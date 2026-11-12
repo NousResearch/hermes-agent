@@ -424,6 +424,10 @@ class LineAdapter(BasePlatformAdapter):
         self._media_temp_paths: set[str] = set()
         self._media_ttl = MEDIA_TOKEN_TTL_SECONDS
         self._pending_buttons: dict[str, str] = {}  # one outstanding button per chat: chat_id → request_id
+        # chat_id → request_id: the user tapped the button while the turn was still
+        # running. Their one request is spent on the "still working" notice, so the
+        # answer must be PUSHED when it lands rather than left behind the button.
+        self._tap_waiting: dict[str, str] = {}
 
     def _fail(self, code: str, detail: str, *, retryable: bool = False) -> bool:  # fatal connect error → False
         self._set_fatal_error(code, detail, retryable=retryable)
@@ -607,6 +611,11 @@ class LineAdapter(BasePlatformAdapter):
             messages = [_text_message(str(entry.payload or self.interrupted_text))]
         else:
             messages = [_text_message(self.delivered_text if state is State.DELIVERED else self.pending_text)]
+            if state is State.PENDING:
+                # They asked while the answer was still being written. Remember it:
+                # this tap has now answered their intent, so nothing will make them
+                # tap again once the entry turns READY.
+                self._tap_waiting[chat_id] = request_id
         try:
             await self._client.reply(reply_token, messages)
         except Exception as exc:
@@ -661,6 +670,15 @@ class LineAdapter(BasePlatformAdapter):
             entry = self._cache.get(pending_rid)
             if entry is not None and entry.state is State.PENDING:
                 self._cache.set_ready(pending_rid, content)
+                if self._tap_waiting.pop(chat_id, None) == pending_rid:
+                    # The user already tapped and was told "still working". Leaving the
+                    # answer in the cache here is silent message loss: no tap is coming,
+                    # and this returns success while nothing reached them. Push it.
+                    rescued = await self._send_text_chunks(chat_id, content, force_push=True)
+                    if rescued.success:
+                        self._cache.mark_delivered(pending_rid)
+                        self._pending_buttons.pop(chat_id, None)
+                    return rescued
                 return SendResult(success=True, message_id=pending_rid)
             # Stale mapping: the entry is READY/DELIVERED/ERROR or gone entirely —
             # absorbing this send would silently swallow the answer behind a dead
@@ -728,6 +746,7 @@ class LineAdapter(BasePlatformAdapter):
     async def interrupt_session_activity(self, session_key: str, chat_id: str) -> None:
         """Resolve any orphan PENDING postback so the button doesn't loop."""
         await super().interrupt_session_activity(session_key, chat_id)
+        self._tap_waiting.pop(chat_id, None)
         rid = self._pending_buttons.pop(chat_id, None)
         if rid:
             self._cache.set_error(rid, self.interrupted_text)

@@ -327,6 +327,42 @@ class TestSlowLLMPostbackRegression:
         assert adapter._client.reply.await_args.args[1][0]["text"] == adapter.expired_text
         assert "Uchat" not in adapter._pending_buttons
 
+    def test_tap_while_pending_still_delivers_the_answer_when_it_lands(self, adapter):
+        """A tap that arrives MID-TURN must not spend the user's one request.
+
+        The tap lands while the entry is still PENDING, so the user is told the
+        turn is "still working". That acknowledgement answers their intent and
+        they have no reason to press the button again. When the answer finally
+        arrives it used to be cached against the button and left there: nothing
+        pushed it, nothing told the user, and the chat stayed silent while every
+        status signal (including SendResult.success) reported a delivery.
+        """
+        rid = adapter._cache.register_pending("Uchat")
+        adapter._pending_buttons["Uchat"] = rid
+
+        asyncio.run(adapter._handle_postback_event({
+            "replyToken": "tap-token",
+            "source": {"type": "user", "userId": "Uchat"},
+            "postback": {"data": json.dumps({"action": "show_response", "request_id": rid})}}))
+        assert adapter._client.reply.await_args.args[1][0]["text"] == adapter.pending_text
+
+        result = asyncio.run(adapter.send("Uchat", "The answer they asked for"))
+
+        assert result.success
+        assert adapter._client.push.await_count == 1, "answer must reach a user who already asked"
+        assert adapter._client.push.await_args.args[1][0]["text"] == "The answer they asked for"
+        assert adapter._cache.get(rid).state is State.DELIVERED
+        assert "Uchat" not in adapter._pending_buttons
+
+    def test_no_push_when_nobody_asked(self, adapter):
+        """Silence stays silent: an untapped button still just caches the answer."""
+        rid = adapter._cache.register_pending("Uchat")
+        adapter._pending_buttons["Uchat"] = rid
+        result = asyncio.run(adapter.send("Uchat", "answer nobody asked for yet"))
+        assert result.success and adapter._client.push.await_count == 0
+        assert adapter._cache.get(rid).state is State.READY
+
+
 
 class TestEnvEnablement:
 

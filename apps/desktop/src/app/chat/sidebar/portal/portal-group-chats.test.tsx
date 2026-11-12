@@ -4,7 +4,8 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { RootTooltipProvider } from '@/components/ui/tooltip'
 import type * as GroupRegistry from '@/plugins/hermes-bots/canonical-group-registry'
 import { useGatewayGroupRooms } from '@/plugins/hermes-bots/canonical-group-registry'
-import { $botMeta, $lastRoster } from '@/plugins/hermes-bots/data'
+import type * as BotsData from '@/plugins/hermes-bots/data'
+import { $botMeta, $lastRoster, useRoster } from '@/plugins/hermes-bots/data'
 import { $groupChats } from '@/plugins/hermes-bots/group-chat'
 import { openGroupChat } from '@/plugins/hermes-bots/group-chat-view'
 import type * as BotsI18n from '@/plugins/hermes-bots/i18n'
@@ -14,6 +15,10 @@ import { PortalGroupChats } from './portal-group-chats'
 vi.mock('@/plugins/hermes-bots/canonical-group-registry', async original => ({
   ...await original<typeof GroupRegistry>(),
   useGatewayGroupRooms: vi.fn(() => [])
+}))
+vi.mock('@/plugins/hermes-bots/data', async original => ({
+  ...await original<typeof BotsData>(),
+  useRoster: vi.fn(() => ({ data: undefined }))
 }))
 vi.mock('@/plugins/hermes-bots/group-chat-view', () => ({ openGroupChat: vi.fn() }))
 vi.mock('@/plugins/hermes-bots/i18n', async original => {
@@ -45,4 +50,16 @@ it('opens same-named rooms using their exact gateway authority and retains deskt
   fireEvent.click(screen.getByRole('button', { name: /Across gateways/ }))
   expect(openGroupChat).toHaveBeenLastCalledWith('Across gateways', 'name')
   expect(screen.getByRole('button', { name: 'New group chat' })).toBeTruthy()
+})
+
+it('counts members from the live roster when no Bots pane ever published one', () => {
+  const profiles = ['one', 'two'].map(name => ({ name, connectionId: 'local' }))
+
+  vi.mocked(useRoster).mockReturnValue({ data: { profiles } } as ReturnType<typeof useRoster>)
+  $groupChats.set({ Pair: { log: [], watermarks: {}, roomId: 'pair', engine: 'desktop', members: [
+    { name: 'one', connectionId: 'local', sourceScoped: true },
+    { name: 'two', connectionId: 'local', sourceScoped: true }
+  ] } })
+  render(<RootTooltipProvider><PortalGroupChats query="" /></RootTooltipProvider>)
+  expect(screen.getByRole('button', { name: /Pair/ }).textContent).toContain('2')
 })

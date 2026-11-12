@@ -70,6 +70,13 @@ via `tasks/get`.
   prompt-injection filters and framed as untrusted peer input; remote peers
   cannot invoke operator slash commands.
 - Outbound text is scrubbed of credential-shaped strings.
+- **Peer Agent Card signatures** (A2A v1.0 §8.4). A peer's card — its endpoints
+  and skills — is attacker-controlled until its signature is checked against a
+  key you trust. Configure `A2A_TRUSTED_SIGNERS` (a JWKS) and a card whose
+  signature does not verify against one of those keys is refused by
+  `a2a_discover` / `a2a_call`, so a card forged under a legitimate `kid` can no
+  longer steer a call. Inert until configured; `A2A_REQUIRE_CARD_SIGNATURE`
+  additionally rejects any unsigned peer card.
 - Push callbacks are SSRF-guarded and HMAC-SHA256 signed (`X-A2A-Signature`).
 - Every exchange is logged to `~/.hermes/a2a_audit.jsonl`.
 - Conversations persist to `~/.hermes/a2a_conversations/` — they survive context
@@ -90,6 +97,8 @@ via `tasks/get`.
 | `A2A_RATE_LIMIT` | `60` | Requests/minute per identity. |
 | `A2A_MAX_PINGPONG_TURNS` | `5` | Anti-loop turn cap per context (max 20). |
 | `A2A_REPLY_TIMEOUT` | `300` | Seconds to wait for the agent's reply; the orphan sweep never fails a task before this window (floor 300s) or while a request still waits on it. |
+| `A2A_TRUSTED_SIGNERS` | _(unset)_ | JWKS (inline JSON or a path) of public keys that may sign a peer's Agent Card. When set, a card whose signature does not verify against one of these keys is refused. |
+| `A2A_REQUIRE_CARD_SIGNATURE` | `false` | Also refuse any peer card that is not signed by a trusted signer. |
 | `A2A_PUSH_SECRET` | bearer token | HMAC secret for push signing. |
 | `A2A_ADVERTISED_TOOLSETS` | all registered | Restrict skills on the Agent Card. |
 

@@ -729,6 +729,20 @@ def test_fs_write_text_refuses_sensitive_files_through_symlinks(client, tmp_path
     assert store.read_text() == "model: safe\n"
 
 
+@pytest.mark.require_symlinks
+def test_fs_write_text_refuses_a_credential_name_mid_link_chain(client, tmp_path):
+    store = tmp_path / "settings-store"
+    store.write_text("model: safe\n")
+    (tmp_path / "config.yaml").symlink_to(store)
+    alias = tmp_path / "notes.md"
+    alias.symlink_to(tmp_path / "config.yaml")
+
+    for target in (str(alias), alias.as_uri()):
+        response = client.post("/api/fs/write-text", json={"path": target, "content": "EVIL=1"})
+        assert response.status_code == 403, repr(target)
+    assert store.read_text() == "model: safe\n"
+
+
 def test_fs_read_data_url_reads_a_browser_paste_from_the_host_for_an_ssh_profile(client, monkeypatch):
     """A browser paste is saved in the profile's host image cache even when its workspace is an
     SSH machine. Sending it reads it back through this route, so that one host-owned path must not

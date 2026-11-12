@@ -118,7 +118,19 @@ def _is_sensitive_path(path: Path) -> bool:
     return any(part.lower() in _SENSITIVE_MANAGED_DIR_NAMES for part in path.parts)
 
 
-def _refuse_sensitive_write(target: Path, requested: str) -> None:
+def _link_chain(start: Path) -> list[Path]:
+    """Every path a leaf symlink chain passes through after *start* (bounded like the kernel's loop limit)."""
+    hops, current = [], start
+    for _ in range(40):
+        try:
+            current = Path(os.path.dirname(current), os.readlink(current))
+        except OSError:
+            break
+        hops.append(current)
+    return hops
+
+
+def _refuse_sensitive_write(target: Path, requested: str, root: Optional[Path] = None) -> None:
     """403 when a write/delete would land on a credential file the read side hides.
 
     *target* is the resolver's (symlink-resolved) path and *requested* the client's path as sent:
@@ -130,7 +142,13 @@ def _refuse_sensitive_write(target: Path, requested: str) -> None:
         # the managed routes take the text verbatim, so a URL they cannot parse stays as sent.
         with contextlib.suppress(ValueError):
             requested = _file_url_path(requested)
-    if any(_is_sensitive_path(p) for p in (Path(requested), target, Path(os.path.realpath(target)))):
+    # A credential name in the MIDDLE of a chain (alias.txt -> config.yaml -> settings-store) is neither
+    # the name sent nor the final target, so walk the chain from where the client's path lands.
+    anchor = Path(requested).expanduser()
+    if not anchor.is_absolute():
+        anchor = root / anchor if root is not None else None
+    hops = _link_chain(anchor) if anchor is not None else []
+    if any(_is_sensitive_path(p) for p in (Path(requested), target, Path(os.path.realpath(target)), *hops)):
         raise HTTPException(status_code=403, detail="Writing sensitive files is not allowed")
 
 
@@ -876,7 +894,7 @@ async def stream_managed_file(
 
 def _managed_write_target(path: str, request: Request, overwrite: bool):
     policy, target, display_path = _resolve_managed_path(path, request, for_write=True)
-    _refuse_sensitive_write(target, path)
+    _refuse_sensitive_write(target, path, policy.locked_root)
     if target.exists() and target.is_dir():
         raise HTTPException(status_code=409, detail="A directory already exists at that path")
     if target.exists() and not overwrite:
@@ -972,7 +990,7 @@ async def upload_managed_file_stream(
 @router.post("/api/files/mkdir")
 def create_managed_directory(payload: ManagedDirectoryCreate, request: Request):
     policy, target, display_path = _resolve_managed_path(payload.path, request, for_write=True)
-    _refuse_sensitive_write(target, payload.path)
+    _refuse_sensitive_write(target, payload.path, policy.locked_root)
     if target.exists() and not target.is_dir():
         raise HTTPException(status_code=409, detail="A file already exists at that path")
     with _io_errors("Directory is not writable", "Could not create directory"):
@@ -983,7 +1001,7 @@ def create_managed_directory(payload: ManagedDirectoryCreate, request: Request):
 @router.delete("/api/files")
 def delete_managed_file(payload: ManagedFileDelete, request: Request):
     policy, target, display_path = _resolve_managed_path(payload.path, request)
-    _refuse_sensitive_write(target, payload.path)
+    _refuse_sensitive_write(target, payload.path, policy.locked_root)
     if policy.locked_root is not None and target == policy.locked_root:
         raise HTTPException(status_code=400, detail="Cannot delete the managed files root")
     if target.parent == target:

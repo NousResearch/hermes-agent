@@ -1,6 +1,6 @@
 name: agssh
 repo: https://github.com/mosesman831/agssh
-sha: e5cce644c8bff0d33949111871ede3f87115ee08
+sha: 3d47bf8e6ca8606a8377ba50b1250249f3164dfd
 subdir: "plugin/agssh"
 description: >-
   SSH hosts as first-class agent tools. Register your hosts once, then the model calls

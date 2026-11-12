@@ -18,8 +18,9 @@ class StreamFallbackMixin:
     """Non-streaming delivery paths used once progressive edits fail or the turn ends oddly."""
 
     async def _send_new_chunk(self, text: str, reply_to_id: Optional[str], *,
-                              final: bool = False) -> Optional[str]:
-        """Send a sealed head. ``__no_edit__`` means it may have landed without an id."""
+                              final: bool = False, first: bool = False) -> Optional[str]:
+        """Send a sealed head. ``__no_edit__`` means it may have landed without an id;
+        ``__partial__`` that the *first* head landed in part (see :meth:`_adopt_partial_head`)."""
         text = self._clean_for_display(text)
         if not text.strip():
             return reply_to_id
@@ -40,6 +41,8 @@ class StreamFallbackMixin:
             self._already_sent = True
             self._last_sent_text = text
             return "__no_edit__"
+        if first and not result.success and self._adopt_partial_head(result, text):
+            return "__partial__"
         if not (result.success and result.message_id):
             self._edit_supported = False
             return reply_to_id
@@ -49,6 +52,22 @@ class StreamFallbackMixin:
         self._last_sent_text = text
         self._notify_new_message()
         return str(result.message_id)
+
+    def _adopt_partial_head(self, result: Any, text: str) -> bool:
+        """A head send whose first parts landed (``partial_overflow`` naming a ``delivered_prefix``
+        of *text*): keep them as the shown prefix and enter fallback mode, so got_done sends only the
+        unseen tail. Without an exact prefix the caller resends it all (a repeated head beats a lost tail)."""
+        raw = getattr(result, "raw_response", None)
+        prefix = raw.get("delivered_prefix") if isinstance(raw, dict) and raw.get("partial_overflow") else None
+        if not (isinstance(prefix, str) and prefix.strip() and text.startswith(prefix)):
+            return False
+        self._message_id = str(raw.get("last_message_id") or result.message_id or "__no_edit__")
+        self._track_preview_ids_from_result(result)
+        self._last_sent_text = prefix
+        self._fallback_preserve_partial_messages = True
+        self._enter_fallback_mode(prefix)
+        self._notify_new_message()
+        return True
 
     def _visible_prefix(self) -> str:
         """Return the visible text already shown in the streamed message."""
@@ -181,11 +200,17 @@ class StreamFallbackMixin:
             if not result or not result.success:
                 # Partial continuation landed: do NOT set _final_response_sent (the
                 # gateway must still deliver the full answer); _already_sent only
-                # prevents a duplicate of the partial.  Nothing landed: let the
-                # gateway final send try once more.
+                # prevents a duplicate of the partial, and the answer now spans several
+                # messages (the id is only the last one).  Nothing landed: the frozen
+                # preview keeps its id, so the gateway finishes it in place instead of
+                # posting the whole answer again beside it.
                 self._already_sent = sent_any_chunk
-                self._message_id = last_message_id
-                self._last_sent_text = last_successful_chunk
+                self._turn_split_delivery = self._turn_split_delivery or sent_any_chunk
+                if sent_any_chunk or not stale_message_id:
+                    self._message_id = last_message_id
+                    self._last_sent_text = last_successful_chunk
+                else:
+                    self._message_id = stale_message_id
                 self._fallback_prefix = ""
                 return
             sent_any_chunk = True

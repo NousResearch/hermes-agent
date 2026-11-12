@@ -850,11 +850,12 @@ def installs_held():
         _installs_held.reset(token)
 
 
-def defer_startup_notice(message: str) -> None:
+def defer_startup_notice(message: str, *, log: bool = True) -> None:
     """Hand *message* to the active home's next turn someone sees (:func:`claim_kept_notices`), once.
-    For boot-path work that runs before any agent exists."""
+    For boot-path work that runs before any agent exists. *log* False: the caller already logged it."""
     from hermes_constants import get_hermes_home
-    logger.warning(message)
+    if log:
+        logger.warning(message)
     _queue_notice(Path(get_hermes_home()), message)
 
 

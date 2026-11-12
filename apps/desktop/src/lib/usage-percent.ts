@@ -1,3 +1,9 @@
+import { getRuntimeI18nLocale } from '@/i18n/runtime'
+
+export function formatPercent(value: number, locale = getRuntimeI18nLocale()): string {
+  return new Intl.NumberFormat(locale, { style: 'percent', maximumFractionDigits: 0 }).format(value)
+}
+
 /**
  * Whole-percent used for a usage-window allowance. Same rule as the portal
  * (`formatUsedPercentLabel`) and the CLI (`format_percent_used`): floor, any
@@ -8,14 +14,14 @@ export function formatPercentUsed(used: number): string {
   const bp = Math.floor(Math.round(Math.min(1, Math.max(0, used)) * 10_000 * 1e6) / 1e6)
 
   if (bp <= 0) {
-    return '0%'
+    return formatPercent(0)
   }
 
   if (bp < 100) {
-    return '<1%'
+    return `<${formatPercent(0.01)}`
   }
 
-  return `${Math.floor(bp / 100)}%`
+  return formatPercent(Math.floor(bp / 100) / 100)
 }
 
 /** `5h` / `2d 3h` / `12m` until a window allowance resets; null when unknown or under a minute away

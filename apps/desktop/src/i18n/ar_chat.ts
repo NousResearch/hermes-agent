@@ -102,7 +102,7 @@ export const arChat = {
       '/blueprint': 'إعداد أتمتة من قالب مخطط',
       '/browser': 'إدارة متصفح الوكيل [connect|disconnect|status]',
       '/palette': 'فتح لوحة الأوامر',
-      '/usage': 'عرض استخدام الرموز وحدود الطلبات؛ reset يسترد إعادة ضبط محفوظة لحدود Codex',
+      '/usage': 'عرض استخدام Tokens وحدود الطلبات؛ reset يسترد إعادة ضبط محفوظة لحدود Codex',
       '/subscription': 'عرض خطة Nous وتغييرها في المتصفح',
       '/topup': 'عرض رصيد Nous وإدارة الفواتير',
       '/platform': 'إيقاف منصة بوابة متعثرة مؤقتًا أو استئنافها أو عرضها',
@@ -145,11 +145,11 @@ export const arChat = {
     queueDroppedTitle: 'تم إسقاط عنصر قائمة الانتظار',
     queueDroppedBody:
       'أُسقط هذا العنصر في الخلفية لأن جلسته تعذّر استئنافها بعد محاولات متكررة. بقية قائمة الانتظار لم تتأثر.',
-    terminalSelectionMissingTitle: 'تحديد الطرفية غير متاح',
+    terminalSelectionMissingTitle: 'تحديد Terminal غير متاح',
     terminalSelectionMissingBody:
-      'أعد تحديد أسطر الطرفية (Ctrl/Cmd+L) قبل الإرسال — لا يحتوي هذا الوسم على النص الأصلي.',
+      'أعد تحديد أسطر Terminal (Ctrl/Cmd+L) قبل الإرسال — لا يحتوي هذا الوسم على النص الأصلي.',
     queuedTerminalSelectionExpiredBody:
-      'تحديد الطرفية في قائمة الانتظار لم يعد متاحا. أعد تحديد الأسطر (Ctrl/Cmd+L) وضع الرسالة في القائمة مجددا.',
+      'تحديد Terminal في قائمة الانتظار لم يعد متاحا. أعد تحديد الأسطر (Ctrl/Cmd+L) وضع الرسالة في القائمة مجددا.',
     previewUnavailable: 'المعاينة غير متاحة',
     previewLabel: label => `معاينة ${label}`,
     couldNotPreview: label => `تعذرت معاينة ${label}`,
@@ -178,7 +178,7 @@ export const arChat = {
     snippets: {
       codeReview: {
         label: 'مراجعة الكود',
-        description: 'دقّق التغيير الحالي بحثًا عن الانحدارات والحالات الطرفية المُسقطة والاختبارات المفقودة.',
+        description: 'دقّق التغيير الحالي بحثًا عن الانحدارات والحالات الحدّية المُسقطة والاختبارات المفقودة.',
         text: 'يرجى مراجعة هذا بحثًا عن الأخطاء والانحدارات والاختبارات المفقودة.'
       },
       implementationPlan: {
@@ -487,7 +487,7 @@ export const arChat = {
     items: {
       'new-session': {
         title: 'ابدأ من جديد',
-        text: 'كل محادثة جديدة لها سياقها وطرفيتها ومجلد عملها الخاص.'
+        text: 'كل محادثة جديدة لها سياقها وTerminal الخاص بها ومجلد عملها الخاص.'
       },
       skills: {
         title: 'علّمه مرة واحدة',
@@ -524,7 +524,7 @@ export const arChat = {
       },
       'right-pane': {
         title: 'لوحة العمل',
-        text: 'الملفات والطرفية والمراجعة والمتصفح المدمج تتشارك اللوحة الجانبية.'
+        text: 'الملفات وTerminal والمراجعة والمتصفح المدمج تتشارك اللوحة الجانبية.'
       }
     }
   }

@@ -16,6 +16,13 @@ interface PlatformStatusInput {
   state?: null | string
 }
 
+export function platformStatusLabel(
+  state: null | string | undefined,
+  copy: { states: Record<string, string>; unknown: string }
+): string {
+  return state ? copy.states[state] || state.replace(/_/g, ' ') : copy.unknown
+}
+
 export function platformStatusTone({ enabled = true, state }: PlatformStatusInput): StatusTone {
   if (!enabled) {
     return 'muted'

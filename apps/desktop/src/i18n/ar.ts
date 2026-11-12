@@ -1,5 +1,9 @@
+import { mergeTranslations } from '@hermes/shared/i18n'
+
 import { arArtifacts } from './ar_artifacts'
 import { arAssistant } from './ar_assistant'
+import { arBatch1 } from './ar_batch_1'
+import { arBatch2 } from './ar_batch_2'
 import { arBoot } from './ar_boot'
 import { arCapabilities } from './ar_capabilities'
 import { arChat } from './ar_chat'
@@ -12,11 +16,11 @@ import { arFirstRun } from './ar_first_run'
 import { arSettings } from './ar_settings'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 
-export const arOverrides = {
+const arSections = {
   gatewayGroupOpen: {
-    opening: "جارٍ فتح محادثة المجموعة…",
-    lookupFailed: "تعذّر العثور على هذه المجموعة على البوابة. حاول مجددًا.",
-    missing: "لم تعد محادثة المجموعة هذه موجودة."
+    opening: 'جارٍ فتح محادثة المجموعة…',
+    lookupFailed: 'تعذّر العثور على هذه المجموعة على البوابة. حاول مجددًا.',
+    missing: 'لم تعد محادثة المجموعة هذه موجودة.'
   },
 
   catalog: {
@@ -157,5 +161,12 @@ export const arOverrides = {
     }
   }
 } satisfies TranslationOverrides
+
+// Batch overlays deep-merge over the section files, so a nested group keeps its
+// existing Arabic siblings.
+export const arOverrides: TranslationOverrides = mergeTranslations<TranslationOverrides>(
+  mergeTranslations<TranslationOverrides>(arSections, arBatch1),
+  arBatch2
+)
 
 export const ar = defineLocale(arOverrides)

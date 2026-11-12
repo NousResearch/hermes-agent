@@ -482,7 +482,7 @@ def test_live_snapshot_holds_neither_password_nor_prologue_names(live_env):
 
 
 def _bash(script, stdin="", env_vars=None, timeout=20):
-    return subprocess.run(["bash", "-c", script], input=stdin, capture_output=True, text=True,
+    return subprocess.run(["bash", "-c", script], input=stdin, capture_output=True, text=True, check=False,
                           env={**os.environ, **(env_vars or {})}, timeout=timeout)
 
 

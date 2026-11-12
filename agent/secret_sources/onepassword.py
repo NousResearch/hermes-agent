@@ -24,6 +24,7 @@ from agent.secret_sources.base import (
     ErrorKind, FetchResult, SecretSource, classify_cli_error, coerce_float,
     get_source_environment, is_valid_env_name, run_cli,
 )
+from hermes_constants import LAUNCH_ONLY_ENV_KEYS
 
 logger = logging.getLogger(__name__)
 
@@ -231,8 +232,9 @@ def apply_onepassword_secrets(
     result.warnings.extend(warnings)
 
     def _guarded(name: str) -> bool:
-        """True when ``name`` must not be applied (token var or env already set)."""
-        return name == service_account_token_env or (not override_existing and bool(os.environ.get(name)))
+        """True when ``name`` must not be applied (token var, launch-only key, or env already set)."""
+        return (name == service_account_token_env or name in LAUNCH_ONLY_ENV_KEYS
+                or (not override_existing and bool(os.environ.get(name))))
 
     result.skipped.extend(n for n in valid if _guarded(n))
     refs_to_fetch = {n: ref for n, ref in valid.items() if not _guarded(n)}

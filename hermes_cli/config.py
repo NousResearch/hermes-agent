@@ -131,7 +131,7 @@ _ENV_VAR_NAME_DENYLIST: frozenset[str] = frozenset({
     "HERMES_YOLO_MODE", "HERMES_ACCEPT_HOOKS", "HERMES_REDACT_SECRETS",
     "HERMES_INTERACTIVE", "HERMES_EXEC_ASK", "HERMES_GATEWAY_SESSION",
     "HERMES_CRON_SESSION", "HERMES_SINGLE_QUERY_SESSION",
-    "HERMES_SESSION_KEY", "HERMES_SESSION_PLATFORM"})
+    "HERMES_SESSION_KEY", "HERMES_SESSION_PLATFORM"}) | LAUNCH_ONLY_ENV_KEYS
 
 
 def _env_var_policy_name(key: str, *, is_windows: Optional[bool] = None) -> str:
@@ -2533,7 +2533,7 @@ def _publish_env_value(key: str, value: Optional[str]) -> None:
     # dashboard launch scope), so a same-request read after the write must see it there too; a
     # routed profile's value never reaches the shared process env.
     targets = [scope] if isinstance(scope, dict) else []
-    if not routed and (scope is None or isinstance(scope, dict)):
+    if not routed and key not in LAUNCH_ONLY_ENV_KEYS and (scope is None or isinstance(scope, dict)):
         targets.append(os.environ)
     for target in targets:
         if value is None:
@@ -2679,9 +2679,7 @@ def reload_env() -> int:
     env_vars = load_env()
     count = 0
     for key, value in env_vars.items():
-        if key in LAUNCH_ONLY_ENV_KEYS:
-            continue  # launch-only: a dotenv re-read must not repoint the managed scope (#135200)
-        if os.environ.get(key) != value:
+        if key not in LAUNCH_ONLY_ENV_KEYS and os.environ.get(key) != value:  # launch-only: never from .env (#135200)
             os.environ[key] = value
             count += 1
     known = set() if dotenv_unreadable(get_env_path()) else set(OPTIONAL_ENV_VARS) | _EXTRA_ENV_KEYS

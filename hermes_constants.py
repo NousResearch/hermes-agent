@@ -856,8 +856,9 @@ def socket_safe_tmpdir() -> str:
 # moves identity, policy and plugin scope wholesale — one write to ``~/.hermes/.env`` would
 # otherwise relocate SOUL.md, config.yaml, plugins, skills and cron on the next start (#144685).
 # Skipped by ``hermes_cli.env_loader._load_dotenv_with_fallback``,
-# ``hermes_cli.config.reload_env`` and ``agent.secret_sources.registry.apply_all``
-# (reported as ``skipped_protected``).
+# ``hermes_cli.config.reload_env``, ``agent.secret_sources.registry.apply_all`` (reported as
+# ``skipped_protected``) and ``onepassword.apply_onepassword_secrets``; refused by the ``.env``
+# writers (``validate_env_var_name_for_write``) and never mirrored by ``_publish_env_value``.
 LAUNCH_ONLY_ENV_KEYS = frozenset({"HERMES_MANAGED_DIR", "HERMES_HOME"})
 
 

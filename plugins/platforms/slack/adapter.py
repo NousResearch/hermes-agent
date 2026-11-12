@@ -6758,8 +6758,7 @@ async def _standalone_send(
                     break
         return send_error(f"Slack API error: {last_error}")
     except Exception as e:  # the text may echo the proxy URL: it reaches the model
-        return send_error(f"Slack send failed: {describe_proxy_error(e, resolve_proxy_url()) or e}",
-                          nothing_sent=request_never_left(e))
+        return send_error(f"Slack send failed: {describe_proxy_error(e, resolve_proxy_url()) or e}", nothing_sent=request_never_left(e))
 
 
 _SETUP_STEPS = (

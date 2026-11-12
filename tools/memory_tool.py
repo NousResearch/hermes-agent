@@ -83,11 +83,14 @@ def _pin_matched_entries(store: MemoryStore, payload: dict[str, Any]) -> Optiona
 
 def _gate_or_stage(store: MemoryStore, summary: str, detail: str, payload: dict[str, Any]) -> Optional[str]:
     """JSON tool-result string when the write must NOT proceed (blocked or staged
-    for approval), None to proceed. Fails open if the gate module can't load."""
+    for approval), None to proceed. Fails closed (refuses) if the gate module can't load."""
     try:
         from tools import write_approval as wa
     except Exception:
-        return None
+        logger.error("write_approval unavailable; refusing memory write", exc_info=True)
+        FAILURE_CLASS.set("gate_refused")
+        return tool_error("Memory write refused: the write-approval gate could not be loaded. "
+                          "Nothing was saved.", success=False)
     decision = wa.evaluate_gate(wa.MEMORY, inline_summary=summary, inline_detail=detail)
     if decision.allow:
         return None

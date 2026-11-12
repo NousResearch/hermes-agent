@@ -38,7 +38,11 @@ async function loadRoom(): Promise<Room> {
 
   Object.assign(host, gateway.host)
 
-  const [chat, view, shared] = await Promise.all([import('./group-chat'), import('./group-chat-view'), import('./shared')])
+  const [chat, view, shared] = await Promise.all([
+    import('./group-chat'),
+    import('./group-chat-view'),
+    import('./shared')
+  ])
   shared.setPluginCtx(scriptedStorage(gateway.storage))
 
   return { chat, gateway, view }
@@ -47,10 +51,18 @@ async function loadRoom(): Promise<Room> {
 const stored = (room: Room) => (room.gateway.storage.get('group-chats') || {}) as Record<string, GroupChat>
 
 function seed(room: Room) {
-  for (const [name, engine] of [['Mixed', 'desktop'], ['Plain', undefined]] as const) {
+  for (const [name, engine] of [
+    ['Mixed', 'desktop'],
+    ['Plain', undefined]
+  ] as const) {
     room.chat.updateGroupChat(
       name,
-      r => ({ ...r, members: [{ name: 'alpha' }, { name: 'beta' }], roomId: `room-${name}`, ...(engine ? { engine } : {}) }),
+      r => ({
+        ...r,
+        members: [{ name: 'alpha' }, { name: 'beta' }],
+        roomId: `room-${name}`,
+        ...(engine ? { engine } : {})
+      }),
       { sync: false }
     )
   }

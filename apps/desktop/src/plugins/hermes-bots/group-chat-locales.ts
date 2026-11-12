@@ -41,12 +41,19 @@ export interface GroupChatMessages extends GroupChatChromeMessages, GroupChatErr
 function russianNoun(count: number, one: string, few: string, many: string): string {
   return count % 10 === 1 && count % 100 !== 11
     ? one
-    : count % 10 >= 2 && count % 10 <= 4 && (count % 100 < 12 || count % 100 > 14) ? few : many
+    : count % 10 >= 2 && count % 10 <= 4 && (count % 100 < 12 || count % 100 > 14)
+      ? few
+      : many
 }
 
 function arabicBots(count: number, dual = 'روبوتان'): string {
-  return count === 0 ? 'لا روبوتات' : count === 1 ? 'روبوت واحد' : count === 2 ? dual
-    : `${count} ${count % 100 >= 3 && count % 100 <= 10 ? 'روبوتات' : count % 100 >= 11 ? 'روبوتًا' : 'روبوت'}`
+  return count === 0
+    ? 'لا روبوتات'
+    : count === 1
+      ? 'روبوت واحد'
+      : count === 2
+        ? dual
+        : `${count} ${count % 100 >= 3 && count % 100 <= 10 ? 'روبوتات' : count % 100 >= 11 ? 'روبوتًا' : 'روبوت'}`
 }
 
 export const GROUP_CHAT_LOCALES = {
@@ -56,9 +63,12 @@ export const GROUP_CHAT_LOCALES = {
     mentionBot: 'Bot in this group chat',
     mentionEveryone: 'Everyone in the group chat',
     mentionUser: 'You — the group chat is waiting on a human',
-    createDesc: max => `Pick 2–${max} bots. Local memberships sync through each bot profile; for bots on other computers, membership is saved in this group chat only.`,
-    manageMembersDesc: (max, group) => `Pick 2–${max} bots for “${group}”. The group chat, its history and its member sessions stay as they are.`,
-    deleteDesc: group => `This removes “${group}” from its bots and clears the shared group chat history. The bots and their individual chats are kept.`,
+    createDesc: max =>
+      `Pick 2–${max} bots. Local memberships sync through each bot profile; for bots on other computers, membership is saved in this group chat only.`,
+    manageMembersDesc: (max, group) =>
+      `Pick 2–${max} bots for “${group}”. The group chat, its history and its member sessions stay as they are.`,
+    deleteDesc: group =>
+      `This removes “${group}” from its bots and clears the shared group chat history. The bots and their individual chats are kept.`,
     memberSizeError: max => `A group chat needs between 2 and ${max} bots`,
     manageMembers: 'Manage members',
     saveMembers: 'Save members',
@@ -75,12 +85,14 @@ export const GROUP_CHAT_LOCALES = {
     created: (group, count) => `“${group}” created with ${count} bot${count === 1 ? '' : 's'}`,
     memberGroups: groups => `in ${groups}`,
     createAction: 'Create group',
-    browserCommentsAdded: (count, group) => `${count} browser comment${count === 1 ? '' : 's'} added to ${group}. Review the new thread draft before sending.`,
+    browserCommentsAdded: (count, group) =>
+      `${count} browser comment${count === 1 ? '' : 's'} added to ${group}. Review the new thread draft before sending.`,
     memberCount: count => `${count} bot${count === 1 ? '' : 's'}`,
-    allHeldStatus: count => count === 1 ? 'The bot is paused' : `All ${count} bots are paused`,
+    allHeldStatus: count => (count === 1 ? 'The bot is paused' : `All ${count} bots are paused`),
     availableCount: (available, total) => `${available} of ${total} available`,
     disbandDescPrefix: 'This removes the ',
-    disbandDescSuffix: count => ` grouping from its ${count} bot${count === 1 ? '' : 's'} and clears the shared group chat log. ${count === 1 ? 'The bot itself and its per-group sessions are' : 'The bots themselves and their per-group sessions are'} kept.`,
+    disbandDescSuffix: count =>
+      ` grouping from its ${count} bot${count === 1 ? '' : 's'} and clears the shared group chat log. ${count === 1 ? 'The bot itself and its per-group sessions are' : 'The bots themselves and their per-group sessions are'} kept.`,
     pinGroup: 'Pin to top',
     unpinGroup: 'Unpin',
     groupPinned: group => `${group} pinned to top`,
@@ -92,9 +104,12 @@ export const GROUP_CHAT_LOCALES = {
     mentionBot: 'このグループチャットのボット',
     mentionEveryone: 'グループチャットの全員',
     mentionUser: 'あなた — グループチャットは人による対応を待っています',
-    createDesc: max => `ボットを2〜${max}体選んでください。同じコンピューター上のメンバー情報は各ボットのプロファイルを通じて同期されます。ほかのコンピューターのボットの参加情報は、このグループチャット内だけで保持されます。`,
-    manageMembersDesc: (max, group) => `「${group}」のボットを2〜${max}体選んでください。グループチャット、履歴、メンバーのセッションはそのまま保持されます。`,
-    deleteDesc: group => `「${group}」からボットを外し、グループチャットの共有履歴を消去します。ボットと個別のチャットは保持されます。`,
+    createDesc: max =>
+      `ボットを2〜${max}体選んでください。同じコンピューター上のメンバー情報は各ボットのプロファイルを通じて同期されます。ほかのコンピューターのボットの参加情報は、このグループチャット内だけで保持されます。`,
+    manageMembersDesc: (max, group) =>
+      `「${group}」のボットを2〜${max}体選んでください。グループチャット、履歴、メンバーのセッションはそのまま保持されます。`,
+    deleteDesc: group =>
+      `「${group}」からボットを外し、グループチャットの共有履歴を消去します。ボットと個別のチャットは保持されます。`,
     memberSizeError: max => `グループチャットには2〜${max}体のボットが必要です`,
     manageMembers: 'メンバーを管理',
     saveMembers: 'メンバーを保存',
@@ -111,12 +126,14 @@ export const GROUP_CHAT_LOCALES = {
     created: (group, count) => `ボット${count}体で「${group}」を作成しました`,
     memberGroups: groups => `${groups}に参加`,
     createAction: 'グループを作成',
-    browserCommentsAdded: (count, group) => `ブラウザーのコメント${count}件を${group}に追加しました。送信前に新しいスレッドの下書きを確認してください。`,
+    browserCommentsAdded: (count, group) =>
+      `ブラウザーのコメント${count}件を${group}に追加しました。送信前に新しいスレッドの下書きを確認してください。`,
     memberCount: count => `ボット${count}体`,
     allHeldStatus: count => `すべてのボット（${count}体）が一時停止中`,
     availableCount: (available, total) => `${total}体中${available}体が利用可能`,
     disbandDescPrefix: '',
-    disbandDescSuffix: count => `からボット${count}体を外し、グループチャットの共有履歴を消去します。ボット自体と各グループのセッションは保持されます。`,
+    disbandDescSuffix: count =>
+      `からボット${count}体を外し、グループチャットの共有履歴を消去します。ボット自体と各グループのセッションは保持されます。`,
     pinGroup: '先頭にピン留め',
     unpinGroup: 'ピン留めを解除',
     groupPinned: group => `${group}を先頭にピン留めしました`,
@@ -128,7 +145,8 @@ export const GROUP_CHAT_LOCALES = {
     mentionBot: '此群聊中的机器人',
     mentionEveryone: '群聊中的所有人',
     mentionUser: '你 — 群聊正在等待人工回应',
-    createDesc: max => `选择 2–${max} 个机器人。本机成员关系通过各机器人的配置文件同步；其他电脑上机器人的成员关系仅保存在此群聊中。`,
+    createDesc: max =>
+      `选择 2–${max} 个机器人。本机成员关系通过各机器人的配置文件同步；其他电脑上机器人的成员关系仅保存在此群聊中。`,
     manageMembersDesc: (max, group) => `为“${group}”选择 2–${max} 个机器人。群聊、历史记录和成员会话均保持不变。`,
     deleteDesc: group => `这将把机器人移出“${group}”并清除群聊的共享历史记录。机器人及其单独聊天会保留。`,
     memberSizeError: max => `群聊需要 2 到 ${max} 个机器人`,
@@ -165,8 +183,10 @@ export const GROUP_CHAT_LOCALES = {
     mentionBot: '此群組聊天中的機器人',
     mentionEveryone: '群組聊天中的所有人',
     mentionUser: '你 — 群組聊天正在等待人工回應',
-    createDesc: max => `選擇 2–${max} 個機器人。本機成員關係透過各機器人的設定檔同步；其他電腦上機器人的成員關係僅保存在此群組聊天中。`,
-    manageMembersDesc: (max, group) => `為「${group}」選擇 2–${max} 個機器人。群組聊天、歷史記錄和成員工作階段均保持不變。`,
+    createDesc: max =>
+      `選擇 2–${max} 個機器人。本機成員關係透過各機器人的設定檔同步；其他電腦上機器人的成員關係僅保存在此群組聊天中。`,
+    manageMembersDesc: (max, group) =>
+      `為「${group}」選擇 2–${max} 個機器人。群組聊天、歷史記錄和成員工作階段均保持不變。`,
     deleteDesc: group => `這會將機器人移出「${group}」並清除群組聊天的共用歷史記錄。機器人及其個別聊天會保留。`,
     memberSizeError: max => `群組聊天需要 2 到 ${max} 個機器人`,
     manageMembers: '管理成員',
@@ -202,9 +222,12 @@ export const GROUP_CHAT_LOCALES = {
     mentionBot: 'روبوت في محادثة المجموعة هذه',
     mentionEveryone: 'الجميع في محادثة المجموعة',
     mentionUser: 'أنت — محادثة المجموعة تنتظر ردًا من شخص',
-    createDesc: max => `اختر ما بين روبوتين و${arabicBots(max, 'روبوتين')}. تُزامَن العضويات المحلية عبر ملف تعريف كل روبوت؛ أما عضوية الروبوتات على أجهزة أخرى فتُحفظ في محادثة المجموعة هذه فقط.`,
-    manageMembersDesc: (max, group) => `اختر ما بين روبوتين و${arabicBots(max, 'روبوتين')} لـ «${group}». تبقى محادثة المجموعة وسجلها وجلسات أعضائها كما هي.`,
-    deleteDesc: group => `يؤدي هذا إلى إزالة «${group}» من روبوتاتها ومسح السجل المشترك لمحادثة المجموعة. تبقى الروبوتات ومحادثاتها الفردية محفوظة.`,
+    createDesc: max =>
+      `اختر ما بين روبوتين و${arabicBots(max, 'روبوتين')}. تُزامَن العضويات المحلية عبر ملف تعريف كل روبوت؛ أما عضوية الروبوتات على أجهزة أخرى فتُحفظ في محادثة المجموعة هذه فقط.`,
+    manageMembersDesc: (max, group) =>
+      `اختر ما بين روبوتين و${arabicBots(max, 'روبوتين')} لـ «${group}». تبقى محادثة المجموعة وسجلها وجلسات أعضائها كما هي.`,
+    deleteDesc: group =>
+      `يؤدي هذا إلى إزالة «${group}» من روبوتاتها ومسح السجل المشترك لمحادثة المجموعة. تبقى الروبوتات ومحادثاتها الفردية محفوظة.`,
     memberSizeError: max => `تحتاج محادثة المجموعة إلى ما بين روبوتين و${arabicBots(max, 'روبوتين')}`,
     manageMembers: 'إدارة الأعضاء',
     saveMembers: 'حفظ الأعضاء',
@@ -221,12 +244,21 @@ export const GROUP_CHAT_LOCALES = {
     created: (group, count) => `أُنشئت «${group}». عدد الروبوتات: ${count}`,
     memberGroups: groups => `في ${groups}`,
     createAction: 'إنشاء مجموعة',
-    browserCommentsAdded: (count, group) => `أُضيفت تعليقات المتصفح إلى ${group} (العدد: ${count}). راجع مسودة سلسلة الرسائل الجديدة قبل الإرسال.`,
+    browserCommentsAdded: (count, group) =>
+      `أُضيفت تعليقات المتصفح إلى ${group} (العدد: ${count}). راجع مسودة سلسلة الرسائل الجديدة قبل الإرسال.`,
     memberCount: count => arabicBots(count),
-    allHeldStatus: count => count === 0 ? 'لا توجد روبوتات لإيقافها مؤقتًا' : count === 1 ? 'الروبوت متوقف مؤقتًا' : count === 2 ? 'الروبوتان متوقفان مؤقتًا' : `جميع الروبوتات متوقفة مؤقتًا (${count})`,
+    allHeldStatus: count =>
+      count === 0
+        ? 'لا توجد روبوتات لإيقافها مؤقتًا'
+        : count === 1
+          ? 'الروبوت متوقف مؤقتًا'
+          : count === 2
+            ? 'الروبوتان متوقفان مؤقتًا'
+            : `جميع الروبوتات متوقفة مؤقتًا (${count})`,
     availableCount: (available, total) => `المتاح: ${available} من ${total}`,
     disbandDescPrefix: 'يؤدي هذا إلى إزالة المجموعة ',
-    disbandDescSuffix: count => ` من أعضائها (${arabicBots(count, 'روبوتين')}) ومسح السجل المشترك لمحادثة المجموعة. ${count === 1 ? 'يبقى الروبوت نفسه وجلساته الخاصة بكل مجموعة محفوظة.' : count === 2 ? 'يبقى الروبوتان وجلساتهما الخاصة بكل مجموعة محفوظة.' : 'تبقى الروبوتات نفسها وجلساتها الخاصة بكل مجموعة محفوظة.'}`,
+    disbandDescSuffix: count =>
+      ` من أعضائها (${arabicBots(count, 'روبوتين')}) ومسح السجل المشترك لمحادثة المجموعة. ${count === 1 ? 'يبقى الروبوت نفسه وجلساته الخاصة بكل مجموعة محفوظة.' : count === 2 ? 'يبقى الروبوتان وجلساتهما الخاصة بكل مجموعة محفوظة.' : 'تبقى الروبوتات نفسها وجلساتها الخاصة بكل مجموعة محفوظة.'}`,
     pinGroup: 'تثبيت في الأعلى',
     unpinGroup: 'إلغاء التثبيت',
     groupPinned: group => `تم تثبيت ${group} في الأعلى`,
@@ -238,14 +270,18 @@ export const GROUP_CHAT_LOCALES = {
     mentionBot: 'Бот в этом групповом чате',
     mentionEveryone: 'Все участники группового чата',
     mentionUser: 'Вы — групповой чат ждёт ответа человека',
-    createDesc: max => `Выберите от 2 до ${max} ботов. Локальное членство синхронизируется через профиль каждого бота; для ботов с других компьютеров сведения об участии хранятся только в этом групповом чате.`,
-    manageMembersDesc: (max, group) => `Выберите от 2 до ${max} ботов для «${group}». Групповой чат, его история и сеансы участников сохранятся.`,
-    deleteDesc: group => `Группа «${group}» будет удалена из списка групп её ботов, а общая история группового чата будет очищена. Боты и их личные чаты сохранятся.`,
+    createDesc: max =>
+      `Выберите от 2 до ${max} ботов. Локальное членство синхронизируется через профиль каждого бота; для ботов с других компьютеров сведения об участии хранятся только в этом групповом чате.`,
+    manageMembersDesc: (max, group) =>
+      `Выберите от 2 до ${max} ботов для «${group}». Групповой чат, его история и сеансы участников сохранятся.`,
+    deleteDesc: group =>
+      `Группа «${group}» будет удалена из списка групп её ботов, а общая история группового чата будет очищена. Боты и их личные чаты сохранятся.`,
     memberSizeError: max => `Для группового чата нужно от 2 до ${max} ботов`,
     manageMembers: 'Управление участниками',
     saveMembers: 'Сохранить участников',
     deleted: group => `Группа «${group}» удалена`,
-    globalCount: count => `${count} ${russianNoun(count, 'общий групповой чат', 'общих групповых чата', 'общих групповых чатов')}`,
+    globalCount: count =>
+      `${count} ${russianNoun(count, 'общий групповой чат', 'общих групповых чата', 'общих групповых чатов')}`,
     noBots: 'В этом групповом чате нет ботов',
     noBotsMatch: query => `Нет ботов по запросу «${query}»`,
     createBotFirst: 'Ботов пока нет — сначала создайте бота.',
@@ -254,15 +290,18 @@ export const GROUP_CHAT_LOCALES = {
     memberRemoved: (bot, group) => `${bot} удалён из «${group}»`,
     newGroup: 'Новая группа…',
     namePlaceholder: 'Название группы (например, Исследования)',
-    created: (group, count) => `Группа «${group}» создана. В ней ${count} ${russianNoun(count, 'бот', 'бота', 'ботов')}.`,
+    created: (group, count) =>
+      `Группа «${group}» создана. В ней ${count} ${russianNoun(count, 'бот', 'бота', 'ботов')}.`,
     memberGroups: groups => `в ${groups}`,
     createAction: 'Создать группу',
-    browserCommentsAdded: (count, group) => `В «${group}» добавлены комментарии из браузера: ${count}. Проверьте черновик новой ветки перед отправкой.`,
+    browserCommentsAdded: (count, group) =>
+      `В «${group}» добавлены комментарии из браузера: ${count}. Проверьте черновик новой ветки перед отправкой.`,
     memberCount: count => `${count} ${russianNoun(count, 'бот', 'бота', 'ботов')}`,
-    allHeldStatus: count => count === 1 ? 'Бот приостановлен' : `Все боты приостановлены (${count})`,
+    allHeldStatus: count => (count === 1 ? 'Бот приостановлен' : `Все боты приостановлены (${count})`),
     availableCount: (available, total) => `Доступно: ${available} из ${total}`,
     disbandDescPrefix: 'Группа ',
-    disbandDescSuffix: count => ` будет удалена у ${count} ${russianNoun(count, 'бота', 'ботов', 'ботов')}, а общая история группового чата будет очищена. ${count === 1 ? 'Сам бот и его сеансы' : 'Сами боты и их сеансы'} в группах сохранятся.`,
+    disbandDescSuffix: count =>
+      ` будет удалена у ${count} ${russianNoun(count, 'бота', 'ботов', 'ботов')}, а общая история группового чата будет очищена. ${count === 1 ? 'Сам бот и его сеансы' : 'Сами боты и их сеансы'} в группах сохранятся.`,
     pinGroup: 'Закрепить наверху',
     unpinGroup: 'Открепить',
     groupPinned: group => `Группа «${group}» закреплена наверху`,
@@ -274,9 +313,12 @@ export const GROUP_CHAT_LOCALES = {
     mentionBot: 'Bot de cette discussion de groupe',
     mentionEveryone: 'Tous les membres de la discussion de groupe',
     mentionUser: 'Vous — la discussion de groupe attend une intervention humaine',
-    createDesc: max => `Choisissez de 2 à ${max} bots. Les appartenances locales se synchronisent via le profil de chaque bot ; pour les bots sur d’autres ordinateurs, l’appartenance n’est enregistrée que dans cette discussion de groupe.`,
-    manageMembersDesc: (max, group) => `Choisissez de 2 à ${max} bots pour « ${group} ». La discussion de groupe, son historique et les sessions de ses membres sont conservés.`,
-    deleteDesc: group => `Ceci retire « ${group} » des groupes de ses bots et efface l’historique partagé de la discussion de groupe. Les bots et leurs discussions individuelles sont conservés.`,
+    createDesc: max =>
+      `Choisissez de 2 à ${max} bots. Les appartenances locales se synchronisent via le profil de chaque bot ; pour les bots sur d’autres ordinateurs, l’appartenance n’est enregistrée que dans cette discussion de groupe.`,
+    manageMembersDesc: (max, group) =>
+      `Choisissez de 2 à ${max} bots pour « ${group} ». La discussion de groupe, son historique et les sessions de ses membres sont conservés.`,
+    deleteDesc: group =>
+      `Ceci retire « ${group} » des groupes de ses bots et efface l’historique partagé de la discussion de groupe. Les bots et leurs discussions individuelles sont conservés.`,
     memberSizeError: max => `Une discussion de groupe nécessite de 2 à ${max} bots`,
     manageMembers: 'Gérer les membres',
     saveMembers: 'Enregistrer les membres',
@@ -293,12 +335,14 @@ export const GROUP_CHAT_LOCALES = {
     created: (group, count) => `« ${group} » créé avec ${count} bot${count > 1 ? 's' : ''}`,
     memberGroups: groups => `dans ${groups}`,
     createAction: 'Créer le groupe',
-    browserCommentsAdded: (count, group) => `${count} commentaire${count > 1 ? 's' : ''} du navigateur ajouté${count > 1 ? 's' : ''} à ${group}. Vérifiez le brouillon du nouveau fil avant l’envoi.`,
+    browserCommentsAdded: (count, group) =>
+      `${count} commentaire${count > 1 ? 's' : ''} du navigateur ajouté${count > 1 ? 's' : ''} à ${group}. Vérifiez le brouillon du nouveau fil avant l’envoi.`,
     memberCount: count => `${count} bot${count > 1 ? 's' : ''}`,
-    allHeldStatus: count => count === 1 ? 'Le bot est en pause' : `Les ${count} bots sont tous en pause`,
+    allHeldStatus: count => (count === 1 ? 'Le bot est en pause' : `Les ${count} bots sont tous en pause`),
     availableCount: (available, total) => `${available} sur ${total} disponible${available > 1 ? 's' : ''}`,
     disbandDescPrefix: 'Ceci retire le groupe ',
-    disbandDescSuffix: count => ` de ${count === 1 ? 'son bot' : `ses ${count} bots`} et efface l’historique partagé de la discussion de groupe. ${count === 1 ? 'Le bot et ses sessions' : 'Les bots et leurs sessions'} par groupe sont conservés.`,
+    disbandDescSuffix: count =>
+      ` de ${count === 1 ? 'son bot' : `ses ${count} bots`} et efface l’historique partagé de la discussion de groupe. ${count === 1 ? 'Le bot et ses sessions' : 'Les bots et leurs sessions'} par groupe sont conservés.`,
     pinGroup: 'Épingler en haut',
     unpinGroup: 'Désépingler',
     groupPinned: group => `Groupe « ${group} » épinglé en haut`,
@@ -310,9 +354,12 @@ export const GROUP_CHAT_LOCALES = {
     mentionBot: 'Bot in diesem Gruppenchat',
     mentionEveryone: 'Alle im Gruppenchat',
     mentionUser: 'Sie — der Gruppenchat wartet auf eine menschliche Antwort',
-    createDesc: max => `Wählen Sie 2–${max} Bots. Lokale Mitgliedschaften werden über das jeweilige Bot-Profil synchronisiert; für Bots auf anderen Computern wird die Mitgliedschaft nur in diesem Gruppenchat gespeichert.`,
-    manageMembersDesc: (max, group) => `Wählen Sie 2–${max} Bots für „${group}“. Der Gruppenchat, sein Verlauf und die Sitzungen seiner Mitglieder bleiben erhalten.`,
-    deleteDesc: group => `Dies entfernt „${group}“ aus den Gruppen seiner Bots und löscht den gemeinsamen Verlauf des Gruppenchats. Die Bots und ihre einzelnen Chats bleiben erhalten.`,
+    createDesc: max =>
+      `Wählen Sie 2–${max} Bots. Lokale Mitgliedschaften werden über das jeweilige Bot-Profil synchronisiert; für Bots auf anderen Computern wird die Mitgliedschaft nur in diesem Gruppenchat gespeichert.`,
+    manageMembersDesc: (max, group) =>
+      `Wählen Sie 2–${max} Bots für „${group}“. Der Gruppenchat, sein Verlauf und die Sitzungen seiner Mitglieder bleiben erhalten.`,
+    deleteDesc: group =>
+      `Dies entfernt „${group}“ aus den Gruppen seiner Bots und löscht den gemeinsamen Verlauf des Gruppenchats. Die Bots und ihre einzelnen Chats bleiben erhalten.`,
     memberSizeError: max => `Ein Gruppenchat braucht 2 bis ${max} Bots`,
     manageMembers: 'Mitglieder verwalten',
     saveMembers: 'Mitglieder speichern',
@@ -329,12 +376,14 @@ export const GROUP_CHAT_LOCALES = {
     created: (group, count) => `„${group}“ mit ${count} Bot${count === 1 ? '' : 's'} erstellt`,
     memberGroups: groups => `in ${groups}`,
     createAction: 'Gruppe erstellen',
-    browserCommentsAdded: (count, group) => `${count} Browserkommentar${count === 1 ? '' : 'e'} zu ${group} hinzugefügt. Prüfen Sie den Entwurf des neuen Threads vor dem Senden.`,
+    browserCommentsAdded: (count, group) =>
+      `${count} Browserkommentar${count === 1 ? '' : 'e'} zu ${group} hinzugefügt. Prüfen Sie den Entwurf des neuen Threads vor dem Senden.`,
     memberCount: count => `${count} Bot${count === 1 ? '' : 's'}`,
-    allHeldStatus: count => count === 1 ? 'Der Bot ist pausiert' : `Alle ${count} Bots sind pausiert`,
+    allHeldStatus: count => (count === 1 ? 'Der Bot ist pausiert' : `Alle ${count} Bots sind pausiert`),
     availableCount: (available, total) => `${available} von ${total} verfügbar`,
     disbandDescPrefix: 'Dies entfernt die Gruppe ',
-    disbandDescSuffix: count => ` von ${count === 1 ? 'ihrem Bot' : `ihren ${count} Bots`} und löscht den gemeinsamen Verlauf des Gruppenchats. ${count === 1 ? 'Der Bot selbst und seine Sitzungen' : 'Die Bots selbst und ihre Sitzungen'} pro Gruppe bleiben erhalten.`,
+    disbandDescSuffix: count =>
+      ` von ${count === 1 ? 'ihrem Bot' : `ihren ${count} Bots`} und löscht den gemeinsamen Verlauf des Gruppenchats. ${count === 1 ? 'Der Bot selbst und seine Sitzungen' : 'Die Bots selbst und ihre Sitzungen'} pro Gruppe bleiben erhalten.`,
     pinGroup: 'Oben anheften',
     unpinGroup: 'Lösen',
     groupPinned: group => `„${group}“ oben angeheftet`,
@@ -346,9 +395,12 @@ export const GROUP_CHAT_LOCALES = {
     mentionBot: 'Bot de este chat de grupo',
     mentionEveryone: 'Todos los miembros del chat de grupo',
     mentionUser: 'Tú — el chat de grupo espera una respuesta humana',
-    createDesc: max => `Elige de 2 a ${max} bots. Las pertenencias locales se sincronizan a través del perfil de cada bot; para los bots de otros equipos, la pertenencia solo se guarda en este chat de grupo.`,
-    manageMembersDesc: (max, group) => `Elige de 2 a ${max} bots para «${group}». El chat de grupo, su historial y las sesiones de sus miembros se conservan.`,
-    deleteDesc: group => `Esto quita «${group}» de los grupos de sus bots y borra el historial compartido del chat de grupo. Los bots y sus chats individuales se conservan.`,
+    createDesc: max =>
+      `Elige de 2 a ${max} bots. Las pertenencias locales se sincronizan a través del perfil de cada bot; para los bots de otros equipos, la pertenencia solo se guarda en este chat de grupo.`,
+    manageMembersDesc: (max, group) =>
+      `Elige de 2 a ${max} bots para «${group}». El chat de grupo, su historial y las sesiones de sus miembros se conservan.`,
+    deleteDesc: group =>
+      `Esto quita «${group}» de los grupos de sus bots y borra el historial compartido del chat de grupo. Los bots y sus chats individuales se conservan.`,
     memberSizeError: max => `Un chat de grupo necesita entre 2 y ${max} bots`,
     manageMembers: 'Gestionar miembros',
     saveMembers: 'Guardar miembros',
@@ -365,12 +417,14 @@ export const GROUP_CHAT_LOCALES = {
     created: (group, count) => `«${group}» creado con ${count} bot${count === 1 ? '' : 's'}`,
     memberGroups: groups => `en ${groups}`,
     createAction: 'Crear grupo',
-    browserCommentsAdded: (count, group) => `${count} comentario${count === 1 ? '' : 's'} del navegador añadido${count === 1 ? '' : 's'} a ${group}. Revisa el borrador del nuevo hilo antes de enviarlo.`,
+    browserCommentsAdded: (count, group) =>
+      `${count} comentario${count === 1 ? '' : 's'} del navegador añadido${count === 1 ? '' : 's'} a ${group}. Revisa el borrador del nuevo hilo antes de enviarlo.`,
     memberCount: count => `${count} bot${count === 1 ? '' : 's'}`,
-    allHeldStatus: count => count === 1 ? 'El bot está en pausa' : `Los ${count} bots están en pausa`,
+    allHeldStatus: count => (count === 1 ? 'El bot está en pausa' : `Los ${count} bots están en pausa`),
     availableCount: (available, total) => `${available} de ${total} disponible${available === 1 ? '' : 's'}`,
     disbandDescPrefix: 'Esto quita el grupo ',
-    disbandDescSuffix: count => ` de ${count === 1 ? 'su bot' : `sus ${count} bots`} y borra el historial compartido del chat de grupo. ${count === 1 ? 'El bot y sus sesiones' : 'Los bots y sus sesiones'} por grupo se conservan.`,
+    disbandDescSuffix: count =>
+      ` de ${count === 1 ? 'su bot' : `sus ${count} bots`} y borra el historial compartido del chat de grupo. ${count === 1 ? 'El bot y sus sesiones' : 'Los bots y sus sesiones'} por grupo se conservan.`,
     pinGroup: 'Fijar arriba',
     unpinGroup: 'Dejar de fijar',
     groupPinned: group => `Grupo «${group}» fijado arriba`,

@@ -4104,20 +4104,21 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         return getattr(runner, "_is_user_authorized", None)
 
     def _early_reject_unauthorized(
-            self, user_id: str, channel_id: str, is_dm: bool, *, thread_id: Optional[str] = None) -> bool:
+            self, user_id: str, channel_id: str, is_dm: bool, *,
+            thread_id: Optional[str] = None, is_bot: bool = False) -> bool:
         """True (logged) when the sender is definitively unauthorized. Injected profile-bound check
         first (works under multiplex, where the handler has no ``__self__``), then runner
         introspection. Unknown (None) is NOT a rejection. ``thread_id``: thread-scoped profile_routes."""
         chat_type = "dm" if is_dm else "group"
         decision = (
-            self._is_sender_authorized(user_id, chat_type, channel_id, thread_id=thread_id)
+            self._is_sender_authorized(user_id, chat_type, channel_id, is_bot=is_bot, thread_id=thread_id)
             if user_id and getattr(self, "_authorization_check", None) is not None
             else None)
         auth_fn = self._runner_auth_fn()
         if decision is None and user_id and callable(auth_fn):
             source = self.build_source(
                 chat_id=channel_id, chat_name="", chat_type=chat_type, user_id=user_id, user_name="",
-                thread_id=thread_id)
+                thread_id=thread_id, is_bot=is_bot)
             decision = bool(auth_fn(source))
         if decision is False:
             logger.warning(
@@ -4566,7 +4567,13 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         # Reject unauthorized users before the expensive lookups/downloads;
         # the runner's own auth check only runs after MessageEvent is built.
         thread_ts = self._session_thread_ts(event, ts, is_dm, assistant_meta)
-        if self._early_reject_unauthorized(user_id, channel_id, is_dm, thread_id=thread_ts):
+        # _drop_bot_sender already resolved bot-user posts without payload bot markers.
+        # Preserve that verdict at the early authorization seam: otherwise an allowed
+        # peer bot is checked as a human before MessageEvent.source.is_bot is set.
+        sender_is_bot = self._event_declares_bot_sender(event) or bool(
+            self._user_is_bot_cache.get((str(team_id or ""), str(user_id or "")), False))
+        if self._early_reject_unauthorized(
+                user_id, channel_id, is_dm, thread_id=thread_ts, is_bot=sender_is_bot):
             return
         bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
         # Mentions may live only in Block Kit blocks.

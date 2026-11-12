@@ -107,17 +107,18 @@ class TestEditedModuleWarning(unittest.TestCase):
     """A module the kernel already imported keeps its old code after an edit on disk; the cell
     that runs next must say so instead of letting a correct fix look like it failed."""
 
-    def _module(self, body):
+    def _module(self, body, name="editme_mod"):
         folder = tempfile.mkdtemp(prefix="hermes-kernel-mod-")
         self.addCleanup(lambda: __import__("shutil").rmtree(folder, ignore_errors=True))
-        path = Path(folder) / "editme_mod.py"
+        path = Path(folder) / f"{name}.py"
         path.write_text(body, encoding="utf-8")
         return folder, path
 
     def test_edit_after_import_is_named_once_and_reload_picks_it_up(self):
-        folder, path = self._module("def answer():\n    return 'old'\n")
+        folder, path = self._module("def answer():\n    return 'old'\n", name="editme_módulo")
         with _kernel_config():
-            first = _run(f"import sys; sys.path.insert(0, {folder!r}); import editme_mod; print(editme_mod.answer())")
+            first = _run(f"import sys; sys.path.insert(0, {folder!r}); import editme_módulo as editme_mod; "
+                         "print(editme_mod.answer())")
             self.assertNotIn("warning", first, first)
             path.write_text("def answer():\n    return 'new'\n", encoding="utf-8")
             later = time.time() + 5
@@ -125,7 +126,7 @@ class TestEditedModuleWarning(unittest.TestCase):
             second = _run("print(editme_mod.answer())")
             third = _run("import importlib; importlib.reload(editme_mod); print(editme_mod.answer())")
         self.assertIn("old", second["output"], second)
-        self.assertIn("editme_mod", second.get("warning", ""), second)
+        self.assertIn("editme_módulo", second.get("warning", ""), second)
         self.assertIn("reset=true", second["warning"])
         self.assertEqual(second["kernel"]["reused"], True)
         self.assertIn("new", third["output"], third)
@@ -151,6 +152,8 @@ class TestEditedModuleWarning(unittest.TestCase):
             rewrite = f"open({str(path)!r}, 'w').write(\"VALUE = 'newer'\\n\"); os.utime({str(path)!r}, ({later} + 5, {later} + 5))"
             third = _run("import importlib, os\n" + rewrite + "\nimportlib.reload(editme_mod); print(editme_mod.VALUE)")
             fourth = _run("print(kept, editme_mod.VALUE)")
+            _run("sys.modules = None")
+            fifth = _run("print(kept)")
         self.assertIn("41 old", second["output"], second)
         self.assertIn("editme_mod", second.get("warning", ""), second)
         self.assertNotIn("\x1b", second["warning"])
@@ -158,6 +161,8 @@ class TestEditedModuleWarning(unittest.TestCase):
         self.assertIn("newer", third["output"], third)
         self.assertIn("41 newer", fourth["output"], fourth)
         self.assertNotIn("warning", fourth, fourth)
+        self.assertEqual(fifth["kernel"]["reused"], True, fifth)
+        self.assertIn("41", fifth["output"], fifth)
 
 
 class TestKernelLifecycle(unittest.TestCase):

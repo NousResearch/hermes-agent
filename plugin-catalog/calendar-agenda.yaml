@@ -1,0 +1,43 @@
+# Catalog entry for the Hermes Agent Plugin Hackathon.
+# At submission time this file is added to the NousResearch/hermes-agent
+# repository as `plugin-catalog/calendar-agenda.yaml` via pull request.
+# Schema: plugin-catalog/README.md in NousResearch/hermes-agent
+# (mirrored at https://hermes-agent.nousresearch.com/docs/developer-guide/plugins/catalog-submission)
+#
+# Attribution: author/maintainer is the owner himself, GitHub `sanpeita`;
+# the plugin is published as `sanpeita/hermes-calendar-agenda`.
+# 2026-11-11: re-pinned to 0.1.1 — Google sign-in now goes through Hermes'
+# `oauth:` route (hermes auth add calendar-agenda:google) instead of the
+# google-workspace skill's token file.
+
+name: calendar-agenda
+
+repo: https://github.com/sanpeita/hermes-calendar-agenda
+
+sha: cb7faabcdcef8ada4b721730a995e5d60327018d
+
+description: "Agent tools plus dashboard API routes for today's Google Calendar agenda — records what actually happened to each planned event (done / interrupted / cancelled / skipped, slot kept or released) in private extended properties, never touching titles or Google event status. Disclosure — reads today's events from your primary Google Calendar and writes private extended properties to them through your own Google OAuth client (signed in with `hermes auth add calendar-agenda:google`); when you release a slot it shortens the end time of events you own that have no guests, keeping the original end so it can be restored; its dashboard routes can change event state."
+
+maintainer: sanpeita
+
+tier: community
+
+category: automation
+
+requires_hermes: ">=0.22.3"
+
+version: "0.1.1"
+
+title: Google Calendar Agenda
+
+known_issues:
+  - "Needs your own Google Cloud OAuth client: set CALENDAR_AGENDA_GOOGLE_CLIENT_ID and CALENDAR_AGENDA_GOOGLE_CLIENT_SECRET, then run `hermes auth add calendar-agenda:google` in your own terminal."
+  - "Timezone is currently fixed to Asia/Tokyo (a constant in calendar_agenda_service.py)."
+
+capabilities:
+  provides_tools:
+    - calendar_agenda_list_today
+    - calendar_agenda_set_state
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

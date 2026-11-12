@@ -26,7 +26,33 @@ python3 run.py --report
 Inference defaults to the Nous Portal agent key, read fresh from `$HERMES_HOME/auth.json` for every
 cell and passed as a `custom` provider; set `TCD_INFERENCE_URL` + `TCD_INFERENCE_KEY` for another endpoint.
 
-## Tasks (13)
+## Sandboxed multi-arm battery (manage_connections only)
+
+`battery.py` runs one tree under four arms that differ only in the cell's own config and one sentence:
+A = `manage_connections` eager, B = deferred, C = deferred with the first description sentence reworded
+to "Connect the user's app accounts and install MCP servers." (that sentence is the catalog line),
+D = eager with the reworded sentence. The rewording is applied inside the worker; no default changes.
+
+```
+python3 relay.py <sock> <log.jsonl> &        # the only network exit; holds the agent key
+TCD_TREE=<checkout> TCD_PYTHON=<hermes env python> TCD_RESULTS=<dir> TCD_CELLS=<scratch dir> TCD_RELAY_SOCK=<sock> \
+  python3 battery.py anthropic/claude-fable-5.2 --arms=A,B,C --dry      # no model call: proves stubs + sandbox
+TCD_... python3 battery.py qwen/qwen3.8-27b --arms=A,B,C --only=conn_mcp_install --reps=1   # smoke
+TCD_... python3 battery.py qwen/qwen3.8-27b --arms=A,B,C,D
+TCD_RESULTS=<dir> python3 battery.py --report
+```
+
+Every cell runs in bubblewrap (`bwrap` and `socat` must be installed): its own network namespace with
+only loopback and the relay socket, `/home`, `/tmp`, `/run`, `/mnt` replaced by empty tmpfs, the tree and
+the interpreter bound read-only, one writable dir at `/home/cell`. The operator's Hermes home, tokens
+and CLI do not exist inside a cell, and `relay.jsonl` lists every outbound request the battery made.
+The dry cell checks all of that plus the stubs (inline executor, registry and bridge paths) before any
+model is called. Battery: four MCP-install phrasings (5 reps), four hosted-connection tasks, two
+negatives, two eager-only controls (3 reps). Pass bar per model, against arm A: no fewer tasks done, no
+more wrong-route cells (terminal, code or file tools used on a connection task), model calls per task
+up by at most 0.2, total tokens per task not higher.
+
+## Tasks (13, two-tree `run.py` form)
 
 | group | tasks | oracle |
 |---|---|---|

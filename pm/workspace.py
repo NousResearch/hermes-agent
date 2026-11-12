@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
-    from pm.environment import PythonEnvironment
+    from pm.environment import PythonEnvironment  # noqa: TID251
 
 from pm import paths
 from pm.package import InstallError
@@ -31,7 +31,7 @@ def _member_ignored(directory, names):
 # The uv failure classifier lives beside the uv runner (stdlib-only imports): the bootstrap
 # runner streams uv output from a pre-3.11 system python where this module's tomllib import
 # cannot load. Workspace callers keep reaching it from here.
-from pm.environment import ResolutionConflict, classify_uv_failure
+from pm.environment import ResolutionConflict, classify_uv_failure  # noqa: TID251
 
 
 def member_sources(plugin_dirs) -> dict[Path, Path]:

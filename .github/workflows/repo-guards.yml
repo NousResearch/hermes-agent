@@ -100,6 +100,12 @@ jobs:
         if: ${{ !cancelled() }}
         run: python3 scripts/check-case-collisions.py
 
+      # A text blob stored with CRLF (web upload, API commit) reads as modified in every fresh
+      # checkout and fails clean-tree steps on every later PR. Local: `python scripts/check --only line-endings`.
+      - name: Reject text files stored with CRLF line endings
+        if: ${{ !cancelled() }}
+        run: python3 scripts/ci/check_line_endings.py
+
       # Any binary over 500 KiB added or modified, or any new file over 500 KiB: every blob a
       # merge adds stays in every clone forever. Exact-path exceptions live in
       # .github/blob-size-allowlist.txt (CODEOWNERS-reviewed). Local: `python scripts/check --only blob-size`.

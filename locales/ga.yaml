@@ -332,6 +332,7 @@ gateway:
     title_error_untitled: "\n⚠️ {error} — seisiún tosaithe gan teideal."
     title_empty_untitled: "\n⚠️ Tá an teideal folamh tar éis glanta — seisiún tosaithe gan teideal."
     tip: "\n✦ Leid: {tip}"
+    paused_left: "\n⚠️ Tá {count} teachtaireacht a sheol tú agus an comhrá roimhe ar sos fós sábháilte ar an gcomhrá roimhe, gan freagra. Chun iad a rith: /resume {session_id}, ansin {discard}."
   restart:
     in_progress: "⏳ Tá atosú gateway ar siúl cheana féin..."
     restarting: "♻ Ag atosú gateway. Mura gcuirfear in iúl duit laistigh de 60 soicind, atosaigh ón gconsól le `hermes gateway restart`."
@@ -746,6 +747,8 @@ gateway:
     reject_loop: "Tá an gníomhaire ag rith — úsáid /loop status / pause / stop i lár an reatha, nó /stop roimh lúb nua a shocrú."
     draining_maintenance: "⏳ Tá an gníomhaire seo ag draenáil le haghaidh gníomh cothabhála agus ní ghlacann sé le sealanna nua faoi láthair. Beidh sé ar ais i gceann nóiméid — seol arís go luath le do thoil."
     another_turn_running: "⏳ Tá seal eile fós ag rith ar an seisiún seo. Chun an traschríbhinn a chosaint, níor próiseáladh an teachtaireacht seo. Fan go gcríochnóidh an seal gníomhach, ansin seol arís í."
+    setup_timeout: "⏳ Chuaigh socrú an tseala i bhfostú gan aon ghníomhaíocht ón ngníomhaire agus cuireadh ar ceal é. Seol do theachtaireacht arís, le do thoil."
+    setup_waiting: "⏳ Tá an seal seo fós ag tosú ({minutes} nóim, gan ghníomhaíocht ón ngníomhaire fós). Tá do theachtaireacht sa scuaine. Úsáid /stop chun é agus gach rud sa scuaine a chur ar ceal."
     behavior_queue_short: "cuirtear i scuaine don chéad seal eile"
     behavior_queue_long: "Cuirfear teachtaireachtaí i scuaine don chéad seal eile fad a bhíonn Hermes gnóthach."
     behavior_steer_short: "stiúrtar isteach sa rith reatha (tar éis an chéad ghlao uirlise eile)"

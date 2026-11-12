@@ -1,0 +1,40 @@
+name: fieldkit
+title: FieldKit
+repo: https://github.com/Snehal707/fieldkit
+sha: de630e5a4162f02cdb21eca1262a957545da2e71
+description: >-
+  Offline observation forms for Hermes. Describe your work in a Hermes chat and Hermes drafts the
+  forms, then publishes them as a workspace after you approve. Fill them in on a phone with no
+  signal (installable PWA served by the Hermes dashboard: answers, photos, voice notes, GPS and
+  signatures), and sync entries and files back to Hermes when online, with duplicate protection
+  and conflict review. Hermes reads the synced entries and files through 12 tools and analyses
+  them with its own tools when asked. FieldKit never calls a model. Disclosure: the plugin
+  backend makes no third-party calls; the phone app downloads optional translation and OCR packs
+  from huggingface.co and cdn.jsdelivr.net only when the user installs one.
+maintainer: Snehal707
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/Snehal707/fieldkit#readme
+version: "0.3.2"
+screenshots:
+  - https://raw.githubusercontent.com/Snehal707/fieldkit/de630e5a4162f02cdb21eca1262a957545da2e71/assets/wp-007-observation.png
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - fieldkit_list_records
+    - fieldkit_get_record
+    - fieldkit_get_attachment
+    - fieldkit_get_sync_status
+    - fieldkit_resolve_conflict
+    - fieldkit_get_app_link
+    - fieldkit_workspace_format
+    - fieldkit_draft_workspace
+    - fieldkit_publish_workspace
+    - fieldkit_undo_workspace_update
+    - fieldkit_get_workspace
+    - fieldkit_list_workspaces
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

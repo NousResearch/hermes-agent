@@ -692,6 +692,7 @@ profile and never shares with the default or any sibling:
 | Cron `.env` tuning (`HERMES_CRON_TIMEOUT`, `HERMES_MODEL` fallback, `HERMES_CRON_MAX_PARALLEL`, prefill file), worker / Bot Chat child env | The profile's own `.env`; children never inherit the default profile's `.env` settings or bridged `TERMINAL_*` policy | Cron defaults / model refusal, exactly as a standalone `hermes -p <name> gateway run` |
 | Kanban workers and notifications for a profile's tasks | The assignee's `.env` + `config.yaml` (toolset pin, terminal backend, media policy, display language) | — |
 | `/loop` ticks, `background_process_notifications` gate, `notice_delivery`, background-process checkpoint recovery | The owning profile's `state.db` / `config.yaml` / `processes.json` | — |
+| Reply streaming (`streaming:` block: `enabled`, `transport`, edit pacing, cursor; also the `gateway.streaming` spelling) | The served profile's own `config.yaml`, loaded once at gateway start | The streaming default (off) — a profile with no `streaming:` block does not stream because the default profile does; enable it with `hermes -p <name> config set streaming.enabled true` |
 
 What is **shared** by design: the process, its PID/lock and `gateway_state.json`
 (default home), the one HTTP listener, and the `profile_routes` table (declared
@@ -865,7 +866,9 @@ profile's job targeting an unrouted chat (or a chat routed to another profile)
 is never sent through the shared bot. Guild-only routes do not qualify a cron
 target; add a `chat_id` route for the delivery channel. Routes declaring
 `user_id` do not qualify either: cron has no authenticated inbound sender, so
-they need a separate location-only route. The routed profile does not need its
+they need a separate location-only route. Telegram DMs are the exception: a
+Telegram DM's chat id is the user's id, so a `user_id` route qualifies cron
+delivery to that user's DM without an extra route. The routed profile does not need its
 own `platforms.<platform>` block for this: the shared bot's authorization comes
 from the route, not from the satellite's config.
 

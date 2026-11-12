@@ -153,6 +153,35 @@ def test_a_bump_to_one_platform_fork_moves_that_fork(tmp_path):
     assert ws.core_lock_upgrades(core, seed) == ["numpy==1.26.5; (sys_platform == 'win32')"]
 
 
+def test_parenthesized_or_fork_keeps_the_right_seed_pin_on_host_narrowing(tmp_path):
+    """An OR fork is opaque but grouping parentheses must not defeat host-narrowed matching."""
+    def lock(path, rows):
+        packages = "".join(
+            f'[[package]]\nname = "{name}"\nversion = "{version}"\n'
+            f'source = {{ registry = "https://pypi.org/simple" }}\n'
+            f'resolution-markers = [{json.dumps(condition)}]\n\n'
+            for name, version, condition in rows
+        )
+        path.write_text("version = 1\n\n" + packages, encoding="utf-8")
+        return path
+
+    earlier_or_later = "python_full_version < '3.12' or python_full_version >= '3.14'"
+    middle = "python_full_version >= '3.12' and python_full_version < '3.14'"
+    host = "sys_platform == 'linux' and platform_machine == 'x86_64'"
+    seed = lock(tmp_path / "seed.lock", [
+        ("pkgb", "1.2", f"({earlier_or_later}) and {host}"),
+        ("pkgb", "2.0", f"({middle}) and {host}"),
+    ])
+    core = lock(tmp_path / "core.lock", [
+        ("pkgb", "1.3", earlier_or_later),
+        ("pkgb", "2.0", middle),
+    ])
+
+    # Before the fix, the grouped OR marker falls back to both seeded versions;
+    # the unrelated 2.0 fork prevents the required 1.2 -> 1.3 convergence.
+    assert ws.core_lock_upgrades(core, seed) == [f"pkgb==1.3; ({earlier_or_later})"]
+
+
 def test_a_bump_to_one_python_fork_moves_it_on_a_host_narrowed_generation(update):
     """The generation's forks carry the host restriction core's lock does not; the bump still moves."""
     from pm.environments import runtime_facts_path, venv_python

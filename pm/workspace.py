@@ -717,6 +717,27 @@ def install_node_sidecar(
 
 def _conjuncts(marker: str) -> frozenset[str]:
     """Top-level ``and`` terms of a PEP 508 marker; a marker with a top-level ``or`` stays one term."""
+    def ungroup(term: str) -> str:
+        """Ignore parentheses surrounding a whole marker conjunction."""
+        term = term.strip()
+        while term.startswith("(") and term.endswith(")"):
+            depth, quote = 0, ""
+            for offset, char in enumerate(term):
+                if quote:
+                    quote = "" if char == quote else quote
+                elif char in ("'", '"'):
+                    quote = char
+                elif char == "(":
+                    depth += 1
+                elif char == ")":
+                    depth -= 1
+                    if depth == 0 and offset != len(term) - 1:
+                        return term
+            if depth:
+                return term
+            term = term[1:-1].strip()
+        return term
+
     terms, depth, quote, start = [], 0, "", 0
     for index, char in enumerate(marker):
         if quote:
@@ -726,12 +747,12 @@ def _conjuncts(marker: str) -> frozenset[str]:
         elif char in "()":
             depth += 1 if char == "(" else -1
         elif depth == 0 and marker.startswith(" or ", index):
-            return frozenset({marker.strip()})
+            return frozenset({ungroup(marker)})
         elif depth == 0 and marker.startswith(" and ", index):
             terms.append(marker[start:index])
             start = index + len(" and ")
     terms.append(marker[start:])
-    return frozenset(term.strip() for term in terms)
+    return frozenset(ungroup(term) for term in terms)
 
 
 def _seed_fork_pins(forks: Mapping[tuple[str, tuple[str, ...]], list], name: str, markers: Sequence[str]) -> list:

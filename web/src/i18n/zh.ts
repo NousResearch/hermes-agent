@@ -365,6 +365,13 @@ export const zh: Translations = {
     authRequired: "需要认证",
     authRequiredHint: "运行此命令以完成认证：",
     updateGit: "git pull",
+    updateAll: "全部更新",
+    updatingAll: "正在更新插件…",
+    updateAllDone: (updated: number, needsReview: number, failed: number) =>
+      `已更新 ${updated}，需审核 ${needsReview}，失败 ${failed}`,
+    autoUpdate: "自动更新",
+    autoUpdateDesc: (hours: number) =>
+      `网关检查时（每 ${hours} 小时）自动应用插件更新。更新后的代码在新会话中加载。`,
     versionBadge: "版本",
     showInSidebar: "在侧边栏显示",
     hideFromSidebar: "从侧边栏隐藏",

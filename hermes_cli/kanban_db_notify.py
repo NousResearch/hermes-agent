@@ -106,6 +106,10 @@ def add_notify_sub(
         merged_metadata = dict(existing_metadata)
         if delivery_metadata:
             merged_metadata.update(delivery_metadata)
+        if chat_type:
+            # The column defaults to 'dm' when no type is given; the metadata copy records that a
+            # caller really supplied one, which the notifier's route gate takes as evidence.
+            merged_metadata["chat_type"] = chat_type
         metadata_json = _encode_notify_delivery_metadata(merged_metadata) if merged_metadata else None
         conn.execute(
             """
@@ -266,6 +270,26 @@ def remove_notify_sub(
             _sub_key(task_id, platform, chat_id, thread_id),
         )
     return cur.rowcount > 0
+
+
+def retarget_notify_subs(
+    conn: sqlite3.Connection, *, platform: str, from_chat_ids: Iterable[str], to_chat_id: str,
+) -> int:
+    """Re-key subscriptions bound to any of ``from_chat_ids`` onto ``to_chat_id`` (cursor kept), returning
+    how many moved. A row whose new key already exists is dropped: the owner's own subscription wins."""
+    ids = sorted({c for c in from_chat_ids if c and c != to_chat_id})
+    if not ids:
+        return 0
+    moved = 0
+    with _kb.write_txn(conn):
+        for start in range(0, len(ids), 500):
+            chunk = ids[start:start + 500]
+            where = f"LOWER(platform) = LOWER(?) AND chat_id IN ({','.join('?' * len(chunk))})"
+            moved += conn.execute(
+                f"UPDATE OR IGNORE kanban_notify_subs SET chat_id = ? WHERE {where}", (to_chat_id, platform, *chunk),
+            ).rowcount
+            conn.execute(f"DELETE FROM kanban_notify_subs WHERE {where}", (platform, *chunk))
+    return moved
 
 
 def purge_stale_done_notify_subs(conn: sqlite3.Connection, *, max_age_days: int = 30) -> int:

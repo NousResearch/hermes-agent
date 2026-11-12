@@ -134,7 +134,7 @@ class HostedRoomAuthorityRPC:
             result.append((row, identity, generation))
         return result
 
-    def _terminal(self, row, task, generation):
+    def _terminal(self, row, task, generation, *, notify=True):
         from gateway.session_results import admission_result
         saved = admission_result(self.authority.db, row['admission_id'])
         # Unknown discard and queued cancellation never ran: no result exists to recover.
@@ -146,7 +146,7 @@ class HostedRoomAuthorityRPC:
                    'message_id': row['admission_id'], 'settlement_id': row['admission_id'],
                    'task_id': task.task_id, 'execution_generation': generation}
         callback = self.callbacks.pop(row['admission_id'], None)
-        if callback is not None:
+        if callback is not None and notify:
             callback(receipt)
         return receipt
 
@@ -248,6 +248,10 @@ class HostedRoomAuthorityRPC:
                   'task_id': current[1].task_id if current else None,
                   'execution_generation': current[2] if current else None,
                   'status': current[0]['status'] if current else 'idle'}
+        live = self.authority.sessions.get(self.ref.session_id)
+        if current is not None and current[0]['status'] == 'started' and live is not None:
+            # The member's current tool and last frame, for the room's "scout · terminal · 7s".
+            result.update(live.event_stream.progress_for(current[0]['generation']))
         snapshot = await self.authority.attach(self.principal, self.ref, history=False)  # prompts only
         if snapshot.prompts:
             prompt = next((p for p in snapshot.prompts if p.get('kind') == 'approval'), None)
@@ -276,7 +280,9 @@ class HostedRoomAuthorityRPC:
         if type(generation) is not int or generation < 1:
             raise RuntimeStoreError('invalid_params')
         matches = [(row, task) for row, task, hosted_generation in self._rows()
-                   if (row['status'] == 'unknown' or (row['status'] == 'terminal' and row['outcome'] == 'interrupted'))
+                   # A terminal row is an earlier discard's committed outcome (interrupted, or the retained
+                   # answer it recovered): replaying the exact call returns that same receipt.
+                   if row['status'] in {'unknown', 'terminal'}
                    and task.task_id == params['expected_task_id']
                    and hosted_generation == generation]
         if len(matches) != 1:
@@ -286,8 +292,13 @@ class HostedRoomAuthorityRPC:
         if row['status'] == 'unknown':
             await self.authority.resolve_unknown(
                 self.principal, self.ref, row['admission_id'], row['generation'])
-        return {'discarded': True, 'status': 'cancelled', 'task_id': task.task_id,
-                'execution_generation': generation}
+            # Resolution commits a retained captured answer as ``completed``, not interrupted:
+            # report the outcome it committed, so the room settles that answer, never a cancel.
+            row = next(r for r, _, _ in self._rows() if r['admission_id'] == row['admission_id'])
+        # The discarding caller settles the room task from this reply. The attempt's own terminal
+        # callback would settle it a second time and, for a local member, re-enter the room's
+        # preparation from the loop while the caller waits on this reply.
+        return {**self._terminal(row, task, generation, notify=False), 'discarded': True}
 
     async def _approve(self, params):
         if params['choice'] not in {'once', 'deny'}:

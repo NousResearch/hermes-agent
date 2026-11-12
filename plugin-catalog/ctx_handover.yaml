@@ -1,0 +1,18 @@
+name: ctx_handover
+repo: https://github.com/GottZ/ctx
+sha: c61c720f9b04f4580dddca9798acaa7bc966eb01
+subdir: integrations/hermes/plugin/ctx_handover
+version: "0.1.1"
+title: ctx handover
+description: "Close the lid, the session goes on: ctx_handover moves a running Hermes session, with the conversation and the project folder it works in, from one machine you own to another and back. `/handover to server` sends it after work, `/handover take` brings it to the laptop, and `--continue \"task\"` lets the agent keep working on the server if you allow it there; without a connection, `/handover export` writes one file you carry over. The conversation is copied message by message and checked with hashes on both sides, git projects keep branches, stash and uncommitted work, nothing at the destination is overwritten, and the session on the machine you left is retired only after the other one confirms. Works without ctx. Not the core /handoff. Disclosure — talks only to the gateways you pair (HTTPS; plain HTTP only on loopback or with --allow-insecure); no third-party services, telemetry or update checks. Transcript, tool outputs and working files travel unredacted and handover files are unencrypted; workspace .env files, keys and credential folders stay unless released per path with --include-secret, and Hermes' own credentials always stay. A paired device can take this profile's sessions (pull right) or write sessions and project copies under allow_roots (push right) through Ed25519-signed routes behind the dashboard sign-in. Stores the peer's dashboard token or Basic login, which opens that peer's whole dashboard, and an identity key in the profile .env through Hermes' secret routes. Runs git without a shell and with an allowlisted environment, --version probes of developer tools, and with --continue plus allow_remote_continue one `hermes chat --resume` turn that never starts while approvals are off. One model call per handover (refine: off disables it). The complete list is in the README and docs/security.md at the pinned commit."
+maintainer: GottZ
+tier: community
+category: tools
+requires_hermes: ">=0.22.6"
+docs_url: https://github.com/GottZ/ctx/blob/c61c720f9b04f4580dddca9798acaa7bc966eb01/integrations/hermes/plugin/ctx_handover/README.md
+image: https://raw.githubusercontent.com/GottZ/ctx/c61c720f9b04f4580dddca9798acaa7bc966eb01/integrations/hermes/assets/ctx_handover.webp
+capabilities:
+  provides_tools: [handover]
+  provides_hooks: [pre_llm_call, pre_tool_call, post_llm_call, post_compaction]
+  provides_middleware: []
+  requires_env: []

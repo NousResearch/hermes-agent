@@ -22,6 +22,7 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException
 
+from gateway.config import SHARED_LISTENER_MIRROR_PLATFORMS as _LISTENER_MIRRORS
 from gateway.status import resolve_gateway_liveness, retained_gateway_state
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import OPTIONAL_ENV_VARS, get_env_path
@@ -202,9 +203,27 @@ def _platform_enablement(
     return enabled, configured, home_channel
 
 
+def _relay_disabled_platform_ids(scoped: bool) -> frozenset[str]:
+    """Platforms the GATEWAY_RELAY_URL relay-exclusive rule switches off at gateway load
+    (#141175), read from the same load_gateway_config() the unscoped enablement arm uses, so the
+    page can say "Team Gateway" instead of a bare "Disabled" that reverts every restart.
+    Unscoped arm only: profile-scoped status is judged per profile (``_platform_enablement``)."""
+    if scoped:
+        return frozenset()
+    try:
+        from gateway.config import load_gateway_config
+
+        platforms = load_gateway_config().platforms
+        return frozenset(p.value for p, cfg in platforms.items() if cfg.disabled_by_relay)
+    except Exception:  # health: allow BLE001 -- advisory label; an unreadable config keeps the plain state
+        _log.debug("relay-disabled platform lookup failed", exc_info=True)
+        return frozenset()
+
+
 def _messaging_platform_payload(
     entry: dict[str, Any], env_on_disk: dict[str, str], runtime: dict | None,
     scoped: bool = False, profile_home: Optional[Path] = None, source_keys: Collection[str] = (),
+    relay_disabled: frozenset[str] = frozenset(), relay_view: tuple[frozenset[str], bool] = (frozenset(), False),
 ) -> dict[str, Any]:
     platform_id = entry["id"]
     rt = runtime if isinstance(runtime, dict) else {}
@@ -245,11 +264,14 @@ def _messaging_platform_payload(
         })
 
     enabled, configured, home_channel = _platform_enablement(platform_id, entry, env_on_disk, scoped, source_keys)
-    if gateway_running and runtime_platform.get("mirrored_from"):
+    if gateway_running and runtime_platform.get("mirrored_from") and platform_id in _LISTENER_MIRRORS:
         # Served secondary: the default's shared listener already answers this platform at
         # /p/<profile>/... (enabling it locally 409s), so the secondary's own empty config
-        # must not project Disabled over the live mirror (#121125).
+        # must not project Disabled over the live mirror (#121125). A mirrored Relay keeps the
+        # profile's own verdict: Relay has a per-profile opt-out, and a disabled one stays Disabled.
         enabled, configured = True, True
+    elif runtime_platform.get("mirrored_from") and not (enabled and configured):
+        runtime_platform = {}  # the default's Relay is not this profile's channel: none of its errors either
 
     state = runtime_platform.get("state")
     if not enabled:
@@ -275,6 +297,11 @@ def _messaging_platform_payload(
         "gateway_running": gateway_running, "state": state, "error_code": error_code,
         "error_message": error_message, "updated_at": runtime_platform.get("updated_at"),
         "home_channel": home_channel, "env_vars": env_vars,
+        "disabled_by_relay": not enabled and platform_id in relay_disabled,
+        # Team Gateway's shared bot carries this platform: setup is linking an account to it, and a
+        # direct bot is switched off at every start when ``relay_exclusive`` (#141546).
+        "relay_fronted": platform_id in relay_view[0],
+        "relay_exclusive": platform_id in relay_view[0] and relay_view[1],
         # Multiplex secondary served on the default's shared listener: the vendor callback URL.
         "ingress_url": runtime_platform.get("ingress_url") if gateway_running else None,
     }
@@ -303,11 +330,24 @@ def _platform_payloads(scoped_dir: Optional[Path], entries) -> list[dict[str, An
     runtime = served_profile_runtime(own_home, runtime) or runtime
     # Credentials a secret manager supplies have no .env line; only values the profile's enabled
     # sources resolved (into its secret scope, by ``_profile_scope``) count, and an empty one is unset.
-    source_values = get_secret_source_values(scoped_dir) if scoped_dir is not None else {}
+    scoped = scoped_dir is not None
+    source_values = get_secret_source_values(scoped_dir) if scoped else {}
     source_keys = frozenset(key for key, value in source_values.items() if str(value).strip())
-    return [_messaging_platform_payload(entry, env_on_disk, runtime, scoped=scoped_dir is not None,
-                                        profile_home=scoped_dir, source_keys=source_keys)
+    relay_disabled = _relay_disabled_platform_ids(scoped)
+    relay_view = _relay_channel_view(own_home)
+    return [_messaging_platform_payload(entry, env_on_disk, runtime, scoped=scoped, profile_home=scoped_dir,
+                                        source_keys=source_keys, relay_disabled=relay_disabled,
+                                        relay_view=relay_view)
             for entry in entries]
+
+
+def _relay_channel_view(home: Path) -> tuple[frozenset[str], bool]:
+    """The relay serves only the gateway's own (launch) profile; other profiles keep direct setup."""
+    if Path(home).resolve() != Path(get_process_hermes_home()).resolve():
+        return frozenset(), False
+    from gateway.relay.link import relay_channel_view
+
+    return relay_channel_view()
 
 
 @contextlib.contextmanager
@@ -470,6 +510,14 @@ def _fail_whatsapp_pairing(pairing_id: str, error: str, *, proc=None, unless=_WH
             record.error = error
 
 
+# Readable text for bridge pairing error codes the dashboard displays; other codes show as the bridge sent them.
+_WHATSAPP_PAIRING_ERROR_TEXT = {
+    "passkey_required": "This WhatsApp account requires passkey verification, which dashboard setup cannot do. "
+                        "In a local terminal, run hermes whatsapp --passkey-browser followed by the path to your "
+                        "Chrome or Edge executable.",
+}
+
+
 def _apply_pairing_event(record, payload: dict) -> None:
     event = str(payload.get("event") or "").strip()
     if event == "qr":
@@ -489,7 +537,8 @@ def _apply_pairing_event(record, payload: dict) -> None:
         record.error = None
     elif event == "error":
         record.status = "error"
-        record.error = str(payload.get("error") or "WhatsApp pairing failed.")
+        code = str(payload.get("error") or "WhatsApp pairing failed.")
+        record.error = _WHATSAPP_PAIRING_ERROR_TEXT.get(code, code)
     elif event == "disconnected" and record.status == "starting":
         record.status = "waiting"
 
@@ -515,11 +564,11 @@ def _watch_whatsapp_pairing(pairing_id: str, proc: subprocess.Popen) -> None:
     except Exception as exc:
         _fail_whatsapp_pairing(pairing_id, str(exc), proc=proc)
         return
-    # An "error" status from the stream may be overwritten by the exit reason.
+    # An error the bridge streamed names the cause; the exit code only says it stopped.
     _fail_whatsapp_pairing(
         pairing_id, "WhatsApp pairing process exited before pairing completed." if returncode == 0
         else f"WhatsApp pairing process exited with code {returncode}.",
-        proc=proc, unless={"connected", "cancelled", "expired"})
+        proc=proc)
 
 
 def _run_whatsapp_pairing(pairing_id: str, session_path: Path, mode: str) -> None:
@@ -1134,7 +1183,7 @@ def _messaging_platform_posture(
     - pairing grants: approved users in the profile's pairing store (the gateway honors
       the store as a UNION with the allowlists)
     - adapter/config-enforced policy (``dm_policy: allowlist`` with an ``allow_from``):
-      the own-policy adapters (WeCom, Weixin, QQBot, WhatsApp, Yuanbao) gate at intake
+      the own-policy adapters (WeCom, Weixin, QQBot, WhatsApp) gate at intake
 
     Everything failing → deny-all: the connection is up but no sender can get through,
     which the Channels "Test" button must not render as a plain green "connected".

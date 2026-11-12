@@ -1,5 +1,5 @@
 """Config-driven DM / group intake policy shared by the adapters that gate access themselves
-(Weixin, WeCom, QQBot, WhatsApp, Yuanbao's ``AccessPolicy``).
+(Weixin, WeCom, QQBot, WhatsApp; plugin adapters such as Yuanbao's ``AccessPolicy`` use it too).
 
 Host contract — the adapter sets these on ``self`` before any predicate runs: ``_dm_policy`` /
 ``_group_policy`` (``open`` | ``allowlist`` | ``disabled`` | ``pairing``), ``_allow_from`` /

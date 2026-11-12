@@ -49,14 +49,10 @@ vi.mock('@/i18n', () => ({
           installDeviceConfirm: 'Install locally',
           installDeviceDesc:
             'This will install Hermes locally, then open a fresh session on this computer. Nothing is installed until you confirm.',
-          installDeviceTitle: 'Switch to This device?',
+          installDeviceTitle: 'Install Hermes on This device?',
           localDevice: 'This device (local backend — installs Hermes if missing, otherwise opens a fresh session)',
           onGateway: (name: string, gateway: string) => `${name} · ${gateway}`,
-          switchDeviceConfirm: 'Switch',
-          switchDeviceDesc:
-            'This opens a fresh session on this computer. The conversation you are in stays on the other gateway.',
-          switchDeviceTitle: 'Switch to This device?',
-          switchTo: (name: string, gateway: string) => `Switch to ${name} on ${gateway}`
+          switchTo: (name: string, gateway: string) => `Open ${name} on ${gateway}`
         },
         importProfile: 'Import profile…',
         manageProfiles: 'Manage profiles…',
@@ -531,7 +527,7 @@ describe('ProfileRail fleet mode', () => {
     expect(builder.getAttribute('aria-busy')).toBeNull()
   })
 
-  it('asks before a fresh session when This device is already installed', async () => {
+  it('opens an installed This device with no prompt', async () => {
     armFleet()
     await renderFleet()
 
@@ -541,21 +537,8 @@ describe('ProfileRail fleet mode', () => {
       })
     )
 
-    expect(selectConnection).not.toHaveBeenCalled()
-    expect(await screen.findByRole('dialog', { name: 'Switch to This device?' })).toBeTruthy()
-    expect(
-      screen.getByText(
-        'This opens a fresh session on this computer. The conversation you are in stays on the other gateway.'
-      )
-    ).toBeTruthy()
-
-    fireEvent.click(screen.getByRole('button', { name: 'Switch' }))
-
-    await act(async () => {
-      await Promise.resolve()
-    })
-
-    expect(selectConnection).toHaveBeenCalledWith('local', { profile: 'default' })
+    await vi.waitFor(() => expect(selectConnection).toHaveBeenCalledWith('local', { profile: 'default' }))
+    expect(screen.queryByRole('dialog')).toBeNull()
   })
 
   it('confirms before installing and offers connect-to-existing inline', async () => {
@@ -580,24 +563,6 @@ describe('ProfileRail fleet mode', () => {
 
     expect(selectConnection).not.toHaveBeenCalled()
     expect(await screen.findByText('Connect to existing Hermes')).toBeTruthy()
-  })
-
-  it('does not switch when the fresh-session cue is cancelled', async () => {
-    armFleet()
-    await renderFleet()
-
-    fireEvent.click(
-      screen.getByRole('button', {
-        name: 'This device (local backend — installs Hermes if missing, otherwise opens a fresh session)'
-      })
-    )
-    fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }))
-
-    await act(async () => {
-      await Promise.resolve()
-    })
-
-    expect(selectConnection).not.toHaveBeenCalled()
   })
 
   it('keeps the active gateway click on the plain profile path', async () => {

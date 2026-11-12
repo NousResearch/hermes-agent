@@ -55,6 +55,10 @@ export type ChatMessage = {
   interim?: boolean
   /** The user stopped this reply before it finished; its text is partial. */
   interrupted?: boolean
+  /** A projected queued prompt (`user-queued-…`) whose own turn has started:
+   *  `message.start` arrived after it was drawn. It is now that turn's user
+   *  row, not a prompt still waiting for a later turn. */
+  queuedTurnStarted?: boolean
   /** Locally recovered output not yet represented by a durable completed reply. */
   recovered?: boolean
   /** Whether hydration reached a final assistant source row, rather than a tool round. */
@@ -77,6 +81,13 @@ export type ChatMessage = {
   serverRowSpan?: number
   /** Emoji reactions on this message — one per author (see MessageReaction). */
   reactions?: MessageReaction[]
+  /** A safety-refused turn kept for display only. The backend dropped the whole
+   *  refused turn from the model's context but retained the user's own message
+   *  (projected as a `content_refused` user row). It renders as a greyed,
+   *  non-interactive block showing the text plus `notice` — never a normal user
+   *  bubble and never the model's reply. `notice` is absent on older backends;
+   *  the renderer falls back to an i18n string. */
+  contentRefused?: { notice?: string }
 }
 
 export type GatewayEventPayload = {

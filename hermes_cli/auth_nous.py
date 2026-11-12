@@ -414,9 +414,35 @@ _NOUS_SHARED_STATE_KEYS = (
 _SHARED_RENEWAL_KEY = "renewal"
 
 
+def _nous_state_order(a: dict[str, Any], b: dict[str, Any]) -> Optional[int]:
+    """1 when *a* holds the later-ISSUED token pair than *b*, -1 the earlier, 0 tied, None unstamped.
+
+    The forked-grant heal's ordering (``auth_oauth_grants.oauth_pair_order``): JWT ``iat``, then
+    ``obtained_at`` (which also breaks an equal whole-second ``iat``); expiry only orders states
+    lacking an issue stamp, since a later rotation can carry a shorter TTL.
+    A side stamped only by expiry against one stamped only by issue time is a tie (no adopt, no
+    push); JWT states carry both claims, so they always order.
+    """
+    from hermes_cli.auth_oauth_grants import oauth_pair_order
+    return oauth_pair_order(a, b)
+
+
+def _same_known_nous_identity(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    """True when *a* and *b* are provably the same identity. An account whose access token carries no
+    JWT ``sub`` is UNKNOWN, never "the same" as another unknown one."""
+    identity = _nous_identity(a)
+    return identity[1] not in (None, "") and identity == _nous_identity(b)
+
+
 def _merge_shared_nous_oauth_state(state: dict[str, Any]) -> bool:
-    """Copy fresher shared OAuth tokens into a profile-local Nous state."""
-    from hermes_cli.auth import _nonempty_str, _parse_iso_timestamp, _read_shared_nous_state
+    """Adopt the shared store's OAuth tokens into a profile-local Nous state when they are NEWER.
+
+    An older shared copy (a failed shared write after this profile refreshed) never overwrites the
+    profile: its refresh token is already redeemed, and replaying it trips the Portal's reuse
+    detection (forced re-login). When the profile is the newer one it is pushed to the shared
+    store instead, so sibling profiles stop reading the stale copy. Caller holds the shared lock.
+    """
+    from hermes_cli.auth import _nonempty_str, _read_shared_nous_state
     shared = _read_shared_nous_state() or {}
     renewed = shared.get(_SHARED_RENEWAL_KEY)
     if isinstance(renewed, dict) and _nous_identity(renewed) == _nous_identity(state):
@@ -424,10 +450,21 @@ def _merge_shared_nous_oauth_state(state: dict[str, Any]) -> bool:
     shared_refresh = shared.get("refresh_token")
     if not _nonempty_str(shared_refresh):
         return False  # a free-tier identity has no refresh token; nothing to merge into an OAuth state
-    shared_access_exp = _parse_iso_timestamp(shared.get("expires_at")) or 0.0
-    local_access_exp = _parse_iso_timestamp(state.get("expires_at")) or 0.0
     refresh_changed = shared_refresh.strip() != str(state.get("refresh_token") or "").strip()
-    if not refresh_changed and not shared_access_exp > local_access_exp:
+    order = _nous_state_order(shared, state)
+    # A quarantined profile has no access token, so its identity reads as unknown: it must still
+    # recover from a sibling's re-login (ca6513542d5), so an empty profile adopts on order alone.
+    known_same = _same_known_nous_identity(shared, state)
+    same = known_same or not _nonempty_str(state.get("access_token"))
+    # Unstamped on both sides: no evidence either way, keep the legacy "a different token wins".
+    # Never across identities: a profile signed in as one account keeps it (profiles are islands).
+    if not (same and (order == 1 or (order is None and refresh_changed))):
+        if order == -1 and refresh_changed and known_same:
+            _oauth_trace(
+                "nous_shared_store_older_than_profile",
+                shared_refresh_token_fp=_token_fingerprint(shared_refresh),
+                refresh_token_fp=_token_fingerprint(state.get("refresh_token")))
+            _write_shared_nous_state(state, renewal=True)
         return False
     for key in _NOUS_SHARED_STATE_KEYS:
         value = shared.get(key)
@@ -463,6 +500,18 @@ def _nous_identity(state: dict[str, Any]) -> tuple[str, Any]:
     return "account", _decode_jwt_claims(state.get("access_token")).get("sub")
 
 
+def _shared_copy_is_newer(held: Optional[dict[str, Any]], state: dict[str, Any], *, same: bool) -> bool:
+    """True when the shared store already holds a NEWER copy of *state*'s account (a renewal never
+    rolls it back to an older, possibly already-redeemed refresh token)."""
+    from hermes_cli.anon_auth import is_guest_state
+    if held is None or is_guest_state(state):
+        return False
+    copy = held if same else held.get(_SHARED_RENEWAL_KEY)
+    if not isinstance(copy, dict) or not _same_known_nous_identity(copy, state):
+        return False
+    return _nous_state_order(copy, state) == 1
+
+
 def _write_shared_nous_state(state: dict[str, Any], *, renewal: bool) -> None:
     """Persist a minimal copy of the Nous OAuth state to the shared store.
 
@@ -487,6 +536,11 @@ def _write_shared_nous_state(state: dict[str, Any], *, renewal: bool) -> None:
             path = _nous_shared_store_path()
             held = _read_shared_nous_state()
             same = held is not None and _nous_identity(held) == _nous_identity(state)
+            if renewal and _shared_copy_is_newer(held, state, same=same):
+                _oauth_trace(
+                    "nous_shared_store_write_skipped_older", path=str(path),
+                    refresh_token_fp=_token_fingerprint(refresh_token))
+                return
             if renewal and held is not None and not same:
                 shared = {**held, _SHARED_RENEWAL_KEY: _nous_shared_shape(state)}
             else:

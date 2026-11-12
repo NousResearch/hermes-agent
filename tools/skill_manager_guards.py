@@ -221,7 +221,41 @@ def _background_review_read_before_write_guard(
         _read_before_write_required=True)
 
 
+def _locked_guard(name: str, action: str) -> Optional[dict[str, Any]]:
+    """Refuse every mutating ``skill_manage`` action on a skill the user locked (``hermes curator
+    lock`` / the Desktop lock switch), whoever asks: foreground turns, the background review and the
+    curator pass alike. ``create`` is exempt (the collision check already refuses a name that resolves
+    anywhere). An unreadable sidecar fails CLOSED for the autonomous passes (silently relaxing a
+    lock is the failure this exists to prevent) and open for normal turns, so one corrupt file does
+    not freeze every skill edit. Keyed by directory name, so the bare, ``cat/name`` and
+    frontmatter-name forms all resolve to the same record."""
+    if action == "create" or not name:
+        return None
+    try:
+        from tools import skill_manager_tool as _smt
+        from tools import skill_usage
+        candidates = {name, Path(name).name}
+        if existing := _smt._find_skill(name):
+            candidates.add(existing["path"].name)
+        locked = next((c for c in candidates if skill_usage.is_locked(c)), None)
+    except Exception:
+        logger.warning("locked skill guard lookup failed for %s", name, exc_info=True)
+        if not _is_background_review():
+            return None  # a corrupt sidecar must not freeze every skill edit in normal turns
+        return _refusal(
+            f"Refusing {action} for skill '{name}': its lock state could not be verified because the "
+            f"skills/.usage.json sidecar is unreadable. Leave the skill alone and tell the user; they "
+            f"can repair the sidecar or run `hermes curator unlock {name}`.", _locked=True)
+    if locked:
+        from tools.skill_lock import skill_refusal
+        return _refusal(f"Refusing {action}: {skill_refusal(locked)}", _locked=True)
+    return None
+
 def _background_review_preflight(action: str, name: str) -> Optional[dict[str, Any]]:
+    """Guards that run on the bare action/name before any handler, for the single-op AND the
+    batch path: the content lock (every mutating action) and the ownership delete guard."""
+    if (locked := _locked_guard(name, action)) is not None:
+        return locked
     if action != "delete":
         return None
     from tools import skill_manager_tool as _smt

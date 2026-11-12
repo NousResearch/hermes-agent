@@ -47,25 +47,33 @@ class SurfacePolicy:
     #: ``/api/ui-preferences`` serves: the browser's door to this machine's UI preferences store
     #: (native Desktop reaches the same file through its preload capability, not over HTTP).
     ui_preferences: bool
+    #: ``/api/audio/voice-config`` may hand the client provider keys to call STT/TTS itself. A
+    #: browser tab cannot: a provider without CORS (the Nous tool gateway) refuses its fetch, and the
+    #: keys would sit in the page. It relays through the host's /api/audio/* endpoints instead.
+    client_direct_voice: bool
+    #: ``/api/gateway-connections`` serves: the browser's door to this machine's saved gateways list
+    #: (native Desktop reaches the same file through its main process, not over HTTP).
+    gateway_connections: bool = False
 
 
 POLICIES: dict[str, SurfacePolicy] = {
     "serve": SurfacePolicy(
         serves_spa=False, html_token=True, host_terminal=False, launch_link=False, gateway_ticket=False,
         own_origin_cookie_writes=False, web_access=False, browser_files=False,
-        desktop_plugins=False, ui_preferences=False),
+        desktop_plugins=False, ui_preferences=False, client_direct_voice=True),
     "dashboard": SurfacePolicy(
         serves_spa=True, html_token=True, host_terminal=False, launch_link=False, gateway_ticket=False,
         own_origin_cookie_writes=False, web_access=False, browser_files=False,
-        desktop_plugins=False, ui_preferences=False),
+        desktop_plugins=False, ui_preferences=False, client_direct_voice=True),
     "gateway": SurfacePolicy(
         serves_spa=True, html_token=True, host_terminal=False, launch_link=False, gateway_ticket=False,
         own_origin_cookie_writes=False, web_access=True, browser_files=False,
-        desktop_plugins=False, ui_preferences=False),
+        desktop_plugins=False, ui_preferences=False, client_direct_voice=True),
     "webapp": SurfacePolicy(
         serves_spa=True, html_token=False, host_terminal=True, launch_link=True, gateway_ticket=True,
         own_origin_cookie_writes=True, web_access=True, browser_files=True,
-        desktop_plugins=True, ui_preferences=True),
+        desktop_plugins=True, ui_preferences=True, client_direct_voice=False,
+        gateway_connections=True),
 }
 
 

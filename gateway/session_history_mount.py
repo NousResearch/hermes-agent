@@ -7,7 +7,8 @@ writable would legitimise its second writer), so the owner mounts them for readi
 is keyed by no lane's route, so nothing route-keyed acts through it, and every capability but
 ``session:read`` is refused by name. Archive, pin and delete still work as for any read-only mount
 (gateway/session_mutations.py), but only a leaf row deletes. Old local CLI/TUI/Desktop rows are not mounted
-here: resume adopts them as writable conversations (gateway/session_local_migration.py).
+here: resume adopts them as writable conversations (gateway/session_local_migration.py), as it does a phone
+app's self-labelled chat (``mobile``, ``ios``) for its native owner; anyone else still reads that one here.
 """
 
 from hermes_state_runtime import RuntimeStoreError
@@ -23,7 +24,7 @@ def _reader(authority, actor, sid):
     with authority.db._read_ctx() as conn:
         binding = history_binding(conn, sid)
     if binding is not None:
-        return binding_names(binding, actor.profile_id, actor.subject)
+        return binding_names(binding, actor.subject)
     return ('session:operator' in actor.capabilities
             or getattr(authority, '_native_legacy_transports', {}).get(actor.transport_id) == actor)
 

@@ -26,7 +26,7 @@ except ImportError:
     # would reset the already-imported ``web`` to None (500 on POST /v1/runs).
     RequestKey = None  # type: ignore[assignment,misc]
 
-from gateway.platforms.api_server_room_grants import _json_error, _room_grant_error_response
+from gateway.platforms.api_server_room_grants import _json_error, _room_grant_error_response, room_run_claims
 from gateway.turn_executor import _UnboundedThreadExecutor
 from gateway.platforms.api_server_run_idempotency import TERMINAL_STATUSES
 
@@ -419,14 +419,19 @@ def _room_permission_for(request: web.Request) -> str:
 def _run_idempotency_scope(self, request: web.Request, *, _api_server) -> str:
     """Opaque auth/profile namespace; never persist bearer credentials."""
     if self._room_grant_token(request):
-        claims = self._room_grant_claims(request, permission=_room_permission_for(request))
+        claims = room_run_claims(self, request, permission=_room_permission_for(request))
         _remember_room_retention(request, claims)
-        parts = (claims[k] for k in (
-            "room_id", "home_install_id", "authority_gateway_id", "authority_epoch",
-            "member_id", "target_install_id", "target_profile"))
-    else:
-        parts = (_api_server._api_request_profile.get() or "default",
-                 self._expected_api_key() or "unauthenticated-test-listener")
+        return room_run_scope(claims)
+    parts = (_api_server._api_request_profile.get() or "default",
+             self._expected_api_key() or "unauthenticated-test-listener")
+    return hashlib.sha256("\0".join(map(str, parts)).encode()).hexdigest()
+
+
+def room_run_scope(claims: dict[str, Any]) -> str:
+    """The run namespace of one room member, whichever of its grant's permissions authenticated."""
+    parts = (claims[k] for k in (
+        "room_id", "home_install_id", "authority_gateway_id", "authority_epoch",
+        "member_id", "target_install_id", "target_profile"))
     return hashlib.sha256("\0".join(map(str, parts)).encode()).hexdigest()
 
 
@@ -434,7 +439,7 @@ def _check_run_auth(self, request: web.Request, *, permission: str, _api_server)
     if not self._room_grant_token(request):
         return self._check_auth(request)
     try:
-        self._room_grant_claims(request, permission=permission)
+        room_run_claims(self, request, permission=permission)
     except Exception as exc:
         return _room_grant_error_response(exc, _openai_error=_api_server._openai_error)
     return None

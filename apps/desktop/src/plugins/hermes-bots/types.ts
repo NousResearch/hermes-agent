@@ -11,6 +11,8 @@
 
 import type { ProfileSessionPreview } from '@hermes/plugin-sdk'
 
+import type { GroupEngine } from './group-engine'
+
 /**
  * The compact age suffixes the sidebar's session rows render ("now", "m", "h",
  * "d"). Structural rather than an import of core's `Translations`, which the
@@ -209,6 +211,9 @@ export interface GroupChat {
   holdDetection?: boolean
   /** Bumped to abandon in-flight member turns from a previous round. */
   epoch?: number
+  /** Execution ownership survives membership changes. Gateway records capture
+   *  their connection, profile and room id; older records are resolved on open. */
+  engine?: GroupEngine
   /** Room-entry ids consumed while a member was held, replayed into that
    *  member's next visible turn. Keyed by the durable member key. */
   heldMessages?: Record<string, string[]>

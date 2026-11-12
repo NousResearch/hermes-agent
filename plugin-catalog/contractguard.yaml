@@ -1,0 +1,43 @@
+
+name: contractguard
+repo: https://github.com/Mohamedhazeem/ContractGuard
+sha: "c7ed5549c026e9b7420aea613ecc4f7aa4135e10"
+description: >-
+  Hermes-native API contract assurance: validates proposed requests before they
+  are sent, verifies live responses even when the status code is 200, compares
+  candidate contracts against a human-approved baseline, and keeps redacted
+  evidence receipts. Disclosure — makes HTTP requests only to a loopback
+  address (localhost, 127.0.0.1, ::1) the user registered explicitly, and only
+  with GET or HEAD; write methods are validated offline and never dispatched.
+  Reads the OpenAPI document at the exact path named in a tool call, and writes
+  only to the Hermes plugin database (service registrations, immutable contract
+  baselines, redacted evidence receipts). No telemetry, no third-party calls, no
+  shell commands, no background processes, no stored credentials; secret-bearing
+  headers are rejected from tool arguments. Baseline promotion requires human
+  approval and fails closed when approval is unavailable.
+maintainer: Mohamedhazeem
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+version: "0.2.0"
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - contractguard_ping
+    - contractguard_inspect
+    - contractguard_register
+    - contractguard_validate_request
+    - contractguard_test
+    - contractguard_diff
+    - contractguard_history
+    - contractguard_promote_baseline
+  provides_hooks:
+    - pre_tool_call
+    - pre_verify
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - "Live verification targets loopback addresses only; remote targets are refused."
+  - "Live requests are limited to GET and HEAD; write methods are preflight-only."
+  - "Compatibility classification covers a bounded ruleset; complex schema composition is reported as unclassified rather than guessed."

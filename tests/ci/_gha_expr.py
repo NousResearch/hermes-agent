@@ -187,6 +187,9 @@ class _Parser:
             if isinstance(hay, list):
                 return any(_equal(h, needle) for h in hay)
             return to_string(needle).lower() in to_string(hay).lower()
+        if name in ("startsWith", "endsWith"):
+            text, affix = (to_string(a).lower() for a in args)
+            return text.startswith(affix) if name == "startsWith" else text.endswith(affix)
         raise Unsupported(f"function {name}() in {self.text!r}")
 
     def lookup(self, path: str) -> Any:

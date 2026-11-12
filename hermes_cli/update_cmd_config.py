@@ -28,7 +28,8 @@ def _run_migrate_config_fresh(*, interactive: bool = False, quiet: bool = False)
     stop_for_relaunch(incomplete=True)
 
 
-def _migrate_sibling_profile_configs(notes: dict[str, list[str]] | None = None) -> list[tuple[str, int, int]]:
+def _migrate_sibling_profile_configs(notes: dict[str, list[str]] | None = None,
+                                     stopped: dict[str, int] | None = None) -> list[tuple[str, int, int]]:
     """Migrate every SIBLING profile's config.yaml (the shared checkout serves all profiles). Per
     sibling (active skipped): scope via the context-local HERMES_HOME override (never ``os.environ``)
     and run the NON-INTERACTIVE quiet migration — prompt-requiring settings wait for that profile's
@@ -60,6 +61,8 @@ def _migrate_sibling_profile_configs(notes: dict[str, list[str]] | None = None) 
                 if current_ver >= latest_ver:
                     continue
                 results = migrate_config(interactive=False, quiet=True)
+                if stopped is not None and results.get("failed_step") is not None:
+                    stopped[name] = results["failed_step"]
                 after_ver, _ = check_config_version(raise_on_parse_error=True)
                 if after_ver > current_ver:
                     migrated.append((name, current_ver, after_ver))
@@ -190,6 +193,8 @@ def _check_and_apply_config_migration(
         return
 
     owed_error = None
+    partial_migration_step = None
+    sibling_stopped: dict[str, int] = {}
     has_new_options = bool(missing_env or missing_config)
     version_bump_only = not has_new_options and current_ver < latest_ver
     needs_migration = has_new_options or current_ver < latest_ver
@@ -201,7 +206,10 @@ def _check_and_apply_config_migration(
         print(f"  ℹ Updating config format (v{current_ver} → v{latest_ver})…")
         try:
             _mig_results = migrate_config(interactive=False, quiet=True)
-            print("  ✓ Config format updated (no new settings to configure)")
+            if _mig_results.get("failed_step") is None:
+                print("  ✓ Config format updated (no new settings to configure)")
+            else:
+                partial_migration_step = _mig_results["failed_step"]
             # quiet=True also mutes steps that RESET/REMOVE a setting; re-surface them so an
             # unattended update never silently changes config (config_added holds only mutations here).
             # In this branch missing_config is empty, so config_added can only contain migration-step
@@ -236,7 +244,9 @@ def _check_and_apply_config_migration(
             # non-interactive pass so defaults and version bumps land before the gateway restarts.
             unattended = gateway_mode or assume_yes or response == "auto"
             results = migrate_config(interactive=not unattended, quiet=False)
-            if results["env_added"] or results["config_added"]:
+            if results.get("failed_step") is not None:
+                partial_migration_step = results["failed_step"]
+            elif results["env_added"] or results["config_added"]:
                 print()
                 print("✓ Configuration updated!")
             if unattended and missing_env:
@@ -251,12 +261,20 @@ def _check_and_apply_config_migration(
     # migration per sibling home via the context-local HERMES_HOME override (never os.environ).
     with _best_effort('Sibling config migration failed: %s'):
         sibling_notes: dict[str, list[str]] = {}
-        for _name, _from_ver, _to_ver in _migrate_sibling_profile_configs(sibling_notes):
+        for _name, _from_ver, _to_ver in _migrate_sibling_profile_configs(sibling_notes, sibling_stopped):
             print(f"  ✓ Profile '{_name}': config format updated (v{_from_ver} → v{_to_ver})")
             for _note in sibling_notes.get(_name, ()):
                 print(f"      {_note}")
 
     _restore_snapshot_safety_nets(pre_update_snapshot_id)
+    if partial_migration_step is not None or sibling_stopped:
+        # A migration that stopped cleanly still owes the remaining steps. Raise only after the
+        # independent sibling sweep and snapshot recovery so the update receipt records a follow-up.
+        where = ([f"v{partial_migration_step}"] if partial_migration_step is not None else []) + [
+            f"profile '{name}' v{step}" for name, step in sibling_stopped.items()]
+        raise RuntimeError(
+            f"config migration stopped at {', '.join(where)}; "
+            "run `hermes config migrate` to retry the remaining steps")
     if owed_error is not None:
         raise owed_error
 

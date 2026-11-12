@@ -11,6 +11,7 @@ import { type MouseEventHandler, useCallback, useEffect, useMemo, useRef, useSta
 
 import { useTitlebarHeight } from '@/app/shell/use-touch-titlebar'
 import { PaneTab, PaneTabLabel, PaneTabStrip } from '@/components/ui/pane-tab'
+import { usePaneTabKeyboard } from '@/components/ui/pane-tab-keyboard'
 import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
 import type { Contribution } from '@/contrib/types'
@@ -168,10 +169,6 @@ export function NarrowOverlays() {
     }
   }, [narrow, solo])
 
-  if (!narrow || solo || collapsibles.length === 0) {
-    return null
-  }
-
   const sideOf = (c: Contribution) => (paneChrome(c).placement === 'left' ? 'left' : 'right')
   const revealed = reveal ? collapsibles.find(p => p.id === reveal.id) : undefined
   const sides = [...new Set(collapsibles.map(sideOf))]
@@ -203,6 +200,12 @@ export function NarrowOverlays() {
 
     return shown.length > 0 ? shown : [revealed]
   })()
+
+  const tabKeyboardProps = usePaneTabKeyboard(zonePanes.map(pane => pane.id), revealed?.id ?? '', overlayRef)
+
+  if (!narrow || solo || collapsibles.length === 0) {
+    return null
+  }
 
   return (
     <>
@@ -302,16 +305,19 @@ export function NarrowOverlays() {
             <PaneTabStrip>
               {zonePanes.map(pane => (
                 <PaneTab
+                  {...tabKeyboardProps(pane.id)}
                   active={pane.id === revealed.id}
                   aria-selected={pane.id === revealed.id}
                   data-narrow-overlay-tab={pane.id}
                   key={pane.id}
+                  onActivate={() => setReveal(current => ({ id: pane.id, pinned: current?.pinned ?? false }))}
                   onPointerDown={event => {
                     if (event.button === 0) {
                       event.preventDefault()
                       setReveal(current => ({ id: pane.id, pinned: current?.pinned ?? false }))
                     }
                   }}
+                  role="tab"
                 >
                   <PaneTabLabel>{pane.title ?? pane.id}</PaneTabLabel>
                 </PaneTab>

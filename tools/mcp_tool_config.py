@@ -215,6 +215,16 @@ def _build_safe_env(user_env: Optional[dict]) -> dict:
     for key in ("HERMES_KANBAN_DB", "HERMES_KANBAN_BOARD"):
         if key in os.environ:
             env[key] = os.environ[key]
+    # Pin the ACTIVE (served) profile's home so a stdio child never falls back to the
+    # platform-default home (issue #18594). Without it a child spawned by a multiplexed host
+    # or a dashboard/desktop backend serving ``--open-profile`` resolves HERMES_HOME to the
+    # LAUNCH profile's home (or the platform default) and writes to the wrong profile — and a
+    # Python child that imports hermes_constants trips the ``_warn_profile_fallback_once``
+    # guard. Resolve at call time: ``get_hermes_home()`` honours the served-profile
+    # contextvar, which does not cross the process boundary, while ``os.environ`` holds only
+    # the launch profile's home. An explicit server ``env.HERMES_HOME`` still wins below.
+    from hermes_constants import get_hermes_home
+    env["HERMES_HOME"] = str(get_hermes_home())
     if user_env:
         # An entry rendered from one whole ``${VAR}`` that is unset (or empty) counts as absent, so
         # a plugin can forward an optional var without the child seeing the literal placeholder.
@@ -664,6 +674,7 @@ def _portable_mcp_servers(safe_servers: dict[str, dict], rejected: frozenset[str
 
     The package's declared costs are facts about its server, so a same-name native entry (the way a user widens
     a package server's trust) keeps them unless it sets the cost key itself; ``spend_limit: 0`` turns the limit off."""
+    from agent.secret_scope import UnscopedSecretError
     from tools.mcp_tool_costs import CONFIG_KEYS
     try:
         from hermes_cli.plugins import discover_plugins, get_plugin_manager
@@ -682,7 +693,15 @@ def _portable_mcp_servers(safe_servers: dict[str, dict], rejected: frozenset[str
                 else:
                     logger.warning("Portable MCP server '%s' conflicts with native config; skipping", name)
             else:
-                safe_servers[name] = dict(cfg)
+                # Rendered like native entries: a raw ``${VAR}`` here reads as a changed definition
+                # on every transport rebuild and swaps the running header for the literal placeholder.
+                try:
+                    safe_servers[name] = _interpolate_env_vars(dict(cfg))
+                except UnscopedSecretError:
+                    # Unscoped multiplex load: keep the raw templates (as before rendering here) rather
+                    # than end the merge; connect re-renders under the owner's scope and fails closed.
+                    logger.debug("Portable MCP server '%s' left unrendered: no secret scope bound", name)
+                    safe_servers[name] = dict(cfg)
     except Exception:
         logger.debug("Failed to load portable MCP servers", exc_info=True)
 

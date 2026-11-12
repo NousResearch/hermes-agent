@@ -106,7 +106,7 @@ def owner_execution_runner():
                 source=SimpleNamespace(user_id="cron-owner"))}, pending_results={})
         request_id = execution_id or identity
         row = {"admission_id": identity, "request_id": request_id,
-               "principal_id": "cron-owner", "payload": {"text": extra_prompt or ""}}
+               "principal_id": "cron-owner", "owner_epoch": 1, "generation": 1, "payload": {"text": extra_prompt or ""}}
         policy = SimpleNamespace(request_json=json.dumps({
             "cron_job": job, "extra_prompt": extra_prompt, "request_id": request_id}))
 

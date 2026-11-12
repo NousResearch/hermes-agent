@@ -52,6 +52,23 @@ class LocalSessionAdapter(BasePlatformAdapter):
     def register_source(self, source):
         self.sources[self._source_key(source)] = source, self._identity(source)
 
+    def kept_source(self, source):
+        """The object this route was admitted with when *source* is that same source: a closed
+        conversation retired from memory comes back with it, so the results its background work
+        still holds pass ``authorize_source`` (an identity check)."""
+        saved = self.sources.get(self._source_key(source))
+        return saved[0] if saved is not None and saved[0].to_dict() == source.to_dict() else source
+
+    def forget(self, source, route):
+        """A deleted conversation's admission source, frozen policy and post-delivery slot (a local
+        route names one conversation; a detached copy keeps only its own key, its chat's stays)."""
+        key = self._source_key(source)
+        if self.sources.get(key, (None,))[0] is source:
+            del self.sources[key]
+        if key == source.chat_id and source.platform == Platform.LOCAL:
+            self.policies.pop(key, None)
+            self._post_delivery_callbacks.pop(route, None)
+
     async def connect(self, *, is_reconnect=False):
         return True
 
@@ -122,6 +139,17 @@ class LocalSessionAdapter(BasePlatformAdapter):
         if started is not None and 'local_automation_v1' in started['payload']:
             return 'Clarification is unavailable: no viewer can answer this chat'
         return None
+
+
+def forget_live_session(authority, session_id, live):
+    """What the local adapter and the authority keyed by a deleted live session."""
+    authority.launch_sources.pop(session_id, None)
+    if live.source is None or live.source.platform != Platform.LOCAL:
+        return
+    from gateway.session_local_recovery import local_adapter_map
+    local = local_adapter_map(authority).get(Platform.LOCAL)
+    if local is not None:
+        local.forget(live.source, live.route)
 
 
 def authorize_local_source(runner, source):
@@ -458,6 +486,9 @@ def local_session_info(authority, ref):
         # resuming client can tell "same flags again" from a real override attempt.
         import json
         info['launch_request'] = json.loads(policy.request_json)
+        from gateway.session_client import policy_client
+        if (client := policy_client(policy)) is not None:  # only a client that named itself
+            info['client'] = client
         from agent.session_client_env import NOT_LOCAL_WARNING
         # Session-start notices main's TUI already renders as ``config_warning``.
         notices = (project_plugins_warning(policy), NOT_LOCAL_WARNING if policy.client_env_remote else None)
@@ -469,8 +500,10 @@ def local_session_info(authority, ref):
 
 def _classic_cli_fields(authority, ref, live, agent, policy):
     """What main's HermesCLI read off itself for /status, the status bar and the exit summary: the
-    stored title and times, the session's yolo, api_mode, the loaded tool count and a masked
-    credential hint (never the key). Lazy sessions report what is known without building an agent."""
+    stored title, archived flag, and times, the session's yolo, api_mode, the loaded tool count and a
+    masked credential hint (never the key). Lazy sessions report what is known without building an
+    agent. ``archived`` is a JSON boolean (``bool(row.get("archived"))``), never SQLite ``1``:
+    Desktop's hidden Bot Chat probe uses ``archived === true``."""
     import contextlib
     stored_id = ref.session_id
     with contextlib.suppress(Exception):
@@ -495,5 +528,6 @@ def _classic_cli_fields(authority, ref, live, agent, policy):
     started = row.get('started_at')
     return {'title': row.get('title'), 'started_at': started,
             'last_active_at': row.get('last_activity_at') or started, 'yolo': yolo,
+            'archived': bool(row.get('archived')),
             'api_mode': api_mode or None, 'tool_count': len(tools) if isinstance(tools, list) else None,
             'credential_hint': hint}

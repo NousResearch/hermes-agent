@@ -1,6 +1,6 @@
 """Frozen legacy commit-email → GitHub login mappings. Data only; never append.
 
-The contributor-check CI job and ``scripts/audit_pr_attribution.py`` grep this
+The contributor-email step of the repo-guards CI job and ``scripts/audit_pr_attribution.py`` grep this
 file for ``"<email>"``, so the entries must stay a literal dict here.
 """
 

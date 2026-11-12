@@ -450,10 +450,11 @@ def _row_ids_of(messages) -> set:
     return {row_id for message in messages if isinstance((row_id := _message_row_id(message)), int)}
 
 
-# Rollout (#133716, maintainer decision G15-B): one release warn-only, so an older Desktop or a
-# third-party client that predates confirm_deep_truncate keeps working while upgraded clients ask
-# before a deep cut on their own. The next release flips this to refuse with 4033.
-DEEP_TRUNCATE_ENFORCED = False
+# Rollout (#133716, maintainer decision G15-B): v0.22.5 shipped the gate warn-only, so an older
+# Desktop or a third-party client that predates confirm_deep_truncate kept working while upgraded
+# clients asked before a deep cut on their own. Enforced from here on (#145556): a stale client
+# replaying an old ordinal now gets the 4033 confirm round-trip instead of silently losing turns.
+DEEP_TRUNCATE_ENFORCED = True
 
 
 def _archived_user_turns(session, sid, history, cut_index, survivor_ids) -> int:

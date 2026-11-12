@@ -210,3 +210,28 @@ async def test_album_photo_lost_after_the_request_left_is_reported_ambiguous(ada
     assert len(calls) == 2  # one request per photo, none resent
     assert result.success is True and result.raw_response["ambiguous"] is True
     assert result.raw_response["failed"] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("images", [
+    [("https://example.com/a.gif", "")],
+    [("https://example.com/a.gif", ""), ("https://example.com/b.png", "")],
+])
+async def test_a_gif_whose_receipt_was_lost_keeps_the_batch_ambiguous(adapter, monkeypatch, images):
+    """A GIF upload that left but got no answer may be in the chat: the batch (GIF-only, or GIF
+    beside a still photo that posted) reports it possibly delivered, never a definite failure."""
+    calls = []
+
+    async def lost(**kwargs):
+        calls.append(kwargs)
+        raise _read_error()
+
+    adapter._bot.send_animation = lost
+    adapter._bot.send_media_group = AsyncMock(return_value=[SimpleNamespace(message_id=9)])
+    adapter._bot.send_photo = AsyncMock(return_value=SimpleNamespace(message_id=9))
+    monkeypatch.setattr("tools.url_safety.is_safe_url", lambda _url: True)
+
+    result = await adapter.send_multiple_images("123", images)
+
+    assert len(calls) == 1  # never resent
+    assert result.success is True and result.raw_response["ambiguous"] is True

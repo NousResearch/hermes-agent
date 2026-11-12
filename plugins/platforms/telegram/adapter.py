@@ -4961,14 +4961,12 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         is_anim = lambda url: not url.startswith("file://") and self._is_animation_url(url)
         animations = [img for img in images if is_anim(img[0])]
         photos = [img for img in images if not is_anim(img[0])]
-        delivered = False
-        if animations:
-            anim_result = await super().send_multiple_images(chat_id, animations, metadata, human_delay=human_delay)
-            delivered = anim_result.success
+        from plugins.platforms.telegram.telegram_album import send_animations, send_photo_album
+        delivered, ambiguous = await send_animations(self, chat_id, animations, metadata, human_delay)  # a lost GIF receipt stays unknown
         if not photos:
-            return SendResult(success=delivered, error=None if delivered else "all images failed to send")
-        from plugins.platforms.telegram.telegram_album import send_photo_album
-        return await send_photo_album(self, chat_id, photos, metadata, human_delay, delivered=delivered)
+            return SendResult(success=delivered, error=None if delivered else "all images failed to send",
+                              raw_response={"ambiguous": True} if ambiguous else None)
+        return await send_photo_album(self, chat_id, photos, metadata, human_delay, delivered=delivered, ambiguous=ambiguous)
 
     async def send_image_file(
         self, chat_id: str, image_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None,

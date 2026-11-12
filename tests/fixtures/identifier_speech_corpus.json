@@ -7,7 +7,9 @@
     ["Trace id 550e8400-e29b-41d4-a716-446655440000 appears once.", ["550e8400", "446655440000"], ["Trace id", "appears once"]],
     ["Model meta-llama/Llama-3.3-70B-Instruct is large.", ["meta-llama/Llama-3.3-70B-Instruct", "70B"], ["Model", "is large"]],
     ["Config at ~/.config/hermes/config.yaml was read.", ["config.yaml", "~/.config"], ["Config at", "was read"]],
-    ["Version v2.1.0-beta.3 shipped.", ["v2.1.0-beta.3"], ["Version", "shipped"]]
+    ["Version v2.1.0-beta.3 shipped.", ["v2.1.0-beta.3"], ["Version", "shipped"]],
+    ["Weights Qwen/Qwen2-7B load.", ["Qwen2-7B"], ["Weights", "load"]],
+    ["Not dates: 32/10, 19/13 and 19/10-2026 stay silent.", ["32/10", "19/13", "19/10-2026"], ["Not dates", "stay silent"]]
   ],
   "pass_through_tokens": [
     ["The samples played cleanly, so listen again.", [], ["The samples played cleanly, so listen again"]],
@@ -15,6 +17,10 @@
     ["Email me at user@example.com.", [], ["user@example.com"]],
     ["COVID-19 and well-known facts stay.", [], ["COVID-19", "well-known"]],
     ["Due 2026/06/02 and status N/A here.", [], ["2026/06/02", "N/A"]],
-    ["The final score was 3:2.", [], ["3:2"]]
+    ["The final score was 3:2.", [], ["3:2"]],
+    ["Rendez-vous le 19/10 \u00e0 21h30.", [], ["le 19/10 \u00e0 21h30"]],
+    ["Cong\u00e9s du 19/10 au 25/10.", [], ["du 19/10 au 25/10"]],
+    ["Paid 19/10/2026, 19-10-2026, 19.10.2026 and 1/2/26.", [], ["19/10/2026", "19-10-2026", "19.10.2026", "1/2/26"]],
+    ["Two thirds is 2/3, open 24/7, due 12/31, shipped 2026-06-02.", [], ["2/3", "24/7", "12/31", "2026-06-02"]]
   ]
 }

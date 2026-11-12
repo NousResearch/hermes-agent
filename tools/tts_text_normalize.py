@@ -150,13 +150,20 @@ _HASH_PREFIX_HEX_RE = re.compile(
     r"\b(?:sha(?:-?256|-?512|-?1|3)?|blake2[ab]?|md5|crc32?)[:\s]+[0-9a-fA-F]{7,64}", re.IGNORECASE)
 _HEX_RUN_RE = re.compile(r"(?<![0-9a-fA-F])[0-9a-fA-F]{7,64}(?![0-9a-fA-F])")
 _IDENTIFIER_TOKEN_RE = re.compile(r"[A-Za-z0-9_./~@-]+")
-_DATE_TOKEN_RE = re.compile(r"\d{4}[-/]\d{1,2}(?:[-/]\d{1,2})?")
+# Dates: year-first ("2026-09-28", "2026/06/02"), then numeric D/M or M/D with an
+# optional /YY or /YYYY ("19/10", "10/19", "19-10-2026"). Both parts must be a
+# real day/month and the separator must repeat, so "32/10", "19/13" and
+# "19/10-2026" stay identifiers. "2/3" is a date or a fraction; both are speakable.
+_DATE_TOKEN_RE = re.compile(
+    r"\d{4}[-/]\d{1,2}(?:[-/]\d{1,2})?"
+    r"|(?:0?[1-9]|[12]\d|3[01])([-/])(?:0?[1-9]|1[0-2])(?:\1(?:\d{2}|\d{4}))?"
+    r"|(?:0?[1-9]|1[0-2])([-/])(?:0?[1-9]|[12]\d|3[01])(?:\2(?:\d{2}|\d{4}))?")
 
 
 def _is_dense_identifier(token: str) -> bool:
     """True for a machine token a voice would spell out character by character."""
-    if "@" in token or _DATE_TOKEN_RE.fullmatch(token):
-        return False  # email addresses, dates ("2026-09-28", "2026/06/02")
+    if "@" in token or _DATE_TOKEN_RE.fullmatch(token.rstrip(".")):
+        return False  # email addresses, dates ("2026-09-28", "2026/06/02", "19/10.")
     if token.startswith(("~/", "./", "../", "/")):
         return True  # filesystem paths
     if "/" in token and (_FILENAME_EXT_RE.search(token) or any(char.isdigit() for char in token)):

@@ -3193,6 +3193,24 @@
       }
     },
     {
+      "name": "session.append_message",
+      "summary": "Persist one user/assistant line without a turn; a same-role line merges into the last live entry.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionAppendMessageParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionAppendMessageResult"
+        }
+      }
+    },
+    {
       "name": "session.archive",
       "summary": "Set/clear archived (soft-hide, messages kept) on a session + lineage; Desktop PATCH parity.",
       "params": [
@@ -37127,6 +37145,86 @@
           "sessions"
         ],
         "title": "SessionActiveListResult",
+        "type": "object"
+      },
+      "SessionAppendMessageParams": {
+        "additionalProperties": false,
+        "description": "``role`` is ``user`` or ``assistant``; any other value is a 4000. ``text`` is an alias for ``content``.",
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "role": {
+            "title": "Role",
+            "type": "string"
+          },
+          "content": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Content"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Text"
+          },
+          "observed": {
+            "default": true,
+            "title": "Observed",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "session_id",
+          "role"
+        ],
+        "title": "SessionAppendMessageParams",
+        "type": "object"
+      },
+      "SessionAppendMessageResult": {
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "role": {
+            "title": "Role",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "role"
+        ],
+        "title": "SessionAppendMessageResult",
         "type": "object"
       },
       "SessionArchiveParams": {

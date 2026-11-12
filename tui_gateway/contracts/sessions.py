@@ -502,6 +502,24 @@ method("session.history", params=SessionHistoryParams, result=SessionHistoryResu
        doc="The durable display transcript (ancestors included, row ids attached).")
 
 
+class SessionAppendMessageParams(SessionParams):
+    """``role`` is ``user`` or ``assistant``; any other value is a 4000. ``text`` is an alias for ``content``."""
+
+    role: str
+    content: str | None = None
+    text: str | None = None
+    observed: bool = True
+
+
+class SessionAppendMessageResult(Result):
+    ok: bool
+    role: str
+
+
+method("session.append_message", params=SessionAppendMessageParams, result=SessionAppendMessageResult,
+       doc="Persist one user/assistant line without a turn; a same-role line merges into the last live entry.")
+
+
 class SessionUsageParams(SessionParams):
     pass
 

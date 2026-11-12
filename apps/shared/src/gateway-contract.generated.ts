@@ -3599,6 +3599,19 @@ export interface SessionHistoryResult {
   count: number
   messages: TranscriptMessage[]
 }
+/** ``role`` is ``user`` or ``assistant``; any other value is a 4000. ``text`` is an alias for ``content``. */
+export interface SessionAppendMessageParams {
+  session_id: string
+  profile?: string | null
+  role: string
+  content?: string | null
+  text?: string | null
+  observed?: boolean
+}
+export interface SessionAppendMessageResult {
+  ok: boolean
+  role: string
+}
 export interface SessionUsageParams {
   session_id: string
   profile?: string | null
@@ -6703,6 +6716,8 @@ export interface RpcMethods {
   'session.activate': { params: SessionActivateParams; result: SessionActivateResult }
   /** Live sessions in this process, insertion order (not a DB browser). */
   'session.active_list': { params: SessionActiveListParams; result: SessionActiveListResult }
+  /** Persist one user/assistant line without a turn; a same-role line merges into the last live entry. */
+  'session.append_message': { params: SessionAppendMessageParams; result: SessionAppendMessageResult }
   /** Set/clear archived (soft-hide, messages kept) on a session + lineage; Desktop PATCH parity. */
   'session.archive': { params: SessionArchiveParams; result: SessionArchiveResult }
   /** Fork a live session into a new stored child that shares the parent's history so far. */
@@ -7053,6 +7068,7 @@ export const RPC_METHODS = [
   'rollback.restore',
   'session.activate',
   'session.active_list',
+  'session.append_message',
   'session.archive',
   'session.branch',
   'session.branch_stored',

@@ -779,7 +779,10 @@ def _apply_aux_assignment_sync(cfg: dict, provider: str, model: str, task: str, 
             # in. See #65254.
             slot_cfg["base_url"] = base_url
             if api_key:
-                slot_cfg["api_key"] = store_aux_endpoint_key(task or "all", base_url, api_key)
+                try:
+                    slot_cfg["api_key"] = store_aux_endpoint_key(task or "all", base_url, api_key)
+                except ValueError as exc:  # .env write lock: the refusal names the variable, never the key
+                    raise HTTPException(status_code=400, detail=str(exc)) from exc
         elif new_provider != prev_provider and new_provider != "custom":
             slot_cfg.pop("base_url", None)
             clear_model_endpoint_credentials(slot_cfg)

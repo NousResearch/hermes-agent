@@ -7,6 +7,7 @@ auxiliary assignment (one task, and all tasks at once).
 from __future__ import annotations
 
 import pytest
+from fastapi import HTTPException
 
 from hermes_cli.config import get_config_path, load_config
 
@@ -51,7 +52,7 @@ def test_blocked_env_write_stores_neither_the_key_nor_a_dangling_reference(monke
 
     assert SECRET not in get_config_path().read_text()
     assert "HERMES_CUSTOM_AUX" not in get_config_path().read_text()
-    with pytest.raises(ValueError):
+    with pytest.raises(HTTPException):
         _dashboard("vision")(monkeypatch)
     assert SECRET not in get_config_path().read_text()
 

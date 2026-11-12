@@ -104,6 +104,9 @@ class SessionSource:
     # over the authenticated relay WebSocket. ``platform`` is the UNDERLYING platform, not
     # ``relay``, so authz must key upstream trust off THIS flag.
     delivered_via_upstream_relay: bool = False
+    # Authenticated Telegram update context; never serialize callback IDs or
+    # ephemeral addresses into durable routing records.
+    telegram_control_metadata: Dict[str, Any] = field(default_factory=dict, repr=False, compare=False)
     # Wire-INVISIBLE: the key of a conversation its chat moved past, still run from the apps
     # (gateway/session_detached.py). It replaces the chat's key, so nothing keyed by route reaches
     # the chat's current conversation, and delivery goes nowhere.

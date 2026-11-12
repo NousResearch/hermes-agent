@@ -98,6 +98,7 @@ class TelegramMediaFloodMixin:
     async def _send_local_file(
         self, label: str, path: str, chat_id, reply_to, metadata, media_key: str, build_kwargs, on_error,
         redo: Optional[Redo] = None, source: Optional[str] = None,
+        *, rich_caption: Optional[str] = None,
     ) -> SendResult:
         """Existence check, open, send with routing. ``build_kwargs(f)`` supplies the media kwargs;
         ``await on_error(exc)`` handles a failure flood recovery did not resolve. ``redo(path)`` repeats
@@ -110,12 +111,30 @@ class TelegramMediaFloodMixin:
             return SendResult(success=False, error=self._missing_media_path_error(label, path))
         if redo is None:
             def redo(p: Optional[str]) -> Awaitable[SendResult]:
-                return self._send_local_file(label, p or path, chat_id, reply_to, metadata, media_key, build_kwargs, on_error)
+                return self._send_local_file(
+                    label, p or path, chat_id, reply_to, metadata, media_key, build_kwargs, on_error,
+                    rich_caption=rich_caption)
             source = path
 
         what = f"{media_key} {os.path.basename(path)}"
         try:
             with await asyncio.to_thread(open, path, "rb") as f:
+                if self._rich_media_active():
+                    from plugins.platforms.telegram.telegram_rich_media import _RichMediaTransient
+                    # The same upload slot and flood window govern both rich and legacy requests.
+                    async with self._media_send_slot(chat_id):
+                        try:
+                            rich_msg = await self._send_local_rich_media(
+                                chat_id, path, f, media_key, build_kwargs(f), rich_caption, reply_to, metadata)
+                        except _RichMediaTransient as exc:
+                            if flood_wait_seconds(exc.__cause__) is not None:
+                                raise exc.__cause__
+                            return self._rich_media_transient_result(exc)
+                    if rich_msg is not None:
+                        message_id = (rich_msg.get("message_id", (rich_msg.get("result") or {}).get("message_id"))
+                                      if isinstance(rich_msg, dict) else rich_msg.message_id)
+                        return SendResult(success=True, message_id=str(message_id))
+                    f.seek(0)
                 msg = await self._send_media(
                     getattr(self._bot, f"send_{media_key}"), chat_id, reply_to, metadata, media_key,
                     reset_media=lambda: f.seek(0), **build_kwargs(f))

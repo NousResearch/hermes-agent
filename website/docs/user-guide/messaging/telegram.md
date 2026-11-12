@@ -1142,6 +1142,8 @@ To find a topic's `thread_id`, open the topic in Telegram Web or Desktop and loo
 - **Bot API 9.4 (Feb 2026):** Private Chat Topics — bots can create forum topics in 1-on-1 DM chats via `createForumTopic`. Hermes uses this for two distinct features: operator-curated [Private Chat Topics](#private-chat-topics-bot-api-94) (config-driven, fixed topic list) and user-driven [Multi-session DM mode](#multi-session-dm-mode-topic) (activated by `/topic`, unlimited user-created topics).
 - **Privacy policy:** Telegram now requires bots to have a privacy policy. Set one via BotFather with `/setprivacy_policy`, or Telegram may auto-generate a placeholder. This is particularly important if your bot is public-facing.
 - **Bot API 9.5 (Mar 2026): Native streaming via `sendMessageDraft`.** Hermes uses Telegram's native streaming-draft API for private chats under the default `auto` transport (groups and group forum topics always use the `editMessageText` path; private-chat topics try drafts too and fall back to edits if Telegram rejects them). If the draft preview visibly collapses and re-renders on your Telegram client, set `transport: edit` (see below).
+- **Bot API 10.2/10.3:** native generation Stop, rich thinking drafts, requester-only ephemeral group controls, rich action buttons and embedded rich media — see the sections below.
+- **Bot API 10.4 (Nov 2026):** HTML widgets with live state and requests, ephemeral replies addressed by `callback_query_id`, outgoing and incoming rich-message quotes, rich TON/card entities, wallet/paid-message service notes, and Telegram metadata lookups — see [HTML widgets](#html-widgets-bot-api-104), [Quoting a rich reply](#quoting-a-rich-reply-bot-api-104) and [Telegram metadata](#telegram-metadata).
 
 ### Streaming transport (`gateway.streaming.transport`)
 
@@ -1171,9 +1173,123 @@ gateway:
 
 **What if a draft frame fails?** Any failure (transient network error, server-side rejection, older python-telegram-bot install) flips that response back to the edit-based path for the rest of the stream. The next response gets a fresh attempt.
 
+### Native generation Stop button (Bot API 10.3)
+
+When a DM reply streams through Telegram's native draft transport, the draft carries `can_stop: true` — Telegram renders a **Stop** control natively next to the generation. Tapping it produces a `stopped_message_generation` update, which the gateway maps to the same turn-scoped cancellation as the `/stop` command: the running turn is interrupted, the draft preview ends, and nothing further is posted for that reply.
+
+The Stop binding is **turn-scoped, not chat-scoped**: it is keyed to the exact (chat, topic, draft) generation being streamed. A late Stop that arrives after the turn already completed (or while a successor turn is running) is ignored — it can never cancel someone else's turn. Long tool phases are covered by a heartbeat that re-frames the draft every 10 seconds, keeping Stop reachable past Telegram's ~30-second draft expiry.
+
+Telegram's server encodes the stopped update's `draft_id` as a decimal string, even though the API documents it as an integer. Hermes normalizes this wire value before matching the live draft; numeric SDK values remain accepted. Malformed IDs and updates for another draft cannot interrupt the turn.
+
+No configuration is required beyond streaming with the draft transport (`gateway.streaming.transport: auto` or `draft`). The control uses Telegram's `keep_on_stop` draft option so the completed portion of a stopped reply stays visible.
+
+### Thinking drafts (`rich_messages` + `rich_drafts`)
+
+Thinking drafts need **both** `telegram.extra.rich_messages: true` and `telegram.extra.rich_drafts: true` (plus `gateway.streaming.enabled: true` so the reply streams through the DM draft transport). With either flag off, the live preview stays plain. When active, Hermes streams `sendRichMessageDraft` frames whose payload carries a `<tg-thinking>` block — Telegram renders the client's native animated status indicator instead of a wall of "typing…".
+
+The block appears during the pre-reply phase (before the first output token, and during tool execution). Tool progress lines (when enabled, see [tool progress](#tool-progress)) route into the same draft frame as the thinking status, so the preview shows the last tool status line rather than sending separate interim messages. The thinking block is a **presentation placeholder only** — it carries the localized status label, never model reasoning transcripts, and it is never persisted into the final reply.
+
+A Telegram capability rejection (older Bot API) latches rich drafts off for the adapter's lifetime and the preview falls back to plain drafts; transient rich-frame failures degrade frame-by-frame. Final replies use the configured normal rich/legacy selection, without the thinking block.
+
+### Requester-only group controls (`private_controls`, Bot API 10.3)
+
+By default, every interactive control the gateway posts in a group — exec approval buttons, model/choice pickers, clarification prompts — is a **regular public message** every member can see and click. With `telegram.extra.private_controls: true`, groups, supergroups and forum topics instead get **ephemeral controls**: delivered only to the requesting member via Telegram's ephemeral message API.
+
+```yaml
+gateway:
+  platforms:
+    telegram:
+      extra:
+        private_controls: true
+```
+
+Delivery addressing: when the **bot is a chat administrator**, it can send a requester-only control at any time. A non-admin bot needs a delivery trigger — an eligible callback query or incoming ephemeral message, within Telegram's 15-second window. Outside that window, or when the requester id is missing, delivery fails rather than falling back to a public send. Only the receiver sees the control; only the receiver can drive its buttons. Edits and dismissal use Telegram's ephemeral edit/delete endpoints and never target a regular message id.
+
+**Bot API 10.4 callback addressing.** For a public callback, Hermes addresses the ephemeral overlay using `callback_query_id` alone, omitting `receiver_user_id` and chat/thread routing from the wire. Telegram routes it to the user who pressed the button, including in groups where the bot is no longer a member. Hermes still requires the authenticated requester locally and checks the returned receiver and chat before registering the message for later edits. Non-callback prompts and ephemeral-origin interactions keep explicit receiver addressing. Ordinary DM controls are unchanged; channel direct-message topics do not use callback-only addressing. These callback-only sends require Bot API 10.4; rejection on an older server fails closed rather than publishing the control.
+
+**Callback interactions.** A fresh public callback query can deliver the private control as an **overlay** — `replace_callback_query_message` makes the private content replace the public message in place. A callback originating from an ephemeral message never replaces (Telegram requires the edit endpoints there): the replacement flow **edits the same ephemeral message** instead of sending a duplicate. Ephemeral controls also support media and caption updates through the ephemeral media/caption edit endpoints — same receiver gating, never a public `editMessageMedia`/`editMessageCaption` fallback.
+
+**Failure semantics (fail closed).** If an ephemeral delivery cannot be completed — the requester id is missing, the 15-second window has passed, Telegram rejects the send, or the response lacks a usable ephemeral id — the control is **not** re-sent to the group. Hermes returns a uniform egress decline that the gateway's fallback suppression understands: the refused prompt never degrades into a public model listing, approval card or status message. You'll notice a missing button rather than a leaked one.
+
+### Rich action controls (`rich_controls`, Bot API 10.3)
+
+With `telegram.extra.rich_controls: true`, all built-in interactive menus use native `<tg-button-row>` controls inside rich messages: model/provider pickers, flat choice pickers (`/reasoning`, `/fast`), execution approvals, slash-command confirmations, clarification prompts and update prompts. This flag is independent of `rich_messages`; changing it requires a gateway restart. Existing public menus upgrade on their next supported callback edit, while new menus use the native layout from their first send.
+
+```yaml
+gateway:
+  platforms:
+    telegram:
+      extra:
+        rich_controls: true
+```
+
+**Native menu layout and states:**
+
+- Provider/model and flat-choice selectors pair short labels (up to 18 characters); longer labels get a separate row without manual truncation in rich mode. The current provider remains clickable so its models can be opened; the current model and current flat-choice value are marked with `✓`, success-styled and disabled. Rich card fields use explicit line breaks so headings and settings do not run together.
+- Pagination and the separate back/cancel row are centered consistently; the page counter is disabled, not a no-op callback. Navigation uses link styling, selection uses primary, one-time approval uses success, persistent approval uses primary, and cancel/deny uses danger. Styles come from the action, not translated button text.
+- Clarification prompts place each escaped option immediately before its own button, with the free-text answer action after the options. Legacy fallback retains the full numbered question and ordinary keyboard.
+- Approval and confirmation actions use the same compact short-label layout; terminal resolution replaces the same message with its result and removes the controls. Callback identifiers, approval semantics and authorization remain unchanged.
+
+With the flag off, ordinary inline keyboards remain available. A permanent rich rejection also restores ordinary keyboards with no rich-only fields; an ambiguous failure never triggers a second send. Telegram clients own the final rendering of native styles and alignment.
+
+The converter covers **all** RichMessageButton action kinds, not just callbacks: `callback_data`, `url`, `web_app`, `login_url`, `switch_inline_query` (and the `_current_chat` / `_chosen_chat` variants), `copy_text`, and `disabled`. A button carrying an action the converter cannot represent (e.g. callback_game or pay) makes the **whole prompt** fall back to the legacy inline-keyboard path — a user action is never silently dropped.
+
+Callback payloads pass through **verbatim** — the same `ea:`/`mp:`/`cp:` prefixes and authorizations as legacy inline keyboards, so allowlists and receiver gates behave identically. Button labels are plain text (HTML-escaped losslessly; custom-emoji/datetime labels are not representable through this converter), and callback data keeps Telegram's 1–64 byte bounds. Rows longer than 8 buttons are **split** at the 8-button boundary, never truncated; empty rows are dropped. Pagination edits stay rich; a terminal edit (no keyboard) drops the control from the rich registry.
+
+**Row alignment** needs no global flag: pass `api_kwargs={"align": "left|center|right"}` on the `InlineKeyboardMarkup` to align every row, or `api_kwargs={"row_alignments": [...]}` for per-row values (missing or invalid entries keep the client default; split rows inherit their source row's alignment).
+
+Failure semantics match the rich-message finals path: a permanent rejection (older Bot API, capability error) transparently falls back to the legacy inline-keyboard prompt; a transient failure returns an ambiguous, non-retryable result so the prompt is never duplicated. When both flags are enabled in a group, `private_controls` controls the delivery scope and `rich_controls` embeds the buttons inside that ephemeral message using `sendRichMessage` plus `ephemeral_message_parameters`; the rich payload never becomes public. If rich embedding is unavailable, the same requester-only control falls back to plain ephemeral text — still never to a public group send.
+
+### Embedded rich media and 10.3 constructs (Bot API 10.2/10.3, `rich_messages`)
+
+With `telegram.extra.rich_messages: true`, a reply that embeds media or uses the newer rich constructs renders through the same `sendRichMessage` path instead of a caption message followed by a separate attachment:
+
+- **Embedded media (10.2):** documents, photos, videos and audio referenced from the rich body via `tg://document?id=…` / `tg://photo?id=…` / `tg://video?id=…` / `tg://audio?id=…` links. Local document/photo/video sends carry the full plain-text caption (escaped into rich HTML, preserving line breaks) and the attachment in one `sendRichMessage` request when they fit the rich cap. Explicit metadata supports formatted bodies, reusable Telegram `file_id` values, HTTP(S) URLs and local uploads. With the flag off, the existing media endpoints and their caption limits remain unchanged.
+- **Expandable quotes (10.3):** `<blockquote expandable>` renders as the client's native collapsible quotation.
+- **Table styles (10.3):** `<table>` with `bordered`/`striped`/`compact` attributes; a bare `<table compact>` (smaller cell indents) also triggers rich rendering.
+
+With `rich_messages` off, existing MarkdownV2 and media behavior stays unchanged. Rich drafts additionally require `rich_drafts`. Explicit `telegram_rich_message` metadata accepts exactly one of `html`, `markdown` or `blocks`, plus an optional list of up to 50 media specs (`id`, `kind`, `media`; local uploads use a `Path`, bytes or an open binary file, while strings are file IDs or URLs). Invalid metadata returns a non-retryable error rather than a different-format send. Permanent rich-media rejection falls back to the legacy media endpoint; an ambiguous network failure is not re-sent.
+
+## HTML widgets (Bot API 10.4)
+
+The agent can send a small interactive **HTML widget** into the current private chat through the `telegram_ui` tool (`action: send_widget`). Telegram renders the widget inside the message bubble with no network access; the HTML is fixed when sent, while two state strings (`public_data`, shared wherever the widget is shown, and `chat_data`, per message) can be updated later.
+
+```json
+{
+  "action": "send_widget",
+  "widget": {
+    "html": "<h3>Order #1042</h3><p>Total: $23.50</p><button onclick=\"TelegramWidget.request('details')\">Details</button>",
+    "caption": "Order #1042: $23.50",
+    "public_data": "{\"r\":1,\"total\":23.5}",
+    "allow_queries": true
+  },
+  "actions": {"details": "Explain the current order"}
+}
+```
+
+- **Private chats only.** Telegram's production Bot API accepts widgets only in the bot's private chat; Hermes refuses other chats rather than sending an unsupported message. Group, inline and forwarded widgets exist on Telegram's test server only.
+- **Caption required.** The caption is what chat lists, notifications, search and clients without widget support show. Keep the useful information there too.
+- **Limits enforced before the request:** HTML at most 32,768 UTF-8 bytes and at most 4,096 bytes after zlib level-9 compression (NUL rejected), caption at most 1,024 UTF-16 units, each state/query string at most 1,024 UTF-8 bytes.
+- **No secrets.** Widget HTML and shared state can be visible to anyone who sees the message. Treat them as public.
+- **Actions.** Each `TelegramWidget.request('<key>')` maps through `actions` to one intent. Only listed keys are accepted; payloads are bounded user input, never slash commands or gateway control. Each key is rate-limited per widget, and the reserved `refresh` key returns the stored state without starting a model turn.
+- **State updates.** `edit_widget` changes the chat/shared state of a widget this conversation created; omitted keys stay unchanged, an empty string clears. `edit_shared_widget` updates a shared widget's public state and refresh period (5-3,600 seconds; at most one edit per second).
+- **Shared widgets and reuse.** A widget sent with `is_shared: true` gets an id; `send_shared_widget` shows it again with per-message chat state. `widget_state` returns the stored state and action map.
+- **Ownership.** Hermes records the bot, chat, topic, user, session and session id that created each widget. Every later edit or interaction is checked against the current conversation; a widget whose conversation was reset, or one from another chat, user or bot profile, cannot be edited or used to wake the agent.
+- **Delivery semantics.** A rejected widget request is reported with its validation/API reason. A lost acknowledgement is marked ambiguous and never retried, because a retry could duplicate the widget message. There is no plain-text fallback that would silently drop the interaction.
+
+## Rich replies and quoting exact text
+
+`telegram_ui` with `action: send_rich_reply` posts one `sendRichMessage` reply that quotes an exact rich-message selection (`quote_rich_texts`) taken from the current message or the message being replied to, with optional `quote_position`. The payload keeps the original nesting and formatting (bold, italic, underline, strikethrough, spoiler, subscript, superscript, date-time, custom emoji and math); at most 32 quoted blocks and 1,024 characters total. A quote Telegram would reject or silently flatten is refused before sending, and there is no quote-less fallback: a failed rich reply is not resent without the quote.
+
+Incoming TON addresses and bank card numbers keep their machine-readable value even when the rich label is empty or different, while mention/wake-word matching still sees only the visible text. A `ton_wallet_transfer` or `paid_messages_waived` service message reaches the conversation as an informational note (transaction id, peer, raw smallest-unit amount including negative outgoing values, comment). Those notes never confirm a payment on-chain and never authorize spending, entitlement or commands.
+
+## Telegram metadata
+
+The same tool can read metadata through `chat_info` (chat identity plus TON wallet card and share theme, when present), `share_theme_backdrops` (the backdrop catalog available to share themes) and `gift_info` (a unique gift by slug). These are read-only lookups. `topic_link` returns the `https://t.me/<bot>/<thread_id>` deep link for the current private-chat topic, which opens only for the user that topic belongs to.
+
 ## Rendering: Rich Messages, Tables and Link Previews
 
-**Rich Messages (Bot API 10.1).** Final replies that contain constructs the legacy MarkdownV2 path degrades — tables, task lists, collapsible `<details>`, and block math — are sent with Telegram's native [`sendRichMessage`](https://core.telegram.org/bots/api#sendrichmessage) using the agent's **raw markdown**, so they render natively with no client-side flattening. In DMs, the default `rich_drafts: false` keeps the streaming preview plain — it uses Telegram's ephemeral draft transport with legacy rendering (tables and other rich-only constructs stay as raw markdown in the preview) — then persists the completed response with `sendRichMessage`. Setting `rich_drafts: true` makes the live preview use `sendRichMessageDraft` too. Edit-based streams can finalize an existing preview in place through `editMessageText`'s `rich_message` parameter. Ordinary replies (plain prose, bold/italic, simple lists) stay on the MarkdownV2 path for consistent font weight and spacing across clients.
+**Rich Messages (Bot API 10.1).** Final replies that contain constructs the legacy MarkdownV2 path degrades — tables, task lists, collapsible `<details>`, and block math — are sent with Telegram's native [`sendRichMessage`](https://core.telegram.org/bots/api#sendrichmessage) using the agent's **raw markdown**, so they render natively with no client-side flattening. With `rich_messages: true`, embedded media and the 10.3 constructs above ride the same path (see [Embedded rich media](#embedded-rich-media-and-103-constructs-bot-api-102103-rich_messages)). In DMs, the default `rich_drafts: false` keeps the streaming preview plain — it uses Telegram's ephemeral draft transport with legacy rendering (tables and other rich-only constructs stay as raw markdown in the preview) — then persists the completed response with `sendRichMessage`. Setting `rich_drafts: true` (alongside `rich_messages: true`, see [Thinking drafts](#thinking-drafts-rich_messages--rich_drafts)) makes the live preview use `sendRichMessageDraft` too. Edit-based streams can finalize an existing preview in place through `editMessageText`'s `rich_message` parameter. Ordinary replies (plain prose, bold/italic, simple lists) stay on the MarkdownV2 path for consistent font weight and spacing across clients.
 
 The rich path is skipped automatically when content exceeds the 32,768-character rich text limit, and any rejection from Telegram (unsupported endpoint on an older `python-telegram-bot`, parser error, oversized blocks/columns) **transparently falls back** to the MarkdownV2 path — your message is never lost. Transient/network errors are *not* silently re-sent (no duplicate final message).
 

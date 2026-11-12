@@ -148,3 +148,14 @@ class TestFastChoicePicker:
         assert not (tmp_path / "config.yaml").exists()
 
 
+
+@pytest.mark.asyncio
+async def test_private_choice_decline_never_returns_public_status_card(tmp_path, monkeypatch):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    class PrivatePicker(_PickerAdapter):
+        async def send_choice_picker(self, **kwargs):
+            return SendResult(success=False, error="telegram egress declined: private control delivery unavailable")
+
+    runner = _make_runner(PrivatePicker())
+    assert await runner._handle_reasoning_command(_make_event("/reasoning")) is None

@@ -628,6 +628,21 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
             return self._is_session_run_current(session_key, run_generation)
         return _run_still_current
 
+    def _generation_stop_callback(self, source, session_key, run_generation):
+        """Native UI stop is exact-turn only: never use /stop's broader chat fallback."""
+        if source.platform != Platform.TELEGRAM or not session_key or run_generation is None:
+            return None
+
+        async def stop():
+            if not self._is_session_run_current(session_key, run_generation):
+                return
+            from gateway.run import _INTERRUPT_REASON_STOP
+            await self._interrupt_and_clear_session(
+                session_key, source, interrupt_reason=_INTERRUPT_REASON_STOP,
+                invalidation_reason="telegram_native_stop")
+
+        return stop
+
     @staticmethod
     def _proxy_error_result(text: str) -> dict[str, Any]:
         return {"final_response": text, "messages": [], "api_calls": 0, "tools": []}
@@ -728,6 +743,8 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
             None if scheduled_heartbeat
             else self._proxy_stream_consumer(source, event_message_id, _thread_metadata, _run_still_current)
         )
+        if _stream_consumer is not None:
+            _stream_consumer._on_generation_stop = self._generation_stop_callback(source, session_key, run_generation)
         stream_task = asyncio.create_task(_stream_consumer.run()) if _stream_consumer else None
 
         _adapter = self._delivery_adapter_for(source)
@@ -846,6 +863,10 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         """Profile-scoping wrapper around ``_run_agent_inner`` (same keyword parameters; pass-through
         when multiplexing is off)."""
         with self._profile_scope_for_source(source):
+            if source.platform == Platform.TELEGRAM:
+                from plugins.platforms.telegram.telegram_ui_tool import bind_telegram_ui
+                with bind_telegram_ui(self, source, session_id, turn_kwargs.get("session_key"), turn_kwargs.get("run_generation")):
+                    return await self._run_agent_inner(message, context_prompt, history, source, session_id, **turn_kwargs)
             return await self._run_agent_inner(message, context_prompt, history, source, session_id, **turn_kwargs)
 
     def _run_agent_display_settings(self, source: SessionSource) -> GatewayRunner._RunAgentDisplay:
@@ -1038,6 +1059,12 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
             )
         if metadata is None and _relay_prospective_thread_id:
             metadata = {"reply_to_message_id": event_message_id}
+        if source.platform == Platform.TELEGRAM and source.chat_type in {"group", "forum", "supergroup"}:
+            metadata = dict(metadata or {})
+            metadata["telegram_chat_type"] = source.chat_type
+            metadata["telegram_requester_user_id"] = source.user_id
+        if source.platform == Platform.TELEGRAM:
+            metadata = {**(metadata or {}), **(getattr(source, "telegram_control_metadata", None) or {})}
         return metadata
 
     def _run_agent_progress_threading(

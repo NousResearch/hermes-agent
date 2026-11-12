@@ -100,7 +100,8 @@ async def send_draft(adapter: Any, chat_id: str, draft_id: int, content: str, me
     if (skipped := skipped_draft(adapter, chat_id)) is not None:
         return skipped
     # Rich draft fast-path; any failure degrades to the plain draft below. Drafts have no message_id.
-    if adapter._should_attempt_rich_draft(content) and await adapter._try_send_rich_draft(chat_id, draft_id, content, metadata):
+    rich_content = content or "<tg-thinking>Thinking…</tg-thinking>"
+    if adapter._should_attempt_rich_draft(rich_content) and await adapter._try_send_rich_draft(chat_id, draft_id, content, metadata):
         return SendResult(success=True, message_id=None)
     if (skipped := skipped_draft(adapter, chat_id)) is not None:  # the rich frame was refused with retry_after
         return skipped
@@ -122,6 +123,9 @@ async def send_draft(adapter: Any, chat_id: str, draft_id: int, content: str, me
         if use_markdown:
             kwargs["parse_mode"] = ParseMode.MARKDOWN_V2
         kwargs.update(draft_thread_kwargs)
+        options = adapter._generation_draft_options(chat_id, draft_id, metadata)
+        if options:
+            kwargs["api_kwargs"] = options
         try:
             if await _await_with_thread_deadline(
                 adapter._bot.send_message_draft(**kwargs), timeout=_TEXT_SEND_DEADLINE, label="telegram-send", dump_on_blocked_loop=False):

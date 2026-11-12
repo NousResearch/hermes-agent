@@ -1161,15 +1161,15 @@ def _clone_file(source_dir: Path, profile_dir: Path, relpath: str) -> None:
 _CLONE_MATERIALIZE = (".env", "config.yaml", "auth.json", "SOUL.md")
 
 
-def _materialize_symlinked_files(profile_dir: Path) -> list[str]:
-    """Replace symlinked root files the clone will edit with private copies of their targets (a
-    dangling link is dropped). Returns the relative names materialized."""
+def _materialize_symlinked_files(source_dir: Path, profile_dir: Path) -> list[str]:
+    """Replace symlinked root files the clone will edit with private copies of their targets, resolved in
+    the source (a relative link names a path from there; a dangling one is dropped). Returns the names."""
     done: list[str] = []
     for name in _CLONE_MATERIALIZE:
         path = profile_dir / name
         if not path.is_symlink():
             continue
-        target = Path(os.path.realpath(path))
+        target = Path(os.path.realpath(source_dir / name))
         path.unlink()
         if target.is_file():
             shutil.copy2(target, path)
@@ -1221,13 +1221,13 @@ def _copytree_keep_junctions(src: Path, dst: Path, ignore, dirs_exist_ok: bool =
 
 
 def _clone_all_into(source_dir: Path, profile_dir: Path, canon: str) -> Optional[dict]:
-    """--clone-all: full copytree minus infrastructure/history, then strip runtime files
-    and cloned single-use OAuth grants."""
+    """--clone-all: full copytree minus infrastructure/history, then strip runtime files and single-use OAuth grants."""
     _copytree_keep_junctions(source_dir, profile_dir, _clone_all_copytree_ignore(source_dir))
-    materialized = _materialize_symlinked_files(profile_dir)
-    if materialized:
+    if materialized := _materialize_symlinked_files(source_dir, profile_dir):
         logger.info("profile %s: materialized symlinked %s so the clone never writes through to %s",
                     canon, materialized, source_dir)
+    with contextlib.suppress(OSError):  # copytree keeps a loose source mode; owner-only like --clone
+        os.chmod(str(profile_dir / ".env"), 0o600)
     # Excluded history dirs (sessions/, cron/) must still exist as empty dirs so the clone runs.
     for subdir in _PROFILE_DIRS:
         (profile_dir / subdir).mkdir(parents=True, exist_ok=True)
@@ -1456,10 +1456,16 @@ def _live_default_multiplexer() -> bool:
         return False
 
 
-def seed_profile_skills(profile_dir: Path, quiet: bool = False) -> Optional[dict]:
+def seed_profile_skills(profile_dir: Path, quiet: bool = False, problems: Optional[list] = None) -> Optional[dict]:
     """Seed bundled skills into a profile via subprocess (sync_skills() caches HERMES_HOME at
     module level). Returns the sync result dict, or None on failure. ``--no-skills`` profiles
-    still run the sync: ``sync_skills()`` detects the marker and seeds only essentials."""
+    still run the sync: ``sync_skills()`` detects the marker and seeds only essentials.
+    ``problems`` also collects the failure lines (a gateway's quiet create hands them to its client)."""
+    def report(*lines: str) -> None:
+        (problems if problems is not None else []).extend(lines)
+        if not quiet:
+            print(*lines, sep="\n")
+
     project_root = Path(__file__).parent.parent.resolve()
     try:
         result = subprocess.run(
@@ -1473,19 +1479,13 @@ def seed_profile_skills(profile_dir: Path, quiet: bool = False) -> Optional[dict
         )
         if result.returncode == 0 and result.stdout.strip():
             return json.loads(result.stdout.strip())
-        if not quiet:
-            print(f"⚠ Skill seeding returned exit code {result.returncode}")
-            if result.stderr.strip():
-                print(f"  {result.stderr.strip()[:200]}")
-        return None
+        stderr = result.stderr.strip()
+        report(f"⚠ Skill seeding returned exit code {result.returncode}", *([f"  {stderr[:200]}"] if stderr else []))
     except subprocess.TimeoutExpired:
-        if not quiet:
-            print("⚠ Skill seeding timed out (60s)")
-        return None
+        report("⚠ Skill seeding timed out (60s)")
     except Exception as e:
-        if not quiet:
-            print(f"⚠ Skill seeding failed: {e}")
-        return None
+        report(f"⚠ Skill seeding failed: {e}")
+    return None
 
 
 def backfill_profile_envs(quiet: bool = False) -> list[str]:

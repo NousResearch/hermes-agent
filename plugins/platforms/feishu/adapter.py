@@ -93,7 +93,7 @@ from gateway.platforms.base import (
     cache_audio_from_bytes_async, cache_image_from_bytes_async,
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
-from gateway.platforms.helpers import send_chunks
+from gateway.platforms.helpers import caption_is_command, prompt_id_counter, send_chunks
 from plugins.platforms.feishu.adapter_choice_cards import FeishuChoiceCardsMixin
 from gateway.status import acquire_scoped_lock
 from gateway.status_scoped_locks import release_scoped_lock
@@ -1344,9 +1344,9 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
         self._pending_media_batch_tasks = self._media_batch_state.tasks
         # Button-card state: id → {session_key, message_id, chat_id}
         self._approval_state: dict[int, dict[str, str]] = {}
-        self._approval_counter = itertools.count(1)
+        self._approval_counter = prompt_id_counter()
         self._update_prompt_state: dict[int, dict[str, str]] = {}
-        self._update_prompt_counter = itertools.count(1)
+        self._update_prompt_counter = prompt_id_counter()
         self._init_choice_card_state()
         # Reaction deletion needs the opaque reaction_id from create, cached per message_id.
         self._pending_processing_reactions: OrderedDict[str, str] = OrderedDict()
@@ -2838,11 +2838,6 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
     async def _handle_webhook_request(self, request: Any) -> Any:
         remote_ip = (getattr(request, "remote", None) or "unknown")
 
-        # Rate-limit key is app_id:path:remote_ip (matches openclaw key structure).
-        if not self._check_webhook_rate_limit(f"{self._app_id}:{self._webhook_path}:{remote_ip}"):
-            logger.warning("[Feishu] Webhook rate limit exceeded for %s", remote_ip)
-            return self._webhook_reject(remote_ip, "429", 429, "Too Many Requests")
-
         headers = getattr(request, "headers", {}) or {}
         content_type = str(headers.get("Content-Type", "") or "").split(";")[0].strip().lower()
         if content_type and content_type != "application/json":  # Feishu always sends JSON
@@ -2884,14 +2879,19 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
                 logger.warning("[Feishu] Webhook rejected: invalid verification token from %s", remote_ip)
                 return self._webhook_reject(remote_ip, "401-token", 401, "Invalid verification token")
 
-        # Token is validated above BEFORE reflecting the challenge, so an unauthenticated
-        # remote can't prove endpoint control by getting its own challenge echoed back.
-        if payload.get("type") == "url_verification":
-            return web.json_response({"challenge": payload.get("challenge", "")})
-
-        if self._encrypt_key and not self._is_webhook_signature_valid(request.headers, body_bytes):
+        # url_verification is unsigned (the token above is its only auth): no signature check, and no quota charge without a token.
+        # Quota (key app_id:path:remote_ip, as openclaw) is charged only after auth, so forged traffic can't get real deliveries 429'd.
+        is_url_verification = payload.get("type") == "url_verification"
+        if self._encrypt_key and not is_url_verification and not self._is_webhook_signature_valid(request.headers, body_bytes):
             logger.warning("[Feishu] Webhook rejected: invalid signature from %s", remote_ip)
             return self._webhook_reject(remote_ip, "401-sig", 401, "Invalid signature")
+        if (self._verification_token or not is_url_verification) and not self._check_webhook_rate_limit(f"{self._app_id}:{self._webhook_path}:{remote_ip}"):
+            logger.warning("[Feishu] Webhook rate limit exceeded for %s", remote_ip)
+            return self._webhook_reject(remote_ip, "429", 429, "Too Many Requests")
+
+        # Token is checked above BEFORE reflecting the challenge, so a remote can't get its own challenge echoed.
+        if is_url_verification:
+            return web.json_response({"challenge": payload.get("challenge", "")})
 
         if payload.get("encrypt"):
             logger.error("[Feishu] Encrypted webhook payloads are not supported by Hermes webhook mode")
@@ -3058,8 +3058,9 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
         text = normalized.text_content
         media_text_inlined: list[bool] = []
         inlined_parts: list[str] = []
+        is_command = caption_is_command(_strip_edge_self_mentions(text, normalized.mentions))  # "@Hermes /goal x"
         for media_url, media_type in zip(media_urls, media_types):
-            extracted = await self._maybe_extract_text_document(media_url, media_type)
+            extracted = "" if is_command else await self._maybe_extract_text_document(media_url, media_type)
             media_text_inlined.append(bool(extracted))
             if extracted:
                 inlined_parts.append(extracted)

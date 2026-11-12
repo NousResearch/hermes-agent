@@ -21,6 +21,8 @@ from gateway.session_settlement_recovery import (
 )
 from tui_gateway.contracts.registry import EVENTS
 
+pytestmark = pytest.mark.usefixtures("authority_cwd_in_tmp")  # symbolic profile ids are relative homes
+
 
 def test_restart_drain_timeout_default_stays_zero():
     from gateway.restart import DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
@@ -191,7 +193,7 @@ def test_managed_worker_turn_settles_with_the_cause_of_the_stop_that_reached_it(
     authority = SessionAuthority(runner, profile_id='owned', instance_id='i', db=db,
                                  epoch=begin_runtime_epoch(db, instance_id='i'))
     runner.session_authority = authority
-    live = authority.sessions['s'] = LiveSession(SimpleNamespace(platform=None, user_id='human', chat_id='c'), 'route')
+    live = authority.sessions['s'] = LiveSession(SimpleNamespace(platform=None, user_id='human', chat_id='c', profile=None), 'route')
     actor = SessionActor('human', 'owned', frozenset({'session:submit', 'session:control'}), 'cli')
     ref = SessionRef('owned', 's')
     monkeypatch.setattr(authority, '_schedule', lambda ref: None)
@@ -489,7 +491,7 @@ def test_shutdown_stop_before_the_managed_worker_spawned_carries_its_cause(tmp_p
     db.create_session('s', source='test')
     authority = SessionAuthority(runner, profile_id='owned', instance_id='i', db=db,
                                  epoch=begin_runtime_epoch(db, instance_id='i'))
-    live = authority.sessions['s'] = LiveSession(SimpleNamespace(platform=None, user_id='human', chat_id='c'), 'route')
+    live = authority.sessions['s'] = LiveSession(SimpleNamespace(platform=None, user_id='human', chat_id='c', profile=None), 'route')
     actor = SessionActor('human', 'owned', frozenset({'session:submit', 'session:control'}), 'cli')
     ref = SessionRef('owned', 's')
     monkeypatch.setattr(authority, '_schedule', lambda ref: None)
@@ -552,7 +554,7 @@ def test_a_stop_during_context_reference_expansion_never_spawns_the_worker(tmp_p
     db.create_session('s', source='test')
     authority = SessionAuthority(runner, profile_id='owned', instance_id='i', db=db,
                                  epoch=begin_runtime_epoch(db, instance_id='i'))
-    live = authority.sessions['s'] = LiveSession(SimpleNamespace(platform=None, user_id='human', chat_id='c'), 'route')
+    live = authority.sessions['s'] = LiveSession(SimpleNamespace(platform=None, user_id='human', chat_id='c', profile=None), 'route')
     actor = SessionActor('human', 'owned', frozenset({'session:submit', 'session:control'}), 'cli')
     ref = SessionRef('owned', 's')
     monkeypatch.setattr(authority, '_schedule', lambda ref: None)

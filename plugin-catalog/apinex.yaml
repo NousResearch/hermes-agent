@@ -1,7 +1,7 @@
 name: apinex
 title: APInex
 repo: https://github.com/Apinex-AI/hermes-provider-apinex
-sha: "21b7e98a701e6153799af269c983420dde8cdcb8"
+sha: "4097c6e311a214b91171d5035ab7684bcf9cdb3e"
 subdir: apinex
 description: >-
   APInex as Hermes model providers on one key: `apinex` serves Claude 5.5 and Free-tier Claude
@@ -21,12 +21,12 @@ maintainer: Apinex-AI
 tier: community
 category: models
 requires_hermes: ">=0.21.5"
-docs_url: https://github.com/Apinex-AI/hermes-provider-apinex#readme
+docs_url: https://apinex.bond/integrations/hermes?utm_source=hermes&utm_medium=plugin
 version: "0.1.0"
-image: https://raw.githubusercontent.com/Apinex-AI/hermes-provider-apinex/21b7e98a701e6153799af269c983420dde8cdcb8/assets/banner.png
+image: https://raw.githubusercontent.com/Apinex-AI/hermes-provider-apinex/4097c6e311a214b91171d5035ab7684bcf9cdb3e/assets/banner.png
 screenshots:
-- https://raw.githubusercontent.com/Apinex-AI/hermes-provider-apinex/21b7e98a701e6153799af269c983420dde8cdcb8/assets/screenshot-01.png
-- https://raw.githubusercontent.com/Apinex-AI/hermes-provider-apinex/21b7e98a701e6153799af269c983420dde8cdcb8/assets/screenshot-02.png
+- https://raw.githubusercontent.com/Apinex-AI/hermes-provider-apinex/4097c6e311a214b91171d5035ab7684bcf9cdb3e/assets/screenshot-01.png
+- https://raw.githubusercontent.com/Apinex-AI/hermes-provider-apinex/4097c6e311a214b91171d5035ab7684bcf9cdb3e/assets/screenshot-02.png
 readme: true
 platforms: []
 capabilities:

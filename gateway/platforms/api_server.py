@@ -1368,7 +1368,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "real_ip": self._clean_log_value(request.headers.get("X-Real-IP", "")),
             "method": self._clean_log_value(request.method, max_len=16),
             "path": self._clean_log_value(request.path_qs, max_len=500),
-            "user_agent": self._clean_log_value(request.headers.get("User-Agent", ""), max_len=300)}
+            "user_agent": self._clean_log_value(request.headers.get("User-Agent", ""), max_len=300),
+            # The Portal user a peer pass holder signed in as; set by the dashboard's /api/peer route.
+            "peer_principal": self._clean_log_value(request.headers.get("X-Hermes-Peer-Principal", ""), max_len=128)}
 
     def _request_audit_log_suffix(self, request: web.Request) -> str:
         ctx = self._request_audit_context(request)
@@ -1379,11 +1381,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         """Persist safe API source metadata on cron jobs created over HTTP."""
         ctx = self._request_audit_context(request)
         origin = {"platform": "api_server", "chat_id": "api"}
-        for ctx_key, origin_key in (("remote", "source_ip"), ("peer_ip", "peer_ip"),
-                                    ("forwarded_for", "forwarded_for"), ("real_ip", "real_ip"),
-                                    ("user_agent", "user_agent")):
-            if ctx.get(ctx_key):
-                origin[origin_key] = ctx[ctx_key]
+        for key in ("remote", "peer_ip", "forwarded_for", "real_ip", "user_agent", "peer_principal"):
+            if ctx.get(key):
+                origin["source_ip" if key == "remote" else key] = ctx[key]
         return origin
 
     def _expected_api_key(self) -> str:
@@ -2289,10 +2289,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         api_platform["metrics"] = api_status
         platforms["api_server"] = api_platform
         # Served BY the gateway process, so gateway_running is True by definition; busy/
-        # drainable use the same shared contract as /api/status so the two never disagree.
+        # drainable share /api/status's contract; its probe waits on _live_lock, run off-loop.
         active_api_runs, process_depth, active_delegations = self._readiness_work_counts()
         from gateway.run import _resolve_gateway_model
-        readiness = collect_runtime_readiness(
+        readiness = await asyncio.to_thread(collect_runtime_readiness,
             configured_model=_resolve_gateway_model(), runtime_status=runtime,
             active_api_runs=active_api_runs, process_completion_queue_depth=process_depth,
             active_delegations=active_delegations)

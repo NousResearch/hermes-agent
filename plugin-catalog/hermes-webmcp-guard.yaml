@@ -1,14 +1,14 @@
-name: hermes-webmcp-bridge
-title: Hermes WebMCP Bridge
-repo: https://github.com/NifasathA/hermes-webmcp-bridge
-sha: c75bece094260f45c6e9ff7792dae0aea3686920
+name: hermes-webmcp-guard
+title: Hermes WebMCP Guard
+repo: https://github.com/NifasathA/hermes-webmcp-guard
+sha: 9f5fead8f5c30f2fe65c833944d8f18c0591c722
 description: "Permission-aware, ephemeral WebMCP capabilities with origin allowlists, schema validation, conservative risk classification, exact one-call approvals, and safe revocation. Disclosure — connects only to operator-configured Chrome DevTools WebSocket endpoints and invokes website-provided WebMCP tools; those websites may make their own network requests. It does not launch a browser, read credentials, execute arbitrary JavaScript, or persist website capabilities."
 maintainer: NifasathA
 tier: community
 category: web
 requires_hermes: ">=0.23.1"
 version: "0.1.0"
-docs_url: https://github.com/NifasathA/hermes-webmcp-bridge/blob/c75bece094260f45c6e9ff7792dae0aea3686920/README.md
+docs_url: https://github.com/NifasathA/hermes-webmcp-guard/blob/9f5fead8f5c30f2fe65c833944d8f18c0591c722/README.md
 readme: true
 platforms: []
 known_issues:

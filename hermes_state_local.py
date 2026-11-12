@@ -7,6 +7,10 @@ from collections import OrderedDict
 from hermes_state_runtime import RuntimeStoreError, _epoch, _json
 
 POLICY_PREFIX = 'gateway.local_policy.v1:'
+# Must match idx_state_meta_local_lineage in hermes_state_common.SCHEMA_SQL (structurally, not
+# byte-for-byte: SQLite compares parsed expressions) or local_lineage_index falls back to a scan.
+LOCAL_LINEAGE_LEN_EXPR = ("(CASE WHEN key GLOB '" + POLICY_PREFIX + "*' AND json_valid(value) "
+                          "THEN json_array_length(value, '$.lineage') END)")
 API_BINDING_PREFIX = 'gateway.api.binding.v1.'
 API_DECLARED_PREFIX = 'gateway.api.conversation.v1.'
 
@@ -313,8 +317,9 @@ def local_lineage_index(conn):
     reset segment to ``(owner, lineage)`` for the row that represents the conversation. A delete
     of that row removes the whole lineage (``hermes_state_mutation_guards.delete_targets``)."""
     superseded, heads = set(), {}
-    rows = conn.execute("SELECT value FROM state_meta WHERE key GLOB ? AND json_valid(value) "
-                        "AND json_array_length(value, '$.lineage') > 1", (POLICY_PREFIX + '*',)).fetchall()
+    # Same rows as ``key GLOB POLICY_PREFIX* AND json_valid AND json_array_length(lineage) > 1``,
+    # phrased as the indexed expression (idx_state_meta_local_lineage) so it is an index seek.
+    rows = conn.execute(f"SELECT value FROM state_meta WHERE {LOCAL_LINEAGE_LEN_EXPR} > 1").fetchall()
     for (raw,) in rows:
         receipt = json.loads(raw)
         owner, lineage = receipt.get('session_id'), receipt.get('lineage')

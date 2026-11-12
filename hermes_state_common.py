@@ -783,6 +783,15 @@ CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id, id);
 CREATE INDEX IF NOT EXISTS idx_messages_assistant_calls_by_session
     ON messages(session_id)
     WHERE role = 'assistant' AND tool_calls IS NOT NULL;
+-- Local-lineage lookup (hermes_state_local.local_lineage_index) runs on every sidebar /
+-- session-list read. Without this index it JSON-parses every gateway.local_policy.v1:* row
+-- (each carries a full config snapshot, tens of KB) to find the handful with a lineage; on a
+-- large store that is hundreds of MB per call. The expression must stay structurally identical
+-- to LOCAL_LINEAGE_LEN_EXPR in hermes_state_local.py (SQLite compares parsed expressions, so
+-- spacing may differ); otherwise the planner silently falls back to the receipt scan.
+CREATE INDEX IF NOT EXISTS idx_state_meta_local_lineage ON state_meta(
+    (CASE WHEN key GLOB 'gateway.local_policy.v1:*' AND json_valid(value)
+          THEN json_array_length(value, '$.lineage') END));
 CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(expires_at);
 CREATE INDEX IF NOT EXISTS idx_session_turn_leases_expires ON session_turn_leases(expires_at);
 CREATE INDEX IF NOT EXISTS idx_session_model_usage_session ON session_model_usage(session_id);

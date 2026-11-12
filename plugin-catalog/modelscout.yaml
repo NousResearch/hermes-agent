@@ -1,6 +1,6 @@
 name: modelscout
 repo: https://github.com/iknowterry/modelscout
-sha: "66aa9a6d654428806edeef2725dc3e6b75de8466"
+sha: "8e20ff365d0c885a7be42fdafd14e4d2ea905f81"
 subdir: plugins/modelscout
 title: ModelScout
 description: >-
@@ -22,8 +22,8 @@ maintainer: iknowterry
 tier: community
 category: models
 requires_hermes: ">=0.23.0"
-docs_url: https://github.com/iknowterry/modelscout/blob/66aa9a6d654428806edeef2725dc3e6b75de8466/plugins/modelscout/README.md
-version: "0.3.7"
+docs_url: https://github.com/iknowterry/modelscout/blob/8e20ff365d0c885a7be42fdafd14e4d2ea905f81/plugins/modelscout/README.md
+version: "0.3.8"
 capabilities:
   provides_tools: []
   provides_hooks: [pre_llm_call, subagent_start]

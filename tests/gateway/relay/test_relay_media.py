@@ -354,6 +354,11 @@ async def test_download_routes_auth_decision_through_is_relay_media_url(monkeypa
         ("https://conn.example", "https://evil.example@conn.example/relay/media/abc", False),
         ("https://conn.example", "https://conn.example:bad/relay/media/abc", False),
         ("", "https://conn.example/relay/media/abc", False),
+        # Dot segments a normalizing proxy would resolve outside the base path.
+        ("https://conn.example/team-a", "https://conn.example/team-a/relay/media/../../team-b/x", False),
+        ("https://conn.example/team-a", "https://conn.example/team-a/relay/media/%2e%2e/%2E%2E/team-b/x", False),
+        ("https://conn.example/team-a", "https://conn.example/team-a/relay/media/..%5c..%5cteam-b/x", False),
+        ("https://conn.example/team-a", "https://conn.example/team-a/relay/media/a..b", True),
     ],
 )
 def test_is_relay_media_url_requires_connector_origin_and_base_path(base, url, expected):
@@ -404,3 +409,29 @@ async def test_inbound_failed_foreign_url_with_relay_path_is_kept_as_public():
     event = _make_event(["https://conn.example/relay/media/dead", foreign])
     await adapter._localize_inbound_media(event)
     assert event.media_urls == [foreign]
+
+
+@pytest.mark.asyncio
+async def test_rehost_on_another_origin_names_both_origins_once(monkeypatch, caplog):
+    """A connector whose PUBLIC_BASE_URL differs from GATEWAY_RELAY_URL mints re-hosts the
+    bearer no longer reaches: the lost attachment is logged with both origins, once."""
+    import urllib.error
+    import urllib.request as _ur
+
+    def _unauthorized(req, timeout=None):
+        raise urllib.error.HTTPError(req.full_url, 401, "Unauthorized", {}, None)
+
+    monkeypatch.setattr(_ur, "urlopen", _unauthorized)
+    c = RelayMediaClient("https://relay.example/team-a", "gw1", "sec")
+    with caplog.at_level("WARNING", logger="gateway.relay.media"):
+        assert await c.download("https://pilot.example/relay/media/a") is None
+        assert await c.download("https://pilot.example/relay/media/b") is None
+        assert await c.download("https://cdn.example/attachments/1/v.ogg") is None
+        # Same origin, outside the base path: refused, but not an origin mismatch.
+        assert await c.download("https://relay.example/relay/media/c") is None
+        assert await c.download("http://pilot.example/relay/media/d") is None
+        c._warn_foreign_rehost("https://[::1/relay/media/x")  # urlsplit refuses it; no raise
+    hints = [r.getMessage() for r in caplog.records if "PUBLIC_BASE_URL" in r.getMessage()]
+    assert len(hints) == 2
+    assert "https://pilot.example" in hints[0] and "https://relay.example/team-a" in hints[0]
+    assert "http://pilot.example" in hints[1]

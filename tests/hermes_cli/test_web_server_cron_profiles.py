@@ -1775,3 +1775,31 @@ async def test_update_cron_job_confines_monitor_script(isolated_profiles, tmp_pa
 
     assert exc.value.status_code == 400
     assert "scripts" in exc.value.detail
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["deliver", "failure_deliver"])
+async def test_update_cron_job_validates_list_valued_bot_chat_deliver(isolated_profiles, field):
+    """A JSON list deliver (the tool path accepts one) is canonicalized before
+    the bot-chat guard, not stringified into a list repr that slips past it."""
+    job = _web_server_cron._call_cron_for_profile(
+        "worker_alpha", "create_job",
+        prompt="managed by named profile", schedule="every 1h", name=f"list-{field}",
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await _rt_cron.update_cron_job(
+            job["id"],
+            _web_models.CronJobUpdate(updates={field: ["bot-chat:ghost_profile"]}),
+            profile="worker_alpha",
+        )
+    assert exc.value.status_code == 400
+    assert "ghost_profile" in exc.value.detail
+
+    await _rt_cron.update_cron_job(
+        job["id"],
+        _web_models.CronJobUpdate(updates={field: ["bot-chat:worker_alpha", "local"]}),
+        profile="worker_alpha",
+    )
+    stored = _web_server_cron._call_cron_for_profile("worker_alpha", "get_job", job["id"])
+    assert stored[field] == "bot-chat:worker_alpha,local"

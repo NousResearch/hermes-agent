@@ -11,13 +11,14 @@ from __future__ import annotations
 from typing import Any
 
 from hermes_cli.colors import Colors, color
+from hermes_cli.route_identity import normalize_route_base_url
 
 _AUX_KEY_FIELDS = ("api_key", "key_env", "api_key_env")
 
 
 def _route_of(provider: Any, base_url: Any) -> tuple[str, str]:
     p = str(provider or "").strip().lower()
-    return ("" if p == "auto" else p), str(base_url or "").strip().rstrip("/")
+    return ("" if p == "auto" else p), normalize_route_base_url(str(base_url or "").strip())
 
 
 def clear_aux_credentials_on_route_change(entry: dict, provider: Any, base_url: Any = "") -> bool:

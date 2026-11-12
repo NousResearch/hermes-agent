@@ -93,6 +93,20 @@ def test_dashboard_new_base_url_sends_no_old_key(home, seed):
     assert api_key != OLD_SECRET and api_mode is None
 
 
+def test_dashboard_equivalent_https_url_keeps_its_key(home):
+    """A different spelling of the same HTTPS URL must not lose endpoint credentials."""
+    from hermes_cli.config import load_config
+    from hermes_cli.web_server_config import _apply_aux_assignment_sync
+    _seed(home, {"provider": "custom", "model": "m",
+                 "base_url": "https://a.example/v1", "api_key": "a-key"})
+
+    # URL hostnames are case-insensitive and :443 is the HTTPS default port.
+    _apply_aux_assignment_sync(load_config(), "custom", "m2", "vision",
+                               "https://A.EXAMPLE:443/v1/", "")
+
+    assert _resolved_vision() == ("custom", "m2", "https://A.EXAMPLE:443/v1/", "a-key", None)
+
+
 def test_dashboard_same_route_keeps_its_key(home):
     from hermes_cli.config import load_config
     from hermes_cli.web_server_config import _apply_aux_assignment_sync

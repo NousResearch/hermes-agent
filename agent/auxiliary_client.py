@@ -6992,12 +6992,13 @@ def _create_with_progress_once(
         return chunks
     from agent.auxiliary_stream_watchdog import chat_stream_windows
     return _aggregate_chat_stream(
-        chunks, model=model, total_ceiling=total_ceiling, no_progress=chat_stream_windows(client, kwargs, task))
+        chunks, model=model, total_ceiling=total_ceiling,
+        no_progress=chat_stream_windows(client, kwargs, task), task=task)
 
 
 def _aggregate_chat_stream(
     chunks: Any, *, model: str = "", total_ceiling: Optional[float] = None,
-    no_progress: Optional[tuple[float, Optional[float]]] = None,
+    no_progress: Optional[tuple[float, Optional[float]]] = None, task: Optional[str] = None,
 ) -> Any:
     """Consume a chunk stream into a complete response; TimeoutError (phrased "timed out" so the
     classifier reads a timeout) past *total_ceiling* or the *no_progress* windows (#100501)."""
@@ -7008,7 +7009,7 @@ def _aggregate_chat_stream(
         consume_chat_stream(chunks, acc, no_progress)
     finally:
         _close_chunk_stream(chunks)
-    return acc.finish()
+    return acc.finish(require_terminal=task == "compression")
 
 
 # Reasoning-detail fields whose non-empty text counts as forward progress.
@@ -7137,7 +7138,15 @@ class _ChatStreamAccumulator:
             _notify_aux_progress()
         return made_progress
 
-    def finish(self) -> Any:
+    def finish(self, *, require_terminal: bool = False) -> Any:
+        # A closed stream is not proof of a completed checkpoint. In
+        # particular, a clean EOF before finish_reason must never rewrite
+        # partial compression text into an apparently successful "stop".
+        if require_terminal and not self.finish_reason:
+            raise ConnectionError(
+                "Auxiliary compression stream ended without a terminal finish_reason "
+                "(incomplete response)"
+            )
         tool_calls = None
         if self.tool_calls_acc:
             tool_calls = [
@@ -7155,7 +7164,8 @@ class _ChatStreamAccumulator:
 
 
 async def _aggregate_chat_stream_async(
-    chunks: Any, *, model: str = "", total_ceiling: Optional[float] = None
+    chunks: Any, *, model: str = "", total_ceiling: Optional[float] = None,
+    task: Optional[str] = None,
 ) -> Any:
     """Async mirror of :func:`_aggregate_chat_stream` (AsyncOpenAI streams need ``async for``)."""
     acc = _ChatStreamAccumulator(
@@ -7169,7 +7179,7 @@ async def _aggregate_chat_stream_async(
         if pending is not None:
             with contextlib.suppress(Exception):
                 await pending
-    return acc.finish()
+    return acc.finish(require_terminal=task == "compression")
 
 
 async def _acreate_with_stream(client: Any, kwargs: dict[str, Any], task: Optional[str] = None) -> Any:
@@ -7178,7 +7188,8 @@ async def _acreate_with_stream(client: Any, kwargs: dict[str, Any], task: Option
     chunks = await client.chat.completions.create(**stream_kwargs)
     if hasattr(chunks, "choices"):  # shims may hand back a complete response despite stream=True
         return chunks
-    return await _aggregate_chat_stream_async(chunks, model=model, total_ceiling=total_ceiling)
+    return await _aggregate_chat_stream_async(
+        chunks, model=model, total_ceiling=total_ceiling, task=task)
 
 
 def _async_client_streams_internally(client: Any) -> bool:
@@ -7222,7 +7233,8 @@ async def _acreate_with_progress(
     if hasattr(chunks, "choices"):  # shims may hand back a complete response despite stream=True
         _notify_aux_provider_response()
         return chunks
-    return await _aggregate_chat_stream_async(chunks, model=model, total_ceiling=total_ceiling)
+    return await _aggregate_chat_stream_async(
+        chunks, model=model, total_ceiling=total_ceiling, task=task)
 
 
 # Shared request head + recovery ladder for call_llm / async_call_llm: the entry points differ

@@ -4667,6 +4667,7 @@
                 "kanban_list",
                 "kanban_request_changes",
                 "kanban_request_review",
+                "kanban_schedule",
                 "kanban_show",
                 "kanban_unblock",
                 "manage_catalog",

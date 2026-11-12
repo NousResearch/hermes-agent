@@ -39,7 +39,7 @@ function context(appOutDir, productFilename = 'Hermes Preview') {
   const packager = Object.assign(Object.create(PlatformPackager.prototype), {
     platform: Platform.MAC,
     appInfo: { productFilename },
-    info: { framework: { distMacOsAppName: 'Electron.app' } }
+    info: { framework: { distMacOsAppName: 'Electron.app' }, config: {} }
   })
   return { appOutDir, electronPlatformName: 'darwin', packager }
 }
@@ -95,7 +95,7 @@ it('leaves Linux alone and reports a missing framework without failing packaging
   const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
   try {
     // win32 is not a no-op here: the same hook sanitizes and batch-signs the PE tree.
-    const linuxCtx = { appOutDir: root, electronPlatformName: 'linux' }
+    const linuxCtx = { appOutDir: root, electronPlatformName: 'linux', packager: { config: {} } }
     await seedPackagedMain(linuxCtx)
     await configuredHook(linuxCtx)
     expect(warn).not.toHaveBeenCalled()

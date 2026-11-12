@@ -103,6 +103,21 @@ it('lets an exact payload copy through afterPack and fails a lossy one, naming e
   }
 })
 
+it('fails a bundled pack whose payload never arrived but leaves Hermes Light alone', async () => {
+  const missing = packContext()
+  const failure = await afterPack(missing.context).catch(error => error)
+  expect(failure).toBeInstanceOf(Error)
+  expect(failure.message).toContain(`packaged payload ${missing.packaged} is missing`)
+
+  vi.stubEnv('HERMES_DESKTOP_VARIANT', 'light')
+  for (const module of ['../electron-builder.config.cjs', '../product-identity.cjs']) {
+    delete require.cache[require.resolve(module)]
+  }
+  const light = packContext()
+  light.context.packager.config = require('../electron-builder.config.cjs')
+  await expect(afterPack(light.context)).resolves.toBeUndefined()
+})
+
 it('checks the macOS copy before signing repairs a flattened Chromium framework', async () => {
   const chromium = path.join('tools', 'chromium-1208', 'Chromium.app')
   const framework = path.join(chromium, 'Contents', 'Frameworks', 'F.framework')

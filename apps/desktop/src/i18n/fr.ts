@@ -4195,6 +4195,17 @@ export const frOverrides = {
     versionDetailsBackend: 'Backend connecté',
     versionDetailsCommit: 'Commit',
     versionDetailsBuildOrigin: 'Origine de la compilation',
+    versionDetailsSource: {
+      build: 'Build',
+      ci: 'CI',
+      'commit-build': 'Build de commit',
+      docker: 'Docker',
+      fallback: 'Secours',
+      git: 'Git',
+      local: 'Local',
+      nix: 'Nix',
+      unknown: 'Inconnue'
+    },
     versionDetailsDistribution: 'Distribution',
     versionDetailsDistributionDesktop: 'Application Desktop',
     versionDetailsDistributionDesktopMsix: 'Application Desktop (MSIX)',

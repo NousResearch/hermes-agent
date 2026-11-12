@@ -270,7 +270,7 @@ function ConnectedProviderRow({
 }) {
   const { t } = useI18n()
   const copy = t.settings.providers
-  const title = providerTitle(provider)
+  const title = providerTitle(provider, t)
   const Trail = provider.flow === 'external' ? Terminal : ChevronRight
   // Hermes can clear this provider's creds via the API.
   const canDisconnect = provider.disconnectable ?? provider.flow !== 'external'
@@ -469,7 +469,7 @@ export function ProvidersSettings({
       return
     }
 
-    const name = providerTitle(provider)
+    const name = providerTitle(provider, t)
 
     const ok = await confirm({
       confirmLabel: t.settings.providers.disconnect,
@@ -492,7 +492,7 @@ export function ProvidersSettings({
   }
 
   async function handleDisconnect(provider: OAuthProvider) {
-    const name = providerTitle(provider)
+    const name = providerTitle(provider, t)
 
     const ok = await confirm({
       confirmLabel: t.settings.providers.disconnect,

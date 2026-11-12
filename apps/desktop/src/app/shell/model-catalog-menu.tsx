@@ -1117,7 +1117,11 @@ function ModelFamilyRow({
     }),
     daybreak?.on ? t.shell.modelOptions.daybreak : null,
     (caps?.reasoning ?? true) && (isCurrent ? !current.effortPending : Boolean(effEffort))
-      ? reasoningEffortLabel(effEffort || defaultEffort, isCurrent ? current.effortWire : undefined)
+      ? reasoningEffortLabel(
+          effEffort || defaultEffort,
+          isCurrent ? current.effortWire : undefined,
+          t.shell.modelOptions.effortShort
+        )
       : null
   ].filter((setting): setting is string => Boolean(setting))
 

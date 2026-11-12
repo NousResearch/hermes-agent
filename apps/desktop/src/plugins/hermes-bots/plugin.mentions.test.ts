@@ -164,7 +164,7 @@ async function contributions({
 
   try {
     plugin.register({
-      i18n: { register: () => () => undefined },
+      i18n: { onLocaleChange: () => () => undefined, register: () => () => undefined, t: (key: string) => key },
       onDispose: () => undefined,
       register: (contribution: Contribution) => registered.push(contribution),
       storage: { get: async () => undefined, remove: async () => undefined, set: async () => undefined }

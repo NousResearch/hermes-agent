@@ -1,10 +1,34 @@
-import { StrictMode } from 'react'
+import { StrictMode, useEffect } from 'react'
 import { createRoot } from 'react-dom/client'
 
 import { ErrorBoundary } from '@/components/error-boundary'
+import { I18nProvider, isSupportedLocaleValue, normalizeLocale, useI18n } from '@/i18n'
 import { ThemeProvider } from '@/themes/context'
 
 import { QuickEntryApp } from './quick-entry-app'
+
+/**
+ * The card has no gateway, so no `display.language` read: it speaks the
+ * language the primary window relays with every state push. With no config
+ * client, `setLocale` only switches the card; nothing is saved.
+ */
+function QuickEntryLocaleSync() {
+  const { locale, setLocale } = useI18n()
+
+  useEffect(
+    () =>
+      window.hermesDesktop?.quickEntry?.onState(payload => {
+        const next = payload?.locale
+
+        if (isSupportedLocaleValue(next) && normalizeLocale(next) !== locale) {
+          void setLocale(normalizeLocale(next))
+        }
+      }),
+    [locale, setLocale]
+  )
+
+  return null
+}
 
 /**
  * Boot the Quick Entry window. Loaded by the same bundle as the main app but via
@@ -29,9 +53,12 @@ export function mountQuickEntry(): void {
   createRoot(root).render(
     <StrictMode>
       <ErrorBoundary label="quick-entry">
-        <ThemeProvider>
-          <QuickEntryApp />
-        </ThemeProvider>
+        <I18nProvider configClient={null}>
+          <QuickEntryLocaleSync />
+          <ThemeProvider>
+            <QuickEntryApp />
+          </ThemeProvider>
+        </I18nProvider>
       </ErrorBoundary>
     </StrictMode>
   )

@@ -40,5 +40,11 @@ export {
   resolveTranslations,
   unregisterAppLocaleSource
 } from './registry'
-export { runtimeTranslations, setRuntimeI18nLocale, translateNow } from './runtime'
+export {
+  getRuntimeI18nLocale,
+  runtimeTranslations,
+  setRuntimeI18nLocale,
+  subscribeRuntimeI18nLocale,
+  translateNow
+} from './runtime'
 export type { BundledLocale, Locale, ToolTitleKey, Translations } from './types'

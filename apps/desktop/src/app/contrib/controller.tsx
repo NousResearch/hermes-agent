@@ -38,7 +38,7 @@ import { discoverBundledPlugins } from '@/contrib/plugins'
 import { Slot } from '@/contrib/react/slot'
 import { registry } from '@/contrib/registry'
 import { discoverRuntimePlugins } from '@/contrib/runtime-loader'
-import { LocalizedTabTitle, translateNow } from '@/i18n'
+import { LocalizedTabTitle, subscribeRuntimeI18nLocale, translateNow } from '@/i18n'
 import { NEW_SESSION_TITLE, sessionTitle as storedSessionTitle } from '@/lib/chat-runtime'
 import {
   Download,
@@ -718,7 +718,10 @@ registry.register(
         continue
       }
 
-      const title = String(pane.title ?? pane.id)
+      // `tabTitleText` is the pane's live title in the active language; `title`
+      // is a string frozen when the pane registered.
+      const tabTitleText = (pane.data as { tabTitleText?: () => string } | undefined)?.tabTitleText
+      const title = tabTitleText?.() || String(pane.title ?? pane.id)
 
       stripTabToggles.set(
         pane.id,
@@ -727,7 +730,7 @@ registry.register(
             id: `strip-tab.${pane.id}`,
             label: translateNow('zones.toggleStripTab', title),
             icon: LayoutDashboard,
-            keywords: [title.toLowerCase(), 'tab', 'pane', 'sidebar', 'show', 'hide'],
+            keywords: [title.toLowerCase(), pane.id, 'tab', 'pane', 'sidebar', 'show', 'hide'],
             // On-screen truth, same contract as the logs toggle above.
             get: () => isPaneVisible(pane.id),
             set: visible => {
@@ -745,6 +748,16 @@ registry.register(
 
   syncStripTabToggles()
   registry.subscribeArea('panes', syncStripTabToggles)
+
+  // Rows register a finished label; rebuild them once the language loads or changes.
+  subscribeRuntimeI18nLocale(() => {
+    for (const dispose of stripTabToggles.values()) {
+      dispose()
+    }
+
+    stripTabToggles.clear()
+    syncStripTabToggles()
+  })
 }
 
 // YOLO (dangerous-command approval bypass) is a status-bar zap and a /yolo

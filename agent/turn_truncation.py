@@ -732,16 +732,20 @@ def handle_content_policy_refusal(
     from agent.conversation_loop import _arm_fallback_restart, _content_policy_blocked_result
 
     _refusal_result = normalize_response_for_agent(agent, response)
-    _refusal_text = (getattr(_refusal_result, "content", None) or "").strip()
+    # Anthropic stop_reason=refusal carries its reason on stop_details (category + optional explanation),
+    # not in a content block — without it a classifier halt reads as "(no text)" (#113689). Text beside it
+    # is the reply the classifier cut short, never the reason, so stop_details wins whenever it names one.
+    _stop_details = (getattr(_refusal_result, "provider_data", None) or {}).get("stop_details")
+    _refusal_text = ""
+    if isinstance(_stop_details, dict):
+        _explanation = str(_stop_details.get("explanation") or "").strip()
+        _category = str(_stop_details.get("category") or "").strip()
+        _refusal_text = " ".join(part for part in (
+            _explanation, f"(provider refusal category: {_category})" if _category else "") if part)
+    if not _refusal_text:
+        _refusal_text = (getattr(_refusal_result, "content", None) or "").strip()
     if not _refusal_text:
         _refusal_text = (agent._extract_reasoning(_refusal_result) or "").strip()
-    # Anthropic stop_reason=refusal carries its reason on stop_details (category + optional explanation),
-    # not in a content block — without it a classifier halt reads as "(no text)" (#113689).
-    _stop_details = (getattr(_refusal_result, "provider_data", None) or {}).get("stop_details")
-    if not _refusal_text and isinstance(_stop_details, dict):
-        _refusal_text = str(_stop_details.get("explanation") or "").strip() or (
-            f"provider refusal category: {_stop_details['category']}" if _stop_details.get("category") else ""
-        )
 
     agent._invoke_api_request_error_hook(
         task_id=effective_task_id, turn_id=turn_id, api_request_id=api_request_id,

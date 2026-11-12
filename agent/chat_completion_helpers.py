@@ -32,6 +32,7 @@ from agent.error_classifier import (
 from agent.sdk_transform_bypass import bypass_chat_sdk_request_transform
 from agent.errors import EmptyStreamError
 from agent.chat_completion_local import _streams_llamacpp, stale_giveup
+from agent.chat_completion_delta_fields import collect_delta_extras
 from agent.chat_completion_headers import _chat_completion_capturing_headers
 from agent.chat_completion_stream_monitor import StreamingWaitMonitor, StreamLifetimeExceeded
 from agent.transports.chat_completions import is_router_timeout_shim, router_timeout_shim_may_follow
@@ -3014,6 +3015,7 @@ class _StreamingCall(StreamingWaitMonitor):
         # ``delta.content`` stays empty, so an un-accumulated refusal looks like an empty
         # stream and burns the empty-response retries (the non-streaming fix is #46013).
         refusal_parts: list[str] = []
+        relayed: dict = {}  # fields an adapter relays in its chunk (chat_completion_delta_fields)
         reasoning_details: list = []  # OpenRouter replay data (signatures, encrypted blocks)
         pending_text_parts: list[str] = []
         from agent.chat_completion_helpers_tool_calls import _ToolCallAccumulator
@@ -3140,13 +3142,7 @@ class _StreamingCall(StreamingWaitMonitor):
                 if reasoning_watch.feed(reasoning_text) or detail_watch.feed(detail_text):
                     runaway = "reasoning"
                     break
-            # Not routed to the live display: the transport promotes a sole-payload
-            # refusal to content + ``content_filter`` and the loop surfaces it terminally.
-            delta_refusal = getattr(delta, "refusal", None)
-            if delta_refusal is None and isinstance(getattr(delta, "model_extra", None), dict):
-                delta_refusal = delta.model_extra.get("refusal")
-            if isinstance(delta_refusal, str) and delta_refusal:
-                refusal_parts.append(delta_refusal)
+            collect_delta_extras(delta, refusal_parts, relayed)  # refusal text, relayed fields: not displayed
 
             # Text (list-of-blocks deltas flattened once); possible echoed SSE is
             # buffered until it can be judged.
@@ -3193,7 +3189,7 @@ class _StreamingCall(StreamingWaitMonitor):
         response = self._finish_chat_stream(stream, role, content_parts, reasoning_parts, tool_calls_acc,
             "length" if runaway else finish_reason, model_name, usage_obj, flush_pending=_flush_pending_stream_text,
             response_id=response_id, upstream_provider=upstream_provider, reasoning_details=reasoning_details,
-            refusal_parts=refusal_parts)
+            refusal_parts=refusal_parts, relayed=relayed)
         carriers.apply(response)
         if runaway:
             # Cut, not finished: the length path ends the turn on this mark instead of continuing.
@@ -3275,7 +3271,7 @@ class _StreamingCall(StreamingWaitMonitor):
 
     def _finish_chat_stream(self, stream, role, content_parts, reasoning_parts, tool_calls_acc, finish_reason,
         model_name, usage_obj, *, flush_pending, response_id=None, upstream_provider=None, reasoning_details=None,
-        refusal_parts=None):
+        refusal_parts=None, relayed=None):
         """Assemble the non-streaming-shaped response after the chunk loop. A
         stream ending with no finish_reason is a drop, not a completion: return a
         partial-stream stub so the loop fails fast instead of executing empty
@@ -3326,6 +3322,8 @@ class _StreamingCall(StreamingWaitMonitor):
             # Only when present: _build_assistant_message's passthrough persists them
             # for replay, and non-reasoning providers keep the attribute absent.
             message.reasoning_details = reasoning_details
+        for key, value in (relayed or {}).items():
+            setattr(message, key, value)  # read by normalize_response, like ``refusal``
         # The provider's id when the chunks carried one (chatcmpl-/gen-...): it is what a provider needs to
         # look a request up. Fabricated only when the stream never sent one.
         response = SimpleNamespace(id=response_id or ("stream-" + str(uuid.uuid4())), model=model_name, usage=usage_obj,

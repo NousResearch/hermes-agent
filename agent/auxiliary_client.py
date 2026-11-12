@@ -1806,13 +1806,8 @@ class _AnthropicCompletionsAdapter:
                 prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
                 total_tokens=getattr(response.usage, "total_tokens", 0) or (prompt_tokens + completion_tokens),
             )
-        # ToolCall already duck-types as OpenAI shape via properties.
-        choice = SimpleNamespace(
-            index=0,
-            message=SimpleNamespace(content=_nr.content, tool_calls=_nr.tool_calls, reasoning=_nr.reasoning),
-            finish_reason=_nr.finish_reason,
-        )
-        return SimpleNamespace(choices=[choice], model=model, usage=usage)
+        from agent.auxiliary_anthropic_response import anthropic_chat_choice
+        return SimpleNamespace(choices=[anthropic_chat_choice(response, _nr, model)], model=model, usage=usage)
 
 
 class AnthropicAuxiliaryClient:

@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from typing import FrozenSet, Optional
+from dataclasses import dataclass, field
+from typing import FrozenSet, Mapping, Optional
 
 
 @dataclass(frozen=True)
@@ -15,6 +15,13 @@ class UpstreamCredential:
     base_url: str  # e.g. ``https://inference-api.nousresearch.com/v1``
     token_type: str = "Bearer"
     expires_at: Optional[str] = None  # ISO-8601, informational
+    headers: Mapping[str, str] = field(default_factory=dict)
+
+    def __repr__(self) -> str:
+        return (
+            f"{type(self).__name__}(bearer='[REDACTED]', base_url={self.base_url!r}, "
+            f"token_type={self.token_type!r}, expires_at={self.expires_at!r})"
+        )
 
 
 class UpstreamAdapter(ABC):

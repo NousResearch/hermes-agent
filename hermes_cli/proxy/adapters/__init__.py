@@ -3,11 +3,12 @@
 from typing import Dict, Type
 
 from hermes_cli.proxy.adapters.base import UpstreamAdapter
+from hermes_cli.proxy.adapters.codex import CodexAdapter
 from hermes_cli.proxy.adapters.nous_portal import NousPortalAdapter
 from hermes_cli.proxy.adapters.xai import XAIGrokAdapter
 
 # Keyed by the ``hermes proxy start --provider <name>`` value.
-ADAPTERS: dict[str, type[UpstreamAdapter]] = {"nous": NousPortalAdapter, "xai": XAIGrokAdapter}
+ADAPTERS: dict[str, type[UpstreamAdapter]] = {"codex": CodexAdapter, "nous": NousPortalAdapter, "xai": XAIGrokAdapter}
 
 
 def get_adapter(name: str) -> UpstreamAdapter:

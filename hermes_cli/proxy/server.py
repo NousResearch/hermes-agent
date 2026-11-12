@@ -121,6 +121,19 @@ def _local_request_error(
     return None
 
 
+def _forwarded_request_headers(client_headers, credential) -> dict:
+    """Return request headers with upstream identity, never a client identity.
+
+    The proxy must own the Authorization, User-Agent, originator and account
+    headers. A client value can identify a third-party harness or account and
+    must not survive into the upstream request.
+    """
+    forwarded = _filter_headers(client_headers)
+    forwarded.update(credential.headers)
+    forwarded["Authorization"] = f"{credential.token_type} {credential.bearer}"
+    return forwarded
+
+
 def _filter_headers(headers, drop: frozenset = _HOP_BY_HOP_HEADERS) -> dict:
     """Strip hop-by-hop (+ auth) headers; ``drop`` widens the set for upstream responses."""
     return {key: value for key, value in headers.items() if key.lower() not in drop}
@@ -132,8 +145,7 @@ async def _open_upstream(request: web.Request, rel_path: str, body: bytes, cred:
     upstream_url = f"{cred.base_url.rstrip('/')}{rel_path}"
     if request.query_string:  # preserved verbatim
         upstream_url = f"{upstream_url}?{request.query_string}"
-    fwd_headers = _filter_headers(request.headers)
-    fwd_headers["Authorization"] = f"{cred.token_type} {cred.bearer}"
+    fwd_headers = _forwarded_request_headers(request.headers, cred)
     logger.debug("proxy: forwarding %s %s -> %s (body=%d bytes)", request.method, rel_path, upstream_url, len(body))
     try:
         session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=None, sock_connect=15, sock_read=300))

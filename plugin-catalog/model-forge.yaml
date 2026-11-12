@@ -1,7 +1,7 @@
 name: model-forge
 title: Model Forge
 repo: https://github.com/mr-pewpy/model-forge
-sha: c0bbe666f95966762025a0c00bea0e9a9d32e599
+sha: c48384dda3d202a59e21da2266803a1771897cb0
 subdir: model-forge
 description: "Local models for every modality — chat, vision, OCR, image generation and editing, video, 3D meshes, music, SFX and voice. Model Forge finds your hardware (local GPU or LAN compute targets), shows which models fit, drives the right inference engine (llama.cpp, Strata, Ollama, vLLM, ComfyUI, weights broker and more), pulls the model, serves it, and wires it into Hermes as a provider — so chat, image_generate, video_generate, vision and TTS run on your own hardware with no account and no API key. Six tools: model_forge_status (targets, VRAM/RAM, engines, loaded models), model_forge_browse (per-modality model catalog with hardware-fit verdicts), model_forge_target_add (register LAN compute targets), model_forge_install (pull models through engine-native paths), model_forge_activate (wire a served model into Hermes), model_forge_generate_media (image, 3D, music, SFX and voice jobs against any local engine). Disclosure — model pulls download weights from huggingface.co or modelscope.cn on user request (optional HF_TOKEN / MODELSCOPE_API_TOKEN pull credentials live in plugin settings, are read only through Hermes' secret route and are sent only to their own host family); the plugin runs shell commands to start and stop local inference engines and manages those long-running background processes; it probes hardware state (GPU, VRAM, RAM) on registered compute targets; no telemetry."
 maintainer: mr-pewpy

@@ -1,7 +1,7 @@
 name: model-forge-desktop
 title: Model Forge Desktop
 repo: https://github.com/mr-pewpy/model-forge
-sha: c0bbe666f95966762025a0c00bea0e9a9d32e599
+sha: c48384dda3d202a59e21da2266803a1771897cb0
 subdir: model-forge-desktop
 description: "Model Forge cockpit pane for Hermes Desktop — compute targets, live engines, loaded models and hardware at a glance. Companion UI for the Model Forge plugin. Disclosure — renders local plugin state only; no network calls, no shell commands, no credentials, no background processes."
 maintainer: mr-pewpy

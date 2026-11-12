@@ -2592,6 +2592,21 @@ class TestFormatMessage:
         assert "> quote" in result
         assert "`code`" in result
 
+    def test_bold_spans_lines(self, adapter):
+        """Bold wraps across a line break instead of leaking literal asterisks."""
+        assert adapter.format_message("**line one\nline two**") == "*line one\nline two*"
+
+    def test_bold_stops_at_blank_line(self, adapter):
+        """A paragraph break ends emphasis; an unmatched ** must not swallow it."""
+        assert adapter.format_message("**a\n\nb**") == "**a\n\nb**"
+        assert adapter.format_message("**start\n\nafter **bold** here") == (
+            "**start\n\nafter *bold* here"
+        )
+
+    def test_adjacent_bold_spans_do_not_merge(self, adapter):
+        """Separate bold spans on consecutive lines stay separate."""
+        assert adapter.format_message("**one**\n**two**") == "*one*\n*two*"
+
 
 
 

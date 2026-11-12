@@ -1,6 +1,6 @@
 name: autonoma
 repo: https://github.com/JoeisEvil/autonoma
-sha: 56653cced2b4431db3c08dc680ccb5e139b6f125
+sha: 01cfc58ac9ee6dbcbe8633284c34aca700894ef0
 version: "0.1.0"
 description: >-
   Earned autonomy: a trust score per kind of action (file edits, deletes, git push, network,

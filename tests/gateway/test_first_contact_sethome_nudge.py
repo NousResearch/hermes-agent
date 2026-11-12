@@ -20,9 +20,9 @@ def _runner(tmp_path, monkeypatch, extra):
     return runner
 
 
-async def _first_contact(runner, user_id):
+async def _first_contact(runner, user_id, *, chat_type="dm"):
     source = SessionSource(platform=Platform.WHATSAPP, chat_id=f"{user_id}@s.whatsapp.net",
-                           user_id=user_id, chat_type="dm")
+                           user_id=user_id, chat_type=chat_type)
     await runner._hmwa_first_contact_notes(source, [], [])
     return runner._deliver_platform_notice.await_args_list
 
@@ -42,4 +42,16 @@ async def test_non_admin_customer_never_sees_the_sethome_nudge(tmp_path, monkeyp
 async def test_senders_who_may_run_sethome_still_get_the_nudge(tmp_path, monkeypatch, extra, user_id):
     runner = _runner(tmp_path, monkeypatch, extra)
     calls = await _first_contact(runner, user_id)
+    assert len(calls) == 1 and "sethome" in calls[0].args[1]
+
+
+@pytest.mark.asyncio
+async def test_group_nudge_uses_group_admins_not_dm_admins(tmp_path, monkeypatch):
+    runner = _runner(tmp_path, monkeypatch, {
+        "allow_admin_from": ["dm_operator"],
+        "group_allow_admin_from": ["group_operator"],
+    })
+    # Permission to run /sethome in a DM does not confer group admin rights.
+    assert await _first_contact(runner, "dm_operator", chat_type="group") == []
+    calls = await _first_contact(runner, "group_operator", chat_type="group")
     assert len(calls) == 1 and "sethome" in calls[0].args[1]

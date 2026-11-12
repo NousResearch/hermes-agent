@@ -48,9 +48,10 @@ def test_current_installer_publishes_real_dependencies_and_warm_path(tmp_path, s
            "UV_PYTHON_DOWNLOADS": "never", "UV_CACHE_DIR": str(tmp_path / "cache")}
     canary = tmp_path / "ambient-bin"
     canary.mkdir()
-    npm_called = tmp_path / "npm-called"
-    (canary / "npm").write_text(f'#!/bin/sh\nprintf called > "{npm_called}"\nexit 99\n', encoding="utf-8")
-    (canary / "npm").chmod(0o755)
+    manager_called = tmp_path / "package-manager-called"
+    for name in ("npm", "pnpm"):
+        (canary / name).write_text(f'#!/bin/sh\nprintf {name} >> "{manager_called}"\nexit 99\n', encoding="utf-8")
+        (canary / name).chmod(0o755)
     env["PATH"] = str(canary) + os.pathsep + env["PATH"]
     for key in ("SSL_CERT_FILE", "SSL_CERT_DIR", "NIX_SSL_CERT_FILE"):
         if key in os.environ:
@@ -131,7 +132,7 @@ def test_current_installer_publishes_real_dependencies_and_warm_path(tmp_path, s
     command = ["bash", str(ROOT / "scripts/install.sh"), "--dir", str(install),
                "--branch", "fixture", "--commit", commit, "--non-interactive", "--json"]
     result = run(command, expected=1 if fault else 0)
-    assert not npm_called.exists()
+    assert not manager_called.exists()
     if fault:
         assert not (install / ".hermes-bootstrap-complete").exists()
         assert not (home / ".local/bin/hermes").exists()

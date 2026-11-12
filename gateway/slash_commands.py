@@ -345,7 +345,7 @@ class GatewaySlashCommandsMixin(
             return head + t("gateway.whoami.tier_admin")
         # Non-admin: floor first (mirrors slash_access._ALWAYS_ALLOWED_FOR_USERS), then operator
         # additions, deduped in order.
-        runnable = list(dict.fromkeys(["help", "whoami"] + sorted(policy.user_allowed_commands)))
+        runnable = list(dict.fromkeys(["help", "whoami"] + sorted(policy.user_runnable_commands)))
         runnable_str = ", ".join(f"/{c}" for c in runnable) if runnable else t("gateway.shared.none_marker")
         return head + t("gateway.whoami.tier_user", commands=runnable_str)
 
@@ -540,7 +540,7 @@ class GatewaySlashCommandsMixin(
         self._resume_paused_platform(platform)
         return t("gateway.platform.resumed", name=name)
 
-    async def _handle_restart_command(self, event: MessageEvent) -> str | EphemeralReply:
+    async def _handle_restart_command(self, event: MessageEvent) -> str | EphemeralReply | None:
         """Handle /restart command - drain active work, then restart the gateway."""
         from gateway.run import _hermes_home
         # Idempotency check: if the previous gateway process recorded this same /restart (platform +
@@ -573,9 +573,15 @@ class GatewaySlashCommandsMixin(
             return data
 
         def _dedup_payload() -> dict:
-            # Platform + update_id of the triggering /restart, for redelivery detection.
+            from gateway.session_identity import transport_profile_of
+
+            # Scope the update counter to the bot that received /restart, even if its
+            # session executes in a different (or shared) runtime profile.
             data = {"platform": event.source.platform.value if event.source.platform else None,
                     "requested_at": time.time()}
+            transport_profile = transport_profile_of(event.source)
+            if transport_profile is not None:
+                data["transport_profile"] = transport_profile
             if event.platform_update_id is not None:
                 data["update_id"] = event.platform_update_id
             return data
@@ -587,18 +593,18 @@ class GatewaySlashCommandsMixin(
         # so a delayed Telegram redelivery is still detectable. Overwritten on every /restart.
         await _write_marker(".restart_last_processed.json", _dedup_payload, "dedup marker")
         active_agents = self._running_agent_count()
+        # Idle: teardown is immediate and a RETURNED ack raced the adapter disconnect (lost on a real
+        # Bot API round trip, #65057), so deliver it first. Draining: the drain waits, the reply lands.
+        from gateway.restart_ack import send_restart_ack
+        ack = t("gateway.draining", count=active_agents) if active_agents else EphemeralReply(t("gateway.restart.restarting"))
+        sent = not active_agents and await send_restart_ack(self, self._delivery_adapter_for(event.source), event, ack)
         # Under a service manager (systemd/launchd) or Docker/Podman, exit 75 so the supervisor /
         # restart policy restarts us — detached setsid+bash fails there (systemd KillMode=mixed kills
         # the cgroup; tini exits with the gateway). The explicit marker covers ``sudo env -i`` wrappers.
         from gateway.restart import is_container_restart_context, is_gateway_supervisor_process
         via_service = is_gateway_supervisor_process() or is_container_restart_context()
         self.request_restart(detached=not via_service, via_service=via_service)
-        # Track sessions that were active at shutdown for stuck-loop detection (#7536). On each restart, the
-        # counter increments for sessions that were running. If a session hits the threshold (3 consecutive
-        # restarts while active), the next startup auto-suspends it — breaking the loop.
-        if active_agents:
-            return t("gateway.draining", count=active_agents)
-        return EphemeralReply(t("gateway.restart.restarting"))
+        return None if sent else ack
 
     async def _handle_autoprune_command(self, event: MessageEvent) -> str:
         """Handle /autoprune — the low-disk auto-prune decision (same text as the CLI)."""
@@ -623,7 +629,7 @@ class GatewaySlashCommandsMixin(
         # policy_for_source treats None as ungated.
         policy = policy_for_runner_source(self, source)
         if policy.enabled and not policy.is_admin(source.user_id if source else None):
-            return {"allowed_commands": {"help", "whoami", *policy.user_allowed_commands}}
+            return {"allowed_commands": {"help", "whoami", *policy.user_runnable_commands}}
         return {}
 
     async def _handle_help_command(self, event: MessageEvent) -> str:
@@ -758,15 +764,12 @@ class GatewaySlashCommandsMixin(
         if not checkpoints:
             return t("gateway.rollback.none_found", cwd=cwd)
 
-        # Restore by number or hash
+        # Restore by number or hash (a short hash can be all digits)
+        from tools.checkpoint_refs import resolve_checkpoint_ref
         try:
-            idx = int(arg) - 1
+            target_hash = resolve_checkpoint_ref(checkpoints, arg)
         except ValueError:
-            target_hash = arg
-        else:
-            if not 0 <= idx < len(checkpoints):
-                return t("gateway.rollback.invalid_number", max=len(checkpoints))
-            target_hash = checkpoints[idx]["hash"]
+            return t("gateway.rollback.invalid_number", max=len(checkpoints))
         result = mgr.restore(cwd, target_hash, safe=not restore_all)
         if not result["success"]:
             return t("gateway.rollback.restore_failed", error=result["error"])
@@ -1073,9 +1076,15 @@ class GatewaySlashCommandsMixin(
             return t("gateway.config_save_failed", error=e)
         example = ""
         if new_state:
-            # Show a preview using current agent state if available.
+            # Preview the model the next turn runs: the turn's own resolver (session /model >
+            # channel_overrides > config.yaml); an unresolvable route still previews the config model.
+            try:
+                preview_model, _ = self._resolve_session_agent_runtime(source=event.source, user_config=user_config)
+            except Exception:  # health: allow BLE001 -- a broken route must not break /footer on
+                logger.debug("Footer preview: session runtime unresolvable", exc_info=True)
+                preview_model = _resolve_gateway_model(user_config)
             preview = format_runtime_footer(
-                model=_resolve_gateway_model(user_config) or None, context_tokens=0, context_length=None,
+                model=preview_model or None, context_tokens=0, context_length=None,
                 fields=effective.get("fields") or ["model", "context_pct", "cwd"])
             if preview:
                 example = t("gateway.footer.example_line", preview=preview)
@@ -1191,31 +1200,42 @@ class GatewaySlashCommandsMixin(
             lines += [t("gateway.bundles.item", slug=info["slug"], desc=desc, count=len(skills))] + [f"    · {s}" for s in skills]
         return "\n".join(lines + ["", t("gateway.bundles.invoke_hint")])
 
-    def _blocking_approval_or_stale(self, event: MessageEvent, stale_key: str, none_key: str):
-        """``(session_key, None)`` when an agent thread is blocked on approval, else the reply to send.
+    def _blocking_approval_or_stale(self, event: MessageEvent, stale_key: str, none_key: str,
+                                    resolve_all: bool = False, choice: str = "once"):
+        """``(session_key, None, request_ids)`` when an agent thread is blocked on approval and the
+        sender may answer the approvals this command selects (*choice* names its ``/approve`` or
+        ``/deny`` for the chat's slash policy: the bare-word "always" lands here without dispatch's
+        gate), else ``(session_key, reply, [])``.
         A pending-approvals entry with no blocked thread is a stale prompt: drop it and say so."""
         from tools.approval import has_blocking_approval
         session_key = self._session_key_for_source(event.source)
         if has_blocking_approval(session_key):
-            return session_key, None
-        if session_key in self._pending_approvals:
-            self._pending_approvals.pop(session_key)
-            return session_key, t(stale_key)
-        return session_key, t(none_key)
+            from gateway.approval_actor import answerable_request_ids, refusal_text
+            from gateway.slash_access import policy_for_runner_source
+            ids, requester = answerable_request_ids(
+                session_key, event.sender_id(), resolve_all=resolve_all, choice=choice,
+                admin_ids=policy_for_runner_source(self, event.source))
+            return (session_key, refusal_text(requester), []) if requester else (session_key, None, ids)
+        _approval_state = self._peek_session_state(session_key)
+        if _approval_state is not None and _approval_state.persistent.approvals is not None:
+            _approval_state.persistent.approvals = None
+            return session_key, t(stale_key), []
+        return session_key, t(none_key), []
 
     async def _handle_approve_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /approve — unblock waiting agent thread(s). They block inside tools/approval.py;
         signalling the event resumes them so the command executes inline (same flow as the CLI)."""
         from tools.approval import resolve_gateway_approval
-        session_key, stale = self._blocking_approval_or_stale(event, "gateway.approval_expired",
-                                                              "gateway.approve.no_pending")
-        if stale:
-            return stale
         # Args: "all", "all session", "all always", "session", "always" ("always" beats "session").
         args = event.get_command_args().strip().lower().split()
+        session_key, stale, request_ids = self._blocking_approval_or_stale(
+            event, "gateway.approval_expired", "gateway.approve.no_pending", resolve_all="all" in args)
+        if stale:
+            return stale
         choices = {_APPROVE_CHOICE_BY_ARG[a] for a in args if a in _APPROVE_CHOICE_BY_ARG}
         choice = "always" if "always" in choices else "session" if "session" in choices else "once"
-        count = resolve_gateway_approval(session_key, choice, resolve_all="all" in args)
+        # Exactly the approvals the sender was checked against, never "the oldest" again.
+        count = sum(resolve_gateway_approval(session_key, choice, request_id=rid) for rid in request_ids)
         if not count:
             return t("gateway.approve.no_pending")
         confirmation_text = t(f"gateway.approve.{choice}_{'plural' if count > 1 else 'singular'}", count=count)
@@ -1230,17 +1250,18 @@ class GatewaySlashCommandsMixin(
         the agent so it can adapt instead of only hearing "denied". Ported from qwibitai/nanoclaw#2832.
         """
         from tools.approval import resolve_gateway_approval
-        session_key, stale = self._blocking_approval_or_stale(event, "gateway.deny.stale",
-                                                              "gateway.deny.no_pending")
-        if stale:
-            return stale
         # A leading "all" denies every pending command; the rest (or the whole arg string without
         # "all") is the optional deny reason relayed to the agent, capped to a sane one-liner.
         raw_args = event.get_command_args().strip()
         tokens = raw_args.split()
         resolve_all = bool(tokens) and tokens[0].lower() == "all"
+        session_key, stale, request_ids = self._blocking_approval_or_stale(
+            event, "gateway.deny.stale", "gateway.deny.no_pending", resolve_all=resolve_all, choice="deny")
+        if stale:
+            return stale
         reason = (raw_args[len(tokens[0]):].strip() if resolve_all else raw_args)[:280].strip()
-        count = resolve_gateway_approval(session_key, "deny", resolve_all=resolve_all, reason=reason or None)
+        count = sum(resolve_gateway_approval(session_key, "deny", reason=reason or None, request_id=rid)
+                    for rid in request_ids)
         if not count:
             return t("gateway.deny.no_pending")
         logger.info("User denied %d dangerous command(s) via /deny%s", count,
@@ -1322,6 +1343,7 @@ class GatewaySlashCommandsMixin(
         """Handle /update — spawn ``hermes update`` detached (``setsid``) so it survives the gateway
         restart it may trigger; marker files let this or the next gateway process notify the user."""
         import json
+        from gateway.approval_actor import opener_authority
         from gateway.run import _hermes_home, _resolve_hermes_bin
         from hermes_cli.config import is_managed, format_managed_message
         # Block non-messaging platforms (API server, webhooks, ACP); plugin platforms with
@@ -1363,13 +1385,15 @@ class GatewaySlashCommandsMixin(
         hermes_cmd = _resolve_hermes_bin()
         if not hermes_cmd:
             return t("gateway.update.hermes_cmd_not_found")
+        if self._update_in_flight():  # before any write: the marker names who answers its prompts
+            return t("gateway.update.already_running")
         pending_path = _hermes_home / ".update_pending.json"
         output_path = _hermes_home / ".update_output.txt"
         exit_code_path = _hermes_home / ".update_exit_code"
         pending = {
             "platform": src.platform.value, "chat_id": src.chat_id, "chat_type": src.chat_type,
             "user_id": src.user_id, "session_key": self._session_key_for_source(src),
-            "timestamp": datetime.now().isoformat()}
+            "timestamp": datetime.now().isoformat(), "authority": opener_authority(event)}  # who answers its prompts
         # ``profile``: the update watcher (possibly the NEXT gateway process) must answer through the
         # requester's own profile bot, not the default profile's adapter for the same platform.
         pending.update({k: v for k, v in (("thread_id", src.thread_id), ("message_id", event.message_id),

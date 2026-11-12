@@ -1,0 +1,24 @@
+name: sarvam-provider
+repo: https://github.com/Subramanyarao11/hermes-sarvam
+sha: 3d036b0d5fdaaca20597b144c2bb14c624df73a7
+subdir: sarvam-provider
+description: >-
+  Sarvam AI as a Hermes model provider (`--provider sarvam`):
+  Sarvam-105B and the open models Sarvam hosts in India, with tool calls, JSON output and reasoning
+  levels. Not affiliated with Sarvam AI. Disclosure — registers one model provider at import and nothing
+  else (no tools, hooks, commands or threads); chat requests go to https://api.sarvam.ai through Hermes's
+  own client with SARVAM_API_KEY, which Hermes reads; the plugin itself opens no connections, reads and
+  writes no files and starts no processes.
+maintainer: Subramanyarao11
+tier: community
+category: models
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/Subramanyarao11/hermes-sarvam
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - SARVAM_API_KEY

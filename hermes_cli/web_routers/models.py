@@ -19,7 +19,8 @@ from hermes_cli.web_server_config import (
 from agent.model_metadata import is_local_endpoint
 from starlette.concurrency import run_in_threadpool
 from hermes_cli.web_models import ModelAssignment, MoaConfigPayload, MoaModelSlot
-from hermes_cli.web_routers._common import _CONFIG_MUTATION_LOCK, config_write_scope, http_failure
+from hermes_cli.config_backend import CONFIG_MUTATION_LOCK
+from hermes_cli.web_routers._common import config_write_scope, http_failure
 
 _log = logging.getLogger("hermes_cli.web_server")
 router = APIRouter()
@@ -419,7 +420,7 @@ async def set_model_assignment(body: ModelAssignment, profile: Optional[str] = N
             with _profile_scope(body.profile or profile):
                 prepared = (_prepare_main_assignment(load_config(), provider, model, base_url, api_key)
                             if scope == "main" else None)
-                with _CONFIG_MUTATION_LOCK:
+                with CONFIG_MUTATION_LOCK:
                     return _apply_model_assignment_sync(
                         scope, provider, model, task, base_url, api_key,
                         reasoning_effort=reasoning_effort, prepared=prepared)

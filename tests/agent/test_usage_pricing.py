@@ -283,7 +283,7 @@ def test_bedrock_claude_cached_session_estimates_cost_not_unknown():
     assert result.amount_usd is not None
 
 
-@pytest.mark.parametrize("bare", ["claude-opus-5", "claude-opus-5-5"])
+@pytest.mark.parametrize("bare", ["claude-opus-5", "claude-opus-5-5", "claude-fable-5-2"])
 @pytest.mark.parametrize("scope", ["", "us.", "global."])
 def test_bedrock_claude_opus_5_prices_like_direct_anthropic(bare, scope):
     """Regression for #100848: Bedrock bills Claude at Anthropic's per-token
@@ -406,6 +406,18 @@ def test_curated_google_flash_models_resolve_official_snapshot_pricing(monkeypat
         # Direct-route models the picker offers must also be pickable directly.
         assert bare in _PROVIDER_MODELS["gemini"], model
         assert model in _PROVIDER_MODELS["vertex"], model
+
+
+def test_gemini_4_carbon_is_pickable_and_prices_like_argon(monkeypatch):
+    from hermes_cli.models_catalog_static import _PROVIDER_MODELS
+
+    monkeypatch.setattr("agent.usage_pricing.fetch_endpoint_model_metadata", lambda *_args, **_kwargs: {})
+    usage = CanonicalUsage(input_tokens=1_000_000, output_tokens=1_000_000, cache_read_tokens=1_000_000)
+    carbon = estimate_usage_cost("gemini-4-carbon", usage, provider="gemini")
+    argon = estimate_usage_cost("gemini-4-argon", usage, provider="gemini")
+    assert "gemini-4-carbon" in _PROVIDER_MODELS["gemini"]
+    assert (carbon.status, carbon.source) == ("estimated", "official_docs_snapshot")
+    assert carbon.amount_usd == argon.amount_usd and carbon.amount_usd > 0
 
 
 

@@ -1,0 +1,22 @@
+name: privacy-xray
+repo: https://github.com/MadeByBrain/hermes-extensions
+sha: aa2bf92140016d7cf2ce855d0fff98f46badbc94
+subdir: plugins/privacy-xray
+description: "Where does your data actually go? Records every outgoing model request, the main loop and side tasks such as title generation, compression and vision, as metadata only: destination host, vendor, vendor HQ country, the model vendor behind aggregators such as OpenRouter (read from the model id; the final processing vendor behind an aggregator is not visible), size and counts of detected personal data types (e-mail, IBAN, payment card, phone, IPv4, German Steuer-ID and USt-IdNr, own watch terms). /xray canary invents a fictitious person and /xray trace shows every request and local store that carried it. /xray check audits the config with a severity and the exact hermes config set fix per path; /xray fix <id> --yes applies one; a session retention hint is advice only and is never applied. /xray fix --yes and /xray find run only on local surfaces (CLI, TUI, desktop, dashboard) unless allow_sensitive_on_gateways is turned on. /xray find searches the local stores for a person, /xray report writes a self-contained HTML leak map (no scripts, no external assets) with a before and after view of two canaries; a dashboard tab shows the same page in a sandboxed frame. Not legal advice and not a compliance certificate. Disclosure: no network calls, no model calls, standard library only. pre_api_request and pre_auxiliary_call are observers; they write one metadata line per request (time, session and turn id, task, provider, model, host, vendor, counts, canary id and message fields; never message text or matched values) to HERMES_HOME/plugin-data/privacy-xray/ledger.jsonl (rotated once at ledger_max_mb, default 5 MB). The llm_request middleware is off by default (guard: false); when turned on it masks canary values and watch terms in main model requests before they are sent. Reads the merged Hermes config through load_config_readonly. /xray trace, /xray find and /xray check read outside the plugin's own data, read-only and under a time budget (scan_seconds, default 30): state.db (messages, session titles, stored system prompts, delivery queue), session files including request dumps, memories, logs, cron output, other plugins' plugin-data, paste and pending folders; output shows counts and masked snippets only. Writes config only on /xray fix <id> --yes, through hermes_cli.config.set_config_value (same code as hermes config set); never deletes files. Stores fake canary persons, last check and trace results and requested HTML or Markdown/JSON reports under its plugin-data folder. Registers the tool privacy_xray (map, check, trace, find; read-only, never changes settings), the slash command /xray and a skill that adds one line to the skills index of every session while the plugin is enabled. No credentials, no shell commands, no cron jobs, no background processes, no telemetry."
+maintainer: MadeByBrain
+tier: community
+category: tools
+docs_url: https://github.com/MadeByBrain/hermes-extensions/tree/main/plugins/privacy-xray#readme
+version: "1.0.0"
+image: https://raw.githubusercontent.com/MadeByBrain/hermes-extensions/aa2bf92140016d7cf2ce855d0fff98f46badbc94/plugins/privacy-xray/docs/banner.png
+requires_hermes: ">=0.22.7"
+platforms: []
+capabilities:
+  provides_tools:
+    - privacy_xray
+  provides_hooks:
+    - pre_api_request
+    - pre_auxiliary_call
+  provides_middleware:
+    - llm_request
+  requires_env: []

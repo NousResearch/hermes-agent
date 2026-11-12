@@ -1,0 +1,35 @@
+name: neural-mesh
+repo: https://github.com/D0xedDevi0/hermes-neural-mesh
+sha: 26abb610f3cbdd4215fbb898d4a2478317dfc5e5
+description: "Bi-temporal long-term memory for Hermes: point-in-time recall (mesh_asof answers what was true on a date, not only what is true now), supersession instead of overwrite so a corrected fact keeps its history, hybrid dense + lexical retrieval, a poisoning quarantine, and an injection floor measured on a 15-family ablation. Disclosure — this is a Hermes MemoryProvider (`memory.provider: neural-mesh`). It stores user turns, pre-compression and session-end message extracts, and mirrored MEMORY.md/USER.md writes in an unencrypted local SQLite file at `<profile>/neural-mesh/mesh.db`, so credentials do not belong in it. The provider makes no network calls and needs no API key. The repo also vendors unused upstream modules with LLM/chain HTTP clients that the provider never calls. It ships no compiled binary (the Rust extension is not vendored, so retrieval runs the pure-Python path)."
+maintainer: D0xedDevi0
+tier: community
+category: memory
+docs_url: https://github.com/D0xedDevi0/hermes-neural-mesh
+requires_hermes: ">=0.22.0"
+version: "0.39.0"
+image: https://raw.githubusercontent.com/D0xedDevi0/hermes-neural-mesh/26abb610f3cbdd4215fbb898d4a2478317dfc5e5/docs/screenshots/the-difference.png
+screenshots:
+  - https://raw.githubusercontent.com/D0xedDevi0/hermes-neural-mesh/26abb610f3cbdd4215fbb898d4a2478317dfc5e5/docs/screenshots/the-difference.png
+  - https://raw.githubusercontent.com/D0xedDevi0/hermes-neural-mesh/26abb610f3cbdd4215fbb898d4a2478317dfc5e5/docs/screenshots/cold-recall.png
+  - https://raw.githubusercontent.com/D0xedDevi0/hermes-neural-mesh/26abb610f3cbdd4215fbb898d4a2478317dfc5e5/docs/screenshots/point-in-time.png
+  - https://raw.githubusercontent.com/D0xedDevi0/hermes-neural-mesh/26abb610f3cbdd4215fbb898d4a2478317dfc5e5/docs/screenshots/measured.png
+readme: true
+title: "NEURAL_MESH"
+known_issues:
+  - "The memory store is plain, unencrypted SQLite inside the Hermes profile — anything it remembers is readable by anyone with filesystem access to that profile, so credentials do not belong in it."
+  - "The upstream Rust resonance extension is not shipped (catalog rule 17), so retrieval uses the pure-Python path; mesh_stats reports resonance_backend: python rather than rust."
+  - "Automatic context injection is held to a measured 0.25 score floor, so a weakly-matching memory is deliberately not injected. Use mesh_recall (0.05 floor) when you want a wider net."
+  - "Superseding a memory that does not exist is reported in the tool reply rather than failing the write, so a correction naming a bad id is stored as a new fact — and the reply says so instead of silently leaving two contradictory values current."
+capabilities:
+  provides_tools:
+    - mesh_remember
+    - mesh_recall
+    - mesh_asof
+    - mesh_stats
+  provides_hooks:
+    - on_session_end
+    - on_pre_compress
+    - on_memory_write
+  provides_middleware: []
+  requires_env: []

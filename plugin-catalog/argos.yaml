@@ -1,0 +1,25 @@
+name: argos
+title: ARGOS (Godot editor)
+repo: https://github.com/Tormen28/argos
+sha: ab194154310cf4a44cee932d7c33f7fefb42c95d
+version: "1.2.0"
+description: "Lets Hermes agents drive a live Godot 4 editor through a local MCP server with trust=untrusted: read the scene tree, create / move / delete nodes, undo-grouped action.batch, AnimationPlayer/AnimationTree play/stop, set properties with the editor's real undo/redo, open / save / create scenes, play and stop the game, validate GDScript with --check-only, and capture PNG screenshots (named sessions under .argos/captures/). Launch / check / play require ARGOS_PROJECT allowlist. Agent Plugins v1 package (plugin.json + mcp.json + skills/). Disclosure — the Godot addon opens a WebSocket on 127.0.0.1 only (ports 9080-9090) guarded by a random token rotated each editor start and stored in <project>/.argos/; writes state, history and screenshots under <project>/.argos/ (captures only under .argos/captures/ or res://, never absolute paths, `..` or overwrites); for projects on ARGOS_PROJECT / ARGOS_ALLOWED_PROJECTS it launches the Godot editor, runs `godot --check-only` and plays scenes, which executes that project's own GDScript (use on trusted projects); the MCP server is untrusted, so Hermes asks before every editing tool and argos_raw forwards any ARGOS action; needs a Python with websockets; no third-party network calls, no credentials, no telemetry, no self-update."
+maintainer: Tormen28
+tier: community
+category: tools
+requires_hermes: ">=0.22.1"
+docs_url: https://github.com/Tormen28/argos#readme
+image: https://raw.githubusercontent.com/Tormen28/argos/ab194154310cf4a44cee932d7c33f7fefb42c95d/docs/screenshots/argos-scene-capture.png
+screenshots:
+  - https://raw.githubusercontent.com/Tormen28/argos/ab194154310cf4a44cee932d7c33f7fefb42c95d/docs/screenshots/argos-scene-capture.png
+  - https://raw.githubusercontent.com/Tormen28/argos/ab194154310cf4a44cee932d7c33f7fefb42c95d/docs/screenshots/argos-godot-editor.png
+readme: true
+platforms: []
+known_issues:
+  - "Needs a Python on PATH with the websockets package (pip install websockets)."
+  - "Editing tools need the Godot editor open with the ARGOS addon enabled (python tools/argos_install.py --project <project>)."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

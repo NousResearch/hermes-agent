@@ -37,6 +37,10 @@ export const sessionEn = {
     },
     lifecycle: {
       newLiveSessionStarted: 'new live session started',
+      // {0}=session title (or id prefix)
+      backgroundFinished: (name: string) => `background session "${name}" finished its turn · Ctrl+X to switch`,
+      // {0}=session title (or id prefix)
+      backgroundWaiting: (name: string) => `background session "${name}" is waiting for your answer · Ctrl+X to switch`,
       sessionTitleSet: (title: string) => `session title set: ${title}`,
       titleQueuedSuffix: ' (queued while session initializes)',
       failedToSetTitle: (message: string) => `failed to set session title: ${message}`,

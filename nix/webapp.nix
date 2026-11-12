@@ -1,21 +1,22 @@
-# The Webapp: the Desktop renderer built for a browser. The npm hook has
-# already installed the locked workspace, so it compiles there, with no
-# private workspace and no Electron.
+# The Webapp: the Desktop renderer built for a browser. pnpmConfigHook has
+# already installed the locked workspace (without lifecycle scripts, so no
+# native module and no Electron binary), so it compiles there, with no
+# private workspace.
 { hermesNpmLib, ... }:
-hermesNpmLib.buildNpmPackage {
+hermesNpmLib.buildPnpmPackage {
   dirs = [
     "apps/desktop"
     "apps/shared"
     "scripts/build/webapp.mjs"
     "scripts/build/node-deps.mjs"
+    "scripts/build/node-deps-lock.mjs"
+    "scripts/build/node-deps-heartbeat.mjs"
+    "scripts/build/node-deps-watcher.mjs"
+    "scripts/build/node-deps-relay.mjs"
     "scripts/build/freshness.mjs"
     "scripts/build/frontend-common.mjs"
   ];
   pname = "hermes-webapp";
-
-  # The browser bundle loads no native module (node-pty belongs to Desktop),
-  # so none is compiled.
-  npmRebuildFlags = [ "--ignore-scripts" ];
 
   doCheck = false;
 

@@ -85,7 +85,7 @@ sk.bind_worker_context = lambda frame: None
 import gateway.session_policy as sp
 sp.restore_policy = lambda frame: policy
 sp.register_worker_hooks = lambda policy: None
-sp.policy_scope = lambda policy: contextlib.nullcontext()
+sp.policy_scope = lambda policy, **kwargs: contextlib.nullcontext()
 import tools.process_registry as pr
 pr.process_registry.recover_from_checkpoint = lambda: None
 import tools.approval as approval
@@ -102,7 +102,7 @@ run_agent.AIAgent = object
 sys.modules['run_agent'] = run_agent
 
 scope = {'profile_id': '/tmp/managed-worker-test', 'session_id': 'session', 'execution_id': 'execution',
-         'generation': 0, 'pid': os.getpid(), 'birth': 'birth', 'secret': 'secret', 'epoch': 1}
+         'generation': 1, 'pid': os.getpid(), 'birth': 'birth', 'secret': 'secret', 'epoch': 1}
 frame = {'home': '/tmp/managed-worker-test', 'scope': scope, 'policy': {}, 'route': 'route',
          'api_key': None, 'user_id': 'user', 'chat_id': 'chat', 'text': 'text'}
 try:

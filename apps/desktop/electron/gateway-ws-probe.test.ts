@@ -2,7 +2,7 @@
  * Tests for electron/gateway-ws-probe.ts.
  *
  * Run with: node --test electron/gateway-ws-probe.test.ts
- * (Wired into npm test:desktop:platforms in package.json.)
+ * (Wired into pnpm run test:desktop:platforms in package.json.)
  *
  * The probe drives a real WebSocket handshake for the "Test remote" button.
  * Here we inject a fake socket so we can deterministically replay each handshake

@@ -80,6 +80,25 @@ override `session_path`, keep it distinct per profile, or the profiles share one
 WhatsApp login. Bridges started by an older Hermes report no session directory
 and are restarted once, as after a bridge update.
 
+### Bridge API authentication
+
+The bridge listens on loopback only, but loopback does not identify the caller:
+any process on the same machine could otherwise read every inbound message
+(`GET /messages`) or send as you (`POST /send`). Each session therefore has a
+secret, `platforms/whatsapp/session/.bridge-token` (owner-only, created by the
+gateway on first start), and the bridge requires it as a bearer token on every
+route. Before adopting a bridge that is already running, the gateway first sends
+a challenge to `GET /auth-proof` and adopts the listener only when it proves it
+holds the secret, so an impostor that bound the port first never learns the
+token. A listener that fails the proof (another profile's bridge, which holds
+its own token, or an impostor) is never stopped by port: once this session's
+own bridge has been stopped by its pidfile, a listener still holding the port
+fails WhatsApp with `whatsapp_bridge_foreign_session`. Every newly spawned
+bridge gets a fresh secret. Cron and `hermes send` deliveries read the same
+file; they never create it, and a session that has not yet been started by the
+gateway reports `No WhatsApp bridge token`. A bridge launched by hand without
+`HERMES_WHATSAPP_BRIDGE_TOKEN` refuses to serve.
+
 ## Two Modes
 
 | Mode | How it works | Best for |
@@ -91,10 +110,11 @@ and are restarted once, as after a bridge update.
 
 ## Prerequisites
 
-- **Node.js v18+** and **npm** — the WhatsApp bridge runs as a Node.js process
+- **Node.js v20+** and **npm** — the WhatsApp bridge runs as a Node.js process
 - **A phone with WhatsApp** installed (for scanning the QR code)
 
-Unlike older browser-driven bridges, the current Baileys-based bridge does **not** require a local Chromium or Puppeteer dependency stack.
+Ordinary QR pairing does not need a browser. Accounts that require passkey verification
+also need an installed Chrome or Edge browser with access to that account's passkey.
 
 ---
 
@@ -119,6 +139,32 @@ The wizard will:
 4. Point your camera at the terminal QR code
 
 Once paired, the wizard confirms the connection and exits. Your session is saved automatically.
+
+### Accounts requiring a passkey
+
+If WhatsApp requests a passkey after the QR scan, run the interactive setup with
+the path to your installed Chrome or Edge executable:
+
+```text
+hermes whatsapp --passkey-browser "/absolute/path/to/browser"
+```
+
+The path above is a placeholder; replace it with the actual browser executable
+on your machine. Setup opens WhatsApp Web in a temporary browser window to
+complete its passkey request. Approve the request using your account's passkey.
+If setup displays a confirmation code, compare it with your phone and confirm
+only if the codes match. The browser closes when the request completes or is
+cancelled. Hermes enables WhatsApp only after pairing succeeds.
+
+The temporary window does not inherit your regular Chrome or Edge profile or
+its signed-in password manager. Your passkey must be available through the
+authentication options that window offers. Availability of phone and OS passkeys,
+and real-account WhatsApp acceptance, still need end-to-end validation.
+
+This path needs an interactive terminal and graphical browser on the machine
+running setup. It is not available through dashboard onboarding or a headless
+SSH session. The browser is needed during passkey pairing, not for normal
+messaging after pairing.
 
 :::tip
 If the QR code looks garbled, make sure your terminal is at least 60 columns wide and supports

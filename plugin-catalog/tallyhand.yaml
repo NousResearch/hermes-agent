@@ -1,0 +1,36 @@
+name: tallyhand
+repo: https://github.com/RezaHarirchian/hermes-tallyhand
+sha: 04efeb6236ad2301d89871497f871735b530a8bc
+title: Tallyhand
+description: "Twitch chat for Hermes Agent that treats chat as untrusted input. Roles come from chat badges and are enforced in code before every tool call: viewers get no moderation tools, and bans, unbans and long timeouts wait for the streamer's approval. The streamer also gets Twitch and OBS tools, chat commands that need no model call, viewer notes kept only with consent, and replies in the stream's language. Disclosure — chat in the configured Twitch channels starts Hermes turns for allowlisted viewers (or everyone, if TWITCH_ALLOW_ALL_USERS=true), and those viewers' turns run in this profile with its persona and the questions go to your model provider; while this profile's memory, user profile or an external memory provider is on, only your own questions are answered unless you set allow_profile_memory_for_viewers: true, which puts your MEMORY.md, USER.md and memory-provider recall into viewers' turns; viewers and moderators get no Hermes tools beyond the to-do list and, for moderators, capped Twitch moderation, while bans, unbans and long timeouts need your approval; the bot token is used only against Twitch's own endpoints and OBS is contacted on this computer unless TALLYHAND_OBS_ALLOW_REMOTE=true; viewer notes (!remember) are stored under the profile's plugin-data for 90 days by default, and !forgetme deletes the viewer's notes and their own per-viewer Hermes sessions; the setup wizard writes the token to .env and, after a yes/no, Twitch toolset/context settings to config.yaml. No telemetry, no self-update."
+maintainer: Reza Harirchian
+tier: community
+category: platform
+requires_hermes: ">=0.22.7"
+docs_url: https://github.com/RezaHarirchian/hermes-tallyhand#readme
+version: "0.1.1"
+capabilities:
+  provides_tools:
+    - twitch_stream_info
+    - twitch_create_clip
+    - twitch_announce
+    - twitch_shoutout
+    - twitch_timeout
+    - twitch_ban
+    - twitch_unban
+    - twitch_delete_message
+    - obs_status
+    - obs_list_scenes
+    - obs_switch_scene
+    - obs_list_audio_inputs
+    - obs_set_mute
+    - obs_show_caption
+    - obs_clear_caption
+    - obs_set_source_visible
+    - obs_save_replay
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env:
+    - TWITCH_BOT_TOKEN
+    - TWITCH_CHANNEL

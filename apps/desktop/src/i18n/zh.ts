@@ -20,6 +20,7 @@ import { zhNotifications } from './zh_notifications'
 import { zhOnboarding } from './zh_onboarding'
 import { zhPluginPreviewAccess } from './zh_plugin_preview_access'
 import { zhPluginUpdate } from './zh_plugin_update'
+import { zhPluginUpdateAll } from './zh_plugin_update_all'
 import { zhPreviewWeb } from './zh_preview_web'
 import { zhProjects } from './zh_projects'
 import { zhSharedMetrics } from './zh_shared_metrics'
@@ -27,6 +28,11 @@ import { zhThemePicker } from './zh_theme_picker'
 import { zhUpdateChannel } from './zh_update_channel'
 
 export const zhOverrides = {
+  gatewayGroupOpen: {
+    opening: "正在打开群聊…",
+    lookupFailed: "无法在网关上查找此群组，请重试。",
+    missing: "此群聊已不存在。"
+  },
   catalog: zhCatalog,
   externalOpenFailed: {
     title: '无法打开此链接',
@@ -1986,15 +1992,20 @@ export const zhOverrides = {
       browserRealProfile: {
         label: '使用我的真实浏览器配置文件',
         description:
-          '将默认浏览器的登录信息和 Cookie 复制到托管快照中，代理使用该快照进行浏览。绝不会直接打开你的真实配置文件。将应用于新会话。',
+          '将默认浏览器的登录信息和 Cookie 复制到托管快照中，代理使用该快照进行浏览，应用内浏览器也会用它们登录。绝不会直接打开你的真实配置文件。将应用于新会话。',
         enabledTitle: '真实配置文件浏览：已开启',
         enabledMessage: '新会话将使用默认浏览器配置文件的快照进行浏览。',
         disabledTitle: '真实配置文件浏览：已关闭',
-        disabledMessage: '配置文件快照将被删除；新会话使用干净的浏览器。',
+        disabledMessage: '配置文件快照将被删除，应用内浏览器也会退出这些登录；新会话使用干净的浏览器。',
         failedSave: '无法保存真实配置文件设置',
+        reimportSignins: '重新导入登录信息',
+        signinsImportedTitle: '应用内浏览器登录',
+        signinsImported: count => `已使用浏览器配置文件中的 ${count} 个 Cookie 登录应用内浏览器。`,
+        signinsRemote: '此后端运行在另一台机器上，因此不会将其浏览器配置文件导入应用内浏览器。',
+        signinsFailed: '无法将登录信息导入应用内浏览器',
         prompt: {
           title: '让网站保持登录状态',
-          body: '让 Hermes 使用默认浏览器配置文件的快照进行浏览，网站打开时即已登录。',
+          body: '让 Hermes 使用默认浏览器配置文件的快照进行浏览，无论是代理还是应用内浏览器，网站打开时即已登录。',
           bulletSnapshot: 'Cookie 和登录信息会复制到托管快照中。',
           bulletLiveProfile: '绝不会直接打开你的真实浏览器配置文件。',
           bulletLocal: '所有数据都不会离开这台电脑。',
@@ -2101,6 +2112,7 @@ export const zhOverrides = {
       pinnedProvenance: (sha: string) => `已固定到提交 ${sha}。重新固定前将拒绝更新。`,
       pinnedBadge: (sha: string) => `固定 @ ${sha}`,
       ...zhPluginUpdate,
+      ...zhPluginUpdateAll,
       uninstall: '卸载',
       uninstallTip: (name: string, profile: string) => `从 ${profile} 卸载 ${name}`,
       uninstallConfirmTitle: (name: string) => `卸载 ${name}？`,
@@ -4051,6 +4063,15 @@ export const zhOverrides = {
           system_prompt: '系统提示词',
           tool_definitions: '工具定义'
         },
+        compact: {
+          action: '压缩对话',
+          busyHint: '请先完成或停止当前回复',
+          confirm: '压缩',
+          hint: '总结较早的上下文以腾出空间，继续当前对话。',
+          question: '将此对话压缩为摘要？',
+          questionNamed: title => `将“${title}”压缩为摘要？`,
+          working: '正在压缩…'
+        },
         empty: '暂无上下文数据',
         loading: '正在加载明细…',
         percentFull: percent => `已用 ${percent}%`,
@@ -4402,6 +4423,7 @@ export const zhOverrides = {
       readAloud: '朗读',
       copyFullResponse: '复制完整回复',
       readAloudFullResponseHint: '按住 Shift 点击：朗读完整回复',
+      contentRefusedNotice: '该消息被模型的安全过滤器拒绝 — 请换一个问题重试。',
       editMessage: '编辑消息',
       expandMessage: '展开消息',
       scrollToBottom: '滚动到底部',
@@ -4469,6 +4491,10 @@ export const zhOverrides = {
       authorized: server => `已授权 ${server}`,
       failed: server => `${server} 设置失败`,
       toolCount: count => `${count} 个工具`,
+      launchCommand: target => `将运行：${target}`,
+      launchRemote: target => `将连接：${target}`,
+      launchEnv: keys => `环境变量：${keys}`,
+      launchCwd: dir => `工作目录：${dir}`,
       envRequired: '请先填写所需凭据',
       sendFailed: '无法发送 MCP 设置响应',
       reloadFailed: '服务器已保存，但重新加载 MCP 工具失败 — 将在下个会话加载',

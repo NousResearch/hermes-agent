@@ -1,0 +1,18 @@
+name: claw-messenger
+repo: https://github.com/tin-computer/hermes-imessage
+sha: f41cfd39d5b3fc955a8371290d33b58c88800aa9
+description: "iMessage, RCS and SMS for Hermes through Claw Messenger. Your agent texts real phones and gets replies, with no Mac or SIM; send, receive, group chats and attachments. Disclosure — all inbound and outbound message text, phone numbers and attachment links pass through the Claw Messenger hosted relay (wss://claw-messenger.onrender.com by default, a paid third-party service); your Claw Messenger API key is sent in the WebSocket URL together with a fixed client tag (hermes-imessage/<version>); inbound attachments are downloaded (https only, up to 20 MB) from links the relay supplies into Hermes's media cache; with the hermes-claw-messenger toolset enabled the agent can start a group text with any phone numbers it is given."
+maintainer: tin-computer
+tier: community
+category: platform
+title: Claw Messenger
+requires_hermes: ">=0.23.0"
+version: "0.1.5"
+docs_url: https://www.clawmessenger.com/blog/hermes-imessage-setup
+capabilities:
+  provides_tools:
+  - claw_messenger_create_group
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - CLAW_MESSENGER_API_KEY

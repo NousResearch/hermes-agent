@@ -24,9 +24,5 @@ export interface SessionDraftTitleProps {
 export function SessionDraftTitle({ scope }: SessionDraftTitleProps) {
   const { t } = useI18n()
 
-  return (
-    (useStoreSelector($draftTitles, (titles: Record<string, string>) => draftTitleIn(titles, scope))) ||
-    t.keybinds.actions['session.new'] ||
-    NEW_SESSION_TITLE
-  )
+  return useStoreSelector($draftTitles, titles => draftTitleIn(titles, scope)) || t.keybinds.actions['session.new']
 }

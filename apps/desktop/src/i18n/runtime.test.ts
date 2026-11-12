@@ -22,7 +22,8 @@ describe('desktop i18n runtime translator', () => {
     expect(translateNow('assistant.tool.statusRecovered')).toBe(zh.assistant.tool.statusRecovered)
     expect(translateNow('boot.ready')).not.toBe(TRANSLATIONS.en.boot.ready)
 
-    expect(TRANSLATIONS.fr.keybinds.actions['session.new']).toBe('Nouvelle session')
+    setRuntimeI18nLocale('fr')
+    expect(translateNow('keybinds.actions.session.new')).toBe('Nouvelle session')
   })
 
   it('passes arguments to function translations', () => {

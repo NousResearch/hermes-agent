@@ -134,6 +134,26 @@ def _load_sent(path) -> list[float]:
         return []
 
 
+def _load_chain_start(path) -> Optional[float]:
+    try:
+        start = json.loads(path.read_text(encoding="utf-8-sig")).get("start")
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
+    return float(start) if isinstance(start, (int, float)) else None
+
+
+def _notice_chain_start(chain: list[float], stored: list[float], recorded: Optional[float], ts: float) -> float:
+    """First stop of the chain ``ts`` extends. The stored boots are capped, so a long loop pushes its
+    real first stop out of them: when the chain still reaches the oldest stored boot it began at the
+    recorded start, which outlives the cap (or the delivered notices before ``chain[0]`` are
+    forgotten and a continuous loop posts again)."""
+    if not chain:
+        return ts
+    if recorded is not None and chain[0] == min(stored):
+        return min(recorded, chain[0])
+    return chain[0]
+
+
 def notice_loop_tripped(
     max_restarts: int = DEFAULT_MAX_RESTARTS, window_seconds: int = DEFAULT_WINDOW_SECONDS, *,
     now: Optional[float] = None, max_gap_seconds: int = DEFAULT_MAX_GAP_SECONDS,
@@ -145,9 +165,11 @@ def notice_loop_tripped(
     adapter does not use up a notice the user never saw."""
     ts = time.time() if now is None else now
     path = _notice_state_path()
-    chain = _chain_ending_at(_load_boots(path), ts, _chain_gap(window_seconds, max_gap_seconds))
-    sent = [t for t in _load_sent(path) if chain and t >= chain[0]]
-    _save_notice_state(chain + [ts], sent, path)
+    stored = _load_boots(path)
+    chain = _chain_ending_at(stored, ts, _chain_gap(window_seconds, max_gap_seconds))
+    start = _notice_chain_start(chain, stored, _load_chain_start(path), ts)
+    sent = [t for t in _load_sent(path) if chain and t >= start]
+    _save_notice_state(chain + [ts], sent, path, start)
     tripped = max_restarts > 0 and len(sent) >= max_restarts
     if tripped:
         logger.warning(
@@ -161,11 +183,14 @@ def notice_loop_tripped(
 def record_notice_delivered(*, now: Optional[float] = None) -> None:
     """Spend one slot of the current chain: this stop's goodbye reached a home chat."""
     path = _notice_state_path()
-    _save_notice_state(_load_boots(path), _load_sent(path) + [time.time() if now is None else now], path)
+    _save_notice_state(_load_boots(path), _load_sent(path) + [time.time() if now is None else now], path,
+                       _load_chain_start(path))
 
 
-def _save_notice_state(boots: list[float], sent: list[float], path) -> None:
+def _save_notice_state(boots: list[float], sent: list[float], path, start: Optional[float] = None) -> None:
+    state: dict[str, object] = {"boots": boots[-_MAX_STORED_BOOTS:], "sent": sent[-_MAX_STORED_BOOTS:]}
+    if start is not None:
+        state["start"] = start
     with contextlib.suppress(OSError):
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"boots": boots[-_MAX_STORED_BOOTS:], "sent": sent[-_MAX_STORED_BOOTS:]}),
-                        encoding="utf-8")
+        path.write_text(json.dumps(state), encoding="utf-8")

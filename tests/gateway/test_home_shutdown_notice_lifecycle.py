@@ -122,3 +122,15 @@ async def test_loop_cap_counts_delivered_notices_not_attempts(runner):
         await _stop_cycle(runner, adapter)
 
     assert _home_sends(adapter) == 3  # restart_loop_guard.DEFAULT_MAX_RESTARTS delivered goodbyes
+
+
+@pytest.mark.asyncio
+async def test_a_loop_longer_than_the_stored_history_stays_quiet(runner):
+    """The notice log keeps only the newest stops. A continuous loop that outruns it must still
+    remember the goodbyes it already delivered, or it posts three more every ~50 cycles."""
+    from gateway import restart_loop_guard
+    runner, adapter = runner
+    for _ in range(restart_loop_guard._MAX_STORED_BOOTS * 2 + 10):
+        await _stop_cycle(runner, adapter)
+
+    assert _home_sends(adapter) == 3  # restart_loop_guard.DEFAULT_MAX_RESTARTS

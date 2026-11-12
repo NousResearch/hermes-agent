@@ -182,3 +182,36 @@ def test_reused_agent_on_an_init_time_fallback_keeps_dropping_the_primary_tier()
     for _turn in range(3):
         TurnRunner._merge_turn_request_overrides(agent, turn_route)
         assert "service_tier" not in agent.request_overrides
+
+
+def test_init_time_fallback_request_stays_free_of_the_primary_tier_every_turn():
+    """The same init-time fallback through a real agent: merge, restore and the built request
+    kwargs on turns 1-3 (turn 2 used to send the primary's ``service_tier`` to the fallback)."""
+    from unittest.mock import MagicMock, patch
+
+    from gateway.run_turn_runner import TurnRunner
+    from run_agent import AIAgent
+
+    fallback_client = MagicMock(base_url="https://openrouter.ai/api/v1", api_key="fallback-key-1234")
+    route = {"request_overrides": {"service_tier": "priority"}}
+    with (
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
+        patch("agent.context_compressor.get_model_context_length", return_value=200_000),
+        patch("agent.model_metadata.get_model_context_length", return_value=200_000),
+        patch("agent.auxiliary_client.resolve_provider_client",
+              side_effect=lambda provider, **_: (None, None) if provider == "openai"
+              else (fallback_client, "deepseek/deepseek-v4-pro")),
+    ):
+        agent = AIAgent(
+            model="gpt-6-sol", provider="openai", service_tier="priority", quiet_mode=True,
+            skip_context_files=True, skip_memory=True, request_overrides=dict(route["request_overrides"]),
+            fallback_model={"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"},
+        )
+        assert agent.model == "deepseek/deepseek-v4-pro"
+        for turn in (1, 2, 3):
+            TurnRunner._merge_turn_request_overrides(agent, route)
+            agent._restore_primary_runtime()
+            kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}], tools_for_api=[])
+            assert "service_tier" not in kwargs, f"turn {turn}"

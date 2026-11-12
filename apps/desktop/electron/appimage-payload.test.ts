@@ -172,6 +172,7 @@ test('installs that are not a mounted AppImage keep running the artifact payload
 
   const host = {
     platform: 'linux' as NodeJS.Platform,
+    execPath: '/tmp/.mount_Hermes/hermes',
     env: { APPIMAGE: '/home/u/Hermes.AppImage' },
     home: '/home/u',
     resourcesPath: '/tmp/.mount_Hermes/resources',
@@ -188,6 +189,8 @@ test('installs that are not a mounted AppImage keep running the artifact payload
   for (const variant of [
     { ...host, platform: 'darwin' as NodeJS.Platform },
     { ...host, env: {} },
+    // A .deb Hermes started from a terminal AppImage inherits that image's APPIMAGE and APPDIR.
+    { ...host, execPath: '/opt/Hermes/hermes', env: { APPIMAGE: '/home/u/Term.AppImage', APPDIR: '/tmp/.mount_Term' } },
     { ...host, stamp: stamp({ payload: 'light' }) },
     { ...host, stamp: null }
   ]) {
@@ -390,7 +393,8 @@ posix('a copy removed while the app runs is prepared again, not handed out', asy
 
   const stable = createStablePayloadResources(hostLog => ({
     platform: 'linux',
-    env: { APPIMAGE: appimage, XDG_DATA_HOME: path.join(root, 'data') },
+    execPath: path.join(root, 'mount', 'hermes'),
+    env: { APPIMAGE: appimage, APPDIR: path.join(root, 'mount'), XDG_DATA_HOME: path.join(root, 'data') },
     home: path.join(root, 'home'),
     resourcesPath: resources,
     stamp: stamp(),

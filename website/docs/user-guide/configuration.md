@@ -3190,7 +3190,7 @@ delegation:
   oneshot_max_children: 2                   # Total subagents a one-shot run (hermes chat -q / --oneshot) may spawn; 0 = unlimited. Interactive and gateway sessions are never capped by this.
   resumable_ttl_hours: 48                   # A child stopped by a restart, crash or provider failure stays continuable (delegate_task action=continue) this long, and its worktree is kept from the startup sweep.
   max_resumable: 32                         # Per profile, how many such children keep their worktree pinned; the oldest beyond it loses its pin (the record stays).
-  auto_resume: false                        # Opt-in: resume such children automatically. Off = you continue them.
+  auto_resume: false                        # Opt-in: the gateway resumes children stopped by a limit (at its reset) or a restart/crash, at most twice each, unless the parent moved on. Spends tokens unattended. Off = you continue them.
   gateway_mode: auto                        # Gateway sessions: auto | inline | background. auto = join children inside the turn (one answer) on a messaging chat whose display.interim_assistant_messages is off. See Subagent Delegation → Messaging chats without interim messages.
 ```
 

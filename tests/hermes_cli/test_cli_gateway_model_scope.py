@@ -127,6 +127,7 @@ def _prepare_for_chat(monkeypatch, cli_mod, stub):
     stub._on_tool_progress = None
     stub._on_tool_start = None
     stub._on_tool_complete = None
+    stub._on_inline_diff = None
     stub._stream_delta = None
     stub._on_tool_gen_start = None
     stub._on_notice = None

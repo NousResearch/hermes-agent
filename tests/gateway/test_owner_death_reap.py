@@ -101,6 +101,42 @@ async def test_owner_death_reap_honours_a_reconnect(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_owner_death_reap_defers_to_a_restarts_after_turn_wait(tmp_path, monkeypatch):
+    """A restart waits for in-flight turns on purpose: reaping one amputates the work it preserves."""
+    db, authority = _authority(tmp_path, monkeypatch)
+    agent = Agent()
+    authority.runner._cached_agent_for = {}.get
+    claimed, finished = asyncio.Event(), asyncio.Event()
+
+    async def execute(authority, ref, row):
+        _wire_turn_agent(authority, row['generation'], agent)
+        claimed.set()
+        await asyncio.wait_for(finished.wait(), 5)
+        return 'done'
+    monkeypatch.setattr(session_finite, 'execute_finite_admission', execute)
+    monkeypatch.setattr(session_controls, 'ORPHAN_REAP_GRACE_SECONDS', 0.05)
+
+    with db:
+        receipt = await _submit(authority, 'restart-wait')
+        await asyncio.wait_for(claimed.wait(), 5)
+        conn = AuthorityConnection(authority, object(), HUMAN_IDENTITY)
+        await conn.close()
+        # The owner began a restart's after-turn wait while this turn was still running.
+        authority.runner._draining = True
+        authority.runner._running = True
+        authority.runner.session_runtime_descriptor = {'drain_reason': 'restart_wait'}
+        await _reap_task(authority)
+        assert agent.stops == [], \
+            f'the reap amputated a turn the restart was waiting for: {agent.stops}'
+        finished.set()
+        await asyncio.wait_for(authority.sessions['s'].task, 5)
+        with db._read_ctx() as conn2:
+            row = conn2.execute('SELECT status, outcome FROM session_admissions WHERE admission_id=?',
+                                (receipt.admission_id,)).fetchone()
+    assert (row['status'], row['outcome']) == ('terminal', 'completed')
+
+
+@pytest.mark.asyncio
 async def test_owner_death_reap_cancels_queued_admissions(tmp_path, monkeypatch):
     """A queued prompt of the dead submitter must not be claimed into a new ownerless turn."""
     db, authority = _authority(tmp_path, monkeypatch)

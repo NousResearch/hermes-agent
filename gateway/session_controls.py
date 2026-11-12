@@ -148,6 +148,14 @@ async def _reap_stop_admission(authority, actor, ref, generation, admission_id):
 async def _reap_owner_orphans(authority, subject, session_id):
     try:
         await asyncio.sleep(ORPHAN_REAP_GRACE_SECONDS)
+        # A restart's after-turn wait owns these turns on purpose and stops whatever it still has
+        # when its cap elapses: reaping them here amputates exactly the work it is waiting for.
+        from gateway.drain_control import restart_wait_open
+        if restart_wait_open(authority.runner):
+            logging.getLogger(__name__).info(
+                'orphan reap deferred: a restart is waiting on the owner\'s in-flight turns '
+                '(principal=%r session=%r)', subject, session_id)
+            return
         # A live subscriber (the client itself reloading, or any watcher) keeps the turn owned.
         live = authority.sessions.get(session_id)
         if live is not None and any(member.transport_id in authority.events

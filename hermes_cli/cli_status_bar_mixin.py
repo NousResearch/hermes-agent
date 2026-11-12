@@ -319,16 +319,13 @@ class CLIStatusBarMixin:
                     int(getattr(agent, "session_api_calls", 0) or 0),
                 )
                 if getattr(self, "_cost_memo_key", None) != _key:
-                    _result = estimate_session_cost(agent)
                     self._cost_memo_key = _key
-                    self._cost_memo = _result
+                    self._cost_memo = estimate_session_cost(agent)
                 _result = getattr(self, "_cost_memo", None)
-                if _result is None:
+                if _result is None or _result.amount_usd is None:
                     snapshot["session_cost_label"] = ""
                 elif _result.status == "included":
                     snapshot["session_cost_label"] = t("cli.status_bar.cost_included")
-                elif _result.amount_usd is None:
-                    snapshot["session_cost_label"] = ""
                 else:
                     snapshot["session_estimated_cost_usd"] = float(_result.amount_usd)
                     snapshot["session_cost_status"] = _result.status

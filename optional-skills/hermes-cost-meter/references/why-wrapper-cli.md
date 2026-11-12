@@ -45,20 +45,14 @@ The sanctioned extension point is documented at
 ## Run it
 
 ```sh
-~/projects/hermes-cost-meter/tool/hermes-cost              # fresh session
-~/projects/hermes-cost-meter/tool/hermes-cost --continue   # resume, flags pass through
-```
-
-Optional alias:
-
-```sh
-alias hc='~/projects/hermes-cost-meter/tool/hermes-cost'
+scripts/hermes-cost              # fresh session
+scripts/hermes-cost --continue   # resume, flags pass through
 ```
 
 ## How it stays working across updates
 
 `hermes --print-runtime-command` prints the exact argv the launcher would exec for the
-current environment generation (right python, right bootstrap). `tool/_launch.py` reuses
+current environment generation (right python, right bootstrap). `scripts/_launch.py` reuses
 that argv and only swaps the module it runs (`hermes_cli.main` → `hermes_cost_cli`). No
 venv path is hardcoded, so an `hermes update` or a rebuilt environment is picked up
 automatically.
@@ -80,9 +74,10 @@ the meter says so instead of rendering a reassuring `$0.00`.
 
 | File | Role |
 |---|---|
-| `tool/hermes_cost_cli.py` | the wrapper CLI: widget, `/cost`, preset resolution, pricing |
-| `tool/_launch.py` | re-execs the current Hermes runtime with the wrapper module |
-| `tool/hermes-cost` | the entry point you run |
+| `scripts/hermes_cost_cli.py` | the wrapper CLI: status-bar segment, `/cost`, preset resolution, pricing |
+| `scripts/_launch.py` | re-execs the current Hermes runtime with the wrapper module |
+| `scripts/hermes-cost` | the entry point you run |
+| `scripts/selftest.py` | pty self-test: asserts the meter lands on the status bar |
 
 ## Desktop / TUI alternatives
 

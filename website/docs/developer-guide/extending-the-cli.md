@@ -22,6 +22,30 @@ There are five extension seams available:
 
 The first three are new protected hooks. The last two already existed.
 
+### Adding a value *inside* the status bar
+
+`_get_extra_tui_widgets()` adds a **separate row** above the bar. To put a value inside the
+existing status line — next to the model, context gauge and timings — override
+`_status_bar_segments()`, the single method both the classic and the modern layout render
+from (`hermes_cli/cli_modern_layout.py` calls it too):
+
+```python
+class MyCLI(HermesCLI):
+    def _status_bar_segments(self, snapshot, width, field_set, yolo_active, *, styled):
+        segments = super()._status_bar_segments(snapshot, width, field_set, yolo_active, styled=styled)
+        return [*segments[:1], [("class:status-bar-dim", "~$0.0043")], *segments[1:]]
+```
+
+Insert early (right after the model, which is segment 0) so a narrow terminal trims the
+tail — git branch, elapsed time — before it drops your value.
+
+Note: `display.show_cost` is defined in `hermes_cli/config_defaults.py` and documented in
+the configuration reference, but nothing reads it yet
+([#93951](https://github.com/NousResearch/hermes-agent/issues/93951)); setting it has no
+effect. A complete, installable implementation of a spend segment built on this seam ships
+as the `hermes-cost-meter` optional skill
+([`optional-skills/hermes-cost-meter`](https://github.com/NousResearch/hermes-agent/tree/main/optional-skills/hermes-cost-meter)).
+
 ## Quick start: a wrapper CLI
 
 ```python

@@ -1496,7 +1496,8 @@ def _deliver_via_live_adapter(
 def _deliver_standalone(
     t: _TargetDelivery, content: str, media_files: list, target_errors: list, delivery_errors: list,
 ) -> Optional[bool]:
-    """Standalone fallback for a target the live lane did not deliver; True once the text was sent."""
+    """Standalone fallback for a target the live lane did not deliver; True once the text was sent,
+    in full or in part (a split send that failed after a chunk landed)."""
     job = t.job
     if t.is_relay:
         # Relay owns the destination and credential; a native retry could duplicate — fail closed.
@@ -1505,14 +1506,17 @@ def _deliver_standalone(
         delivery_errors.extend(target_errors)
         return
     result, err = _standalone_send(t, content, media_files)
+    partial = False
     if err is None and result and result.get("error"):
         # Not inside an except block — the error comes from the result dict, no traceback.
         err = f"delivery error: {result['error']} (target {t.where})"
         logger.error("Job '%s': %s", job["id"], err)
         # A sender's failure dict may follow a delivered (or partly delivered) payload: only the
         # contract's NONE (``gateway.platforms._shared.delivery_state``) makes a replay safe.
-        from gateway.platforms._shared import NONE, delivery_state
-        t.standalone_in_flight = t.standalone_in_flight or delivery_state(result) != NONE
+        from gateway.platforms._shared import NONE, PARTIAL, delivery_state
+        state = delivery_state(result)
+        t.standalone_in_flight = t.standalone_in_flight or state != NONE
+        partial = state == PARTIAL
     if err is not None:
         target_errors.append(err)
         delivery_errors.extend(target_errors)
@@ -1530,7 +1534,8 @@ def _deliver_standalone(
             # A satellite profile's worker has no platform token, so standalone cannot stand in
             # for a live adapter that is only waiting to reconnect: keep the payload for that adapter.
             _queue_for_live_reconnect(t, content, media_files, delivery_errors)
-        return
+        # A partial send's head is on screen at this target, so the run did reach someone.
+        return partial
     # Standalone senders report per-file attachment failures in ``warnings`` while returning
     # success; surface them so a vanished attachment doesn't mark the run ok.
     for _w in (result.get("warnings") if isinstance(result, dict) else None) or []:

@@ -32,6 +32,9 @@ The three do not share code, APIs, or delivery. Only the backend `plugin_api.py`
 namespace (`/api/plugins/<id>`) is shared between the desktop and dashboard SDKs.
 :::
 
+For an ordered procedure, use the [native workflow checklist](./plugins/index.md#native-workflow-checklist).
+It covers session routing, turn observers, plugin data, and package checks.
+
 ## Mental model
 
 The SDK follows the VS Code module model. A plugin author imports exactly one
@@ -1428,8 +1431,9 @@ ctx.pet.visible                            // ReadableAtom<boolean> — is a pet
 ctx.runAction('view.showBrowser')          // run a built-in app action → { ok: true } | { ok: false, reason, error }
 ctx.listActions()                          // [{ id, label, category }] — the ids runAction accepts
 host.navigate('/route')                    // hash-route navigation
-host.openSession(id, { profile?, intent? }) // open a stored session core-style;
-                                           //   profile: soft-swap to that profile's backend first
+host.openSession(id, { profile?, route?, intent? }) // open a stored session core-style;
+                                           //   route: owner descriptor from host.profileRoutes()
+                                           //   profile: profile-only routing for local/legacy callers
                                            //   intent: 'in-place' (default) | 'stack' | 'tab' | 'window'
 host.newChat(profile?)                     // fresh chat draft, optionally in another profile
 host.openWorkspace(id, { render, title?, minWidth?, onClose? })
@@ -1461,6 +1465,10 @@ host.pluginDecisions                       // READ-ONLY atom: this window's plug
 host.i18n.registerAppLocale(id, { endonym?, rtl?, translations? })  // add a whole UI language (language pack); returns disposer
 host.i18n.languageOptions()                // [{ id, endonym, rtl, source }] — what the language switcher lists
 ```
+
+`host.openSession(id, { route })` opens a session through its owning connection and profile.
+Use the matching descriptor from `host.profileRoutes()`. Keep its `connectionId` and source-local `profile` with the session ID.
+Opening a session is navigation. By default, it does not switch the active workspace or backend API scope.
 
 `host.request` is the same JSON-RPC the app itself uses (sessions, config, skills,
 cron, kanban, …). `host.requestProfile` accepts a descriptor from
@@ -2338,6 +2346,11 @@ register(ctx) {
 `ctx.rest` is profile-aware and rejects path traversal (`..`) so you can never
 address another plugin's API or a core route through it. `PluginRestOptions` is
 `{ method?, body?, upload?: { filename, contentType?, bytes }, timeoutMs? }`.
+
+Here, profile-aware means the active API request scope, not the owner of an arbitrary open session.
+`host.openSession` does not change that scope by default.
+For a record-specific request, establish the intended backend scope through the supported public contract first.
+If the required scope cannot be established, do not send the request.
 
 `ctx.socket` auto-reconnects with backoff until disposed. **It resolves to a no-op
 on OAuth remotes** (single-use WS tickets are core-managed) — treat the socket as

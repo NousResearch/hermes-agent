@@ -56,6 +56,142 @@ Hermes already ships these for plugin authors:
 - **Make LLM calls:** use `ctx.llm`, which comes with host-owned credentials and a fail-closed trust gate. See [Plugin LLM Access](../plugin-llm-access.md).
 :::
 
+## Native workflow checklist {#native-workflow-checklist}
+
+Use this procedure for a plugin that connects its own data to a native Hermes conversation.
+The procedure is for plugin authors, including AI coding agents.
+It uses existing public APIs.
+It does not add a runtime guarantee.
+
+In this procedure:
+
+- **Session** means the native Hermes conversation.
+- **Turn** means one agent execution in that session.
+- **Plugin data** means records that the plugin owns, such as documents or review items.
+
+### 1. Select the public contract
+
+1. Record the target Hermes version and Desktop version.
+2. Find each required Python import in the [public plugin API](./public-api.md).
+3. Find each required Desktop operation in the [Desktop SDK](../desktop-plugin-sdk.md).
+4. Check each operation against the target versions.
+
+If a required guarantee has no public contract, stop that part of the implementation.
+Describe the missing guarantee in a [generic API request](./catalog-submission.md#asking-for-a-hook).
+Do not replace the missing contract with private gateway state or runtime patches.
+
+### 2. Use the native session and composer
+
+1. Keep the session ID and its owner route with the plugin record.
+2. Find the matching owner route in [`host.profileRoutes()`](../desktop-plugin-sdk.md#host-api).
+3. If the saved owner is absent or ambiguous, stop the operation.
+4. Open the session with `host.openSession(sessionId, { route })`, using that owner route.
+5. Use [`host.composer`](../desktop-plugin-sdk.md#composer-draft-api--read-and-write-the-live-input) for a draft edit or submission.
+
+An owner route identifies the connection and its source-local `profile`.
+A profile name alone is not enough when several connections expose that name.
+Do not substitute the backend `targetProfile` for the route's `profile`.
+
+Use an explicit session ID for an action that belongs to a specific session.
+Only when the action deliberately targets the focused composer, use `null`.
+Do not find the composer through DOM queries, React internals, or synthetic input events.
+
+For example, call this function from an explicit user action for the focused session:
+
+```javascript
+import { host } from '@hermes/plugin-sdk'
+
+export async function addReviewRequest() {
+  const sessionId = host.state.focusedSessionId.get()
+  if (!sessionId) {
+    host.notify({ kind: 'info', message: 'Open the target session first.' })
+    return
+  }
+  const applied = await host.composer.insertText(
+    sessionId, 'Review this item before you change it.', { mode: 'block' }
+  )
+  if (!applied) {
+    host.notify({ kind: 'info', message: 'The target composer is unavailable.' })
+  }
+}
+```
+
+This example adds draft text.
+It does not submit a prompt or save plugin data.
+If a composer operation returns `false`, do not redirect the action to another session.
+A successful submission is not evidence that the turn completed or that a document changed.
+
+### 3. Observe the turn without claiming write authority
+
+1. Select the hook from the [hook reference](../../user-guide/features/hooks.md#plugin-hooks).
+2. Accept additional callback fields through `**kwargs`.
+3. Match the callback's session and turn identifiers to the operation you recorded.
+4. If a required identifier is absent, leave the operation unconfirmed.
+
+`pre_llm_call` and `post_llm_call` operate once per turn, not once per provider request.
+`post_llm_call` can report non-interrupted turns with a final response, including abnormal exits.
+It does not prove success.
+Interrupted turns do not produce that callback.
+The callback return value does not control finalization.
+
+An observer callback does not grant permission to save plugin data.
+The absence of `post_llm_call` is not proof that Stop canceled every possible side effect.
+
+If a save requires host-enforced ordering against Stop, make sure that the public contract provides that ordering.
+If the contract does not provide that ordering, request the contract before you implement the save path.
+Do not infer write authority from a busy flag, a timer, or a final response.
+
+### 4. Keep data and authentication within their contracts
+
+1. Use the public `hermes_state.SessionDB` API for session reads that your plugin requires.
+2. Keep plugin records in the [plugin data directory](#store-durable-state).
+3. Check the target backend scope before a record-specific request.
+4. Call the plugin backend through [`ctx.rest`](../desktop-plugin-sdk.md#calling-it-from-the-plugin).
+5. Enforce the plugin's document and workspace permissions in its backend.
+
+Opening a session does not, by default, switch the active workspace or backend API scope.
+`ctx.rest` uses the active API request scope, not the owner route saved with a record.
+Do not assume that session navigation binds later REST calls to that session's owner.
+If the public API cannot establish the required target scope, stop that operation.
+
+Do not write plugin records into core session tables.
+Do not depend on their SQL schema.
+Routes on the host's `/api/plugins/<id>/` mount use the host's authentication.
+Host authentication does not establish permission to change every plugin document.
+Do not read private host credentials to create a second authentication mechanism.
+
+For a plugin dialog, track the dialog's own open state.
+Do not use unrelated dialogs elsewhere in the app as an action guard.
+
+### 5. Check the package before submission
+
+Both commands below execute plugin code.
+A temporary `HERMES_HOME` is not an operating-system sandbox.
+The `--install-deps` option also installs plugin dependencies.
+
+1. Select a disposable environment for the target Hermes version and its dependencies.
+2. Run Doctor on code that you trust enough to import:
+
+   ```bash
+   hermes plugins doctor /path/to/your-plugin --ci
+   ```
+
+3. Run the catalog check on the same package:
+
+   ```bash
+   hermes plugins validate /path/to/your-plugin --install-deps
+   ```
+
+4. Examine every warning, including warnings that do not cause a failed exit.
+5. Exercise the workflow in the target host with test data.
+6. If the package ships generated files, rebuild those files from the tested commit.
+7. If the package ships generated files, compare the rebuilt files with the shipped files.
+8. Record the tested commit and the checks that did not run.
+
+If a required check fails or a required public contract is absent, stop submission.
+A successful package check is not proof of Desktop behavior or catalog approval.
+Use the existing [catalog submission procedure](./catalog-submission.md) for publication.
+
 ## Portable Agent Plugins v1 packages
 
 Hermes can also install and load directory packages that target the Agent
@@ -1569,7 +1705,7 @@ Each hook is documented in full on the **[Event Hooks reference](../../user-guid
 | [`pre_tool_call`](../../user-guide/features/hooks.md#pre_tool_call) | Before any tool executes | `tool_name: str, args: dict, task_id: str` | optional directive: `{"action": "block", "message": ...}` vetoes the call; `{"action": "approve", "message": ...}` escalates to the human-approval gate |
 | [`post_tool_call`](../../user-guide/features/hooks.md#post_tool_call) | After any tool returns | `tool_name: str, args: dict, result: str, task_id: str, duration_ms: int` | ignored |
 | [`pre_llm_call`](../../user-guide/features/hooks.md#pre_llm_call) | Once per turn, before the tool-calling loop | `session_id: str, user_message: str, conversation_history: list, is_first_turn: bool, model: str, platform: str` | [context injection](#pre_llm_call-context-injection) |
-| [`post_llm_call`](../../user-guide/features/hooks.md#post_llm_call) | Once per turn, after the tool-calling loop (successful turns only) | `session_id: str, user_message: str, assistant_response: str, conversation_history: list, model: str, platform: str` | ignored |
+| [`post_llm_call`](../../user-guide/features/hooks.md#post_llm_call) | Once per non-interrupted turn with a final response. Does not prove success | `session_id: str, user_message: str, assistant_response: str, conversation_history: list, model: str, platform: str` | ignored |
 | `pre_api_request` | Before each raw provider API request (several per turn when the model calls tools) | `session_id: str, model: str, provider: str, base_url: str, api_mode: str, api_call_count: int, message_count: int, tool_count: int, approx_input_tokens: int, max_tokens: int, request: dict` | ignored |
 | `post_api_request` | After each raw provider API request returns | `pre_api_request` fields plus `api_duration: float, finish_reason: str, response_model: str \| None, usage: dict, response: dict, assistant_content_chars: int, assistant_tool_call_count: int` | ignored |
 | `api_request_error` | A provider API call raised | correlation fields plus `status_code: int \| None, retry_count: int \| None, max_retries: int \| None, retryable: bool \| None, reason: str \| None, error: dict, request: dict` | ignored |

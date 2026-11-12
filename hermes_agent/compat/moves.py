@@ -6,6 +6,7 @@ value changes. Plain dicts and no imports, because a process from an older relea
 
 MOVES: dict[str, str] = {
     "acp_adapter": "hermes_agent.acp_adapter",
+    "agent": "hermes_agent.agent",
     "batch_runner": "hermes_agent.batch_runner",
     "cron": "hermes_agent.cron",
     "gateway": "hermes_agent.gateway",
@@ -78,6 +79,7 @@ MOVES: dict[str, str] = {
     "hermes_state_worker_lifecycle": "hermes_agent.hermes_state_worker_lifecycle",
     "model_tools": "hermes_agent.model_tools",
     "registration_lifecycle": "hermes_agent.registration_lifecycle",
+    "run_agent": "hermes_agent.run_agent",
     "tools": "hermes_agent.tools",
     "toolset_distributions": "hermes_agent.toolset_distributions",
     "toolsets": "hermes_agent.toolsets",

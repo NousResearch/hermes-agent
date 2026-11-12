@@ -1,6 +1,6 @@
 name: physis
 repo: https://github.com/ilPez00/hermes-physis
-sha: 1bfb7af31adf0cb623e06362bcc20beddb15db3d
+sha: 0f004ff84866b2e4cec169a9e6bee8437bbabcce
 version: "1.7.1"
 description: "Offline evidence-backed execution memory: per-repo graph context, a deterministic verify hook, and verified tool recipes that replay with zero provider calls and refuse when their tools, registry or captured files changed. An opt-in pre-reasoning packet (pre_context) and an edit-following graph (auto_observe) are off by default; the packet reads an existing index only and is skipped when the graph is stale or retrieval is weak. Two bundled Linux engines and no API key or model download; approved host commands still run with host privileges and Python entry points need an interpreter, and untracked dependencies are not replay-checked. Operator-only approval and replay; the model cannot set executable paths or trigger raw commands. Disclosure — Ships two compiled Linux x86_64 engines (bin/physis-core, bin/replant) built and attested by the repo's own GitHub workflow; operator-approved replay commands and the operator's verify_cmd run as shell commands with the user's file and network access; physis_ingest can read shell history, ~/.claude/projects transcripts, every process's command line and the browser history database only when the operator enables those sources in plugins.entries.physis.settings.ingest_sources (off by default)."
 maintainer: ilPez00
@@ -8,7 +8,7 @@ tier: community
 category: tools
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/ilPez00/hermes-physis#readme
-image: https://raw.githubusercontent.com/ilPez00/hermes-physis/1bfb7af31adf0cb623e06362bcc20beddb15db3d/assets/banner.png
+image: https://raw.githubusercontent.com/ilPez00/hermes-physis/0f004ff84866b2e4cec169a9e6bee8437bbabcce/assets/banner.png
 readme: true
 platforms: [linux]
 # Compiled engines shipped at the pin. Each carries a GitHub build-provenance

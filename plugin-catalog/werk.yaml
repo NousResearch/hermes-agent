@@ -1,6 +1,6 @@
 name: werk
 repo: https://github.com/aaddrick/werk
-sha: 5fbac49c20c994b477bc2382bdf646352e1f871e
+sha: 457f4aa78e14f170b8cbeee885d8396cb700f8b8
 description: >-
   Plain-language equipment description in, engineering package out: werk triages the description into
   domains, breaks it into work items, runs them through review roles and domain-pack checks (a build123d
@@ -20,9 +20,9 @@ category: tools
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/aaddrick/werk#readme
 version: "0.1.0"
-image: https://raw.githubusercontent.com/aaddrick/werk/5fbac49c20c994b477bc2382bdf646352e1f871e/docs/social-card.png
+image: https://raw.githubusercontent.com/aaddrick/werk/457f4aa78e14f170b8cbeee885d8396cb700f8b8/docs/social-card.png
 screenshots:
-  - https://raw.githubusercontent.com/aaddrick/werk/5fbac49c20c994b477bc2382bdf646352e1f871e/docs/example/conveyor-still.png
+  - https://raw.githubusercontent.com/aaddrick/werk/457f4aa78e14f170b8cbeee885d8396cb700f8b8/docs/example/conveyor-still.png
 readme: true
 platforms: [linux]   # only Linux is tested (unshare, uv-managed CPython 3.12)
 title: werk

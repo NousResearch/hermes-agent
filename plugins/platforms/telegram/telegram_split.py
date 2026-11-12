@@ -22,12 +22,32 @@ _MDV2_ESCAPE_RE = re.compile(r"\\(.)", re.DOTALL)
 _DROPPED_MARKER_RE = {False: _RAW_INDICATOR_RE, True: re.compile(r"\s*" + _MDV2_INDICATOR_RE.pattern)}
 
 
-def cap_split_chunks(adapter: Any, chunks: list[str], *, formatted: bool) -> list[str]:
-    """Keep the first ``MAX_SPLIT_MESSAGES - 1`` chunks plus the truncation notice (when warnings
-    are shown), renumbering the ``(N/M)`` markers to the capped count. ``formatted`` chunks are
-    MarkdownV2 already, so the notice is formatted the same way and escapes are not counted as
-    dropped characters; raw chunks get their formatting at send time."""
+class CappedChunks(list):
+    """``cap_split_chunks`` output that the cap cut; ``dropped`` is the reply text it dropped."""
+    dropped = 0
+
+
+def split_budget(adapter: Any, metadata: Any) -> int:
+    """The ceiling for one delivery: ``MAX_SPLIT_MESSAGES``, lowered by the stream consumer's
+    ``_split_budget`` (the messages this call may still open inside the reply's ceiling)."""
+    budget = metadata.get("_split_budget") if isinstance(metadata, dict) else None
     cap = adapter.MAX_SPLIT_MESSAGES
+    return max(1, min(cap, budget)) if type(budget) is int else cap
+
+
+def capped_raw(chunks: Any, raw: Any) -> Any:
+    """``raw_response`` for a delivery of ``chunks``: a capped one says so (``split_capped``)."""
+    if not isinstance(chunks, CappedChunks):
+        return raw
+    return {**(raw if isinstance(raw, dict) else {}), "split_capped": True, "dropped_chars": chunks.dropped}
+
+
+def cap_split_chunks(adapter: Any, chunks: list[str], *, formatted: bool, metadata: Any = None) -> list[str]:
+    """Keep the first ``cap - 1`` chunks plus the truncation notice (when warnings are shown),
+    renumbering the ``(N/M)`` markers to the capped count; ``cap`` is :func:`split_budget`.
+    ``formatted`` chunks are MarkdownV2 already, so the notice is formatted the same way and escapes
+    are not counted as dropped characters; raw chunks get their formatting at send time."""
+    cap = split_budget(adapter, metadata)
     if len(chunks) <= cap:
         return chunks
     marker = _MDV2_INDICATOR_RE if formatted else _RAW_INDICATOR_RE
@@ -35,12 +55,17 @@ def cap_split_chunks(adapter: Any, chunks: list[str], *, formatted: bool) -> lis
     dropped_text = (_DROPPED_MARKER_RE[formatted].sub("", chunk) for chunk in dropped)
     if formatted:
         dropped_text = (_MDV2_ESCAPE_RE.sub(r"\1", chunk) for chunk in dropped_text)
-    notice = adapter._split_cap_notice(sum(len(chunk) for chunk in dropped_text))
+    dropped_chars = sum(len(chunk) for chunk in dropped_text)
+    notice = adapter._split_cap_notice(dropped_chars)
     tail = [adapter.format_message(notice) if formatted else notice] if notice else []
     total = len(kept) + len(tail)
     if formatted:
-        return [marker.sub(lambda m: f"\\({m.group(1)}/{total}\\)", chunk) for chunk in kept] + tail
-    return [marker.sub(lambda m: f" ({m.group(1)}/{total})", chunk) for chunk in kept] + tail
+        out = CappedChunks(marker.sub(lambda m: f"\\({m.group(1)}/{total}\\)", chunk) for chunk in kept)
+    else:
+        out = CappedChunks(marker.sub(lambda m: f" ({m.group(1)}/{total})", chunk) for chunk in kept)
+    out += tail
+    out.dropped = dropped_chars
+    return out
 
 
 def _strip_mdv2(text: str) -> str:

@@ -1,13 +1,13 @@
 name: gogogoogle
 repo: https://github.com/josefacero/hermes-gogogoogle
-sha: 166dca2141b676dcf84d48b6b64bd716a7e9925c
-description: "Hand bulk work to Google Antigravity's agy CLI as a worker agent on your Antigravity quota while Hermes keeps its own model, then have a fresh agy conversation verify the result against the real files and git diff. Roles do, research and review; background jobs; resume after timeout; a verifier chain that skips models out of quota until their reset; a git check that fails read-only runs that changed files; per-run stats. Disclosure — Each `antigravity_delegate` call asks for Hermes approval. `do` runs start agy with `--dangerously-skip-permissions`, so agy can run shell commands and change files outside the workdir. Research, review and verification runs deny writes, shell and non-Playwright MCP through agy session rules, which are not an OS sandbox: agy can still read files outside the workdir, and its headless browser (isolated profile) can reach your local network. Task text, files agy reads and a diff excerpt go to Google on your Antigravity account. Writes run logs and job records under the plugin data directory."
+sha: 3ba13d5bfd941cc7290d58d30673e07567a623df
+description: "Hand bulk work to Google Antigravity's agy CLI as a worker agent on your Antigravity quota while Hermes keeps its own model, then have a fresh agy conversation verify the result against the real files and git diff. Roles do, research and review; background jobs; resume after timeout; a verifier chain that skips models out of quota until their reset; a git check that fails read-only runs that changed files; per-run stats. Disclosure — Each `antigravity_delegate` call asks for Hermes approval. `do` runs start agy with `--dangerously-skip-permissions`, so agy can run shell commands and change files outside the workdir. Research, review and verification runs deny writes, shell and non-Playwright MCP through agy session rules, which are not an OS sandbox: agy can still read files outside the workdir, and its headless browser (isolated profile) can reach your local network. Task text, files agy reads and a diff excerpt go to Google on your Antigravity account. Writes run logs and job records under the plugin data directory. Experimental, off unless configured: `antigravity_remote_review` sends one review-only task over the system `ssh` client (using your SSH agent and config; the plugin reads no key) to a second Windows machine you set up, where agy runs on that machine's Antigravity account. Tested on one Windows-to-Windows pair only."
 maintainer: josefacero
 tier: community
 category: tools
 requires_hermes: ">=0.22.0"
 docs_url: https://github.com/josefacero/hermes-gogogoogle#readme
-version: "0.5.0"
+version: "0.6.0"
 readme: true
 known_issues:
   - "Requires agy and an authenticated Antigravity account; runs use that account's quota."
@@ -20,11 +20,14 @@ known_issues:
   - "Developed and tested on Windows 11 only. Elsewhere a timed-out run ends agy itself but not necessarily its child processes."
   - "Research, review and verification can use agy's Playwright browser (headless by default; setting browser_mode: headless, visible or off). Page text is untrusted. Playwright tools that run code, type or upload files are denied and every other agy MCP server is denied, but a Playwright tool a later release adds stays allowed until listed. The browser can reach your local network."
   - "The plugin points the browser's snapshot files at a temp folder; an older setup may still leave a .playwright-mcp/ folder in the working directory, which the change check ignores."
+  - "Remote review (experimental, only when remote_workers is set): tested on one Windows 11 to Windows 11 pair, review only. Not a sandbox: agy on the worker can read files outside the remote folder. The SSH forced command and spool permissions are documented, not enforced by the plugin. An UNKNOWN or TIMED OUT result does not prove the work stopped; nothing retries automatically."
+  - "Without a configured worker, validation warns that antigravity_remote_review is declared but not registered; that is expected."
 capabilities:
   provides_tools:
     - antigravity_delegate
     - antigravity_job
     - antigravity_stats
+    - antigravity_remote_review
   provides_hooks:
     - pre_tool_call
   provides_middleware: []

@@ -61,8 +61,8 @@ def test_final_log_transport_failure_keeps_known_exit(monkeypatch, exit_code):
     registry = ProcessRegistry()
     session = ProcessSession(id="proc_final", command="job")
     env = Mock()
-    env.execute.side_effect = [{"output": "3 0\nabc"}, {"output": "1"},
-                               {"output": str(exit_code)}, OSError("private")]
+    env.execute.side_effect = [{"output": "3 0 run\nabc"}, {"output": "", "output_incomplete": True},
+                               {"output": "1"}, {"output": str(exit_code)}, OSError("private")]
     monkeypatch.setattr("tools.process_registry_env_log.time.sleep", Mock())
     registry._env_poller_loop(session, env, "log", "pid", "exit")
     assert session.exit_code == exit_code

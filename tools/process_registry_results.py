@@ -47,6 +47,10 @@ def _result_paths():
 
 
 def save_completed_result(session) -> None:
+    """Retain *session*'s completion receipt under this profile's logs. A hosted agent's process
+    has none on this host: its command and output are the tenant's, kept in the live registry only."""
+    if session.sandbox_key:
+        return
     from agent.redact import redact_sensitive_text, redact_terminal_output
     from tools.process_registry import MAX_OUTPUT_CHARS
 
@@ -91,9 +95,11 @@ def load_completed_results(prefix: str = "") -> dict:
     from tools.process_registry import ProcessSession
 
     from gateway.session_context import get_session_env
+    from tools.environments.sandbox_scope import hosted_scope
 
     owner = get_session_env("HERMES_SESSION_ID", "")
-    if not owner:
+    # A hosted agent's processes leave no receipt here and it sees no local one: never read or prune them.
+    if not owner or hosted_scope() is not None:
         return {}
     results = {}
     try:
@@ -112,7 +118,9 @@ def load_completed_results(prefix: str = "") -> dict:
                 continue
             session = ProcessSession(
                 **{key: record[key] for key in _RESULT_FIELDS},
-                exited=True, output_buffer=record["output"], capture_error=record.get("capture_error", ""),
+                # Receipts written before processes carried a sandbox are a local activity's.
+                sandbox_key=record.get("sandbox_key", ""), exited=True, output_buffer=record["output"],
+                capture_error=record.get("capture_error", ""),
             )
             session._completion_event.set()
             results[session.id] = session

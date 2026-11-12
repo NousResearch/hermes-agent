@@ -1456,10 +1456,16 @@ def _live_default_multiplexer() -> bool:
         return False
 
 
-def seed_profile_skills(profile_dir: Path, quiet: bool = False) -> Optional[dict]:
+def seed_profile_skills(profile_dir: Path, quiet: bool = False, problems: Optional[list] = None) -> Optional[dict]:
     """Seed bundled skills into a profile via subprocess (sync_skills() caches HERMES_HOME at
     module level). Returns the sync result dict, or None on failure. ``--no-skills`` profiles
-    still run the sync: ``sync_skills()`` detects the marker and seeds only essentials."""
+    still run the sync: ``sync_skills()`` detects the marker and seeds only essentials.
+    ``problems`` also collects the failure lines (a gateway's quiet create hands them to its client)."""
+    def report(*lines: str) -> None:
+        (problems if problems is not None else []).extend(lines)
+        if not quiet:
+            print(*lines, sep="\n")
+
     project_root = Path(__file__).parent.parent.resolve()
     try:
         result = subprocess.run(
@@ -1473,19 +1479,13 @@ def seed_profile_skills(profile_dir: Path, quiet: bool = False) -> Optional[dict
         )
         if result.returncode == 0 and result.stdout.strip():
             return json.loads(result.stdout.strip())
-        if not quiet:
-            print(f"⚠ Skill seeding returned exit code {result.returncode}")
-            if result.stderr.strip():
-                print(f"  {result.stderr.strip()[:200]}")
-        return None
+        stderr = result.stderr.strip()
+        report(f"⚠ Skill seeding returned exit code {result.returncode}", *([f"  {stderr[:200]}"] if stderr else []))
     except subprocess.TimeoutExpired:
-        if not quiet:
-            print("⚠ Skill seeding timed out (60s)")
-        return None
+        report("⚠ Skill seeding timed out (60s)")
     except Exception as e:
-        if not quiet:
-            print(f"⚠ Skill seeding failed: {e}")
-        return None
+        report(f"⚠ Skill seeding failed: {e}")
+    return None
 
 
 def backfill_profile_envs(quiet: bool = False) -> list[str]:

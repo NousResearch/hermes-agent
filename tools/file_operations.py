@@ -18,7 +18,6 @@ import json
 import logging
 import secrets
 import time
-import unicodedata
 from abc import ABC, abstractmethod
 from typing import Optional, Dict
 from pathlib import Path
@@ -28,7 +27,8 @@ from agent.file_safety import get_write_denied_error
 from tools.file_operations_common import (
     ExecuteResult, PatchResult, ReadResult, SearchResult, WriteResult,
     _UTF8_BOM, _detect_line_ending, _has_bom, _normalize_line_endings, _strip_bom,
-    _strip_terminal_fence_leaks, normalize_read_pagination, normalize_search_pagination)
+    _strip_terminal_fence_leaks, filename_match_key, normalize_read_pagination,
+    normalize_search_pagination)
 from tools.file_operations_lint import LINTERS_INPROC, LintMixin, _FAIL_CLOSED_INPROC_EXTS
 from tools.file_operations_search import SearchMixin
 from tools import file_operations_native as _native_io
@@ -1177,37 +1177,22 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             file_size=file_size, truncated=truncated, hint=hint,
             truncated_lines=True if truncated_lines else None)
 
-    # Confusable characters seen in real filenames, collapsed after NFC.
-    _CONFUSABLES = (
-        ("\u202f", " "),  # narrow no-break space (macOS screenshots)
-        ("\u00a0", " "),  # no-break space
-        ("\u2019", "'"),  # right single quotation mark (Finder)
-        ("\u2018", "'"),  # left single quotation mark
-    )
-
     def _unicode_variant_match(self, path: str) -> Optional[str]:
         """On-disk spelling of a file whose name is unicode-equivalent to ``path``
-        (NFC/NFD, confusable spaces/quotes). Returns the entry only when EXACTLY one
+        (``filename_match_key``). Returns the entry only when EXACTLY one
         matches — several candidates = homoglyph collision, guessing would read the
         wrong file."""
         dir_path = os.path.dirname(path) or "."
         filename = os.path.basename(path)
         if not filename:
             return None
-
-        def _canon(name: str) -> str:
-            out = unicodedata.normalize("NFC", name)
-            for src, dst in self._CONFUSABLES:
-                out = out.replace(src, dst)
-            return out
-
-        target = _canon(filename)
+        target = filename_match_key(filename)
         ls_result = self._exec(f"ls -1 {self._escape_shell_arg(dir_path)} 2>/dev/null")
         if ls_result.exit_code != 0 or not ls_result.stdout.strip():
             return None
         candidates = [
             entry for entry in _strip_terminal_fence_leaks(ls_result.stdout).splitlines()
-            if entry and entry != filename and _canon(entry) == target]
+            if entry and entry != filename and filename_match_key(entry) == target]
         if len(candidates) == 1:
             return os.path.join(dir_path, candidates[0]) if dir_path != "." or "/" in path else candidates[0]
         return None

@@ -111,16 +111,14 @@ def test_remote_log_capture_fault_does_not_advance_offset(monkeypatch):
     session = ProcessSession(id="proc_remote", command="side-effecting job")
     env = Mock()
     env.execute.side_effect = [
-        {"output": "6 0\nabc", "returncode": 0, "output_incomplete": True,
+        {"output": "6 0 run\nabc", "returncode": 0, "output_incomplete": True,
          "capture_error": "injected"},
         {"output": "0", "returncode": 0},
-        {"output": "6 0\nabcdef", "returncode": 0},
-        {"output": "1", "returncode": 0},
-        {"output": "7", "returncode": 0},
-        {"output": "10 6\ntail", "returncode": 0},
+        {"output": "6 0 run\nabcdef", "returncode": 0},
+        {"output": "10 6 exit:7\ntail", "returncode": 0},
     ]
     offsets = []
-    def log_command(path, offset):
+    def log_command(path, offset, pid_path, exit_path):
         offsets.append(offset)
         return f"read-log {offset}"
     monkeypatch.setattr(registry, "_log_delta_command", log_command)
@@ -130,7 +128,7 @@ def test_remote_log_capture_fault_does_not_advance_offset(monkeypatch):
     assert session.output_buffer == "abcdeftail"
     assert session.exit_code == 7
     assert session.capture_fields()["output_incomplete"] is True
-    assert env.execute.call_count == 6
+    assert env.execute.call_count == 4
 
 
 def test_adopted_log_decode_failure_still_records_exit(tmp_path, monkeypatch):

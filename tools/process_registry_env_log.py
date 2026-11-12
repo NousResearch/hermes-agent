@@ -36,9 +36,8 @@ class ProcessEnvLogMixin:
             try:
                 fetched = env.execute(self._log_delta_command(
                     q(log_path), prev_output_bytes, q(pid_path), q(exit_path)), timeout=10)
-                if self._capture_fetch_failed(session, fetched, "remote log/status read"):
-                    continue
-                reply = parse_log_delta_reply(fetched.get("output", ""))
+                incomplete = self._capture_fetch_failed(session, fetched, "remote log/status read")
+                reply = None if incomplete else parse_log_delta_reply(fetched.get("output", ""))
                 if reply is not None:
                     prev_output_bytes = self._ingest_log_reply(session, reply, prev_output_bytes)
                     if reply.exit_code is not None:

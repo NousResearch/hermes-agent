@@ -20,7 +20,6 @@ import { Command, CommandGroup, CommandInput, CommandItem, CommandList } from '@
 import { HighlightMatches } from '@/components/ui/highlight-matches'
 import { KbdCombo } from '@/components/ui/kbd'
 import { getHermesConfigRecord, listAllProfileSessions } from '@/hermes'
-import { useMediaQuery } from '@/hooks/use-media-query'
 import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import {
@@ -569,13 +568,14 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
     useTheme()
 
   // Mode rows preview like theme rows do: paint the committed skin at the
-  // highlighted brightness. `system` has to be resolved here — previewTheme
-  // paints a concrete light/dark.
-  const systemDark = useMediaQuery('(prefers-color-scheme: dark)')
-
+  // highlighted brightness. `system` has to be resolved here, because
+  // previewTheme paints a concrete light/dark. Read the context's resolved
+  // mode rather than a second prefers-color-scheme query: the query does not
+  // reliably re-fire on a native theme switch (#128622), while resolvedMode
+  // tracks it through the theme-updated tick.
   const resolveThemeMode = useCallback(
-    (target: ThemeMode): 'light' | 'dark' => (target === 'system' ? (systemDark ? 'dark' : 'light') : target),
-    [systemDark]
+    (target: ThemeMode): 'light' | 'dark' => (target === 'system' ? resolvedMode : target),
+    [resolvedMode]
   )
 
   const [search, setSearch] = useState('')

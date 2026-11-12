@@ -415,6 +415,7 @@ declare global {
       onStreamWorkWake?: (callback: (token: string) => void) => () => void
       setTitleBarTheme?: (payload: HermesTitleBarTheme) => void
       setNativeTheme?: (mode: 'dark' | 'light' | 'system') => void
+      onNativeThemeUpdated?: (callback: (payload: { dark: boolean }) => void) => () => void
       /** Main-process fact: this OS can back glass with a native material. */
       glassSupported?: boolean
       /** Main-process fact: this OS can do any translucency at all (not Linux). */

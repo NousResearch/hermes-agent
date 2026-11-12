@@ -8,11 +8,11 @@ prefix in ``hermes_agent/compat/moves.py``), write a file at the old path:
   module object. Loaded by path (``runpy.run_path``, ``spec_from_file_location``), it carries the
   moved module's names. Run as a script or with ``-m``, it runs the moved module as ``__main__``.
   When ``hermes_agent`` is not importable (a virtualenv that maps only the old top-level names) or
-  the file runs as a script, it first puts the repository root on ``sys.path``. While Python locates a
-  module under it for ``python -m``, it imports the root ``hermes_bootstrap`` first, as every entry
-  module does, so the repair of a killed update runs before anything under ``hermes_agent`` is
-  imported. Its body is one
-  ``try`` statement, so a file cut short is a SyntaxError, never an empty module.
+  the file runs as a script, it first puts the repository root on ``sys.path``. When that forwarding
+  fails while Python locates a module under it for ``python -m`` (a killed update left
+  ``hermes_agent`` torn or moved aside), it imports the root ``hermes_bootstrap``, which repairs the
+  tree and relaunches, then forwards once more; a healthy tree never imports the bootstrap. Its body
+  is one ``try`` statement, so a file cut short is a SyntaxError, never an empty module.
 - a byte copy of the moved file (kind ``copy``), for a file a release runs without the application
   on the path.
 
@@ -60,17 +60,24 @@ TEMPLATE = '''try:  {header}
     import sys
     from pathlib import Path
 
-    if __name__ == "__main__" or importlib.util.find_spec("hermes_agent") is None:
-        sys.path.insert(0, str(Path(__file__).resolve().parents[{depth}]))
-    if sys.argv[:1] == ["-m"]:  # Python is locating a module under this one for `python -m`
-        import hermes_bootstrap  # repairs a killed update before anything imports hermes_agent
-    from hermes_agent.compat import install
+    def _forward():
+        if __name__ == "__main__" or importlib.util.find_spec("hermes_agent") is None:
+            sys.path.insert(0, str(Path(__file__).resolve().parents[{depth}]))
+        from hermes_agent.compat import install
 
-    install()
+        install()
+        return None if __name__ == "__main__" else importlib.import_module("{new}")
+
+    try:
+        _module = _forward()
+    except Exception:
+        if sys.argv[:1] != ["-m"]:  # only while Python locates a module under this one for `python -m`
+            raise
+        import hermes_bootstrap  # repairs a killed update and relaunches when it restored something
+        _module = _forward()
     if __name__ == "__main__":
         runpy.run_module("{new}", run_name="__main__", alter_sys=True)
     else:
-        _module = importlib.import_module("{new}")
         if getattr(sys.modules.get(__name__), "__dict__", None) is globals():
             sys.modules[__name__] = _module
         _identity = {identity}

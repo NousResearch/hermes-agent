@@ -1,7 +1,7 @@
 name: chat-tree
 title: Chat Tree
 repo: https://github.com/Ronitron007/hermes-chat-tree
-sha: "c1570d5c5e8fcb3b0ac46aba804d9fa734e50884"
+sha: "e9c1d79bd9f7081dba850d7395d6fbb1f417a92d"
 subdir: chat-tree
 description: >-
   One window for branching chats in Hermes Desktop. A side pane draws the open
@@ -39,7 +39,14 @@ maintainer: Ronitron007
 tier: community
 category: desktop
 requires_hermes: ">=0.23"
-version: "0.1.0"
+version: "0.2.0"
+image: https://raw.githubusercontent.com/Ronitron007/hermes-chat-tree/df6fb5d686937eedfb06a4b75882142fbd37ee52/docs/assets/catalog/chat-tree-card.png
+screenshots:
+  - https://raw.githubusercontent.com/Ronitron007/hermes-chat-tree/df6fb5d686937eedfb06a4b75882142fbd37ee52/docs/assets/catalog/chat-tree-pane.png
+  - https://raw.githubusercontent.com/Ronitron007/hermes-chat-tree/df6fb5d686937eedfb06a4b75882142fbd37ee52/docs/assets/catalog/chat-tree-tree.png
+  - https://raw.githubusercontent.com/Ronitron007/hermes-chat-tree/df6fb5d686937eedfb06a4b75882142fbd37ee52/docs/assets/catalog/chat-tree-branch-here.png
+  - https://raw.githubusercontent.com/Ronitron007/hermes-chat-tree/df6fb5d686937eedfb06a4b75882142fbd37ee52/docs/assets/catalog/chat-tree-merge-pick.png
+  - https://raw.githubusercontent.com/Ronitron007/hermes-chat-tree/df6fb5d686937eedfb06a4b75882142fbd37ee52/docs/assets/catalog/chat-tree-digest.png
 docs_url: https://github.com/Ronitron007/hermes-chat-tree/tree/outbox/competition-entry/chat-tree#readme
 readme: true
 platforms: []

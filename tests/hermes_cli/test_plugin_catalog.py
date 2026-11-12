@@ -452,3 +452,32 @@ def test_a_gzipped_catalog_doc_is_still_read(tmp_path, monkeypatch):
     _serve_with(monkeypatch, lambda request: httpx.Response(
         200, headers={"content-encoding": "gzip"}, content=gzip.compress(doc)))
     assert [e["name"] for e in pc.fetch_live_catalog(force=True)["entries"]] == ["published"]
+
+
+@pytest.mark.parametrize("tail", [b"", b"trailing junk after the member"], ids=["never-ends", "trailing-junk"])
+def test_an_endless_gzip_stream_that_inflates_to_nothing_stops_at_the_cap(tmp_path, monkeypatch, tail):
+    """The decoded-size check can't see a gzip stream whose blocks inflate to nothing (or junk after
+    its last member), so the raw byte count is what stops it."""
+    import gzip
+    import httpx
+    import zlib
+    cache = _fresh_cache(tmp_path, monkeypatch, {"entries": [], "removed": []})
+    cache.unlink()
+    monkeypatch.setattr(pc, "_MAX_LIVE_BYTES", 64 * 1024)
+    sent = []
+
+    class _Wire(httpx.SyncByteStream):
+        def __iter__(self):
+            if tail:
+                yield gzip.compress(b"{}") + tail
+            else:
+                head = zlib.compressobj(wbits=16 + zlib.MAX_WBITS)
+                yield head.compress(b"") + head.flush(zlib.Z_FULL_FLUSH)
+            while len(sent) < 10_000:  # 10 MB backstop so an unbounded reader fails instead of hanging
+                sent.append(1)
+                yield (tail or b"\x00\x00\x00\xff\xff") * 200  # empty stored blocks, never final
+
+    _serve_with(monkeypatch, lambda request: httpx.Response(
+        200, headers={"content-encoding": "gzip"}, stream=_Wire()))
+    assert pc.fetch_live_catalog(force=True) is None
+    assert len(sent) <= 128

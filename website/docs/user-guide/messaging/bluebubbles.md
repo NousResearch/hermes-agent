@@ -163,6 +163,17 @@ Two details worth knowing:
 
 Auto-marking messages as read is controlled by the `send_read_receipts` key under `platforms.bluebubbles.extra` in `~/.hermes/config.yaml` (default: `true`). There is no corresponding environment variable.
 
+By default each paragraph of a reply goes out as its own iMessage bubble. To send every reply (including cron reports) as a single text, set `split_paragraphs: false`:
+
+```yaml
+platforms:
+  bluebubbles:
+    extra:
+      split_paragraphs: false
+```
+
+Replies longer than 4,000 characters are still split into several texts.
+
 ## Features
 
 ### Text Messaging

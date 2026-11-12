@@ -26,7 +26,7 @@ from gateway.platforms.base import (
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.media_cache import ext_for_mime
 from gateway.platforms.helpers import compile_mention_patterns, strip_markdown
-from utils import TRUTHY_STRINGS
+from utils import TRUTHY_STRINGS, is_truthy_value
 
 # Historical BlueBubbles mime→ext maps, preserved verbatim as overrides for the shared dispatch in
 # gateway.platforms.media_cache. Both maps are CLOSED: unlisted mimes fall back to .jpg / .mp3.
@@ -121,6 +121,9 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         path = str(_extra_or_secret(extra, "webhook_path", "BLUEBUBBLES_WEBHOOK_PATH", DEFAULT_WEBHOOK_PATH))
         self.webhook_path = path if path.startswith("/") else f"/{path}"
         self.send_read_receipts = bool(extra.get("send_read_receipts", True))
+        # False sends each reply as one bubble; a burst of paragraph texts reads as spam for long
+        # bodies like cron reports (#150762).
+        self.split_paragraphs = is_truthy_value(extra.get("split_paragraphs"), default=True)
         _require_mention = extra.get("require_mention")
         if _require_mention is None:
             _require_mention = _get_scoped_secret("BLUEBUBBLES_REQUIRE_MENTION")
@@ -365,8 +368,11 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         text = self.format_message(content)
         if not text:
             return SendResult(success=False, error="BlueBubbles send requires text")
-        # Each paragraph becomes its own iMessage bubble; truncate any still too long.
-        paragraphs = [p.strip() for p in re.split(r'\n\s*\n', text) if p.strip()] or [text]
+        # Each paragraph becomes its own iMessage bubble unless split_paragraphs is off; truncate any
+        # still too long.
+        paragraphs = (
+            [p.strip() for p in re.split(r'\n\s*\n', text) if p.strip()] if self.split_paragraphs else []
+        ) or [text]
         chunks = [c for para in paragraphs for c in (
             [para] if len(para) <= self.MAX_MESSAGE_LENGTH else self.truncate_message(para, self.MAX_MESSAGE_LENGTH))]
         last = SendResult(success=True)
@@ -714,7 +720,7 @@ def register(ctx) -> None:
         setup_fn=interactive_setup,
         cron_deliver_env_var="BLUEBUBBLES_HOME_CHANNEL",
         standalone_sender_fn=_standalone_send,  # out-of-process cron / send_message
-        # 0 = send_message does not pre-chunk: the adapter's send() splits per paragraph and
+        # 0 = send_message does not pre-chunk: the adapter's send() splits per paragraph (split_paragraphs) and
         # truncates itself (MAX_MESSAGE_LENGTH), exactly as the former core sender did.
         max_message_length=0, pii_safe=True, emoji="💬", allow_update_command=True,
         platform_hint=_PLATFORM_HINT,

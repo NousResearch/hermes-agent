@@ -258,7 +258,9 @@ def plan_sweep(repo_root: str, max_age_hours: int = 24, settings: Optional[dict]
     worktrees_dir = Path(repo_root) / ".worktrees"
     if not worktrees_dir.is_dir():
         return []
-    candidates = ops._prune_candidates(worktrees_dir, max_age_hours, now)
+    from tools.delegate_tool_resumable import pin_reason
+    pins = ops.resumable_pins()
+    candidates = ops._prune_candidates(worktrees_dir, max_age_hours, now, pins=pins)
     doomed_names = {entry.name for entry, _m, _f in candidates}
     decisions: list[Decision] = []
     for entry in sorted(worktrees_dir.iterdir()):
@@ -269,8 +271,10 @@ def plan_sweep(repo_root: str, max_age_hours: int = 24, settings: Optional[dict]
         except OSError:
             continue
         kanban = re.match(r"^t_[0-9a-f]+$", entry.name)
-        decisions.append(Decision(entry.name, str(entry), "skip-kanban" if kanban else "skip-young",
-                                  "owned by kanban gc" if kanban else "younger than its age tier", round(age, 1)))
+        pinned = None if kanban else pin_reason(str(entry), pins)
+        action, reason = (("skip-kanban", "owned by kanban gc") if kanban else ("skip-resumable", pinned) if pinned
+                          else ("skip-young", "younger than its age tier"))
+        decisions.append(Decision(entry.name, str(entry), action, reason, round(age, 1)))
     verdicts = ops._classify_prune_candidates(repo_root, candidates) if candidates else []
     # archive_dirty: false is the classic pruner verbatim (I6), which has no process check.
     live = {} if classic_mode(settings) else live_process_pids([str(v[0]) for v in verdicts])

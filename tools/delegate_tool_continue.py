@@ -5,8 +5,10 @@ home, toolsets, the goal/context its system prompt came from, model, session id,
 on, which the rebuild must resolve to again), its history is loaded from its saved transcript, and ``message`` is its
 next user turn. It keeps its subagent_id AND its session id (the transcript
 appends, like ``--resume``), and runs as a new one-task call through the normal delegate_task dispatch, so delivery,
-the stale monitor and restart recovery are the spawn path's. Process-local like the registry: a child evicted from
-the bounded record, or from before a restart, cannot be continued."""
+the stale monitor and restart recovery are the spawn path's. After a restart or crash the registry is empty and the
+durable record (``delegate_tool_resumable``) is the source: the route is re-resolved from the task's own routing
+request and must land on the same endpoint. Either way the child resumes in the cwd and worktree it stopped in.
+A continue is a normal dispatch: closed-chat refusal, capacity, depth and the spawn pause all apply."""
 
 from __future__ import annotations
 
@@ -86,7 +88,44 @@ def _refusal(parent_agent: Any) -> Optional[str]:
     if is_spawn_paused():
         return ("Delegation spawning is paused. Clear the pause via the TUI (`p` in /agents) or the "
                 "`delegation.pause` RPC before retrying.")
+    from tools.delegate_tool import _get_max_spawn_depth
+    depth, max_spawn = getattr(parent_agent, "_delegate_depth", 0), _get_max_spawn_depth()
+    if isinstance(depth, int) and depth >= max_spawn:  # the same limit a spawn from here hits
+        return f"Delegation depth limit reached (depth={depth}, max_spawn_depth={max_spawn})."
     return None
+
+
+def _durable_spec(sid: str, record: dict[str, Any], parent_agent: Any) -> tuple[Optional[dict[str, Any]], Optional[str]]:
+    """A resume spec from the durable record: its route re-resolved from the task's own routing request."""
+    from tools.delegate_tool import _load_config
+    from tools.delegate_tool_routes import resolve_task_routes
+    request = record.get("route_request")
+    if not isinstance(request, dict) or not record.get("session_id"):
+        return None, (f"Subagent '{sid}' ran on a route that cannot be rebuilt after a restart. "
+                      "Spawn a new task instead.")
+    routes, err = resolve_task_routes([{"goal": record.get("goal"), **request}], _load_config(), parent_agent)
+    if err or not routes or routes[0].error:
+        return None, err or (routes[0].error if routes else "no route")
+    return {**record, "route": routes[0], "endpoint": tuple(record.get("endpoint") or ()) or None}, None
+
+
+def _claim(sid: str, parent_agent: Any) -> tuple[Optional[dict[str, Any]], Optional[dict[str, Any]], Optional[str]]:
+    """``(spec, durable_record, error)``: the in-process record while it is retained, else the durable one; the
+    durable row is claimed in both cases so a continue from another process cannot run the same child too."""
+    from tools.delegate_tool_resumable import claim as claim_durable
+    spec, err = _claim_resume(sid, parent_agent)
+    if spec is None and err != _NOT_FOUND.format(sid=sid):
+        return None, None, err
+    record, durable_err = claim_durable(parent_agent, sid)
+    if durable_err and spec is None:  # in-process the live registry is the authority; across processes, the row
+        return None, None, durable_err
+    if spec is None and record is not None:
+        spec, err = _durable_spec(sid, record, parent_agent)
+        if spec is None:
+            from tools.delegate_tool_resumable import release
+            release(parent_agent, sid, record)
+            return None, None, err
+    return (spec, record, None) if spec else (None, None, err)
 
 
 def _start(
@@ -126,6 +165,8 @@ def _start(
             return None, err
         db.reopen_session(session_id)  # its close() ended it; the continued child's close() ends it again
         children[0][2]._delegate_continue_history = history
+        from tools.delegate_tool_resumable import last_workspace
+        children[0][2]._delegate_continue_workspace = last_workspace(parent_agent, sid)
     batch = _Batch(
         task_list, [(0, task_list[0], children[0][2])], parent_agent, route.creds, None, "leaf",
         _get_max_concurrent_children(), live_id, writers, paths, *origin, time.monotonic(), live_home=live_home,
@@ -144,9 +185,9 @@ def continue_subagent(subagent_id: Optional[str], message: Optional[str], parent
     refusal = _refusal(parent_agent)
     if refusal:
         return tool_error(refusal)
-    spec, err = _claim_resume(sid, parent_agent)
+    spec, record, err = _claim(sid, parent_agent)
     if spec is None:
-        return tool_error(err)
+        return tool_error(err or _NOT_FOUND.format(sid=sid))
     try:
         result, err = _start(sid, text, spec, parent_agent, background)
     except Exception as exc:
@@ -154,5 +195,9 @@ def continue_subagent(subagent_id: Optional[str], message: Optional[str], parent
         result, err = None, f"Could not continue subagent '{sid}': {exc}"
     if result is None:
         _release_resume(sid, spec)
+        if record is not None:
+            from tools.delegate_tool_resumable import release
+            release(parent_agent, sid, record)
         return tool_error(err)
     return result
+

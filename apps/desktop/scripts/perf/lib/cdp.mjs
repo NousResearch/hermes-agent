@@ -215,7 +215,7 @@ export async function requireDriver(cdp) {
   if (!ok) {
     throw new Error(
       '__PERF_DRIVE__ not on window. The perf harness needs a DEV renderer ' +
-        '(perf-probe.tsx is excluded from production builds). Launch with `npm run perf:serve`.'
+        '(perf-probe.tsx is excluded from production builds). Launch with `pnpm run perf:serve`.'
     )
   }
 }

@@ -43,13 +43,26 @@ from openpyxl.utils import (column_index_from_string, get_column_letter,
 # A1-style reference, optionally sheet-qualified, optionally a range.
 # Guards: not preceded by a word char/$/. (avoids ABC123 identifiers) and
 # not followed by a word char or "(" (avoids function names like LOG10().
+SHEET_PATTERN = r"(?:'(?:[^']|'')+'|[A-Za-z_][A-Za-z0-9_.]*)!"
 REF_RE = re.compile(
     r"(?<![\w$.:])"
-    r"(?P<sheet>(?:'(?:[^']|'')+'|[A-Za-z_][A-Za-z0-9_.]*)!)?"
+    rf"(?P<sheet>{SHEET_PATTERN})?"
     r"(?P<start>\$?[A-Za-z]{1,3}\$?[0-9]{1,7})"
     r"(?::(?P<end>\$?[A-Za-z]{1,3}\$?[0-9]{1,7}))?"
     r"(?![\w(])")
-STRING_RE = re.compile(r'"(?:[^"]|"")*"')
+WHOLE_COL_RE = re.compile(
+    r"(?<![\w$.:])"
+    rf"(?P<sheet>{SHEET_PATTERN})?"
+    r"(?P<start>\$?[A-Za-z]{1,3}):(?P<end>\$?[A-Za-z]{1,3})"
+    r"(?![\w(])")
+WHOLE_ROW_RE = re.compile(
+    r"(?<![\w$.:])"
+    rf"(?P<sheet>{SHEET_PATTERN})?"
+    r"(?P<start>\$?[0-9]{1,7}):(?P<end>\$?[0-9]{1,7})"
+    r"(?![\w(])")
+# String literals and innermost [...] groups (table column names in structured
+# references such as Table1[[A:B]]) are copied through unrewritten.
+LITERAL_RE = re.compile(r'"(?:[^"]|"")*"|\[[^\[\]]*\]')
 COORD_RE = re.compile(r"^(\$?)([A-Za-z]{1,3})(\$?)([0-9]+)$")
 
 
@@ -138,8 +151,7 @@ class RefRewriter:
                            f"{e.group(3)}{e.group(4)}")
         return new_start, new_end
 
-    def _sub(self, match, home_sheet):
-        prefix = match.group("sheet") or ""
+    def _targets_sheet(self, prefix, home_sheet):
         if prefix:
             name = prefix[:-1]
             if name.startswith("'"):
@@ -147,7 +159,11 @@ class RefRewriter:
             ref_sheet = name
         else:
             ref_sheet = home_sheet
-        if ref_sheet.lower() != self.target:
+        return ref_sheet.lower() == self.target
+
+    def _sub(self, match, home_sheet):
+        prefix = match.group("sheet") or ""
+        if not self._targets_sheet(prefix, home_sheet):
             return match.group(0)
         start, end = match.group("start"), match.group("end")
         if end is None:
@@ -157,15 +173,42 @@ class RefRewriter:
         return (prefix + "#REF!" if pair is None
                 else f"{prefix}{pair[0]}:{pair[1]}")
 
+    def _sub_whole(self, match, home_sheet, axis):
+        prefix = match.group("sheet") or ""
+        if axis != self.axis or not self._targets_sheet(prefix, home_sheet):
+            return match.group(0)
+        start, end = match.group("start"), match.group("end")
+        start_abs, end_abs = start.startswith("$"), end.startswith("$")
+        if axis == "cols":
+            a = column_index_from_string(start.lstrip("$").upper())
+            b = column_index_from_string(end.lstrip("$").upper())
+        else:
+            a, b = int(start.lstrip("$")), int(end.lstrip("$"))
+        span = shift_span(a, b, self.idx, self.n, self.delete)
+        if span is None:
+            return prefix + "#REF!"
+        if axis == "cols":
+            new_start, new_end = map(get_column_letter, span)
+        else:
+            new_start, new_end = map(str, span)
+        return (f"{prefix}{'$' if start_abs else ''}{new_start}:"
+                f"{'$' if end_abs else ''}{new_end}")
+
+    def _rewrite_segment(self, text, home_sheet):
+        text = WHOLE_COL_RE.sub(
+            lambda m: self._sub_whole(m, home_sheet, "cols"), text)
+        text = WHOLE_ROW_RE.sub(
+            lambda m: self._sub_whole(m, home_sheet, "rows"), text)
+        return REF_RE.sub(lambda m: self._sub(m, home_sheet), text)
+
     def rewrite(self, text, home_sheet):
         """Rewrite refs outside quoted string literals. Returns new text."""
         out, pos = [], 0
-        for lit in STRING_RE.finditer(text):
-            out.append(REF_RE.sub(lambda m: self._sub(m, home_sheet),
-                                  text[pos:lit.start()]))
+        for lit in LITERAL_RE.finditer(text):
+            out.append(self._rewrite_segment(text[pos:lit.start()], home_sheet))
             out.append(lit.group(0))
             pos = lit.end()
-        out.append(REF_RE.sub(lambda m: self._sub(m, home_sheet), text[pos:]))
+        out.append(self._rewrite_segment(text[pos:], home_sheet))
         return "".join(out)
 
 
@@ -176,7 +219,9 @@ def shift_dimensions(dims, idx, n, delete, is_row):
     for key, dim in items:
         pos = key if is_row else column_index_from_string(key)
         new = shift_point(pos, idx, n, delete)
-        if new is not None and new != pos:
+        if new is None:
+            del dims[key]
+        elif new != pos:
             saved[new if is_row else get_column_letter(new)] = dim
             del dims[key]
     for key, dim in saved.items():
@@ -186,6 +231,33 @@ def shift_dimensions(dims, idx, n, delete, is_row):
             dim.index = column_index_from_string(key)
         dims[key] = dim
     return len(saved)
+
+
+def _rewrite_formulas(wb, rewriter, report):
+    for sheet in wb.worksheets:
+        for row in sheet.iter_rows():
+            for cell in row:
+                if isinstance(cell.value, str) and cell.value.startswith("="):
+                    new = rewriter.rewrite(cell.value, sheet.title)
+                    if new != cell.value:
+                        report["formulas"].append(
+                            {"sheet": sheet.title, "cell": cell.coordinate,
+                             "from": cell.value, "to": new})
+                        cell.value = new
+
+
+def _shift_freeze_panes(ws, axis, idx, n, delete, report):
+    m = COORD_RE.match(ws.freeze_panes)
+    ci = column_index_from_string(m.group(2).upper())
+    ri = int(m.group(4))
+    if axis == "rows":
+        ri = shift_point(ri, idx, n, delete) or max(idx, 2)
+    else:
+        ci = shift_point(ci, idx, n, delete) or max(idx, 2)
+    new = f"{get_column_letter(ci)}{ri}"
+    if new != ws.freeze_panes:
+        report["freeze_panes"] = {"from": ws.freeze_panes, "to": new}
+        ws.freeze_panes = new
 
 
 def main(argv=None):
@@ -236,16 +308,7 @@ def main(argv=None):
     getattr(ws, f"{report['op']}_{axis}")(idx, n)
 
     # 3. formulas everywhere
-    for sheet in wb.worksheets:
-        for row in sheet.iter_rows():
-            for cell in row:
-                if isinstance(cell.value, str) and cell.value.startswith("="):
-                    new = rewriter.rewrite(cell.value, sheet.title)
-                    if new != cell.value:
-                        report["formulas"].append(
-                            {"sheet": sheet.title, "cell": cell.coordinate,
-                             "from": cell.value, "to": new})
-                        cell.value = new
+    _rewrite_formulas(wb, rewriter, report)
 
     # 4. merges back, shifted
     for rng in old_merges:
@@ -264,26 +327,20 @@ def main(argv=None):
             report["autofilter"] = {"from": ws.auto_filter.ref, "to": new}
             ws.auto_filter.ref = new
     if ws.freeze_panes:
-        m = COORD_RE.match(ws.freeze_panes)
-        ci = column_index_from_string(m.group(2).upper())
-        ri = int(m.group(4))
-        if axis == "rows":
-            ri = shift_point(ri, idx, n, delete) or max(idx, 2)
-        else:
-            ci = shift_point(ci, idx, n, delete) or max(idx, 2)
-        new = f"{get_column_letter(ci)}{ri}"
-        if new != ws.freeze_panes:
-            report["freeze_panes"] = {"from": ws.freeze_panes, "to": new}
-            ws.freeze_panes = new
+        _shift_freeze_panes(ws, axis, idx, n, delete, report)
 
     # 6. data validations + conditional formatting applied ranges
-    for dv in ws.data_validations.dataValidation:
+    for dv in list(ws.data_validations.dataValidation):
         old = str(dv.sqref)
         parts = [shift_range(p, axis, idx, n, delete) for p in old.split()]
         parts = [p for p in parts if p]
-        if parts and " ".join(parts) != old:
-            dv.sqref = " ".join(parts)
-            report["validations"].append({"from": old, "to": str(dv.sqref)})
+        new = " ".join(parts) if parts else None
+        if new != old:
+            if new is None:
+                ws.data_validations.dataValidation.remove(dv)
+            else:
+                dv.sqref = new
+            report["validations"].append({"from": old, "to": new})
     new_cf = ConditionalFormattingList()
     for cf in ws.conditional_formatting:
         old = str(cf.sqref)
@@ -300,12 +357,15 @@ def main(argv=None):
     ws.conditional_formatting = new_cf
 
     # 7. native tables on the edited sheet
-    for table in ws.tables.values():
-        new = shift_range(table.ref, axis, idx, n, delete)
-        if new and new != table.ref:
-            report["tables"][table.displayName] = {"from": table.ref,
-                                                   "to": new}
-            table.ref = new
+    for table in list(ws.tables.values()):
+        old = table.ref
+        new = shift_range(old, axis, idx, n, delete)
+        if new != old:
+            report["tables"][table.displayName] = {"from": old, "to": new}
+            if new is None:
+                del ws.tables[table.displayName]
+            else:
+                table.ref = new
 
     # 8. workbook-scope defined names
     for name, dn in wb.defined_names.items():

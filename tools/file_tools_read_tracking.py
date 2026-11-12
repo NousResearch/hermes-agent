@@ -18,6 +18,8 @@ of this task wrote without such a baseline, for the refusal wording) and
 container is hard-capped (``_cap_read_tracker_data``) so long sessions stay small.
 """
 
+import contextlib
+import contextvars
 import hashlib
 import logging
 import os
@@ -148,8 +150,47 @@ def _record_not_found(op: str, resolved_str: str, task_id: str, error_json: str)
         _cap_read_tracker_data(task_data)
 
 
+# Set while an ``execute_code`` cell dispatches a tool. The cell consumes the result in code, so
+# the "you already have this" stub only breaks it (``result["content"]`` raises), and the read
+# shows the model nothing, so it must not count as content the conversation has seen.
+_programmatic_read: contextvars.ContextVar[bool] = contextvars.ContextVar("programmatic_file_read", default=False)
+
+
+@contextlib.contextmanager
+def programmatic_file_read():
+    token = _programmatic_read.set(True)
+    try:
+        yield
+    finally:
+        _programmatic_read.reset(token)
+
+
+def _dedup_lookup(task_id: str, dedup_key: tuple) -> tuple[dict, object, bool]:
+    """``(task_data, cached_version, stub_eligible)`` for a read. Eligible means the model was
+    already served this region since the last compaction boundary (the summary may have dropped
+    exact bytes, so the first read after one serves content); never for a programmatic read."""
+    with _read_tracker_lock:
+        task_data = _task_data(task_id)
+        return (task_data, task_data["dedup"].get(dedup_key),
+                dedup_key in task_data["dedup_generation_reads"] and not _programmatic_read.get())
+
+
+def _note_read_served(task_data: dict, dedup_key: tuple, path: str, offset: int, limit: int) -> tuple[int, dict]:
+    """Record that a read's content was served; returns ``(consecutive count, dedup map)``. Lock
+    must be held. A programmatic read leaves the model-facing state alone: count 1 and a
+    throwaway map, so a later read by the model is never told it already has these bytes."""
+    if _programmatic_read.get():
+        return 1, {}  # the map is discarded: nothing is remembered as shown to the model
+    task_data["dedup_hits"].pop(dedup_key, None)
+    task_data["dedup_generation_reads"].add(dedup_key)
+    return _bump_consecutive(task_data, ("read", path, offset, limit)), task_data["dedup"]
+
+
 def _bump_consecutive(task_data: dict, key: tuple) -> int:
-    """Update last_key/consecutive for *key* and return the new count. Lock must be held."""
+    """Update last_key/consecutive for *key* and return the new count. Lock must be held.
+    A cell repeating a read or search in a loop is code, not a model stuck re-asking: count 1."""
+    if _programmatic_read.get():
+        return 1
     if task_data["last_key"] == key:
         task_data["consecutive"] += 1
     else:

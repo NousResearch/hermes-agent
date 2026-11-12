@@ -1,0 +1,18 @@
+name: 990tax
+title: 990.tax
+repo: https://github.com/Digital-Tax-LLC/990tax-mcp
+sha: 9001e9f80445839a71436e0058d91dcf9c103873
+version: "1.0.0"
+description: "IRS public records on 1.9 million+ US tax-exempt organizations through 990.tax's free MCP server (Streamable HTTP at https://990.tax/mcp, no sign-in, no keys in config): search by name or EIN, exempt status and automatic revocations, missing filing years, Form 990 revenue, expenses, assets and officer pay, which annual return applies and when it's due, statistics and rankings by state and category, and IRS e-file reject codes. Bundles two skills: nonprofit-lookup and form-990-filing. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure: hosted-only connector with no local code; every tool call goes to 990.tax, run by Digital Tax LLC (an IRS-authorized e-file provider, not the IRS). All eight tools are annotated read-only and the package marks the server untrusted, so Hermes would ask before any tool that is not. The tool set is served by the remote server at runtime and is not covered by the pinned sha."
+maintainer: Digital Tax LLC
+tier: community
+category: tools
+docs_url: https://990.tax/mcp
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

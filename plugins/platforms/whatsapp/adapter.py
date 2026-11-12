@@ -18,7 +18,8 @@ from gateway.platforms._shared import (
     apply_yaml_bridge as _apply_yaml_bridge, extra_or_secret as _extra_or_secret, get_scoped_secret, send_error
 )
 from gateway.platforms.send_targets import StandaloneSendPolicy, regex_stripped_parser
-from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
+from hermes_cli._subprocess_compat import windows_detach_flags
+from hermes_cli.process_identity import release_process_group_once_empty, spawn_owned
 from hermes_constants import (find_node_executable, get_hermes_dir, with_hermes_node_path)
 
 _IS_WINDOWS = platform.system() == "Windows"
@@ -246,6 +247,14 @@ def _write_bridge_pidfile(session_path: Path, pid: int, port: Optional[int] = No
         (session_path / "bridge.pid").write_text(text, encoding="utf-8")
 
 
+def _spawn_bridge_process(argv: list, log_fh, env: dict) -> subprocess.Popen:
+    """Start the Node bridge as an owned child. It leads its own session (so a container stop
+    reaches it directly, #127047) and dies with this process however this process dies: a SIGKILLed
+    or OOM-killed gateway no longer leaves its bridge serving the port and the WhatsApp session."""
+    return spawn_owned(argv, purpose="whatsapp-bridge", stdin=subprocess.DEVNULL, stdout=log_fh,
+                       stderr=log_fh, env=env, creationflags=windows_detach_flags())
+
+
 def _terminate_bridge_process(proc, *, force: bool = False) -> None:
     """Terminate the bridge process using process-tree semantics where possible."""
     action = "kill" if force else "terminate"
@@ -269,8 +278,6 @@ def _terminate_bridge_process(proc, *, force: bool = False) -> None:
                 getattr(child, action)()
         getattr(parent, action)()
 
-import sys
-sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
@@ -300,6 +307,10 @@ def _is_allowed_bridge_path(url: str) -> bool:
             if resolved.is_relative_to(Path(root).resolve()):
                 return True
     return False
+
+
+# bridge.js exits with this when WhatsApp demands passkey pairing and no signer is available (PASSKEY_REQUIRED_EXIT there).
+PASSKEY_REQUIRED_EXIT = 78
 
 
 def _file_content_hash(path: Path) -> str:
@@ -592,11 +603,15 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         return bridge_env
 
     def _bridge_died(self, detail: str, code: str = "whatsapp_bridge_exited") -> bool:
+        needs_passkey = self._bridge_process is not None and self._bridge_process.poll() == PASSKEY_REQUIRED_EXIT
+        if needs_passkey:
+            code = "whatsapp_passkey_required"
+            detail = "WhatsApp requires passkey verification. Run `hermes whatsapp --passkey-browser EXECUTABLE` in a local interactive terminal, then restart the gateway."
         print(f"[{self.name}] {detail}")
         print(f"[{self.name}] Check log: {self._bridge_log}")
         self._close_bridge_log()
         # Named so the reconnect status and connect telemetry say why instead of an unclassified failure.
-        self._set_fatal_error(code, f"{detail} (see {self._bridge_log})", retryable=True)
+        self._set_fatal_error(code, f"{detail} (see {self._bridge_log})", retryable=not needs_passkey)
         return False
 
     async def _poll_bridge_health(self, died_msg: str) -> tuple[Optional[bool], bool, dict]:
@@ -707,8 +722,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             if not self._ensure_bridge_deps(bridge_path.parent):
                 return False
             self._session_path.mkdir(parents=True, exist_ok=True)
-            # A secondary adopts or reaps only a bridge its own pidfile identifies (crash restart);
-            # the default keeps its historical adopt-or-clear-the-port path.
+            # A secondary adopts or reaps only a bridge its own pidfile identifies; the default keeps
+            # its historical adopt-or-clear-the-port path. A bridge this version started dies with
+            # its gateway (spawn_owned), so what is adopted here is one a pre-update gateway or
+            # another process left running; credentials are on disk, so a fresh bridge needs no re-pair.
             if (not secondary or prior_bridge_is_ours) and await self._reuse_running_bridge(bridge_path):
                 return True
             if self._foreign_bridge_session:
@@ -758,9 +775,9 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             node = find_node_executable("node")
             if node is None:
                 raise RuntimeError("Node.js is no longer available; run `hermes pm install`")
-            self._bridge_process = subprocess.Popen(  # noqa: ASYNC220 -- persistent bridge; callers use the Popen object (pid, poll)
+            self._bridge_process = _spawn_bridge_process(
                 [node, str(bridge_path), "--port", str(self._bridge_port), "--session", str(self._session_path),
-                 "--mode", _wenv("WHATSAPP_MODE", "self-chat")], stdin=subprocess.DEVNULL, stdout=bridge_log_fh, stderr=bridge_log_fh, env=self._bridge_env(), **windows_detach_popen_kwargs())
+                 "--mode", _wenv("WHATSAPP_MODE", "self-chat")], bridge_log_fh, self._bridge_env())
             _write_bridge_pidfile(self._session_path, self._bridge_process.pid, self._bridge_port)
             if not await self._wait_for_bridge():
                 return False
@@ -825,8 +842,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         message = f"WhatsApp bridge process exited unexpectedly (code {returncode})."
         if not self.has_fatal_error:
             logger.error("[%s] %s", self.name, message)
-            self._set_fatal_error("whatsapp_bridge_exited", message, retryable=True)
-            self._close_bridge_log()
+            self._bridge_died(message)
             await self._notify_fatal_error()
         return self.fatal_error_message or message
 
@@ -853,6 +869,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                         await asyncio.to_thread(self._bridge_process.wait, _SIGTERM_GRACE_S)
             except Exception as e:
                 print(f"[{self.name}] Error stopping bridge: {e}")
+            if not _IS_WINDOWS and self._bridge_process.poll() is not None:
+                # Stopped by us; a bridge we failed to stop stays covered by the owner-death supervisor.
+                # (POSIX only: Windows has no supervised group, and its stop path stays as on main.)
+                release_process_group_once_empty(self._bridge_process.pid, timeout=0)
         if self._bridge_process or not getattr(self, "_runtime_status_platform_key", ""):
             _unlink_quietly(self._session_path / "bridge.pid")
         await cancel_task(self._poll_task)

@@ -64,9 +64,9 @@ async def test_old_stored_history_opens_read_only_for_its_owner(tmp_path, monkey
 @pytest.mark.asyncio
 async def test_a_caller_that_is_not_the_owner_still_finds_nothing(tmp_path, monkeypatch):
     """A remote login is not evidence of ownership, before or after the owner opened the row."""
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     conn, ref = await _connect(tmp_path, monkeypatch, 'cron_job1_20261001_120000')
-    login = Principal('basic:alice', ref.profile_id, frozenset({'session:read'}), 'web-socket')
+    login = SessionActor('basic:alice', ref.profile_id, frozenset({'session:read'}), 'web-socket')
     with pytest.raises(RuntimeStoreError, match='not_found'):
         conn.authority.authorize(login, ref, 'session:read')
     assert ref.session_id not in conn.authority.sessions

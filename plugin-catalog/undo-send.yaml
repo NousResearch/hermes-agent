@@ -1,0 +1,20 @@
+name: undo-send
+title: Undo Send
+repo: https://github.com/helenn-szn/undo-send
+sha: 10d388c951245ceeabc1101bb8ff65e75f4f6737
+version: "0.3.2"
+description: "Undo Send for your agent: outward-facing actions (hermes send / imsg send messages to Telegram, Slack, Signal, SMS and others, app connector and MCP writes, git push, gh pr/issue create, npm publish, curl POST/PUT/PATCH/DELETE) wait in a short grace window before they run, so you can cancel them from a Desktop status-bar countdown (Undo / Send now), by replying \"undo\" in Telegram or another gateway chat (owners listed in undo_senders), or with /unsend. On undo the agent is told the action never ran and not to retry it. Disclosure — delays matching outward-facing tool calls (messages, MCP/connector writes, git push, gh/npm/twine publishes, hermes send, curl POST/PUT/PATCH/DELETE) by up to window_seconds (default 20), including unattended/cron runs, never indefinitely; makes no network calls of its own, reads no credentials and sends no telemetry; stores a one-line summary of each held action (URLs reduced to their host), its chat origin, timestamps and outcome in HERMES_HOME/plugin-data/undo-send/pending.db; reads inbound gateway text before gateway auth only to match a bare \"undo\", acting only for owners listed in undo_senders (empty by default, so chat undo is off) and only on actions held from that same chat; /unsend from the CLI, Desktop or an admitted chat user cancels the newest held action in any session; runs no shell commands or background processes; a classifier error runs the tool unchanged."
+maintainer: helenn-szn
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/helenn-szn/undo-send#readme
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_gateway_dispatch
+  provides_middleware:
+    - tool_execution
+  requires_env: []

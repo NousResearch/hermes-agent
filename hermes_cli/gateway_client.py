@@ -49,6 +49,12 @@ class GatewayClientError(ValueError):
     pass
 
 
+DISCONNECTED = ("Gateway disconnected; turn outcome is unknown. "
+                "Resume the printed session ID to check whether it completed or was interrupted; do not resend the work.")
+# A request refused before it reached any socket: nothing is in doubt, so never DISCONNECTED.
+NOT_SENT = "Gateway disconnected before the request was sent; nothing was sent."
+
+
 class GatewayRPCError(GatewayClientError):
     """A received owner refusal, distinct from an ambiguous transport failure.
 
@@ -196,8 +202,7 @@ class GatewayClient:
         except (ConnectionClosed, OSError, ValueError, TimeoutError):
             pass
         finally:
-            error = GatewayClientError("Gateway disconnected; turn outcome is unknown. "
-                "Resume the printed session ID to check whether it completed or was interrupted; do not resend the work.")
+            error = GatewayClientError(DISCONNECTED)
             for future in self.pending.values():
                 if not future.done():
                     future.set_exception(error)
@@ -211,17 +216,30 @@ class GatewayClient:
         """Send one request and await its answer; ``_timeout`` (seconds, never sent on the wire)
         overrides ``DEFAULT_RPC_TIMEOUT`` for a verb that legitimately takes longer (``math.inf``: no
         deadline; the answer, a hang-up or the caller's cancel ends the wait)."""
+        from websockets.protocol import State
+        if self.websocket.state is not State.OPEN or (self.reader is not None and self.reader.done()):
+            # A closing socket (a keepalive timeout fails it, then waits up to close_timeout for the
+            # peer) is never written to, and a reader that ended (closed socket, bad frame, stalled
+            # consumer) could not read the answer: refuse before writing, so the caller knows nothing left.
+            raise GatewayClientError(NOT_SENT)
         self.sequence += 1
         rid = self.sequence
         future = asyncio.get_running_loop().create_future()
         self.pending[rid] = future
         self.events.moved.set()  # a reader waiting on the consumer reads on toward this answer
+        from websockets.exceptions import ConnectionClosed
         try:
-            await self.websocket.send(json.dumps({"jsonrpc": "2.0", "id": rid, "method": method, "params": params}))
+            try:
+                await self.websocket.send(json.dumps({"jsonrpc": "2.0", "id": rid, "method": method, "params": params}))
+            except (ConnectionClosed, OSError) as exc:
+                # The frame may have left before the socket died: the same unknown outcome as a lost answer.
+                raise GatewayClientError(DISCONNECTED) from exc
             budget = DEFAULT_RPC_TIMEOUT if _timeout is None else _timeout
             return await asyncio.wait_for(future, None if budget == float("inf") else budget)
         finally:
             self.pending.pop(rid, None)
+            if future.done() and not future.cancelled():
+                future.exception()  # retrieved, so a failure nobody awaited is never logged as unretrieved
 
 
 def private_control_query(home: Path, request: bytes, timeout: float = 5) -> bytes:

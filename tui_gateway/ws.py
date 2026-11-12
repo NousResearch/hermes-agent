@@ -57,7 +57,7 @@ def _note_dashboard_client_activity(*, force: bool = False) -> None:
     path = None
     try:
         from gateway.scale_to_zero import dashboard_client_heartbeat_path
-        # Resolved here: the worker thread does not carry the caller's profile scope.
+        # The process's own home, whatever profile scope the socket runs in (the watcher reads it).
         path = dashboard_client_heartbeat_path()
         with _dashboard_client_touch_lock:
             if path in _dashboard_client_touch_pending:
@@ -101,7 +101,7 @@ _WS_DISPATCH_QUEUE_MAX = 256
 # transcript, so running them through the serial control lane turns an inexpensive interrupt or
 # control read behind them into a client timeout.  Keep the exception deliberately narrow: mutating
 # RPCs still retain arrival order, and no more than two expensive reads consume a connection.
-_WS_CONCURRENT_READ_METHODS = frozenset({"session.context_breakdown"})
+_WS_CONCURRENT_READ_METHODS = frozenset({"session.context_breakdown", "session.transcript"})
 _WS_CONCURRENT_READ_LIMIT = 2
 # Reads admitted beyond the running ones; one more parks the reader (as the serial lane did).
 _WS_WAITING_READ_LIMIT = 8
@@ -163,6 +163,9 @@ class WSTransport:
         # Socket writes need an async boundary: several batches can queue on the loop during a stall.
         self._send_lock = asyncio.Lock()
         self._abort_requested = False
+        # One socket close per transport: the send-deadline path and abort() both reach for a 1011,
+        # and under load both fire — latched on the loop thread so the peer gets a single close frame.
+        self._close_scheduled = False
 
     def _on_loop(self) -> bool:
         try:
@@ -323,7 +326,12 @@ class WSTransport:
 
     async def _close_socket(self, code: int, reason: str) -> None:
         """Close the peer socket so ``handle_ws``'s ``receive_text`` unblocks and its disconnect teardown
-        runs. The server library bounds this (websockets ``close_timeout`` → abort)."""
+        runs. The server library bounds this (websockets ``close_timeout`` → abort). One-shot: the
+        send-deadline path and ``abort()`` can both schedule this; the first to run on the loop closes,
+        the rest return, so the peer never gets a second 1011."""
+        if self._close_scheduled:
+            return
+        self._close_scheduled = True
         try:
             await self._ws.close(code=code)
         except Exception as exc:
@@ -382,6 +390,11 @@ async def _dispatch_request(authority_connection: Any, req: Any, req_method: Any
     local Desktop runs as work for it (the welcome trial and onboarding key on that), and so do the
     threads it hands off to: ``to_thread`` and the legacy pool copy this context."""
     from hermes_cli.process_identity import serving_local_desktop
+    from tui_gateway.server_requests import resolve_pinned_response
+    if authority_connection is not None and resolve_pinned_response(req, transport):
+        # The answer to a request a sidecar RPC sent back to THIS socket (vault.preview.fill's page
+        # scripts); the authority's own registry never holds those ids.
+        return None
     with serving_local_desktop(getattr(transport, "desktop_local", False)):
         if authority_connection is None:
             return await asyncio.to_thread(server.dispatch, req, transport)

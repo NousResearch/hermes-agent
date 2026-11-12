@@ -21,6 +21,7 @@ from hermes_constants import get_process_hermes_home
 from tools.environments.base import BaseEnvironment
 from tools.environments.base_output import _pipe_stdin
 from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_cli.process_identity import own_process_groups, release_process_groups
 from tools.environments.local_env_policy import (
     _ALWAYS_STRIP_FOLDED, _ALWAYS_STRIP_KEYS, _HERMES_PROVIDER_ENV_BLOCKLIST, _HERMES_PROVIDER_ENV_FORCE_PREFIX,
     _is_hermes_internal_secret, _is_provider_env_blocklisted, _is_terminal_first_party_env,
@@ -246,18 +247,29 @@ def _inject_session_context_env(env: dict) -> None:
     Cross-session leak guard: the vars' last-writer-wins ``os.environ`` mirror may
     belong to another turn on a concurrent multi-session host, so once the session
     context is engaged ContextVars are authoritative — a bound value (incl. "") wins
-    and an _UNSET var is STRIPPED, not inherited. An unengaged CLI keeps the mirror."""
+    and an _UNSET var is STRIPPED, not inherited. An unengaged CLI keeps the mirror.
+    Then the plugins' values for the child's own session (``ctx.register_session_env``), minus
+    every name :func:`_scrub_credentials` strips (Tier 1, incl. backend ``strip_env_keys``, and
+    Tier 2), so a value never puts back a credential the scrub removed; ``None`` unsets a name."""
     try:
-        from gateway.session_context import _UNSET, _VAR_MAP, session_context_engaged
+        from gateway.session_context import (
+            _UNSET, _VAR_MAP, _bound_session_value, session_context_engaged)
     except Exception:
         return
     _engaged = session_context_engaged()
-    for var_name, var in _VAR_MAP.items():
-        value = var.get()
+    for var_name in _VAR_MAP:
+        value = _bound_session_value(var_name)
         if value is not _UNSET:
             env[var_name] = "" if value is None else str(value)
         elif _engaged:
             env.pop(var_name, None)
+    from hermes_cli.plugins_session_env import resolve_session_env
+    if plugin_env := resolve_session_env(env.get("HERMES_SESSION_ID", "")):
+        for name, value in _scrub_credentials(plugin_env, inherit_credentials=False).items():
+            if value is None:
+                env.pop(name, None)
+            else:
+                env[name] = value
 
 
 def _filter_secret_env(
@@ -1059,6 +1071,11 @@ class LocalEnvironment(BaseEnvironment):
             name for name in merged
             if isinstance(name, str) and _matches_terminal_first_party_prefix(name)))
 
+    def _snapshot_excluded_passthrough_names(self) -> tuple[str, ...]:
+        """Plus the plugins' session env names: each command gets its own session's values."""
+        from hermes_cli.plugins_session_env import session_env_names
+        return tuple(sorted({*super()._snapshot_excluded_passthrough_names(), *session_env_names()}))
+
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict | None = None, persistent: bool = True):
         super().__init__(cwd=_resolve_local_initial_cwd(cwd), timeout=timeout, env=env, persist_env=persistent)
         self.init_session()
@@ -1141,13 +1158,20 @@ class LocalEnvironment(BaseEnvironment):
             cmd_string = _prepend_shell_init(cmd_string, _resolve_shell_init_files())
         args = [bash, *(["-l"] if login else []), "-c", cmd_string]
         self._recover_cwd()
+        # Not spawn_owned: an awaited command needs no spawn-ledger entry; own_process_groups below hands
+        # its group to the owner-death supervisor and _wait_for_process releases it.
         proc = subprocess.Popen(
             args, text=True, env=run_env, encoding="utf-8", errors="replace",
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
+            # detached-spawn: ok — owned via own_process_groups right below
             start_new_session=True, cwd=self.cwd,
             **({"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}))
         if not _IS_WINDOWS:
+            # The command dies with this process however it dies: a SIGKILLed / OOM-killed host left a
+            # running `npm run dev` or `sleep` on init. Released once the wait returns (see below).
+            own_process_groups([proc.pid])
+            proc._hermes_owned_pgid = proc.pid
             with contextlib.suppress(ProcessLookupError):
                 proc._hermes_pgid = os.getpgid(proc.pid)
                 # Record the group leader's start-time fingerprint so _kill_process can
@@ -1159,6 +1183,18 @@ class LocalEnvironment(BaseEnvironment):
         if stdin_data is not None:
             _pipe_stdin(proc, stdin_data)
         return proc
+
+    def _wait_for_process(self, proc, *args, **kwargs) -> dict:
+        """Base wait, then hand the command's group back from the owner-death supervisor: once the
+        command returned, what it left running in the background (`server &`) is not ours to kill,
+        exactly as on a graceful exit. A command that yielded to background took the group with it
+        (``ProcessRegistry.adopt_local`` clears ``_hermes_owned_pgid``)."""
+        try:
+            return super()._wait_for_process(proc, *args, **kwargs)
+        finally:
+            if (owned_pgid := getattr(proc, "_hermes_owned_pgid", None)) is not None:
+                proc._hermes_owned_pgid = None
+                release_process_groups([owned_pgid])
 
     def _kill_process(self, proc):
         """Kill the entire process group (all children)."""

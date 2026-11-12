@@ -7,6 +7,7 @@ from copy import deepcopy
 from datetime import UTC, datetime
 import json
 import logging
+import re
 
 from gateway.config import Platform
 from gateway.platforms.event import MessageEvent, MessageType
@@ -94,9 +95,81 @@ async def admit_process_notice(runner, authority, adapter, event, evt):
     if evt.get('type') != 'completion':
         return await authority.admit_automation(adapter, event, identity)
     async with _heartbeat_lock(runner):
-        receipt = await authority.admit_automation(adapter, event, identity)
+        receipt = await _admit_folded_completion(authority, adapter, event, evt, identity)
         await withdraw_process_ticks(runner, evt)
         return receipt
+
+
+async def _admit_folded_completion(authority, adapter, event, evt, identity):
+    """A completion landing behind another completion still waiting at the FIFO tail joins it, so a
+    busy session runs ONE turn for every result that piled up instead of one turn each. The waiting
+    row is cancelled in this admission's own transaction (``replaces``); when it was claimed first,
+    this completion queues alone."""
+    import asyncio
+    waiting = await asyncio.to_thread(_waiting_completion, authority, evt, event)
+    if waiting is not None:
+        unfolded = event.text, dict(event.metadata)
+        _fold_completion(event, waiting, identity)
+        try:
+            return await authority.admit_automation(adapter, event, identity, replaces=waiting['admission_id'],
+                                                    fold=waiting['_skip'])
+        except RuntimeStoreError as exc:
+            if exc.reason != 'stale_generation':
+                raise
+            event.text, event.metadata = unfolded
+    return await authority.admit_automation(adapter, event, identity)
+
+
+def _waiting_completion(authority, evt, event):
+    """The route's own completion row that is the LAST queued input of the session, or None. Only the
+    tail folds: a completion never jumps ahead of, or behind, a prompt queued after it. The finishing
+    process's own queued liveness ticks do not count as the tail: this completion withdraws them
+    (``withdraw_process_ticks``); their admission ids ride the row as ``_skip`` for the write guard."""
+    from gateway.session_detached import route_entry
+    entry = route_entry(authority, str(evt.get('session_key') or ''))
+    if entry is None:
+        return None
+    queued = [row for row in list_session_admissions(authority.db, session_id=_route_owner(authority, entry))
+              if row['status'] == 'queued']
+    process = str(evt.get('session_id') or '')
+    skip = []
+    while queued and _queued_tick(queued[-1], process, entry.session_key):
+        skip.append(queued.pop()['admission_id'])
+    tail = queued[-1] if queued else None
+    if tail is None or tail['principal_id'] != 'automation:' + entry.session_key:
+        return None
+    if [identity[0] for identity in _identities([tail['request_id']])] != ['completion']:
+        return None
+    descriptor = _descriptor(tail['payload'])
+    if (descriptor.get('notification_category', 'result') != event.metadata.get('notification_category', 'result')
+            or descriptor.get('display_kind') != event.metadata.get('display_kind')):
+        return None
+    return {**tail, '_skip': skip}
+
+
+_FOLD_HEADER = ('[IMPORTANT: {count} background process results arrived while this session was busy. '
+                'Treat them as one batch and give one consolidated response; preserve failures and '
+                'actionable results.]')
+_FOLD_HEADER_RE = re.compile(r'\[IMPORTANT: \d+ background process results arrived while this session was busy\.'
+                             r'[^\]]*\]\n\n')
+
+
+def _fold_completion(event, waiting, identity):
+    from gateway.run_notifications import INTERNAL_NOTIFICATION_FOOTER, _mark_internal_notification
+    from tools.process_registry_notifications import process_completion_display_text
+    descriptor = _descriptor(waiting['payload'])
+    identities = sorted({*(descriptor.get('identities') or [waiting['request_id']]),
+                         *(event.metadata.get('automation_identities') or [identity])})
+
+    def body(text):
+        text = text.rstrip().removesuffix(INTERNAL_NOTIFICATION_FOOTER).rstrip()
+        folded = _FOLD_HEADER_RE.match(text)
+        return text[folded.end():] if folded else text
+    event.text = _mark_internal_notification('\n\n'.join((
+        _FOLD_HEADER.format(count=len(identities)), body(waiting['payload']['text']), body(event.text))))
+    event.metadata['automation_identities'] = identities
+    if 'display_text' in event.metadata:
+        event.metadata['display_text'] = process_completion_display_text([{}] * len(identities))
 
 
 async def prepare_heartbeat(runner, event):
@@ -160,6 +233,32 @@ def _replace_queued(admission_id, session_id, replaced):
         if changed != 1:
             raise RuntimeStoreError('stale_generation')
         replaced[:] = [admission_id]
+    return guard
+
+
+_FOLDED_TEXT = '[folded into a later completion batch]'
+
+
+def _fold_queued(admission_id, session_id, replaced, skip=()):
+    """``_replace_queued`` for a completion fold, which must still be the FIFO tail when it commits
+    (a prompt admitted since the tail was read keeps the earlier result ahead of it; ``skip`` names
+    the finishing process's ticks, withdrawn right after). The replaced row keeps only its own
+    identity: its text and earlier identities ride the batch, so no fold stores them twice."""
+    replace = _replace_queued(admission_id, session_id, replaced)
+
+    def guard(conn):
+        row = conn.execute("SELECT seq, payload_json FROM session_admissions WHERE admission_id=? "
+                           "AND target_session_id=? AND status='queued'", (admission_id, session_id)).fetchone()
+        later = row and conn.execute("SELECT admission_id FROM session_admissions WHERE target_session_id=? "
+                                     "AND status='queued' AND seq>?", (session_id, row[0])).fetchall()
+        if row is None or any(other[0] not in skip for other in later):
+            raise RuntimeStoreError('stale_generation')
+        replace(conn)
+        payload = json.loads(row[1])
+        payload['text'] = _FOLDED_TEXT
+        _descriptor(payload).pop('identities', None)
+        conn.execute('UPDATE session_admissions SET payload_json=? WHERE admission_id=?',
+                     (json.dumps(payload, separators=(',', ':'), ensure_ascii=False), admission_id))
     return guard
 
 
@@ -244,9 +343,9 @@ def _queued_tick(row, process, route):
 
 async def _withdraw(authority, row):
     """Cancel the gateway's own queued automation *row*; False when it was claimed or settled first."""
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     # The row's own principal, with the operator access a LOCAL route requires of anyone but its viewer.
-    actor = Principal(row['principal_id'], authority.profile_id,
+    actor = SessionActor(row['principal_id'], authority.profile_id,
                       frozenset({'session:submit', 'session:control', 'session:operator'}), 'producer-withdraw')
     try:
         receipt = await authority.cancel_queued(
@@ -258,7 +357,7 @@ async def _withdraw(authority, row):
 
 def _route_owner(authority, entry):
     # Compression moves the route's transcript to a child; admissions stay on the logical root.
-    return (entry.origin.chat_id if entry.origin.platform == Platform.LOCAL
+    return (entry.origin.chat_id if entry.origin is not None and entry.origin.platform == Platform.LOCAL
             else authority.logical_owner(entry.session_id))
 
 
@@ -329,7 +428,8 @@ def automation_display_metadata(metadata):
 # proof at execution from the target the pre-claim check validated, and the turn's resolver reads it.
 _AUTOMATION_METADATA = frozenset({'gateway_session_key', 'gateway_session_id', 'automation_identities',
     'turn_author', 'notification_origin', 'original_trigger_message_id', 'notification_category',
-    'display_kind', 'display_text', 'gateway_proven_session_id', 'gateway_completion_ids', 'heartbeat_tick'})
+    'display_kind', 'display_text', 'gateway_proven_session_id', 'gateway_completion_ids', 'heartbeat_tick',
+    'completion_wakes_parent'})
 
 
 def admission_display(payload):
@@ -454,6 +554,13 @@ def snapshot_local_automation(authority, adapter, event, identity, entry):
     descriptor.update(automation_notification_metadata(event.metadata))
     descriptor.update(automation_display_metadata(event.metadata))
     descriptor.update(_tick_metadata(event.metadata))
+    if 'completion_wakes_parent' in event.metadata:
+        # A failed async delegation: the parent must act on it, so it runs as a turn even when no viewer
+        # is attached (gateway/session_completion_notes.py). Only ``True`` is stored, so an older
+        # admission's fingerprint is unchanged.
+        if event.metadata['completion_wakes_parent'] is not True:
+            raise RuntimeStoreError('invalid_params')
+        descriptor['wakes_parent'] = True
     if event.metadata.get('turn_author') is not None:
         from agent.turn_author import parse_turn_author
         descriptor['turn_author'] = parse_turn_author(event.metadata['turn_author'])
@@ -503,10 +610,11 @@ def restore_local_automation(authority, ref, row):
     return event
 
 
-async def admit_automation(authority, adapter, event, identity, replaces=None):
+async def admit_automation(authority, adapter, event, identity, replaces=None, fold=None):
     """``replaces``: a queued automation row of the same session this input supersedes (a liveness
     tick carrying the output of the one still waiting). Its cancellation commits in this admission's
-    own transaction, so neither lands without the other."""
+    own transaction, so neither lands without the other. ``fold``: ``replaces`` is a completion this
+    batch absorbs (``_fold_queued``), given the tick admission ids it may sit behind."""
     authority._require_admission_open()
     payload, entry = snapshot_automation(authority, adapter, event, identity)
     from gateway.session_authority import LiveSession
@@ -530,7 +638,9 @@ async def admit_automation(authority, adapter, event, identity, replaces=None):
     return await tracked_write(authority, partial(
         admit_session_input, authority.db, epoch=authority.epoch, principal_id='automation:' + entry.session_key,
         session_id=ref.session_id, request_id=identity, payload=deepcopy(payload),
-        _authorize_write=authority._admission_gate(replaces and _replace_queued(replaces, ref.session_id, replaced))),
+        _authorize_write=authority._admission_gate(replaces and (
+            _replace_queued(replaces, ref.session_id, replaced) if fold is None
+            else _fold_queued(replaces, ref.session_id, replaced, fold)))),
         then=admitted, ordered=True, after=partial(authority._schedule_admitted, ref))
 
 
@@ -562,7 +672,7 @@ async def move_route_wakes(runner, session_key, old_session_id):
     import asyncio
     from functools import partial
     from gateway.session_authority import LiveSession
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     from gateway.session_detached import lane_source
     from gateway.session_runtime_workers import tracked_write
     from hermes_state_runtime import list_session_admissions
@@ -573,7 +683,7 @@ async def move_route_wakes(runner, session_key, old_session_id):
     rows = await asyncio.to_thread(list_session_admissions, authority.db, session_id=old.session_id)
     if any(row['status'] == 'unknown' for row in rows):
         return
-    actor = Principal('messaging-control', authority.profile_id, frozenset({'session:submit', 'session:control'}), 'reset')
+    actor = SessionActor('messaging-control', authority.profile_id, frozenset({'session:submit', 'session:control'}), 'reset')
     for row in rows:
         automation = row['payload'].get('native_text_v1', {}).get('automation', {})
         identity = json.loads(row['request_id']) if automation and row['request_id'].startswith('[') else None

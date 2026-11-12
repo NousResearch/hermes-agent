@@ -7,7 +7,7 @@
 # Schema version of this file. The installers copy it to seed config.yaml, and
 # `hermes update` uses it to know which one-time migrations the file already
 # has. Hermes manages it: do not copy it into another config.
-_config_version: 52
+_config_version: 53
 
 # =============================================================================
 # Database Configuration
@@ -39,8 +39,14 @@ database:
 # this value when the operating system permits it. The value is clamped to the
 # hard limit and never lowers an already higher soft limit. Set to 0, false, or
 # null to disable the adjustment. Default: 4096.
+#
+# malloc_arena_max caps glibc malloc arenas in the gateway / `hermes serve`
+# process (Linux/glibc only; child commands keep glibc's default). An explicit
+# MALLOC_ARENA_MAX (exported or in .env) wins. 0, false, or null = glibc default
+# (8 per CPU core). Default: 4.
 runtime:
   nofile_soft_limit: 4096
+  malloc_arena_max: 4
 
 # =============================================================================
 # Attachments
@@ -684,13 +690,17 @@ compression:
   # durable checkpoint (default: false). With this on and no checkpoint, the
   # compaction attempt errors with BLOCKED_MISSING_PREREQUISITE and the
   # uncompressed transcript is preserved for a later retry. The gate binds to
-  # every compaction authority: server-side native compaction
+  # every compaction authority the host runs: server-side native compaction
   # (codex_responses_native) is suppressed while armed, post-turn
-  # micro-compaction is forced off (no checkpoint hook in its path), and the
-  # codex_app_server API mode is refused at agent init (the codex agent
-  # compacts its own thread — no checkpoint can be guaranteed there). Only
-  # enable it with a checkpoint-capable provider configured — see
-  # website/docs/developer-guide/memory-provider-plugin.md
+  # micro-compaction is forced off (no checkpoint hook in its path), the
+  # proactive tool-result prune (proactive_prune_tokens) is suppressed at its
+  # call site, and the codex_app_server API mode is refused at agent init (the
+  # codex agent compacts its own thread — no checkpoint can be guaranteed
+  # there). Not covered: a plugin context engine that removes or rewrites
+  # host-transcript messages outside compress() (from on_turn_complete(),
+  # say); the host cannot checkpoint that path and does not refuse such an
+  # engine yet. Only enable it with a checkpoint-capable provider configured
+  # — see website/docs/developer-guide/memory-provider-plugin.md
   # ("Pre-Compress Checkpoints").
   checkpoint_required: false
 
@@ -1347,9 +1357,6 @@ agent:
   # Default 3.
   # max_verify_nudges: 3
 
-  # Enable verbose logging
-  verbose: false
-  
   # Reasoning effort level (OpenRouter and Nous Portal)
   # Controls how much "thinking" the model does before responding.
   # Options: "xhigh" (max), "high", "medium", "low", "minimal", "none" (disable)
@@ -1382,6 +1389,11 @@ agent:
   # Also: /fast normal|fast|auto|cold [--global]
   service_tier: ""
   fast_auto_seconds: 60
+
+  # OpenAI Daybreak (Trusted Access for Cyber) on the ChatGPT/Codex
+  # subscription. Sent only on models your account's Codex catalog lists for
+  # it; Desktop shows the switch on those models. Grants no access itself.
+  daybreak: false
 
   # Custom personalities (use with /personality command).
   # Built-ins (helpful, concise, technical, creative, teacher, kawaii, catgirl,
@@ -1469,7 +1481,6 @@ platform_toolsets:
   slack: [hermes-slack]
   signal: [hermes-signal]
   qqbot: [hermes-qqbot]
-  yuanbao: [hermes-yuanbao]
   # Plugin platforms (teams, google_chat, ...) need no row: they default to hermes-<platform> once loaded.
 
 # =============================================================================
@@ -1486,7 +1497,7 @@ platform_toolsets:
 #     guest_mode: false
 #     # allowed_chats: ["-1001234567890"]
 #     extra:
-#       drop_pending_on_cold_boot: true # Drop Telegram's queued updates on a cold boot (default). Set false on hosts that power off, so messages sent while offline are delivered on the next start; watcher reconnects always preserve them
+#       drop_pending_on_cold_boot: false # Answer messages sent while the gateway was off (default; Telegram keeps them up to 24 h). Set true to drop that backlog on a cold boot; watcher reconnects always preserve it
 #       disable_link_previews: false  # Set true to suppress Telegram URL previews in bot messages
 #       rich_messages: false          # Bot API 10.1 rich messages (tables/task lists/details/math); default false for copyable legacy MarkdownV2, set true to opt in
 #       rich_drafts: false            # Experimental rich draft previews during Telegram DM streaming; default false because Telegram Desktop/macOS can visually overlay draft frames
@@ -1505,6 +1516,13 @@ platform_toolsets:
 #         priority:
 #           - my_plugin_command
 #           - my-important-skill
+#   matrix:
+#     channel_overrides:
+#       "!exampleTeamRoom:example.org":
+#         # Successful explicit NO_REPLY/[SILENT] finals stay silent, even when addressed.
+#         # Omitted/null/false keeps the current reply policy; failures remain visible.
+#         # Restart the gateway after changing room overrides.
+#         allow_silence: true
 #   slack:
 #     extra:
 #       # Render live tool calls as Slack-native plan/task cards. This explicit
@@ -1743,7 +1761,7 @@ stt:
   # prompt: "Hermes, Teknium, Nous Research, kanban"
   local:
     model: "base"              # tiny | base | small | medium | large-v3 | turbo
-    # language: ""             # auto-detect; set to "en", "es", "fr", etc. to force
+    # language: ""             # blank = inherit stt.language; set "en", "es", "fr", etc. to force
     # initial_prompt: ""       # Optional faster-whisper prompt, e.g. bias Chinese output to simplified Chinese
     # --- Anti-hallucination hardening (whisper decodes junk from silence without these) ---
     # vad: true                # Silero VAD filter (default on) — silence never reaches whisper.
@@ -1752,13 +1770,13 @@ stt:
     # no_speech_prob_threshold: 0.6  # drop a segment only if no_speech_prob > this...
     # logprob_threshold: -1.0       # ...AND avg_logprob < this (both must hit — quiet real speech survives)
     # unload_after_idle_seconds: 0  # 0=never unload (default); e.g. 300 releases the model after 5min idle (frees VRAM on GPU; next voice message reloads it)
-  language: "en"               # GLOBAL language hint for every STT provider (per-provider language wins). Set "" for auto-detect.
+  language: "en"               # Global hint; a nonempty provider language wins. Blank falls back to HERMES_LOCAL_STT_LANGUAGE, then auto-detect.
   # groq:
   #   model: "whisper-large-v3-turbo"
-  #   language: ""             # blank = stt.language > HERMES_LOCAL_STT_LANGUAGE > auto-detect
+  #   language: ""             # blank inherits stt.language, then HERMES_LOCAL_STT_LANGUAGE
   openai:
     model: "whisper-1"         # whisper-1 | gpt-4o-mini-transcribe | gpt-4o-transcribe | gpt-transcribe
-    language: ""               # auto-detect; set to "en", "es", "fr", etc. to force
+    language: ""               # blank = inherit stt.language; set "en", "es", "fr", etc. to force
     timeout: 60                # request timeout in seconds; increase for self-hosted model cold starts
     max_retries: 1             # OpenAI SDK transport retries; set 0 to disable
   # mistral:
@@ -1914,20 +1932,6 @@ delegation:
   # fallback_providers:                       # Fallback chain for delegated children (same entry format as the
   #   - provider: "openrouter"                # top-level list). Pinned children use only a declared child chain;
   #     model: "deepseek/deepseek-chat"       # unpinned children inherit when unset. [] disables fallback (#65038).
-
-# =============================================================================
-# Honcho Integration (Cross-Session User Modeling)
-# =============================================================================
-# AI-native persistent memory via Honcho (https://honcho.dev/).
-# Builds a deeper understanding of the user across sessions and tools.
-# Runs alongside USER.md — additive, not a replacement.
-#
-# Requires: hermes plugins install honcho (Plastic Labs' plugin from the catalog)
-# Config: ~/.honcho/config.json (shared with Claude Code, Cursor, etc.)
-# API key: HONCHO_API_KEY in ~/.hermes/.env or ~/.honcho/config.json
-#
-# Hermes-specific overrides (optional — most config comes from ~/.honcho/config.json):
-# honcho: {}
 
 # =============================================================================
 # Display
@@ -2254,10 +2258,12 @@ updates:
   # Disable passive CLI/banner update checks with `hermes config set updates.check false`.
   # Explicit `hermes update --check` and `hermes update` remain available.
   check: true
-  # Create a full HERMES_HOME zip before every `hermes update`.
-  # Backups land in ~/.hermes/backups/ and can be restored with `hermes import`.
-  # Off by default because large homes can add minutes to every update.
-  pre_update_backup: false
+  # Backup taken before every `hermes update`:
+  #   quick - snapshot of small critical state (pairing, cron jobs, config.yaml,
+  #           .env, auth.json, profile databases) in state-snapshots/ (default)
+  #   full  - quick plus a zip of HERMES_HOME in backups/; slow on large homes
+  #   off   - no backup
+  # pre_update_backup: quick
 
   # Number of pre-update backup zips to retain.
   backup_keep: 5

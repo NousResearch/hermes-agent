@@ -44,6 +44,7 @@ export function CatalogHeaderMeta({ entry }: { entry: CatalogEntry }) {
           <span className="truncate">{catalogLabel(entry.source)}</span>
         </Badge>
       )}
+      {entry.updateAvailable && <CatalogUpdateBadge />}
       {entry.version && (
         <Badge size="xs" variant="muted">
           v{entry.version}
@@ -53,7 +54,28 @@ export function CatalogHeaderMeta({ entry }: { entry: CatalogEntry }) {
   )
 }
 
+function CatalogUpdateBadge() {
+  const { t } = useI18n()
+
+  return (
+    <Badge size="xs" variant="warn">
+      {t.catalog.updateAvailable}
+    </Badge>
+  )
+}
+
 export function CatalogRating({ entry }: { entry: CatalogEntry }) {
+  const { t } = useI18n()
+
+  if ((entry.usage ?? 0) > 0) {
+    return (
+      <span className="flex shrink-0 items-center gap-0.5 text-[0.65rem] text-(--ui-text-tertiary)" title={t.skills.usageCount(entry.usage!)}>
+        <Codicon name="pulse" size="0.65rem" />
+        {compactNumber(entry.usage!)}
+      </span>
+    )
+  }
+
   if (entry.stars === null || entry.stars <= 0) {return null}
 
   return (

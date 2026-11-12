@@ -34,12 +34,15 @@ def parse_telegram_username_target(target_ref: Any) -> str | None:
 
 
 _SEND_TARGET_RE = re.compile(r"^\s*(-?\d+)(?::(\d+))?\s*$")
+# Named private-DM topic: "<positive chat id>:<topic name>". Private chats are the only positive ids,
+# and the live router resolves the name to a thread id (ensure_dm_topic); groups keep numeric topics.
+_NAMED_DM_TOPIC_TARGET_RE = re.compile(r"^\s*(\d+):([^:\s][^:]*?)\s*$")
 
 
 def parse_send_target(ref):
     """``target_ref_syntax_fn`` for the Telegram ``PlatformEntry``."""
     # "<chat_id>[:<topic_id>]" or an @username (usernames must not be force-int'd).
-    parsed = regex_groups_parser(_SEND_TARGET_RE)(ref)
+    parsed = regex_groups_parser(_SEND_TARGET_RE)(ref) or regex_groups_parser(_NAMED_DM_TOPIC_TARGET_RE)(ref)
     if parsed:
         return parsed
     return parse_nonempty(parse_telegram_username_target(ref) or "")

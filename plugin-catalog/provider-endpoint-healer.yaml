@@ -1,0 +1,18 @@
+name: provider-endpoint-healer
+title: Provider Endpoint Healer
+description: "Status and health listing for configured model endpoints. Probes them on session start and via /peh, and recommends the best candidate by health, latency, cost and capability. Reports only; it does not switch Hermes providers. Disclosure — at session start and on `/peh` it sends an unauthenticated `GET <base_url>/models` to every endpoint listed in its settings (http/https only, no credentials sent, response body not read); it reports health and a recommendation only and does not change the provider Hermes uses."
+maintainer: Alvinagustus
+tier: community
+category: tools
+platforms: []
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/Alvinagustus/provider-endpoint-healer
+version: "0.1.0"
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - on_session_start
+  provides_middleware: []
+  requires_env: []
+repo: https://github.com/Alvinagustus/provider-endpoint-healer
+sha: e20a77f5850aa4c19b2cfe518ed764a273350712

@@ -1,0 +1,50 @@
+name: samskara
+title: Samskara
+repo: https://github.com/SebaWag/hermes-samskara
+sha: d807e875da3176301db9955e0352c9c8adb6cb01
+version: "0.3.1"
+description: >-
+  Relational memory provider backed by a knowledge graph (MillenniumDB or any
+  SPARQL endpoint): multi-hop recall with provenance on every fact, an ontology
+  that infers subsumption (Incidente ⊑ Evento) at reindex time, per-fact weights
+  that are reinforced by use and decay with disuse, and explicit conflict
+  reporting — when two values disagree, the agent says so instead of guessing.
+  Zero-setup mode: SAMSKARA_ENDPOINT=embedded://seed/demo.ttl serves a built-in
+  demo corpus from an in-process, read-only store (stdlib only, no network, no
+  service to run) for the first minute; it answers the three query shapes the
+  plugin issues and refuses arbitrary SPARQL rather than guessing.
+  Onboarding backfills the graph from the sessions the agent already had
+  (state.db, read-only) and reconciles new entities against existing ones.
+  Disclosure — with session-end extraction enabled (default), the plugin sends
+  the recent turns of a session to the user's own model through ctx.llm
+  (host-owned credentials, no provider override) to extract facts. If the host
+  does not expose ctx.llm — Hermes' in-process memory-provider path does not
+  today — extraction is skipped rather than redirected: the session records its
+  entity mentions lexically and no model is called. The plugin reads no provider
+  API key from the environment and has no default model host. The graph endpoint
+  defaults to loopback and is the only other network call. The CLI tool
+  tools/backfill.py (never imported by the plugin) reads past sessions from
+  state.db and sends them only to the endpoint the user names, via
+  SAMSKARA_LLM_BASE_URL and SAMSKARA_LLM_API_KEY. No telemetry. Credentials
+  (SAMSKARA_PASSWORD) are read through agent.secret_scope.get_secret.
+maintainer: SebaWag
+requires_hermes: ">=0.19.0"
+tier: community
+category: memory
+docs_url: https://github.com/SebaWag/hermes-samskara/blob/d807e875da3176301db9955e0352c9c8adb6cb01/README.md
+image: https://raw.githubusercontent.com/SebaWag/hermes-samskara/d807e875da3176301db9955e0352c9c8adb6cb01/docs/demo/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/SebaWag/hermes-samskara/d807e875da3176301db9955e0352c9c8adb6cb01/docs/demo/01-status.jpg
+  - https://raw.githubusercontent.com/SebaWag/hermes-samskara/d807e875da3176301db9955e0352c9c8adb6cb01/docs/demo/02-weights.jpg
+  - https://raw.githubusercontent.com/SebaWag/hermes-samskara/d807e875da3176301db9955e0352c9c8adb6cb01/docs/demo/03-conflict.jpg
+readme: true
+capabilities:
+  provides_tools:
+    - samskara_search
+    - samskara_query
+    - samskara_write
+    - samskara_conflicts
+    - samskara_status
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -14,6 +14,7 @@ from agent.proxy_bypass import is_loopback_host, should_bypass_proxy
 from agent import runtime_cwd as _runtime_cwd
 from tools.mcp_tool_errors import _MCP_HTTP_MAX_BODY_BYTES, NonMcpEndpointError, _apply_identity_header, _describe_http_failure, _handshake_answered_with_unsupported_version, _handshake_rejected_as_modern, _is_streamable_http_rejection, _make_http_rejection_recorder, _make_mcp_body_cap_transport, _make_redirect_header_stripper, _resolve_client_cert, _unwrap_exception_group
 from tools.mcp_tool_lifecycle import _filter_mcp_children, _leader_start_time, _orphan_stdio_pid_servers, _orphan_stdio_pids, _stdio_pgids, _stdio_pids, _stdio_starttimes
+from hermes_cli.process_identity import own_process_groups, register_child, release_process_groups
 from tools.mcp_tool_common import _core
 from tools.mcp_tool_node_abi import node_abi_error
 from tools import mcp_tool_config as _config
@@ -148,6 +149,18 @@ def _connect_inputs(server_name: str, config: dict) -> tuple[list, set]:
         configured_header_names = {key.lower() for key in headers}
         return [url, _apply_identity_header(server_name, config, headers)], configured_header_names
     return list(_stdio_launch(config)), set()
+
+
+def _sdk_unavailable_error(server_name: str) -> ImportError:
+    """The connect error when the core ``mcp`` SDK did not import: its own cause when the import
+    failed (a broken or mid-update install, retried on the next connect), else not installed."""
+    cause = _core._MCP_SDK_IMPORT_ERROR
+    if cause:
+        return ImportError(f"MCP server '{server_name}' requires the 'mcp' Python SDK, but importing it "
+                           f"failed ({cause}). It is retried on the next connect; if this persists, "
+                           "run `hermes pm repair`.")
+    return ImportError(f"MCP server '{server_name}' requires the 'mcp' Python SDK, but it is not "
+                       "installed. Run `hermes setup` to install MCP support, then retry.")
 
 
 class MCPServerTransportMixin:
@@ -330,7 +343,6 @@ class MCPServerTransportMixin:
         # Machine spawn ledger (startup sweeps reap orphans after an unclean exit); best-effort.
         for _pid in new_pids:
             try:
-                from hermes_cli.process_identity import register_child
                 register_child(_pid, "mcp-helper")
             except Exception:
                 logger.debug("spawn-ledger register_child failed for MCP helper pid %s", _pid, exc_info=True)
@@ -338,7 +350,7 @@ class MCPServerTransportMixin:
         # process (kill -9, crash, force-quit) can't leave this server — or its descendants, e.g.
         # mcp-remote's spawned `node` — running forever. The graceful paths (shutdown,
         # _kill_orphaned_mcp_children) still reap as before; this only covers when they never run.
-        _core._update_death_supervisor("register", new_pgids.values())
+        own_process_groups(new_pgids.values())
 
     def _release_spawned_children(self, new_pids: set[int]) -> None:
         """Drop the ledger entries; a child (or its pgroup) still alive means SDK teardown failed
@@ -360,7 +372,7 @@ class MCPServerTransportMixin:
                     if dropped is not None:
                         released_pgids.append(dropped)
                     _stdio_starttimes.pop(pid, None)
-        _core._update_death_supervisor("unregister", released_pgids)
+        release_process_groups(released_pgids)
 
     async def _run_stdio(self, config: dict):
         """Run the server using stdio transport."""
@@ -368,8 +380,7 @@ class MCPServerTransportMixin:
             logger.warning("MCP server '%s': identity_header is only supported on "
                            "HTTP/SSE transports — ignored for stdio servers", self.name)
         if not _core._ensure_mcp_sdk():
-            raise ImportError(f"MCP server '{self.name}' requires the 'mcp' Python SDK, but "
-                              "it is not installed. Run `hermes setup` to install MCP support, then retry.")
+            raise _sdk_unavailable_error(self.name)
         command = config.get("command")
         if not command:
             raise ValueError(f"MCP server '{self.name}' has no 'command' in config")
@@ -599,10 +610,13 @@ class MCPServerTransportMixin:
 
     async def _run_http(self, config: dict):
         """Run the server using HTTP/StreamableHTTP (or SSE) transport."""
-        _core._ensure_mcp_sdk()
+        if not _core._ensure_mcp_sdk():
+            raise _sdk_unavailable_error(self.name)
         if not _core._MCP_HTTP_AVAILABLE:
+            cause = _core._MCP_HTTP_IMPORT_ERROR
             raise ImportError(f"MCP server '{self.name}' requires HTTP transport but "
-                              "mcp.client.streamable_http is not available. "
+                              "mcp.client.streamable_http is not available"
+                              + (f" ({cause})" if cause else "") + ". "
                               "Upgrade the mcp package to get HTTP support.")
         # Agent Plugins v1 strict_redirect_headers: configured headers MUST NOT follow a cross-origin
         # redirect — their names are captured BEFORE client-generated headers are merged in.

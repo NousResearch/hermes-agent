@@ -1,0 +1,17 @@
+name: pollinations
+repo: https://github.com/greythx/hermes-pollinations
+sha: c0281f403b043405094f65821cd32a977e3f13c3
+title: Pollinations
+description: "Pollinations image generation and editing for image_generate. The model picker is read live from the Pollinations catalog, so models appear and disappear without a plugin update. No key is needed for the free classic model, which is watermarked, throttled to about one image per 45 seconds per IP, and capped at 768x768 pixels of area. A Pollinations key unlocks the Quest-eligible catalog with no watermark and no per-IP throttle; paid-only models stay hidden behind a default-off toggle. Disclosure — sends prompts and any reference images to Pollinations (gen.pollinations.ai, image.pollinations.ai); with no key the free classic route is used (prompt in the request URL, watermarked, throttled per IP). A reference image given as a URL is downloaded from that host first (public addresses only, through Hermes' SSRF guard) and a local reference path may be any image file the user can read (PNG/JPEG/GIF/WebP, checked by magic bytes); both are then uploaded to Pollinations. With POLLINATIONS_API_KEY set, generation and editing spend the account's Pollen; the \"Include paid models\" toggle only hides paid-only models in the picker, a paid model set by id is still billed. Caches the model catalog and free-model list under $HERMES_HOME/cache/ and writes images under $HERMES_HOME/cache/generated/images/. No telemetry, no shell, no background processes, no self-update."
+maintainer: greythx
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+version: "1.4.0"
+docs_url: https://github.com/greythx/hermes-pollinations#readme
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - POLLINATIONS_API_KEY

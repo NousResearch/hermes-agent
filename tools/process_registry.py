@@ -35,10 +35,12 @@ from hermes_cli.config import get_hermes_home
 from tools.process_registry_notifications import (
     format_process_notification, heartbeat_output_tail, is_child_process_notification, should_surface_notification)
 from tools.process_registry_checkpoint import ProcessCheckpointMixin
+from tools.process_registry_env_scope import ProcessEnvScopeMixin
 from tools.process_registry_output_log import ProcessOutputLogMixin, open_output_log, record_exit_command, worker_output_log
+from tools.process_registry_ownership import ProcessOwnershipMixin
 from tools.process_registry_termination import ProcessTerminationMixin
 from tools.process_registry_results import load_completed_results, save_completed_result
-from tools.process_registry_env_log import log_delta_command
+from tools.process_registry_env_log import fallback_exit_code, log_delta_command, parse_log_delta_reply
 from tools.process_registry_wsl import _is_wsl_launcher_command
 
 logger = logging.getLogger(__name__)
@@ -558,7 +560,7 @@ class ProcessSession:
     exited_at: float = 0.0                      # time.time() of the FIRST move to finished (0 = unknown)
     exit_code: Optional[int] = None             # None while running
     completion_reason: str = "exited"           # exited|killed|lost|failed_start|already_exited
-    termination_source: str = ""                # process.kill|kill_all|backend_lost|failed_start
+    termination_source: str = ""                # process.kill|kill_all|backend_lost|env_closed|failed_start
     output_buffer: str = ""                     # Rolling tail (last max_output_chars)
     max_output_chars: int = MAX_OUTPUT_CHARS
     detached: bool = False                      # Recovered from checkpoint (no pipe)
@@ -609,6 +611,7 @@ class ProcessSession:
     _reader_finish_requested: threading.Event = field(default_factory=threading.Event, repr=False)
     _reader_selectable: bool = field(default=False, repr=False)
     _pty: Any = field(default=None, repr=False)  # ptyprocess handle (use_pty=True)
+    _owned_pgid: Optional[int] = field(default=None, repr=False)  # see ProcessOwnershipMixin
 
     def __post_init__(self):
         # A session built without an explicit owner is owned by its own task, so ownership checks compare
@@ -637,15 +640,14 @@ class ProcessSession:
         if len(self.output_buffer) > self.max_output_chars:
             self.output_buffer = self.output_buffer[-self.max_output_chars:]
 
-    def mark_exited(self, exit_code, reason: str = "exited", source: str = "") -> None:
-        """Record an exit. A kill that raced the observer already recorded its own
-        exit_code/reason; never overwrite it."""
-        self.exited = True
-        if self.completion_reason != "killed":
-            self.exit_code = exit_code
-            self.completion_reason = reason
-            if source:
-                self.termination_source = source
+    def mark_exited(self, exit_code, reason: str = "exited", source: str = "") -> bool:
+        """Record an exit unless one is already recorded: the first observer's result (a raced kill,
+        an env-close settlement, a reconcile) stands. Returns whether it recorded. Hold ``self._lock``."""
+        if self.exited:
+            return False
+        self.exited, self.exit_code, self.completion_reason = True, exit_code, reason
+        self.termination_source = source or self.termination_source
+        return True
 
 
 # Watcher routing fields, in event-dict key order (``watcher_<key>`` on the session).
@@ -672,7 +674,7 @@ _WSL_CHAIN_NOTE = (
 )
 
 
-class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOutputLogMixin):
+class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOutputLogMixin, ProcessOwnershipMixin, ProcessEnvScopeMixin):
     """In-memory registry of running and finished background processes.
     Thread-safe: accessed from executor threads (terminal_tool, process handlers),
     the gateway asyncio loop (watchers, reset checks) and the cleanup thread."""
@@ -1167,6 +1169,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         pty_env.setdefault("GIT_PAGER", "cat")
         pty_env.setdefault("PAGER", "cat")
         pty_proc = _PtyProcessCls.spawn(pty_argv, cwd=session.cwd, env=pty_env, dimensions=(30, 120))
+        self._own_pty_job(session, pty_proc)
         session.pid = pty_proc.pid
         session.host_start_time = self._safe_host_start_time(session.pid)
         session._pty = pty_proc
@@ -1222,10 +1225,10 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         # the scope attaches to the invoked process, not the spawning session.
         output = open_output_log(log) if log else subprocess.PIPE
         try:
-            proc = subprocess.Popen(
-                spawn_argv, text=True, cwd=session.cwd, env=spawn_env, encoding="utf-8",
-                errors="replace", stdout=output, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                start_new_session=True, **_popen_kwargs)
+            proc = self._spawn_job(
+                session, spawn_argv, persist_on_release, text=True, cwd=session.cwd, env=spawn_env,
+                encoding="utf-8", errors="replace", stdout=output, stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL, **_popen_kwargs)
         finally:
             if log:
                 os.close(output)
@@ -1238,21 +1241,6 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             self._reap_untracked(session, proc)
             raise
         return session
-
-    def _reap_untracked(self, session: ProcessSession, proc: subprocess.Popen) -> None:
-        """Post-Popen setup failed: kill the orphaned subprocess (and any setsid
-        descendants) so nothing leaks untracked."""
-        with suppress(Exception):
-            if session.systemd_unit:
-                # Scope teardown is the authoritative cleanup for the worker cgroup;
-                # the systemd-run wrapper PID is terminated below as fallback.
-                _stop_systemd_unit(session.systemd_unit)
-            # _terminate_host_pid revalidates the kernel start time captured at
-            # spawn before signalling: pgid == pid would only prove the pid leads a
-            # group, and a reaped child can be recycled onto an unrelated leader.
-            self._terminate_host_pid(proc.pid, session.host_start_time)
-        with suppress(Exception):
-            proc.wait(timeout=5)
 
     def adopt_local(
         self, proc: subprocess.Popen, *, command: str, cwd: Optional[str], task_id: str = "",
@@ -1268,9 +1256,16 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         session.pid = proc.pid
         session.host_start_time = self._safe_host_start_time(session.pid)
         session.notify_on_complete = notify_on_complete
+        handed_pgid = getattr(proc, "_hermes_owned_pgid", None)
+        self._take_handoff_group(session, proc)
         if output_so_far:
             session.append_output(output_so_far)
-        self._track_started(session, self._reader_loop, f"proc-reader-{session.id}")
+        try:
+            self._track_started(session, self._reader_loop, f"proc-reader-{session.id}")
+        except Exception:
+            # The caller resumes its foreground wait: give it back its group, still covered.
+            self._return_handoff_group(session, proc, handed_pgid)
+            raise
         return session
 
     def spawn_via_env(
@@ -1421,35 +1416,30 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
     _log_delta_command = staticmethod(log_delta_command)
 
     def _env_poller_loop(self, session: ProcessSession, env: Any, log_path: str, pid_path: str, exit_path: str):
-        """Background thread: poll a sandbox log file for non-local backends."""
+        """Background thread: poll a sandbox log file for non-local backends.
+
+        One ``execute()`` per tick: the read command also reports the process
+        status (see ``log_delta_command``). Sandboxes rate-limit exec starts."""
         q = shlex.quote
         # Byte offset already read from the log (bytes, not chars: the shell counts bytes).
         prev_output_bytes = 0
         while not session.exited:
             time.sleep(2)
             try:
-                # Read only the bytes written since the last poll.
-                raw = env.execute(self._log_delta_command(q(log_path), prev_output_bytes),
-                                  timeout=10).get("output", "")
-                header, _, delta = raw.partition("\n")
-                try:
-                    size_str, offset_str = header.split()
-                    new_size = int(size_str)
-                    used_offset = int(offset_str)
-                except ValueError:
-                    # No usable header (command failed, shell missing a tool): skip this
-                    # poll rather than act on a half-read value.
-                    new_size = None
-                    used_offset = None
-                    delta = ""
-                if new_size is not None:
-                    if used_offset < prev_output_bytes:
+                # Read only the bytes written since the last poll, plus the process status.
+                raw = env.execute(
+                    self._log_delta_command(q(log_path), prev_output_bytes, q(pid_path), q(exit_path)),
+                    timeout=10).get("output", "")
+                reply = parse_log_delta_reply(raw)
+                delta = reply.delta if reply else ""
+                if reply:
+                    if reply.offset < prev_output_bytes:
                         # Log rotated/truncated: what we hold no longer lines up. Restart.
                         with session._lock:
                             if session.exited:
                                 return
                             session.output_buffer = ""
-                    prev_output_bytes = new_size
+                    prev_output_bytes = reply.size
                 if delta:
                     # A kill that landed after this fetch already published its output
                     # snapshot: leave the output as the kill reported it (as the PTY reader does).
@@ -1462,16 +1452,9 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                     self._check_watch_patterns(session, delta)
                     self._emit_output(session, delta)
 
-                check = env.execute(
-                    f"kill -0 \"$(cat {q(pid_path)} 2>/dev/null)\" 2>/dev/null; echo $?", timeout=5)
-                check_output = check.get("output", "").strip()
-                if check_output and check_output.splitlines()[-1].strip() != "0":
-                    # Exited -- read the exit code captured by the wrapper shell.
-                    exit_str = env.execute(f"cat {q(exit_path)} 2>/dev/null", timeout=5).get("output", "").strip()
-                    try:
-                        exit_code = int(exit_str.splitlines()[-1].strip())
-                    except (ValueError, IndexError):
-                        exit_code = -1
+                # Unreadable reply: separate liveness and exit-code reads, as before the combined read.
+                exit_code = reply.exit_code if reply else fallback_exit_code(env, q(pid_path), q(exit_path))
+                if exit_code is not None:
                     self._finish_exited(session, exit_code)
                     return
             except Exception:
@@ -1544,13 +1527,13 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         self._check_watch_patterns(session, text)
         self._emit_output(session, text)
 
-    def _finish_exited(self, session: ProcessSession, exit_code, reason: str = "exited", source: str = "") -> None:
-        """Mark a reader-observed exit (a raced kill keeps its own code/reason) and finish.
-        Under the session lock, like kill_process's commit: otherwise the kill can land between
-        mark_exited's ``killed`` check and its writes, and the reader overwrites the kill."""
+    def _finish_exited(self, session: ProcessSession, exit_code, reason: str = "exited", source: str = "") -> bool:
+        """Mark an observed exit and finish; returns whether this call recorded the result. Under the
+        session lock (like kill_process's commit) so the check-and-write is atomic against other finishers."""
         with session._lock:
-            session.mark_exited(exit_code, reason, source)
+            recorded = session.mark_exited(exit_code, reason, source)
         self._move_to_finished(session)
+        return recorded
 
     def _move_to_finished(self, session: ProcessSession) -> bool:
         """Move a session from running to finished.
@@ -1567,6 +1550,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                 save_completed_result(session)
                 self._running.pop(session.id)
             self._finished[session.id] = session
+        self._release_job_group(session)
         # Release the retained Popen/PTY handles now: otherwise every
         # finished-but-unpruned session keeps its stdout pipe (or PTY master)
         # FD open until FINISHED_TTL_SECONDS elapses, and heavy background

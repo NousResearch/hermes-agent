@@ -547,7 +547,7 @@ class GatewayAuthorizationMixin:
         forwards unpaired DMs for the handshake (already denied by the pairing-store check).
         Anything else → default-deny.
         """
-        # A blank/unknown chat_type could be either scope: only admit when BOTH scope readings
+        # A blank chat_type could be either scope: only admit when BOTH scope readings
         # admit (a gated axis's verdict applies; an ungated axis grants nothing extra), mirroring
         # slash_access.policy_for_source's intersection rule for the same ambiguity.
         if not str(getattr(source, "chat_type", "") or "").strip():
@@ -613,7 +613,7 @@ class GatewayAuthorizationMixin:
                 allowed = {normalize(entry) or entry for entry in allowed}
             return _allows(allowed, user_id)
 
-        # A blank/unknown chat_type could be either scope: admit only when BOTH scope readings
+        # A blank chat_type could be either scope: admit only when BOTH scope readings
         # do, so the DM list cannot admit an ambiguous group message (and vice versa) —
         # mirrors slash_access.policy_for_source's intersection rule.
         if not str(getattr(source, "chat_type", "") or "").strip():

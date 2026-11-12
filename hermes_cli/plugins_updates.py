@@ -398,7 +398,11 @@ def default_ls_remote(source: str) -> str:
 
     Uses the same resolved git executable the CLI path resolves. Lazily
     imports plugins_cmd (which lazily imports this module) — no import
-    cycle at module load.
+    cycle at module load. Runs like ``hermes plugins update``'s pulls
+    (``_run_plugin_git``): its own git runs no credential helper, askpass
+    or prompt, and a stored credential is looked up only when the remote
+    refuses anonymous access — the gateway's scheduled check has nobody to
+    answer a helper's window or a prompt.
     """
     from hermes_cli.plugins_cmd import _resolve_git_executable, _run_plugin_git
 

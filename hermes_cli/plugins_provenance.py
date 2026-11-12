@@ -61,16 +61,20 @@ def _git_origin_url(plugin_dir: Path) -> Optional[str]:
     installs where git refuses)."""
     # fast path: real git repo. Same resolver as install/update: PATH may be minimal
     # (gateway service, Windows without Git on PATH); no git → straight to the config parse.
+    from hermes_cli._subprocess_compat import windows_hide_flags
     from hermes_cli.plugins_cmd import _resolve_git_executable
 
     git = _resolve_git_executable()
     if git is not None:
         try:
+            # The gateway's scheduled update check reaches this console-less: hide the window.
             proc = subprocess.run(
                 [git, "-C", str(plugin_dir), "remote", "get-url", "origin"],
                 capture_output=True,
                 text=True, encoding="utf-8", errors="replace",
                 timeout=10,
+                stdin=subprocess.DEVNULL,
+                creationflags=windows_hide_flags(),
                 check=False,
             )
             if proc.returncode == 0:

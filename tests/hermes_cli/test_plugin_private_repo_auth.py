@@ -27,6 +27,12 @@ def _auth_headers_for(env: dict, origin: str) -> list[str]:
     return out
 
 
+def _route_attempts(monkeypatch, fake) -> None:
+    """Send the credential fallback's git attempts (``git_credentials._run_git``) to *fake*, called
+    the way ``subprocess.run`` is: ``fake(argv, env=..., **run_kwargs)``."""
+    monkeypatch.setattr(git_credentials, "_run_git", lambda argv, env, run_kwargs: fake(argv, env=env, **run_kwargs))
+
+
 def _seed_bare_upstream(tmp_path) -> None:
     """Spin up a local bare repo with one commit so anonymous clones can succeed when the test
     redirects a public URL at it."""
@@ -66,7 +72,7 @@ def test_private_clone_falls_back_to_auth_after_credential_required_error(tmp_pa
             argv = [a_ if a_ != target_url else str(tmp_path / "upstream.git") for a_ in argv]
         return real_run(argv, *a, **kw)
 
-    monkeypatch.setattr(subprocess, "run", spy_run)
+    _route_attempts(monkeypatch, spy_run)
     monkeypatch.setattr(git_credentials, "resolve_git_basic_auth", lambda url: ("alice", "s3cret"))
 
     dest = tmp_path / "clone"
@@ -101,7 +107,7 @@ def test_public_clone_attempts_anonymously_when_credential_resolves(tmp_path, mo
             argv = [a_ if a_ != target_url else str(tmp_path / "upstream.git") for a_ in argv]
         return real_run(argv, *a, **kw)
 
-    monkeypatch.setattr(subprocess, "run", spy_run)
+    _route_attempts(monkeypatch, spy_run)
     # Simulate exactly the failing user state from #114526: ``gh auth login`` has populated the
     # credential resolver, so for any https://github.com URL it returns a non-None basic auth pair.
     monkeypatch.setattr(git_credentials, "resolve_git_basic_auth",
@@ -151,7 +157,7 @@ def test_ref_fetch_and_update_pull_attach_credential_only_after_anonymous_refusa
                 argv, 128, stdout="", stderr=f"fatal: repository '{public_url}/' not found\n")
         return subprocess.CompletedProcess(argv, 0, stdout="Already up to date.\n", stderr="")
 
-    monkeypatch.setattr(subprocess, "run", spy_run)
+    _route_attempts(monkeypatch, spy_run)
     if outcome == "not_found":
         monkeypatch.setattr(git_credentials, "resolve_git_basic_auth",
                             lambda url: pytest.fail("credential must not be resolved for a non-credential failure"))
@@ -206,8 +212,7 @@ def test_anonymous_attempt_fails_fast_under_inherited_askpass(tmp_path, monkeypa
                             lambda env, u: {**env, "HERMES_TEST_AUTH_ATTACHED": "1"})
         attempts: list[dict] = []
         real_run = subprocess.run
-        monkeypatch.setattr(git_credentials.subprocess, "run",
-                            lambda argv, **kw: attempts.append(kw["env"]) or real_run(argv, **kw))
+        _route_attempts(monkeypatch, lambda argv, **kw: attempts.append(kw["env"]) or real_run(argv, **kw))
 
         result = git_credentials.run_git_with_credential_fallback(
             ["git", "clone", url, str(tmp_path / "dest")], url, env=noninteractive_git_env(),
@@ -259,7 +264,7 @@ def test_rejected_env_token_falls_back_to_the_next_owned_credential(monkeypatch)
             return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
         return _refused(argv)
 
-    monkeypatch.setattr(git_credentials.subprocess, "run", fake_run)
+    _route_attempts(monkeypatch, fake_run)
     url = "https://github.com/acme/private.git"
     result = git_credentials.run_git_with_credential_fallback(
         ["git", "clone", url, "dest"], url, env=noninteractive_git_env(), capture_output=True, text=True)
@@ -277,7 +282,7 @@ def test_every_credential_rejected_names_the_dead_env_token(monkeypatch):
         ("GITHUB_TOKEN/GH_TOKEN", ("x-access-token", "ghp_dead")),
         ("gh auth token", ("x-access-token", "gho_dead_too")),
     ]))
-    monkeypatch.setattr(git_credentials.subprocess, "run", lambda argv, **kw: _refused(argv))
+    _route_attempts(monkeypatch, lambda argv, **kw: _refused(argv))
     url = "https://github.com/acme/private.git"
     result = git_credentials.run_git_with_credential_fallback(
         ["git", "clone", url, "dest"], url, env=noninteractive_git_env(), capture_output=True, text=True)
@@ -291,7 +296,7 @@ def test_every_credential_rejected_names_the_dead_env_token(monkeypatch):
             return subprocess.CompletedProcess(argv, 128, stdout="", stderr=f"fatal: repository '{url}/' not found\n")
         return _refused(argv)
 
-    monkeypatch.setattr(git_credentials.subprocess, "run", not_found_once_authed)
+    _route_attempts(monkeypatch, not_found_once_authed)
     result = git_credentials.run_git_with_credential_fallback(
         ["git", "clone", url, "dest"], url, env=noninteractive_git_env(), capture_output=True, text=True)
     assert len(calls) == 2 and "not found" in result.stderr and "hint:" not in result.stderr

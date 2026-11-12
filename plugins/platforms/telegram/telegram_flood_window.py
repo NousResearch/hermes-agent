@@ -81,7 +81,9 @@ async def delete_message(adapter: Any, chat_id: str, message_id: str, *, confirm
     from plugins.platforms.telegram.adapter import _redact_telegram_error_text, normalize_telegram_chat_id
     if not adapter._bot:
         live = adapter._replacement_telegram_adapter()
-        return await delete_message(live, chat_id, message_id, confirmed=confirmed) if live is not None else False
+        if live is None:
+            return False
+        return await (live.delete_message_confirmed if confirmed else live.delete_message)(chat_id, message_id)
 
     async def _delete() -> bool:
         try:

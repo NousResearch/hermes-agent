@@ -2,19 +2,7 @@ name: agentic-soc
 title: Hermes Agentic SOC
 repo: https://github.com/CyStrat-Services-GmbH/hermes-agentic-soc
 sha: 7206d9e1d4a4a5ba1dd843e45ada77214f06119c
-description: >-
-  Evidence-first SOC and DFIR work for Hermes: six defense specialist personas
-  (L1 triage, L2 incident response, threat hunting, DFIR compromise
-  assessment, detection engineering, vulnerability management), 39 skills,
-  25 technology scaffolds and deterministic THOR Lite triage with exact event
-  counts, correlation, audit trail and human approval. Everything is local
-  file work. Disclosure: runs the operator's own THOR Lite executable as a
-  subprocess (separate Nextron licence required, nothing bundled, no download)
-  and can create a new Hermes profile via the local `hermes` CLI when the
-  operator asks for it; reads evidence files only inside operator-configured
-  root folders; writes reports and an audit log under the plugin's own data
-  directory; makes no network calls, holds no credentials (a minimal PATH-only
-  environment is passed to child processes) and never acts on a target.
+description: "Evidence-first SOC and DFIR work for Hermes: six defense specialist personas (L1 triage, L2 incident response, threat hunting, DFIR compromise assessment, detection engineering, vulnerability management), 39 skills, 25 technology scaffolds and deterministic THOR Lite triage with exact event counts, correlation, audit trail and human approval. Everything is local file work. Disclosure — runs the user's own separately licensed THOR Lite executable (path set in plugin settings) on operator-allowed scan directories, and can create a new Hermes profile through the local `hermes` CLI that gets a persona SOUL.md and a copy of the plugin's skills; both actions run only after Hermes approval, and child processes get a minimal environment (PATH, locale and temp vars; HERMES_HOME for the `hermes` CLI). Reads evidence files only inside operator-configured roots and writes reports, a pseudonym salt and an audit log under the plugin's data directory; no network calls."
 maintainer: CyStrat-Services-GmbH
 tier: community
 category: tools

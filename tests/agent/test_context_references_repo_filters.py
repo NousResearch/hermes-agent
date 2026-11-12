@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-import agent.context_references as context_references
+from agent import context_references
 from agent.context_references import preprocess_context_references_async
 from hermes_cli._subprocess_compat import FILTER_DISCOVERY_FAILED
 

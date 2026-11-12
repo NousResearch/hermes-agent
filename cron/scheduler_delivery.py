@@ -1534,8 +1534,9 @@ def _deliver_standalone(
             # A satellite profile's worker has no platform token, so standalone cannot stand in
             # for a live adapter that is only waiting to reconnect: keep the payload for that adapter.
             _queue_for_live_reconnect(t, content, media_files, delivery_errors)
-        # A partial send's head is on screen at this target, so the run did reach someone.
-        return partial
+        # A partial send's head is on screen at this target, so the run did reach someone; so may
+        # a send whose answer was lost (explicit ``uncertain``, or no result at all: timeout, raise).
+        return partial or (t.standalone_in_flight and (result is None or result.get("delivery") == "uncertain"))
     # Standalone senders report per-file attachment failures in ``warnings`` while returning
     # success; surface them so a vanished attachment doesn't mark the run ok.
     for _w in (result.get("warnings") if isinstance(result, dict) else None) or []:

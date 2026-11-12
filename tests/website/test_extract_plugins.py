@@ -151,9 +151,10 @@ def test_non_https_docs_url_is_dropped_not_fatal(mod, tmp_path):
     catalog.mkdir()
     _write_entry(catalog, "scripted", docs_url="javascript:alert(document.domain)")
     _write_entry(catalog, "linked", docs_url="https://example.com/docs")
+    _write_entry(catalog, "malformed", docs_url="https://[")
 
     entries = {e["name"]: e for e in mod.load_catalog_entries(catalog)}
-    assert entries["scripted"]["docsUrl"] == ""
+    assert entries["scripted"]["docsUrl"] == "" and entries["malformed"]["docsUrl"] == ""
     assert entries["linked"]["docsUrl"] == "https://example.com/docs"
 
 

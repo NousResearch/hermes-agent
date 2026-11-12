@@ -61,7 +61,10 @@ def is_allowed_image_url(url: str) -> bool:
 def is_https_url(url: str) -> bool:
     """``docs_url`` lands in an ``<a href>`` on the dashboard: any https host, never ``javascript:``/``data:``."""
     from urllib.parse import urlsplit
-    parts = urlsplit(url)
+    try:
+        parts = urlsplit(url)
+    except ValueError:  # "https://[": a malformed authority drops the link, never the whole catalog
+        return False
     return parts.scheme == "https" and bool((parts.hostname or "").strip())
 _NAME_RE = re.compile(r"^[a-z0-9_-]{1,64}$")
 

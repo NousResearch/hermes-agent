@@ -71,7 +71,10 @@ def _is_allowed_image_url(url: str) -> bool:
 def _is_https_url(url: str) -> bool:
     # docs_url is the one catalog field rendered as a link on the docs site, so any
     # https host is fine — but a javascript:/data: value must never reach the href.
-    parts = urlsplit(url)
+    try:
+        parts = urlsplit(url)
+    except ValueError:  # "https://[": dropped like any other invalid docs_url, never fatal
+        return False
     return parts.scheme == "https" and bool((parts.hostname or "").strip())
 
 

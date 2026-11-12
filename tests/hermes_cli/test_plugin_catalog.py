@@ -73,7 +73,7 @@ def test_non_https_docs_url_is_dropped_on_load_and_live_parse(tmp_path):
     entries = {e.name: e for e in pc.load_catalog(tmp_path)}
     assert entries["scripted"].docs_url == "" and entries["scripted"].to_dict()["docs_url"] == ""
     assert entries["linked"].docs_url == "https://example.com/docs"
-    for bad in ("data:text/html,<script>alert(1)</script>", " JavaScript:alert(1)", "http://example.com/docs"):
+    for bad in ("data:text/html,<script>alert(1)</script>", " JavaScript:alert(1)", "http://example.com/docs", "https://["):
         entry = pc.entry_from_mapping(_entry("live", docs_url=bad), "live#0")
         assert entry is not None and entry.docs_url == ""
 

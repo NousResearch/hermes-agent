@@ -116,6 +116,7 @@ def test_docs_url_must_be_https_when_present(tmp_path):
     _expect_error(tmp_path, {"docs_url": "javascript:alert(document.domain)"}, "docs_url")
     _expect_error(tmp_path, {"docs_url": "https://example.com/docs\r\njavascript:x"}, "docs_url")
     _expect_error(tmp_path, {"docs_url": "http://example.com/docs"}, "docs_url")
+    _expect_error(tmp_path, {"docs_url": "https:///docs"}, "docs_url")
     path = write_entry(tmp_path, {**VALID_ENTRY, "docs_url": "https://example.com/docs"}, "ok.yaml")
     assert run_validator(str(path)).returncode == 0
 

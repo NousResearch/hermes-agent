@@ -109,7 +109,7 @@ def _repo_host(repo: object) -> str:
 
 
 def _check_page_fields(data: dict, errors: list[str]) -> None:
-    """``screenshots``, ``docs_url`` and ``readme`` feed the entry's page at /docs/plugins/<name>; both optional (README on by default)."""
+    """``screenshots``, ``docs_url`` and ``readme`` feed the entry's page at /docs/plugins/<name>; all optional (README on by default)."""
     shots = data.get("screenshots")
     if shots is not None:
         if not isinstance(shots, list) or not all(isinstance(s, str) and _is_allowed_image_url(s) for s in shots):
@@ -121,7 +121,7 @@ def _check_page_fields(data: dict, errors: list[str]) -> None:
     # The site renders docs_url as an <a href>; empty means "no docs link".
     docs_url = data.get("docs_url")
     if docs_url is not None and not (
-        isinstance(docs_url, str) and (not docs_url.strip() or re.fullmatch(r"https://\S+", docs_url.strip()))
+        isinstance(docs_url, str) and (not docs_url.strip() or re.fullmatch(r"https://[^\s/?#]+\S*", docs_url.strip()))
     ):
         errors.append(f"docs_url {docs_url!r} must be an https:// URL (the docs site renders it as a link)")
     readme = data.get("readme")

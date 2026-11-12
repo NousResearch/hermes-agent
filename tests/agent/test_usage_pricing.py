@@ -408,6 +408,18 @@ def test_curated_google_flash_models_resolve_official_snapshot_pricing(monkeypat
         assert model in _PROVIDER_MODELS["vertex"], model
 
 
+def test_gemini_4_carbon_is_pickable_and_prices_like_argon(monkeypatch):
+    from hermes_cli.models_catalog_static import _PROVIDER_MODELS
+
+    monkeypatch.setattr("agent.usage_pricing.fetch_endpoint_model_metadata", lambda *_args, **_kwargs: {})
+    usage = CanonicalUsage(input_tokens=1_000_000, output_tokens=1_000_000, cache_read_tokens=1_000_000)
+    carbon = estimate_usage_cost("gemini-4-carbon", usage, provider="gemini")
+    argon = estimate_usage_cost("gemini-4-argon", usage, provider="gemini")
+    assert "gemini-4-carbon" in _PROVIDER_MODELS["gemini"]
+    assert (carbon.status, carbon.source) == ("estimated", "official_docs_snapshot")
+    assert carbon.amount_usd == argon.amount_usd and carbon.amount_usd > 0
+
+
 
 
 

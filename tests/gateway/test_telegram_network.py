@@ -16,6 +16,8 @@ initialize — #87015), then fall through to the dual-stack hostname last,
 and "stick" to whichever path works.
 """
 
+import contextlib
+
 import httpx
 import pytest
 import socket
@@ -363,19 +365,21 @@ class FakeDoHClient:
 
     @staticmethod
     def _make_response(status, body, url):
-        """Build an httpx.Response with a request attached (needed for raise_for_status)."""
-        request = httpx.Request("GET", url)
-        return httpx.Response(status, json=body, request=request)
+        """A streamed httpx.Response with a request attached (needed for raise_for_status)."""
+        import json as _json
+        return httpx.Response(status, stream=httpx.ByteStream(_json.dumps(body).encode()), request=httpx.Request("GET", url))
 
-    async def get(self, url, *, params=None, headers=None, **kwargs):
+    @contextlib.asynccontextmanager
+    async def stream(self, method, url, *, params=None, headers=None, **kwargs):
         self.requests_made.append({"url": url, "params": params, "headers": headers})
         for prefix, action in self._responses.items():
             if url.startswith(prefix):
                 if isinstance(action, Exception):
                     raise action
                 status, body = action
-                return self._make_response(status, body, url)
-        return self._make_response(200, {}, url)
+                yield self._make_response(status, body, url)
+                return
+        yield self._make_response(200, {}, url)
 
     async def __aenter__(self):
         return self

@@ -643,6 +643,10 @@ async def _prepare_image(
     into immutable history would 400 on every resume. The crop runs BEFORE any downscale so the
     region keeps the full resolution budget. On error no temp file is left."""
     from tools.image_source import ImageResolutionError, ResolveContext, resolve_image_source
+    from tools.hosted_tool_policy import host_feature_enabled
+    if not host_feature_enabled("media_processing"):
+        # Hosted: decoding, conversion and the temp file would all happen on this host.
+        raise _ImagePrepError("Image processing is not available to a hosted agent.")
     try:
         resolved = await resolve_image_source(image_url, ResolveContext(task_id=task_id))
     except ImageResolutionError as exc:
@@ -1034,7 +1038,8 @@ registry.register(
     handler=_handle_vision_analyze,
     check_fn=check_vision_requirements,
     is_async=True,
-    emoji="👁️")
+    emoji="👁️",
+    self_checked_args=("question",))  # the native-image route loads the image without one
 
 
 # --- video_analyze --------------------------------------------------------
@@ -1073,8 +1078,12 @@ async def _materialize_video(video_url: str, task_id: Optional[str], temp_paths:
     shared media resolver with ``permitted=("video",)`` — the exact pipeline vision_analyze uses
     (media-cache host reads, bounded in-sandbox exec-read, credential-read guard, ingest cap)."""
     from tools.image_source import (
-        ImageResolutionError, ResolveContext, _is_local_terminal_backend, resolve_image_source,
+        ImageResolutionError, ResolveContext, _is_local_terminal_backend, local_source_spelling,
+        resolve_image_source,
     )
+    from tools.hosted_tool_policy import host_feature_enabled
+    if not host_feature_enabled("media_processing"):
+        raise ValueError("Video processing is not available to a hosted agent.")  # it would cache here
     source = video_url.removeprefix("file://")
     local_path = Path(os.path.expanduser(source))
     lowered = (video_url or "").strip().lower()
@@ -1094,6 +1103,8 @@ async def _materialize_video(video_url: str, task_id: Optional[str], temp_paths:
         _write_private_bytes(path, resolved.data)
         temp_paths.append(path)
         return path
+    if path_like:
+        local_path = Path(await asyncio.to_thread(local_source_spelling, str(local_path)))
     if local_path.is_file():
         from agent.file_safety import raise_if_read_blocked
         raise_if_read_blocked(str(local_path))
@@ -1189,4 +1200,5 @@ registry.register(
     handler=_handle_video_analyze,
     check_fn=check_video_requirements,
     is_async=True,
-    emoji="🎬")
+    emoji="🎬",
+    self_checked_args=("question",))

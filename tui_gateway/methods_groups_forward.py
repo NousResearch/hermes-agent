@@ -132,6 +132,10 @@ def _call(server, rid, home, endpoint, method: str, params: dict) -> dict:
         logger.warning("Group Chat %s: the gateway that owns it did not answer: %s", method, exc)
         return server._err(rid, OWNER_LOST_CODE, "The Hermes gateway did not answer. Try again.")
     result = result if isinstance(result, dict) else {}
+    if method == "groups.state":
+        # This backend's change watcher cannot see the owning gateway's live status (approvals, tools),
+        # so a view reached through it keeps its full-rate poll instead of trusting groups.changed.
+        result = {key: value for key, value in result.items() if key != "change_events"}
     if method == "groups.capabilities" and isinstance(result.get("methods"), list):
         # Advertise only what this wire can carry: the room methods it forwards.
         carried = forwarded()

@@ -514,6 +514,7 @@ gateway:
     not_git_repo: "✗ Não é um repositório git — não é possível atualizar."
     hermes_cmd_not_found: "✗ Não foi possível localizar o comando `hermes`. O Hermes está em execução, mas o comando de atualização não conseguiu encontrar o executável no PATH nem através do interpretador Python atual. Tenta executar `hermes update` manualmente no teu terminal."
     start_failed: "✗ Falha ao iniciar a atualização: {error}"
+    already_running: "⏳ Já há uma atualização em andamento; só quem a iniciou pode responder às perguntas dela. Aguarde terminar e tente /update novamente."
     starting: "☤ A iniciar a atualização do Hermes… Vou transmitir o progresso aqui."
     reply_failed: "✗ Falha ao enviar a resposta ao processo de atualização: {error}"
     reply_sent: "✓ `{label}` enviado ao processo de atualização."

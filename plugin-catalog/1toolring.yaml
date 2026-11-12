@@ -1,0 +1,34 @@
+name: 1toolring
+title: 1ToolRing
+repo: https://github.com/khmuhtadin/1toolring-mcp
+sha: d4df0c005dd6cfd85f85f26872ffc9c82a97ec76
+version: "1.0.0"
+description: |
+  One API key and one prepaid balance for thousands of pay-per-call tools: search and SEO data, maps and places, shopping prices, market data, web pages, images, video, voice and more. Runs on 1ToolRing's hosted MCP server.
+
+  - Search and SEO: Google search results, keyword and SEO data
+  - Maps and places: Google Maps places
+  - Shopping: e-commerce product prices
+  - Also market data, web pages, images, video and voice, from third-party providers
+  - Four MCP tools: discover_tools, inspect_tool and get_tool_run (free, read-only) and run_tool (paid)
+  - Bundles the 1toolring skill; Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only
+
+  Disclosures
+  - Hosted-only connector with no local code: every tool call, with its arguments, goes to mcp.1toolring.com (Streamable HTTP, API key auth).
+  - run_tool spends the key owner's prepaid 1ToolRing balance at the price inspect_tool shows; failed runs are not charged and there is no subscription.
+  - The package marks the server untrusted, so Hermes asks before every run_tool call.
+  - The key is read from ONETOOLRING_API_KEY in the profile .env (or the plugin's settings form) and sent as a bearer header.
+  - The tool set is served by the remote server at runtime and is not covered by the pinned sha.
+maintainer: khmuhtadin
+tier: community
+category: tools
+docs_url: https://github.com/khmuhtadin/1toolring-mcp#set-up
+requires_hermes: ">=0.21.6"
+image: https://raw.githubusercontent.com/khmuhtadin/1toolring-mcp/d4df0c005dd6cfd85f85f26872ffc9c82a97ec76/assets/logo-400.png
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: [ONETOOLRING_API_KEY]

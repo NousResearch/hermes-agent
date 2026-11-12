@@ -77,3 +77,14 @@ async def answer_or_note(adapter: Any, query: Any, text: str) -> None:
             str(message.chat_id), text, parse_mode=None, thread_id=str(thread_id) if in_topic else None, metadata=None)
     except Exception:
         logger.debug("[Telegram] expired-tap chat note could not be sent", exc_info=True)
+
+
+async def refuse_tap(query: Any, requester: Optional[str]) -> bool:
+    """Answer a tap on someone else's prompt (``gateway.approval_actor`` refused it: *requester* is
+    the opener's name) with the localized "only X can answer" alert; the card stays open for them."""
+    if not requester:
+        return False
+    from gateway.approval_actor import refusal_text
+
+    await answer_callback(query, refusal_text(requester)[:TOAST_LIMIT], show_alert=True)
+    return True

@@ -514,6 +514,7 @@ gateway:
     not_git_repo: "✗ Git リポジトリではありません — 更新できません。"
     hermes_cmd_not_found: "✗ `hermes` コマンドが見つかりません。Hermes は実行中ですが、更新コマンドは PATH 上にも現在の Python インタープリタ経由でも実行可能ファイルを見つけられませんでした。ターミナルで `hermes update` を手動で実行してみてください。"
     start_failed: "✗ 更新の開始に失敗しました: {error}"
+    already_running: "⏳ 更新はすでに実行中です。その確認には開始した人だけが答えられます。完了してからもう一度 /update を試してください。"
     starting: "☤ Hermes の更新を開始しています… 進捗をここにストリーミングします。"
     reply_failed: "✗ 更新プロセスへの応答送信に失敗しました: {error}"
     reply_sent: "✓ 更新プロセスに `{label}` を送信しました。"

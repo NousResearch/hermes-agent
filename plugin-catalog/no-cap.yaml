@@ -1,0 +1,118 @@
+name: no-cap
+repo: https://github.com/jedbrnth-eng/no-cap
+sha: edebf651e96691b57c806d43a13597117444faae
+version: "0.3.0"
+title: "No Cap"
+description: >-
+  Receipts for agent claims. No Cap checks the claims in each final reply (tests pass, pushed, merged, deployed, file
+  written, URL live, SHAs, counts; English plus Chinese, Thai and Spanish for tests, push, merge and deploy) against
+  the tool calls the agent made, with no extra model, and appends a footer: 🧾 NO CAP when a tool call proves the
+  claim, 🧢 CAP only when one directly contradicts it (exit code, test counts, push ref, PR state, or a claimed SHA or
+  branch that does not exist in the session's repo), and an opt-in 🤔 NO RECEIPT. A claim about earlier work can cite
+  an earlier turn of the same session. A green run after the agent changed the suite in that turn (deleted, moved,
+  skipped or deselected tests, a conftest or runner-config filter, PYTEST_ADDOPTS=-k) no longer earns 🧾 for "all
+  tests pass": it gets a visible 🤔 naming the change, and 🧢 only when an earlier run named the removed test as failing
+  and the reply doesn't say so. /cap makes the agent prove or retract its open claims and re-scores the next reply;
+  /capscore keeps a per-model honesty board, a scorecard and an A/B compare card; /nocap verdict draws a session verdict
+  card; strict mode uses pre_verify to send a coding turn back, at most twice. Surfaces: a Cap Board dashboard tab
+  (agents, models and skills ranked live; this profile only unless you opt in to a team view), Hermes Desktop receipt
+  chips and a Receipts popover, opt-in Discord embed + buttons, and Cap Coach, which drafts a rule from repeated caps
+  and injects it only after you approve it. Opt-in Obsidian lessons (0.3.0): each 🧢 becomes a redacted line in that
+  agent's note in your vault and, once per agent and pattern, a mistakes-board note (Agent Black Box format); with
+  obsidian_learn the agent's own repeated cap patterns come back as built-in rules at the start of its turns.
+  Licence: Apache-2.0 (0.1.0 to 0.2.0 were MIT).
+  Disclosure — Stores, all in its Hermes plugin data folder HERMES_HOME/plugin-data/agent-plugin-no-cap-<digest>/
+  (folder 0700; `hermes nocap path` prints it), every text field through a secret masker first (the home directory is
+  written as ~ in stored commands and working dirs): receipts.jsonl (0600; one line per checked reply: session/turn
+  ids, model, platform, each claim's text, verdict, reason and quoted evidence line, and only for tool calls a receipt
+  cites the command (first 160 chars), exit code, error line and parsed facts; other calls only as a count and SHA-256
+  digest; pruned after retention_days (default 30), halved past 20 MB); ledger.jsonl (0600; cross_turn, on by default:
+  per-turn parsed call facts, including the tool's own working directory (first 300 chars), the call's timestamp, up
+  to 20 failing test ids a run printed and up to 10 short notes of suite changes the call made, never raw output;
+  newest 100 turns / 400 calls per session, same retention, 10 MB cap); coach.json (0600; Cap Coach drafts and approved
+  rules with up to 3 redacted example claims per pattern; the rule text it injects is always No Cap's built-in text
+  for that pattern, never text read back from coach.json); desktop.json (0600; on/off and a timestamp from the Desktop
+  half); discord_receipts.json (0600, only with discord_buttons: on; receipt id → session/turn ids, session key, user,
+  chat and thread ids, at most 500, no claim text); scorecard, verdict and compare SVG/PNG cards. /nocap purge deletes
+  the receipts, ledger, Discord map and cards (local CLI/TUI/Desktop only; refused from a gateway chat); coach.json and
+  desktop.json stay until you delete them. `hermes nocap export --out` and `metrics --file` write only the file you
+  name (0600, atomic; CSV cells that could start a formula are quoted). Obsidian lessons (off unless
+  obsidian_vault names an existing vault; nothing in any vault is read or written while it is empty): writes only
+  inside that vault, <vault>/<obsidian_folder, default "No Cap">/<profile>.md (one redacted line per 🧢: date,
+  pattern id, claim and contradicting evidence, each at most 160 chars, Markdown-escaped, plus a ^nc-<receipt id>
+  block id) and, with obsidian_board auto (vault has .agentbox.json or an Agent Black Box folder) or on, one
+  `M-NNNN <title>.md` note per agent and pattern in the board's mistakes folder plus an empty id reservation file
+  in its .ids/ folder; new files 0600, written through a temp file in the same folder and os.replace, the vault held by
+  a descriptor walked with O_NOFOLLOW and re-checked by device and inode before each write, one non-blocking flock
+  per destination folder (at most 120 ms per write, then skipped and retried; `hermes nocap obsidian sync` rewrites
+  from the store idempotently). In its data folder: obsidian-lessons.json (per-agent 🧢 counts by pattern id, no
+  claim text; only with obsidian_learn; /nocap purge deletes it) and obsidian-board-<dev>-<inode>.json (its index
+  of the board notes it wrote). It never reads note text back into a prompt. Suite-change detection reads only the tool
+  calls' own arguments and output (edit contents, shell commands, env prefixes); it adds no file reads, subprocesses or
+  network use. Commands it runs: read-only git as argument lists, no shell, in the session's working directory,
+  hardened against an untrusted repo (GIT_CONFIG_NOSYSTEM=1, GIT_CONFIG_GLOBAL=/dev/null, core.hooksPath=/dev/null,
+  core.fsmonitor=false, protocol.allow=never, no pager, no lazy fetch, credential helper off, minimal env: only PATH,
+  HOME, LANG, LC_ALL, SYSTEMROOT inherited, never provider keys): at reply time, only for a claimed SHA or branch no
+  tool call backs (verify_artifacts, at most 8 calls, 3 s each) `rev-parse --is-inside-work-tree
+  --is-shallow-repository`, `config --get-regexp`, `cat-file -e`, `for-each-ref`; during /cap (5 s each) `cat-file -t
+  <sha>`, `merge-base --is-ancestor <sha> HEAD`, `show -s --format=%ct <sha>`, `rev-parse --verify <ref>` and `reflog
+  show --date=unix -n 20 refs/remotes/origin/<branch>`, so a re-check proves the session's own work, not mere
+  existence. It lists the run's project read-only to tell a file-scoped test run from the full suite (bounded, no
+  symlinks) and, during /cap, stats a file the agent says it created (existence, size, modification time). `hermes
+  nocap demo --ladder` (and /nocap demo ladder, CLI/TUI only, in the background) runs the bundled demo/run_ladder.sh
+  with /bin/sh in a throwaway HERMES_HOME in the system temp directory, under `env -i` with only PATH, HOME, LANG, TMPDIR, TERM and the
+  demo's own settings (no provider keys), a scripted model on 127.0.0.1 and a uv install of the hash-pinned
+  demo/requirements-ladder.txt (pytest, pyte, Pillow) into a throwaway venv; that fetch is the demo's one network use.
+  Network: none by default; with self_verify_http: true, /cap may send one HTTP HEAD to a URL the agent claimed is
+  live, public addresses only (checked after DNS), no redirects, 3 s timeout. Dashboard and Desktop: routes under
+  /api/plugins/no-cap/ on your own Hermes backend, behind the dashboard's auth: GET /board (read-only), POST /hello
+  (writes desktop.json), POST /verify (yes/no for one Desktop chip in one chat; the HMAC key lives only in memory and
+  is never returned), GET /session. The board reads other profiles' stores and board_sources paths only with the
+  board.team_profiles opt-in, only in the CLI and dashboard, never in a gateway chat; in a gateway chat /nocap, /nocap
+  verdict and the /capscore board Hall of Cap show only that chat's receipts, with no store path. Discord: off by
+  default; with discord_buttons: on it edits only the bot's own reply to add an embed and two buttons and answers
+  clicks ephemerally (only the user the reply answered may click). Reply rewriting: it removes forged ::nocap
+  directives, closes a code fence, <!-- or <details> the reply left open (append-only) and appends the footer. Messages
+  it sends: /cap injects one user message where Hermes allows it (gateway-backed sessions need
+  plugins.entries.no-cap.allow_gateway_injection: true), otherwise prints it to paste; it quotes the agent's claims as
+  labelled data (capped, brackets, quotes, backticks and newlines removed) with parsed counts, never a raw output line.
+  Cap Coach injects approved rules as labelled context through pre_llm_call, only in scope, never before /cap coach
+  approve, and /cap coach revert stops it; with obsidian_learn: true it also adds one labelled line holding up to 3
+  built-in rules for the patterns this agent (profile) was stamped 🧢 on at least twice, from its own store only; approve, revert and --apply are refused from a gateway chat. When the
+  history already holds a No Cap footer, pre_llm_call also adds one fixed, labelled line asking the model not to write
+  receipt lines itself (built-in text only, never stored; footer_hint: off stops it). It never edits skills, memory or
+  config (--apply asks the agent to, with its own tools). /nocap doctor reads other plugins' plugin.yaml files and the
+  Hermes config. No tools, credentials, telemetry or self-update. Accuracy: blind samples of public SWE-rebench runs
+  (two raters, adjudicated): round 3 at 01a1fab, 🧾 precision 0.92 (92/100, 95% CI 0.85–0.96; no 🧢 on unseen runs, so
+  not measured); round 2 at 7c6cbc0, 🧢 8 of 11 correct. Local Arena (30 synthetic bug-fix tasks, Qwen3-4B and a
+  partial Qwen3-30B-A3B, No Cap at aa69dcb, one person's hand check against hidden tests): 13 of 13 🧢 correct.
+maintainer: jedbrnth-eng
+tier: community
+category: tools
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/jedbrnth-eng/no-cap#readme
+image: https://raw.githubusercontent.com/jedbrnth-eng/no-cap/edebf651e96691b57c806d43a13597117444faae/docs/brand/social-preview-1280x640.png
+screenshots:
+  - https://raw.githubusercontent.com/jedbrnth-eng/no-cap/edebf651e96691b57c806d43a13597117444faae/docs/media/demo-run/01-turnA-lies.png
+  - https://raw.githubusercontent.com/jedbrnth-eng/no-cap/edebf651e96691b57c806d43a13597117444faae/docs/media/board-run/01-board.png
+  - https://raw.githubusercontent.com/jedbrnth-eng/no-cap/edebf651e96691b57c806d43a13597117444faae/docs/media/install-run/04-chip-open.png
+  - https://raw.githubusercontent.com/jedbrnth-eng/no-cap/edebf651e96691b57c806d43a13597117444faae/docs/media/real-model-run/04-real-after-cap.png
+  - https://raw.githubusercontent.com/jedbrnth-eng/no-cap/edebf651e96691b57c806d43a13597117444faae/docs/media/obsidian-run/01-nocap-agent-note.png
+  - https://raw.githubusercontent.com/jedbrnth-eng/no-cap/edebf651e96691b57c806d43a13597117444faae/docs/media/obsidian-run/02-abb-mistakes-board.png
+readme: true
+platforms: []
+known_issues:
+  - "Only the final reply is checked. If another enabled plugin also rewrites replies (transform_llm_output), Hermes keeps one rewrite per turn; `/nocap doctor` warns about it."
+  - "Tested on macOS with a Hermes 0.22.5 dev build (0.22.5+2362.g8acb7f6) and v0.23.0, plus a GitHub install run on Hermes Agent and Desktop 0.23.0; not on the 0.22.5 release itself. Linux is covered by CI (unit and integration suite, not a live Hermes session). Desktop is tested end to end with a scripted model only; Discord with Hermes's real adapter and discord.py over a fake connection, not on a live server; Windows and Telegram are not tested end to end."
+  - "Secret masking has one known gap: a tool output over 40 KB is parsed in windows (first 8 KB, last 32 KB, fragments around summary lines), so a secret that sits across a window edge may be seen only in part and not masked (docs/GUIDE.md, Known limits)."
+  - "Obsidian lessons: tested on macOS with a local vault (unit, integration and an end-to-end run); not on Windows or network drives. A folder moved in the microseconds between the inode re-check and the write is not caught (docs/OBSIDIAN.md). Whether the lesson line changes a model's behaviour has not been measured."
+  - "register_platform_handler and register_cli_command run in-process only (`hermes plugins validate` notes this under plugins.isolation: host)."
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - post_tool_call
+    - transform_llm_output
+    - pre_verify
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

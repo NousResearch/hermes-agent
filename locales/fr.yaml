@@ -588,6 +588,7 @@ gateway:
     not_git_repo: "✗ Pas un dépôt git — impossible de mettre à jour."
     hermes_cmd_not_found: "✗ Impossible de localiser la commande `hermes`. Hermes est en cours d'exécution, mais la commande de mise à jour n'a pas pu trouver l'exécutable dans le PATH ni via l'interpréteur Python actuel. Essayez d'exécuter `hermes update` manuellement dans votre terminal."
     start_failed: "✗ Échec du démarrage de la mise à jour : {error}"
+    already_running: "⏳ Une mise à jour est déjà en cours ; seule la personne qui l'a lancée peut répondre à ses questions. Attendez qu'elle se termine, puis relancez /update."
     starting: "☤ Démarrage de la mise à jour Hermes… Je diffuserai la progression ici."
     reply_failed: "✗ Échec de l'envoi de la réponse au processus de mise à jour : {error}"
     reply_sent: "✓ `{label}` envoyé au processus de mise à jour."

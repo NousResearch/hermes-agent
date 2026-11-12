@@ -198,6 +198,9 @@ class FeishuChoiceCardsMixin:
         checked = self._validate_card_action(event=event, state=state, label="choice picker", ident=picker_id)
         if checked is None:
             return self._card_response()
+        from gateway.approval_actor import picker_refusal, refusal_text
+        if requester := picker_refusal(state["on_choice_selected"], checked[3] or checked[0], extra=self.config.extra):
+            return self._card_toast(refusal_text(requester))  # another member's tap: only they see it, card stays open
         token = str(action_value.get("hermes_choice_picker_action") or "")
         choices = state["choices"]
         if not (token.isdigit() and int(token) < len(choices)):

@@ -40,6 +40,14 @@ DAEMON_STRIPPED_ENV = (
 )
 
 
+# The daemon would inherit an elevated client's token, and no normal window can reach it (gateway_elevated).
+# Installing the task is not offered: registered through the UAC hand-off it can start the gateway
+# elevated too (#152218).
+CLIENT_ELEVATED_REMEDY = (
+    "Hermes is running as administrator, and a gateway it started would run as administrator too, "
+    "which locks every normal Hermes window out of it. Start Hermes from a normal (non-administrator) window")
+
+
 def spawn_unmanaged_gateway(profile_home: Path, *, deadline: float, idle_exit: bool = False,
                             force: bool = False) -> subprocess.Popen | GatewayJob:
     """Request a daemon, not readiness. Refuse Windows no-breakaway fallback.
@@ -51,6 +59,11 @@ def spawn_unmanaged_gateway(profile_home: Path, *, deadline: float, idle_exit: b
     ``force``: a ``gateway restart --force --detach`` replacement keeps the ``--force`` its old owner
     needed (a named profile under a multiplexer), or it exits on the run-side guard.
     """
+    from hermes_dir_acl import TOKEN_ELEVATION_TYPE_DEFAULT, process_elevation_type, process_is_elevated
+    # Only a split (UAC) token has a normal twin to lock out. With none (UAC off, the built-in
+    # Administrator) every window of this user is elevated and attaches to this gateway.
+    if process_is_elevated() and process_elevation_type() != TOKEN_ELEVATION_TYPE_DEFAULT:
+        raise RuntimeStartError("client_elevated", detail=CLIENT_ELEVATED_REMEDY)
     home = profile_home.resolve()
     root = Path(__file__).resolve().parent.parent
     # A root home is only pinned by an explicit selector: without one the child's
@@ -87,15 +100,29 @@ def spawn_unmanaged_gateway(profile_home: Path, *, deadline: float, idle_exit: b
                                     deadline=deadline):
             return job
     try:
-        with (logs / "gateway-stdio.log").open("ab", buffering=0) as output:
-            remaining(deadline)
+        output = (logs / "gateway-stdio.log").open("ab", buffering=0)
+    except OSError as exc:
+        raise RuntimeStartError("stdio_log_unavailable", detail=os_refusal(exc)) from exc
+    with output:
+        remaining(deadline)  # a spent deadline is the caller's "deadline", not a refusal
+        try:
             return subprocess.Popen(command, cwd=root, env=env, close_fds=True,
                                     stdin=subprocess.DEVNULL, stdout=output, stderr=output,
                                     # detached-spawn: ok — a gateway daemon launch must outlive its launcher
                                     **windows_detach_popen_kwargs())
-    except OSError as exc:
-        reason = "windows_breakaway_unavailable" if sys.platform == "win32" else "spawn_failed"
-        raise RuntimeStartError(reason) from exc
+        except OSError as exc:
+            # Only CreateProcess's own refusal is the job's verdict.
+            reason = "windows_breakaway_unavailable" if sys.platform == "win32" else "spawn_failed"
+            raise RuntimeStartError(reason, detail=os_refusal(exc)) from exc
+
+
+def os_refusal(exc: OSError) -> str | None:
+    """The OS's own code and message (``WinError 5: Access is denied``), never the filename: it can
+    name a profile home."""
+    winerror = getattr(exc, "winerror", None)
+    code = f"WinError {winerror}" if winerror is not None else (
+        f"errno {exc.errno}" if exc.errno is not None else None)
+    return ": ".join(part for part in (code, exc.strerror) if part) or None
 
 
 def start_detached_replacement(profile_home: Path, *, force: bool = False) -> int:
@@ -106,7 +133,11 @@ def start_detached_replacement(profile_home: Path, *, force: bool = False) -> in
     try:
         spawn_unmanaged_gateway(profile_home, deadline=time.monotonic() + 30, force=force)
     except RuntimeStartError as exc:
-        print(f"✗ Could not start the gateway in the background: {exc}", file=sys.stderr)
+        print(f"✗ Could not start the gateway in the background: {exc}"
+              + (f". {exc.detail}" if exc.detail else ""), file=sys.stderr)
+        return 1
+    except TimeoutError:  # spawn_unmanaged_gateway leaves a spent budget to its caller (ensure's "deadline")
+        print("✗ Could not start the gateway in the background: deadline", file=sys.stderr)
         return 1
     print("✓ Started the gateway in the background")
     return 0

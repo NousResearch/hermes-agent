@@ -353,10 +353,13 @@ async def _upload_ciphertext(session: aiohttp.ClientSession, *, ciphertext: byte
 
 
 async def _download_bytes(session: aiohttp.ClientSession, *, url: str, timeout_seconds: float = 60.0) -> bytes:
+    from gateway.platforms.base import read_httpx_body_with_limit
+
     async def _do() -> bytes:
         async with session.get(url) as response:
             response.raise_for_status()
-            return await response.read()
+            return await read_httpx_body_with_limit(
+                response, media_type="media", body=response.content.iter_chunked(65536))
     return await asyncio.wait_for(_do(), timeout=timeout_seconds)
 
 
@@ -1094,7 +1097,11 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
 
     async def send_image(self, chat_id: str, image_url: str, caption: str, reply_to: Optional[str] = None, metadata=None) -> SendResult:
         cleanup = image_url.startswith(("http://", "https://"))
-        file_path = await self._download_remote_media(image_url) if cleanup else image_url.replace("file://", "")
+        try:
+            file_path = await self._download_remote_media(image_url) if cleanup else image_url.replace("file://", "")
+        except Exception as exc:  # unsafe, failed or over gateway.max_inbound_media_bytes: keep the link
+            logger.warning("[%s] image download refused, sending the URL as text: %s", self.name, exc, exc_info=True)
+            return await super().send_image(chat_id, image_url, caption, reply_to, metadata=metadata)
         if not cleanup and not os.path.isabs(file_path):
             file_path = os.path.abspath(file_path)
         try:

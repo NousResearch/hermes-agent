@@ -1783,7 +1783,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             from tools.async_delegation import interrupt_all as _interrupt_async
             _count_step(
                 "Shutdown (%s): interrupted %d background delegation(s)",
-                lambda: _interrupt_async(reason=f"gateway shutdown ({phase})"),
+                lambda: _interrupt_async(reason=f"gateway shutdown ({phase})", resumable=True),
             )
 
         _step("process_registry.kill_all", _kill_processes)

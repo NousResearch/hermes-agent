@@ -3908,7 +3908,9 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             keyboard = InlineKeyboardMarkup([[
                 InlineKeyboardButton(t("platform.telegram.prompt.affirm"), callback_data=f"update_prompt:y:{prompt_id}"),
                 InlineKeyboardButton(t("platform.telegram.prompt.negate"), callback_data=f"update_prompt:n:{prompt_id}")]])
-            return text, keyboard, lambda _msg: setattr(self, "_update_prompt_id", str(prompt_id))
+            # Installed BEFORE the send: while its receipt is pending, an older card must already be stale.
+            self._update_prompt_id = str(prompt_id)
+            return text, keyboard, None
         return await self._send_prompt(
             "send_update_prompt", chat_id, metadata, build, thread_id=self._metadata_thread_id(metadata), reply_to_mode=self._reply_to_mode)
 

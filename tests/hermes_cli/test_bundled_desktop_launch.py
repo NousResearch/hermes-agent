@@ -265,7 +265,7 @@ class TestCmdGuiOnABundle:
 
         assert code == 0
         # THE regression: repo/apps/desktop/package.json exists in a bundle,
-        # so the old probe fell through to npm ci + npm run pack inside the
+        # so the old probe fell through to npm ci + npm run pack (now pnpm) inside the
         # app's own signed resources.
         assert builds == []
         assert launches == [[str(launcher)]]
@@ -304,7 +304,7 @@ class TestCmdGuiOnABundle:
         _code, builds, launches = self._run(monkeypatch, checkout, self._args())
 
         assert launches == []
-        assert any("npm" in " ".join(cmd) for cmd in builds), builds
+        assert any(" run build" in " ".join(cmd) for cmd in builds), builds
 
     @pytest.mark.parametrize("flag", ["source", "build_only", "force_build"])
     def test_build_flags_are_refused_rather_than_ignored(self, tmp_path, monkeypatch, flag):

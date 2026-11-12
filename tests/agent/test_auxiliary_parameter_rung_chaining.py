@@ -12,6 +12,7 @@ from unittest.mock import MagicMock
 from agent.auxiliary_client import (
     _call_fallback_candidate_sync,
     _drive_ladder,
+    _failure,
     _is_reasoning_field_rejection,
     _ladder_parameter_rungs,
     _LadderRoute,
@@ -59,7 +60,7 @@ def test_primary_rungs_chain_in_provider_order_and_strip_each_field_once():
         step_client, step_kwargs = step.args
         return step_client.chat.completions.create(**step_kwargs)
 
-    resp, err, final_kwargs = _drive_ladder(_ladder_parameter_rungs(first_err, route, kwargs, 64), perform)
+    resp, err, final_kwargs, _repaired = _drive_ladder(_ladder_parameter_rungs(_failure(route, first_err), route, kwargs, 64), perform)
 
     assert err is None and resp.choices[0].message.content == "ok"
     assert not {"temperature", "max_tokens", "reasoning_effort"} & set(final_kwargs)
@@ -138,9 +139,9 @@ def test_rate_limit_after_parameter_strip_falls_through_to_later_rungs():
     kwargs = {"model": "m", "messages": [], "max_tokens": 64}
     first_err = _Bad400("Error code: 400 - Unsupported parameter: 'max_tokens' is not supported with this model.")
 
-    resp, err, final_kwargs = _drive_ladder(
-        _ladder_parameter_rungs(first_err, route, kwargs, 64),
+    resp, err, final_kwargs, _repaired = _drive_ladder(
+        _ladder_parameter_rungs(_failure(route, first_err), route, kwargs, 64),
         lambda step: step.args[0].chat.completions.create(**step.args[1]))
 
-    assert resp is None and err is rate_limited
+    assert resp is None and err.error is rate_limited
     assert "max_tokens" not in final_kwargs

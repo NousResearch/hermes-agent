@@ -886,9 +886,15 @@ def unit_convert(args: dict, **kwargs) -> str:
 1. **Signature:** `def my_handler(args: dict, **kwargs) -> str`
 2. **Return:** Always a JSON string. Success and errors alike.
 3. **Never raise:** Catch all exceptions, return error JSON instead.
-4. **Accept `**kwargs`:** Hermes injects context keywords (`task_id`, `session_id`, `user_task`,
-   `parent_agent`, ...) and only forwards the ones your signature names, so `def handler(args)`
+4. **Accept `**kwargs`:** Hermes injects context keywords (`task_id`, `session_id`, `conversation_id`,
+   `user_task`, `parent_agent`, ...) and only forwards the ones your signature names, so `def handler(args)`
    works; `**kwargs` is how you opt into the full, additively growing context.
+5. **Key per-conversation state on `conversation_id`:** `session_id` names the current transcript
+   segment, and a rotating compression (`compression.in_place: false`) replaces it mid-conversation.
+   `conversation_id` is the id of the conversation's first session and does not change. `/new` and
+   `/branch` start a new conversation. A delegated subagent's calls carry its own `session_id` and its
+   delegator's `conversation_id`. Both are empty when the call has no session (for example, a tool call
+   from inside an `execute_code` script).
 
 ## Step 5: Write the registration
 
@@ -1249,6 +1255,37 @@ def open_skill(name):
 Plugin-registered skills (`ctx.register_skill`) are not on disk under these roots; `find_all_skills()`
 returns the on-disk catalog only.
 
+### Check file paths and read YAML with Hermes's own helpers
+
+A plugin that reads or writes a path the model chose (an attachment, an export target, a file to
+summarise) should refuse the same paths Hermes's own file tools refuse: credential stores, the
+skills-hub cache, project `.env` files and anything outside `HERMES_WRITE_SAFE_ROOT`. Call these
+instead of keeping your own denylist:
+
+| Import | What it gives you |
+|---|---|
+| `agent.file_safety.get_read_block_error(path)` | An error string if Hermes's file tools would refuse to read `path`, else `None`. Pass an absolute path. |
+| `agent.file_safety.raise_if_read_blocked(path)` | The same check, raising `ValueError` on a block. |
+| `agent.file_safety.get_write_denied_error(path)` | An error string if Hermes's file tools would refuse to write `path`, else `None`. |
+| `agent.file_safety.is_write_denied(path)` | `True` when that write would be refused. |
+| `hermes_yaml.safe_load(text)` / `hermes_yaml.safe_dump(data)` | The YAML reader and writer Hermes uses for its own config. Hermes does not ship PyYAML, so `import yaml` fails unless your plugin declares it. |
+
+```python
+from agent.file_safety import get_read_block_error
+from hermes_yaml import safe_load
+
+def load_recipe(path):
+    if err := get_read_block_error(path):
+        return err
+    with open(path, encoding="utf-8") as fh:
+        return safe_load(fh)
+```
+
+Import the names themselves (`from hermes_yaml import safe_load`), as above: `hermes plugins
+validate` accepts those spellings and reports a bare `import agent.file_safety` as a private import.
+To read Hermes's own settings, use `load_config_readonly()` from `hermes_cli.config` rather than
+parsing `config.yaml` yourself.
+
 ### Ship a language pack
 
 A plugin can add a UI language or override the wording of an existing one for every surface at once —
@@ -1544,7 +1581,8 @@ Each hook is documented in full on the **[Event Hooks reference](../../user-guid
 | [`on_session_reset`](../../user-guide/features/hooks.md#on_session_reset) | Gateway swaps in a new session key (`/new`, `/reset`) | `session_id: str, platform: str` | ignored |
 | [`on_session_delete`](../../user-guide/features/hooks.md#on_session_delete) | A session delete or deliberate archive commits (every surface, sweeps, prune) | `session_id: str, reason: str, profile: str \| None`, optional `deleted_ids: list[str]`, `sessions_dir: str` | ignored |
 | [`post_compaction`](../../user-guide/features/hooks.md#post_compaction) | A compaction committed (any path: auto, `/compress`, gateway, Codex, micro, prune) | `session_id: str, old_session_id: str, kind: str, reason: str, before_tokens: int \| None, after_tokens: int \| None, messages_removed: int \| None` | ignored |
-| [`gateway_platform_event`](../../user-guide/features/hooks.md#gateway_platform_event) | An authorized platform-native event is normalized at the gateway boundary (Telegram reactions currently) | `platform: str, event_type: str, payload: dict` | ignored |
+| [`post_curator_run`](../../user-guide/features/hooks.md#post_curator_run) | A curator pass wrote its report directory | `run_dir: str, run_json_path: str, report_md_path: str, dry_run: bool` | ignored |
+| [`gateway_platform_event`](../../user-guide/features/hooks.md#gateway_platform_event) | An authorized platform-native event is normalized at the gateway boundary (Telegram reactions and message edits; Discord message edits and deletes, thread create and rename; see the [per-event contracts](../../user-guide/features/hooks.md#gateway_platform_event)) | `platform: str, event_type: str, payload: dict` | ignored |
 | `kanban_task_claimed` | A kanban task is claimed (dispatcher process, before the worker spawns) | `task_id: str, board: str \| None, assignee: str \| None, run_id: int \| None, profile_name: str` | ignored |
 | `kanban_task_completed` | A kanban task completes (worker process) | `task_id, board, assignee, run_id, profile_name, summary: str \| None` | ignored |
 | `kanban_task_blocked` | A kanban task is blocked (worker process) | `task_id, board, assignee, run_id, profile_name, reason: str \| None` | ignored |
@@ -1556,6 +1594,57 @@ All callbacks should accept `**kwargs` for forward compatibility. If a hook call
 The kanban lifecycle hooks fire **after** the board DB change commits, so a callback always sees durable state and can never hold the SQLite write lock. Because kanban workers run as separate `hermes -p <profile> chat -q` subprocesses, `kanban_task_claimed` fires in the **dispatcher** process while `kanban_task_completed` / `kanban_task_blocked` fire in the **worker** process — hook in the dispatcher to observe every transition centrally, or in the worker for per-task in-session context.
 
 The **API request hooks** are observers for the raw provider request, one level below the per-turn `pre_llm_call` / `post_llm_call` pair: a single turn that calls tools makes several API requests, and these hooks fire around each one. They exist for observability plugins (tracing, cost accounting, latency dashboards). The `request` and `response` kwargs are sanitized, size-capped JSON views of the provider payload (sensitive keys redacted, long strings truncated, SDK objects normalized), and `usage` is a plain token-summary dict. Every payload carries the correlation fields `turn_id`, `api_request_id`, `task_id`, `session_id`, and `api_call_count`, so a plugin can stitch requests, tool calls, and turns together. `api_request_error` fires when a provider call raises and adds `status_code`, `retry_count` / `max_retries`, `retryable`, `reason`, and an `error` dict with `type` and `message`.
+
+### Where each hook fires {#hook-fire-sites}
+
+Every name in `hermes_cli.plugins.VALID_HOOKS` has at least one core fire site. This table names the function that fires each one, so you can read the exact call and payload. Paths are relative to the repository root. When you add a hook, add its row here in the same change.
+
+| Hook | Fired by |
+|------|----------|
+| `pre_tool_call` | `hermes_cli/plugins.py` `_dispatch_pre_tool_call_hooks`, called from `agent/tool_executor.py` `_pre_tool_block`, `agent/agent_runtime_helpers.py` `_pre_tool_block_message` and `model_tools.py` `_pre_dispatch_guards` |
+| `post_tool_call` | `model_tools.py` `_emit_post_tool_call_hook` |
+| `transform_terminal_output` | `tools/terminal_tool_result.py` `_apply_output_transform_hook` |
+| `transform_tool_result` | `model_tools.py` `_apply_transform_tool_result_hook` |
+| `transform_llm_output` | `agent/turn_finalizer.py` `apply_llm_output_transform` |
+| `pre_llm_call` | `agent/turn_context.py` `_collect_pre_llm_call_context` |
+| `post_llm_call` | `agent/turn_finalizer.py` `_apply_output_hooks` |
+| `on_stream_start` / `on_stream_end` | `agent/stream_delivery.py` `StreamDeliveryMixin._emit_stream_start` / `_emit_stream_end` |
+| `on_stream_delta` | `agent/stream_delivery.py` `StreamDeliveryMixin._fire_stream_delta` (text) and `_fire_reasoning_delta` (reasoning) |
+| `on_interim_message` | `agent/stream_delivery.py` `StreamDeliveryMixin._emit_interim_assistant_message` |
+| `pre_verify` | `hermes_cli/plugins.py` `get_pre_verify_continue_message`, called from `agent/turn_stop_gates.py` `_pre_verify_nudge` |
+| `pre_api_request` | `agent/turn_api_request.py` `_fire_pre_api_request_hook` |
+| `post_api_request` | `agent/turn_response_intake.py` `_fire_post_api_request_hook` |
+| `api_request_error` | `agent/api_request_hooks.py` `ApiRequestHooksMixin._invoke_api_request_error_hook` |
+| `pre_auxiliary_call` / `post_auxiliary_call` | `agent/auxiliary_hooks.py` `_AuxCallHooks.pre` / `_AuxCallHooks.post` |
+| `transform_api_error_classification` | `hermes_cli/plugins.py` `get_plugin_error_classification`, called from `agent/error_classifier.py` `_plugin_verdict` |
+| `on_session_start` | `agent/conversation_loop.py` `_restore_or_build_system_prompt` |
+| `on_session_end` | `agent/turn_finalizer.py` `finalize_turn`; interrupted exits: `hermes_cli/cli_shutdown.py` `_invoke_interrupted_session_end`, `tui_gateway/session_lifecycle.py` `_finalize_session` |
+| `on_session_finalize` | `hermes_cli/lifecycle.py` `finalize_session`, called from `hermes_cli/cli_session_mixin.py` `CLISessionMixin._notify_session_boundary`, `hermes_cli/cli_shutdown.py` `_notify_session_finalize`, `tui_gateway/session_lifecycle.py` `_notify_session_boundary` and `gateway/run_shutdown_session_end.py` `GatewaySessionEndMixin._finalize_session_off_loop` |
+| `on_session_reset` | `hermes_cli/cli_session_mixin.py` `CLISessionMixin._notify_session_boundary`; `tui_gateway/session_registry.py` `_start_session_services`; `gateway/slash_commands_session.py` `GatewaySessionCommandsMixin._handle_reset_command`; `gateway/run_shutdown_session_end.py` `GatewaySessionEndMixin._reset_session_off_loop` |
+| `on_session_delete` | `hermes_state_common.py` `emit_session_deleted` |
+| `on_session_open` | `gateway/session_open.py` `_Open._deliver` |
+| `on_skill_lifecycle` | `tools/skill_usage.py` `_emit_skill_lifecycle` |
+| `subagent_start` | `tools/delegate_tool.py` `_build_child_agent` |
+| `subagent_stop` | `tools/delegate_tool_results.py` `_fire_subagent_stop_hooks` |
+| `pre_gateway_dispatch` | `gateway/run_inbound_hooks.py` `GatewayInboundHooksMixin._hm_pre_gateway_dispatch_hook`; webhook and relay ingress: `gateway/platforms/webhook_ingress.py` `_admit_once` |
+| `post_gateway_admission` | `gateway/run_inbound_consumer.py` `run_post_admission_hook`; `gateway/platforms/webhook_ingress.py` `_admit_once` |
+| `agent_loop_stopped` | `gateway/run_agent_cache.py` `GatewayAgentCacheMixin._interrupt_and_clear_session`; `tui_gateway/session_lifecycle.py` `_interrupt_session_turn` |
+| `pre_approval_request` / `post_approval_response` | `tools/approval_context.py` `_fire_approval_hook`, called from `tools/approval.py`, `tools/approval_prompt.py`, `tools/approval_gateway_wait.py`, `tools/approval_smart.py` and `tools/file_tools_write_guards.py` |
+| `on_human_input_request` / `on_human_input_resolved` | `tools/human_input_hooks.py` `human_input_request` |
+| `on_room_member_activity` | `tui_gateway/hosted_room_member_activity.py` `emit_room_member_activity` |
+| `pre_transcription` | `tools/transcription_command.py` `_apply_pre_transcription_hook` |
+| `kanban_task_claimed` | `hermes_cli/kanban_db.py` `claim_task` (through `_fire_task_hook`) |
+| `kanban_task_completed` | `hermes_cli/kanban_db.py` `complete_task` (through `_fire_task_hook`); `hermes_cli/kanban_swarm.py` `create_swarm` |
+| `kanban_task_blocked` | `hermes_cli/kanban_db.py` `block_task` (through `_fire_task_hook`) |
+| `on_kanban_worker_spawned` | `hermes_cli/kanban_db.py` `_fire_worker_spawned_hook` |
+| `on_kanban_worker_exited` | `hermes_cli/kanban_db_dispatch.py` `detect_crashed_workers` |
+| `on_kanban_worker_stale_claim` | `hermes_cli/kanban_db.py` `release_stale_claims` |
+| `on_kanban_task_updated` | `hermes_cli/kanban_db.py` `notify_task_updated` |
+| `on_kanban_dispatch_tick` | `hermes_cli/kanban_db.py` `_fire_dispatch_tick_hook` |
+| `gateway_platform_event` | `gateway/run_adapters.py` `GatewayAdapterLifecycleMixin._handle_gateway_platform_event` (events come from the Telegram and Discord adapters) |
+| `pre_command` | `hermes_cli/plugins.py` `fire_pre_command_hook`, called from `cli.py` `HermesCLI.process_command`, `gateway/run_inbound_hooks.py` `GatewayInboundHooksMixin._hm_command_hooks` and `gateway/session_commands.py` |
+| `post_compaction` | `agent/compaction_events.py` `fire_post_compaction` |
+| `post_curator_run` | `agent/curator.py` `_notify_post_curator_run` |
 
 ### `pre_llm_call` context injection
 
@@ -1715,6 +1804,30 @@ The canonical list of kinds is `VALID_MIDDLEWARE` in `hermes_cli/middleware.py`:
 - Middleware payloads carry `middleware_schema_version` (`hermes.middleware.v1`) alongside the observer telemetry fields.
 - Unknown kinds register with a warning instead of failing, so a plugin written against a newer Hermes still loads on an older one.
 
+### Give each session's commands its own environment variables
+
+Tools run in the process that serves the session. With the shared gateway, that is the gateway daemon, so a variable from the terminal or pane that shows a conversation is not in the environment of the commands the agent runs. `ctx.register_session_env(names, resolver)` closes that gap without a change to the commands:
+
+```python
+def pane_env(session_id):
+    pane = find_pane_showing(session_id)  # your plugin's own lookup
+    if pane is None:
+        return {}  # the commands keep the gateway's own values
+    return {"MY_PANE": pane.id, "MY_PANE_SOCKET": pane.socket or None}
+
+def register(ctx):
+    ctx.register_session_env(["MY_PANE", "MY_PANE_SOCKET"], pane_env)
+```
+
+- Hermes calls `resolver(session_id)` each time it starts a local process for a session: a foreground or background `terminal` command, a `terminal()` call from `execute_code`, and the other subprocesses that get the session's `HERMES_SESSION_*` variables. The value is read at that moment, so a change (the conversation moves to another pane) applies to the next command.
+- `session_id` is the session the process runs for. A subagent's commands get the subagent's id; map it to its parent session in your resolver when the parent's values must apply.
+- Return a map of declared names to strings. A value of `None` removes the name from the process environment. A name you leave out keeps the gateway's own value. Names you did not declare are ignored.
+- The declared names are never saved in the shared shell snapshot, so one session's value cannot reach a later command of another session, and an `export` of one of these names does not carry to the next command. This applies to your plugin's own profile only: another profile served by the same gateway keeps its own exports of the name.
+- Each name has one plugin per profile. Declaring a name another loaded plugin of the same profile already declared raises `ValueError` naming that plugin. Unloading a plugin frees its names, and a reload of the same plugin declares them again. Your own plugin may declare a name in more than one call: the later registration's value wins, and disposing it brings back the earlier one's.
+- Names must be valid environment variable names. `HERMES_*` names are refused (they belong to core). Provider and Hermes credential names that the subprocess scrub removes are also removed from your values.
+- A resolver that raises is logged and contributes nothing; the command still runs. Keep it fast and local: it runs on every spawn.
+- Values apply on the local terminal backend only. Remote backends (Docker, SSH, Modal and other sandboxes) do not receive them.
+
 ### Register CLI commands
 
 Plugins can add their own `hermes <plugin>` subcommand tree:
@@ -1819,14 +1932,20 @@ def register(ctx):
 
 - Return the text to show. `print()` writes to the gateway's stdout, and the user never sees it.
 - Take the session's working directory from `agent.runtime_cwd.resolve_agent_cwd()`, not `os.getcwd()`, which is the gateway's own directory. Resolve relative paths against it.
-- Read session identity with `gateway.session_context.get_session_env("HERMES_SESSION_PLATFORM")` and the other `HERMES_SESSION_*` names, not `os.environ`.
+- Read session identity with `get_session_env("HERMES_SESSION_PLATFORM")`, `get_session_env("HERMES_SESSION_CHAT_ID")` and the other `HERMES_SESSION_*` names, not `os.environ`. Import the function itself with `from gateway.session_context import get_session_env`: that name is the public seam, and `hermes plugins validate` reports `import gateway.session_context` as a private import.
+- For "who asked this turn" (authorization, provenance), read `HERMES_SESSION_ACTOR_ID` / `HERMES_SESSION_ACTOR_NAME`. Both are empty when the turn has no single actor (another member's message joined it), in process and in a terminal or `execute_code` child alike, so treat empty as nobody in particular. `HERMES_SESSION_USER_ID` is the session route, and it is empty in a shared chat (Telegram observe mode), so code that rebuilds a delivery target from it stays on the shared conversation.
 
 ```python
 from agent.runtime_cwd import resolve_agent_cwd
+from gateway.session_context import get_session_env
 
 def _handle_todo(raw_args: str) -> str:
     todo = resolve_agent_cwd() / "TODO.md"  # the session's folder, not the gateway's
     return todo.read_text() if todo.exists() else "No TODO.md here."
+
+def _handle_where(raw_args: str) -> str:
+    platform = get_session_env("HERMES_SESSION_PLATFORM")  # unbound: falls back to os.environ, then ""
+    return f"{platform or 'local'} chat {get_session_env('HERMES_SESSION_CHAT_ID') or '(none)'}"
 ```
 
 ### Ask the user to pick an option
@@ -1920,6 +2039,78 @@ def register(ctx):
 ```
 
 For running a full `hermes <subcommand>` (e.g. `hermes kanban show`), shell out with the `terminal` tool via `ctx.dispatch_tool("terminal", {"command": "hermes kanban show ..."})` — there is no in-process slash-command bridge for headless worker sessions, and tools are the supported way to drive Hermes from a hook.
+
+### Talk to your own frontend: plugin RPC methods and session events
+
+A frontend that is a JSON-RPC client of the gateway (a terminal frontend attached to the shared gateway, a
+custom web client on `/api/ws`) can call its own Python half, and the Python half can push an event to the
+clients viewing one session:
+
+```python
+def register(ctx):
+    def pane_state(params, *, session_id, **kwargs):
+        # session_id is the session the call named (None for a sessionless call), already authorized.
+        state = load_state(session_id)
+        ctx.emit_to_session(session_id, "pane.changed", {"rows": len(state)})
+        return {"rows": state}
+
+    ctx.register_rpc("pane.state", pane_state)
+```
+
+The client calls `plugin.<plugin_id>.pane.state` with any JSON params (`session_id` names the session) and
+listens for the event frame of type `plugin.<plugin_id>.pane.changed`:
+
+```json
+{"jsonrpc": "2.0", "id": 7, "method": "plugin.my-plugin.pane.state", "params": {"session_id": "local-…", "page": 2}}
+```
+
+- **Names are forced into your namespace** (`<plugin_id>` is `ctx.plugin_id`). `ctx.register_rpc(name, handler)`
+  serves `plugin.<plugin_id>.<name>`, and `ctx.emit_to_session(session_id, event, payload=None)` sends
+  `plugin.<plugin_id>.<event>`. `name` and `event` are bare dotted names (segments of `[A-Za-z0-9_-]`), as for
+  `broadcast_plugin_event`. A plugin whose id is not `[a-z0-9_-]{1,64}` (a category plugin such as
+  `image_gen/x`) cannot register one: the call raises `ValueError`.
+- **The handler** is called as `handler(params, session_id=...)` off the gateway loop, in the owning
+  profile's scope. It may be `async def`: it then runs on its own event loop in that worker thread, never
+  on the gateway loop, the same as a plugin slash command. Accept `**kwargs`: later releases may pass more context. Its return value must be
+  JSON-encodable and is the call's `result`. An exception, or a value JSON cannot encode, answers the call
+  with error `4001`, reason `plugin_rpc_failed`, and the exception text in `error.data.detail`. The call
+  holds that client's request lane until it returns, so keep it short: start long work in a thread and
+  report through `emit_to_session`.
+- **Unload removes the methods.** Once the plugin is disabled or removed, its methods answer `-32601`
+  like any unknown method.
+- **Session events go to that session's viewers only**, on its event stream: clients attached now, and a
+  client that reconnects replays them. `session_id` may be the conversation's id or its agent's current
+  id (compression gives the agent a new one), so a tool or hook can pass the `session_id` it received.
+  `payload` is a JSON dict. The call returns `True` when a live viewer took the frame, `False` when no
+  client is viewing or this process holds no such session. `ctx.emit_to_session` looks the session up in
+  your plugin's own profile, also from a thread you started. `hermes_cli.plugin_events.emit_plugin_session_event(plugin_id, session_id, event, payload)`
+  is the same call for code without `ctx`; it uses the caller's profile scope, so from your own thread on
+  a gateway that serves several profiles, use `ctx.emit_to_session`.
+- **`plugins.isolation: host`:** handlers run in the plugin host process, and both emit calls are
+  forwarded to the gateway process, looked up in the host's profile. There `emit_plugin_session_event`
+  is sent as the plugin whose code made the call: it returns `False` and sends nothing when `plugin_id`
+  is not that plugin's own or the code is from a load that has since unloaded (a task left running
+  across a reload too), and it may do the same from a thread you
+  started (the host may not know which plugin it belongs to), so use `ctx.emit_to_session` there. In-process the helper takes
+  `plugin_id` as given.
+- **Where it works:** on a gateway that owns sessions (its session authority, as on the shared
+  `hermes gateway run` gateway that attached frontends use). A backend without one answers the method
+  with `-32601`. In a process without one (`hermes chat`, cron, a
+  `dashboard.turn_isolation` compute child) `emit_to_session` returns `False`.
+- **Detect it first.** An owner that serves plugin methods lists `plugin-rpc-v1` in
+  `runtime.describe`'s `capabilities`. With it, `-32601` means that plugin method is not loaded (the
+  plugin is disabled, not installed, or has no such method). Without `plugin-rpc-v1`, clients must not
+  assume plugin RPC is supported (an older owner may still serve it without listing the capability). The contract declares the namespace once as
+  `plugin.{plugin_id}.{name}` (`CanonicalRpcNamespaces` in the generated TypeScript,
+  `x-canonical-namespaces` in the OpenRPC document): params are an open object with an optional
+  `session_id`, and the result is whatever JSON your handler returns.
+
+**Security.** A plugin method gets the same gate as a plugin slash command on that gateway: the connection
+needs the `session:control` capability, and a call that names a `session_id` must pass that session's
+authorization (the right profile, the owner of a local session, a superseded conversation is read-only).
+Beyond that, any client the gateway authenticated can call any plugin method with any params. Hermes does
+not check callers per method (`SECURITY.md` §2.6, rule 4): treat a plugin method like a plugin tool, validate
+its params, and never expose through it more than the plugin's own data and actions.
 
 ### Send raw CDP commands to the agent's browser
 

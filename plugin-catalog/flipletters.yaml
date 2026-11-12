@@ -1,0 +1,18 @@
+name: flipletters
+title: FlipLetters
+repo: https://github.com/Terahertz-Inc/flipletters-mcp
+sha: 460880225ce2f7b95b1020622b2552aaa1a580b2
+version: "0.3.1"
+description: "Split-flap and flip-dot board design through FlipLetters' remote MCP (https://app.flipletters.com/mcp/v1): FlipCode reference, validate boards, render videos, share. Portable Agent Plugins v1 (plugin.json + mcp.json + skills/). Disclosure — hosted-only connector with no local code: every tool call, with its arguments, goes to app.flipletters.com and needs a FlipLetters account (flk_ API key in FLIPLETTERS_API_KEY, sent as a Bearer header). Render tools spend the account's export quota, and share tools post into team libraries or schedule and publish to the user's connected social channels through Postiz; the package marks the server untrusted, so Hermes asks before write-capable tools and refuses them in unattended runs. The live tool set is served by the remote server and is not covered by the pinned sha."
+maintainer: Terahertz, Inc.
+tier: community
+category: tools
+docs_url: https://flipletters.com/mcp
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: ["FLIPLETTERS_API_KEY"]

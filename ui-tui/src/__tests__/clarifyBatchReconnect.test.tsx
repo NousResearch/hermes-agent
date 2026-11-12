@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
 
 import { renderSync, Text } from '@hermes/ink'
+import { RECONNECT_BASE_MS } from '@hermes/shared/gateway-client'
 import React from 'react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
@@ -56,7 +57,7 @@ import { hasOpenServerRequest, resetServerRequestsForTests } from '../app/server
 import { turnController } from '../app/turnController.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import { useSessionLifecycle } from '../app/useSessionLifecycle.js'
-import { GatewayClient, RECONNECT_BASE_MS } from '../gatewayClient.js'
+import { GatewayClient } from '../gatewayClient.js'
 
 const noop = () => {}
 const QUESTIONS = [{ qid: 'q0', question: 'Colour?', choices: ['red', 'blue'] }, { qid: 'q1', question: 'Size?', choices: ['S', 'L'] }]

@@ -163,7 +163,7 @@ def test_notice_for_a_legacy_inline_store_keeps_the_reclaim_estimate(tmp_path, m
         "SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'messages_fts%'")]
     db._conn.executescript(
         "".join(f"DROP TRIGGER {n};" for n in names)
-        + "DROP TABLE IF EXISTS messages_fts_cjk; DROP TABLE IF EXISTS messages_fts_trigram;"
+        + "DROP TABLE IF EXISTS messages_fts_trigram;"
         + "DROP VIEW IF EXISTS messages_fts_trigram_src; DROP TABLE messages_fts;"
         + LEGACY_FTS_SQL
     )

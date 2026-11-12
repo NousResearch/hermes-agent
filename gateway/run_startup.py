@@ -36,29 +36,36 @@ from typing import Any, Dict, Optional, Tuple
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
+# What adapters' ``get_chat_info`` reports for a chat every member reads (a handoff home that is no DM).
+_HANDOFF_SHARED_CHAT_TYPES = frozenset({"group", "channel", "forum", "room", "supergroup", "thread"})
 
 
-def recover_left_core_in(home: Path, *, hydrate_secrets: bool = True) -> None:
+def recover_left_core_in(home: Path, *, hydrate_secrets: bool = True) -> list[str]:
     """Install the catalog plugin of every feature that left core (Home Assistant) *home* uses, in
     *home*'s runtime scope (its config, secrets and allow_lazy_installs); once per process per home.
-    Blocking: call it off the event loop."""
+    Returns the installed plugin names. Blocking: call it off the event loop."""
     from gateway.run import _profile_runtime_scope
     from hermes_cli.left_core_migration import recover_at_startup
     with _profile_runtime_scope(Path(home), hydrate_secrets=hydrate_secrets):
-        recover_at_startup(gateway_start=True)
+        return recover_at_startup(gateway_start=True)
 
 
-def recover_left_core_at_gateway_start() -> None:
+def recover_left_core_at_gateway_start() -> bool:
     """Left-core migration for the homes whose platform config the runner loads first: the launch
     home and the default root (the multiplex primary; a named launcher is then served as a
     secondary). Every secondary runs :func:`recover_left_core_in` before its plugins are discovered,
-    so a platform plugin it gets starts its adapter in the same gateway start."""
-    from hermes_cli.left_core_migration import recover_at_startup
+    so a platform plugin it gets starts its adapter in the same gateway start. True when a plugin
+    that ships a gateway platform was installed: platform config loaded before it lacks the platform."""
+    from hermes_cli.left_core_migration import LEFT_CORE
     from hermes_constants import get_default_hermes_root, get_hermes_home
-    recover_at_startup(gateway_start=True)
+    # The launch home too runs in its own scope: a multiplexing config load already armed fail-closed
+    # secret reads, so an unscoped install read of its own .env raised. Its sources were hydrated at boot.
+    launch = Path(get_hermes_home())
+    installed = recover_left_core_in(launch, hydrate_secrets=False)
     root = Path(get_default_hermes_root())
-    if root.resolve() != Path(get_hermes_home()).resolve():
-        recover_left_core_in(root)
+    if root.resolve() != launch.resolve():
+        installed += recover_left_core_in(root)
+    return any(feature.platform and feature.plugin in installed for feature in LEFT_CORE)
 
 
 
@@ -551,28 +558,41 @@ class GatewayStartupMixin:
         """Replay one adapter identity's transient failures after reconnect: the startup sweep cannot
         claim live-owner rows, so ``send_path_degraded`` responses would otherwise stay failed until
         the next restart. Best-effort; reuses the startup redelivery contract."""
+        claim, owned = None, []
         try:
-            from gateway.delivery_ledger import ledger_enabled, sweep_failed_for_runtime
-            if not await asyncio.to_thread(ledger_enabled):
+            try:
+                from gateway.delivery_ledger import ledger_enabled, sweep_failed_for_runtime
+                if not await asyncio.to_thread(ledger_enabled):
+                    return 0
+                # Cancelling this task cannot stop the worker thread committing the claim: shield it so
+                # a stop landing mid-claim still learns which rows it now owns.
+                claim = asyncio.ensure_future(asyncio.to_thread(sweep_failed_for_runtime, platform.value, profile=profile))
+                claimed = await asyncio.shield(claim)
+            except Exception:
+                logger.debug("runtime delivery ledger sweep failed after %s reconnect", platform.value, exc_info=True)
                 return 0
-            claimed = await asyncio.to_thread(sweep_failed_for_runtime, platform.value, profile=profile)
-        except Exception:
-            logger.debug(
-                "runtime delivery ledger sweep failed after %s reconnect", platform.value, exc_info=True,
-            )
-            return 0
-        if not claimed:
-            return 0
-        # Clear before any send so the reconnect path cannot both redeliver AND resume the same turn.
-        sendable = await self._clear_resume_pending_for_claimed_obligations(claimed, require_success=True)
-        sendable_ids = {row["obligation_id"] for row in sendable}
-        for row in claimed:
-            if row["obligation_id"] not in sendable_ids:
-                await self._release_runtime_claim_quiet(
-                    row["obligation_id"], "failed to release runtime delivery claim %s",
-                    error=row.get("last_error") or "send_path_degraded",
-                )
-        return await self._redeliver_claimed_obligations(sendable)
+            if not claimed:
+                return 0
+            # Clear before any send so the reconnect path cannot both redeliver AND resume the same turn.
+            sendable = await self._clear_resume_pending_for_claimed_obligations(claimed, require_success=True)
+            sendable_ids = {row["obligation_id"] for row in sendable}
+            for row in claimed:
+                if row["obligation_id"] not in sendable_ids:
+                    await self._release_runtime_claim_quiet(
+                        row["obligation_id"], "failed to release runtime delivery claim %s",
+                        error=row.get("last_error") or "send_path_degraded",
+                    )
+            return await self._redeliver_claimed_obligations(sendable)
+        except asyncio.CancelledError:
+            # Cancelled while owning claims (profile stop, adapter replacement): later sweeps only claim
+            # 'failed', so release every claim still 'attempting' (the guard skips sent and released
+            # rows) in one thread hop that a second cancel cannot cut short.
+            from gateway.delivery_ledger import release_runtime_claim
+            with suppress(Exception):
+                owned = await claim if claim is not None else []
+            await asyncio.to_thread(lambda: [release_runtime_claim(
+                row["obligation_id"], row.get("last_error") or "send_path_degraded") for row in owned])
+            raise
 
     def _resume_pending_candidates(self, platform=None) -> Optional[list]:
         """Snapshot resume-pending entries (optionally scoped to ``platform``); None when
@@ -1047,7 +1067,7 @@ class GatewayStartupMixin:
     _ALLOWLIST_ENV_PLATFORMS = (
         "TELEGRAM", "DISCORD", "WHATSAPP", "WHATSAPP_CLOUD", "SLACK", "SIGNAL", "EMAIL", "SMS",
         "MATTERMOST", "MATRIX", "DINGTALK", "FEISHU", "WECOM", "WECOM_CALLBACK", "WEIXIN",
-        "BLUEBUBBLES", "QQ", "YUANBAO",
+        "BLUEBUBBLES", "QQ",
     )
     _BUILTIN_ALLOWED_USERS_VARS = tuple(f"{p}_ALLOWED_USERS" for p in _ALLOWLIST_ENV_PLATFORMS) + (
         "SIGNAL_GROUP_ALLOWED_USERS", "TELEGRAM_GROUP_ALLOWED_USERS",
@@ -1286,7 +1306,7 @@ class GatewayStartupMixin:
                 _multiplex_skipped_platforms.append(platform)
                 continue
             enabled_platform_count += 1
-            adapter = self._create_adapter(platform, platform_config)
+            adapter = await self._create_adapter_off_loop_deps(platform, platform_config)
             if not adapter:
                 # Distinguish between missing builtin deps and missing plugin
                 if platform.value in {m.value for m in Platform.__members__.values()}:
@@ -1850,10 +1870,10 @@ class GatewayStartupMixin:
             chat_type = "dm" if home_chat_id.startswith("D") else "group"
             scope_for_chat = getattr(transport.adapter, "scope_id_for_chat", None)
             scope_id = home.scope_id or (scope_for_chat(home_chat_id) if callable(scope_for_chat) else None)
-        if platform == Platform.MATRIX:
-            # Matrix likewise keys an in-thread reply on the ROOM's type (#112918); the adapter's
-            # get_chat_info reports "dm"/"group" for the home room.
-            chat_type = "dm" if await self._handoff_home_is_dm(transport.adapter, home_chat_id) else "group"
+        if platform == Platform.MATRIX or (not is_thread and platform not in (Platform.TELEGRAM, Platform.SLACK)):
+            # Matrix keys replies on the room's type (#112918); a turn in no fresh thread keeps the home's
+            # real type on every platform: a group home is not a DM (its DM-only statuses, #101003).
+            chat_type = await self._handoff_home_chat_type(transport.adapter, home_chat_id, platform)
         # Discord builds in-thread messages with ``chat_id == thread id``: key on the thread's OWN id.
         dest_source = SessionSource(
             platform=platform,
@@ -1876,15 +1896,19 @@ class GatewayStartupMixin:
         )
 
     @staticmethod
-    async def _handoff_home_is_dm(adapter, home_chat_id: str) -> bool:
-        """Whether the home chat is a DM by the adapter's own ``get_chat_info`` (``type: "dm"``);
-        unknown/failed → not a DM, the common handoff target."""
+    async def _handoff_home_chat_type(adapter, home_chat_id: str, platform: Platform) -> str:
+        """The home chat's type by the adapter's own ``get_chat_info``. Matrix and Discord key a room or
+        guild channel ``group`` (unknown/failed → ``group``, the common handoff target); elsewhere the
+        reported shared label is kept, and an unclassifiable home keeps ``dm``."""
         try:
             info = await adapter.get_chat_info(home_chat_id)
         except Exception:
             logger.debug("Handoff: get_chat_info failed for %s", home_chat_id, exc_info=True)
-            return False
-        return isinstance(info, dict) and info.get("type") == "dm"
+            info = None
+        kind = str(info.get("type") or "").strip().lower() if isinstance(info, dict) else ""
+        if platform in (Platform.MATRIX, Platform.DISCORD):
+            return "dm" if kind == "dm" else "group"
+        return kind if kind in _HANDOFF_SHARED_CHAT_TYPES else "dm"
 
     def _handoff_session_key(self, dest, profile_name: Optional[str]) -> str:
         """Destination session_key by the adapters' own rules. Thread keys omit user_id so the next
@@ -1912,7 +1936,7 @@ class GatewayStartupMixin:
             thread_sessions_per_user=extra.get("thread_sessions_per_user", False), profile=handoff_profile,
         )
 
-    async def _handoff_repoint(self, dest, session_key: str, cli_session_id: str) -> None:
+    async def _handoff_repoint(self, dest, session_key: str, cli_session_id: str):
         """Point the destination route at the handed-off conversation; ``switch_session`` ends the
         route's prior session and reopens this one. A handoff carries the conversation the user is
         looking at: a local chat's latest ``/new`` segment, then that segment's compression tip
@@ -1928,15 +1952,16 @@ class GatewayStartupMixin:
             raise RuntimeError(f"could not switch session key {session_key} → {target}")
         if authority is not None:
             follow_hand_off(authority, dest.source, session_key, authority.logical_owner(target), local_owner)
+        return switched
 
     async def _process_handoff(self, row: dict[str, Any], profile_name: Optional[str] = None) -> None:
         """Execute one handoff row; raises on failure (caller marks failed). ``profile_name`` (None =
         root) is the profile whose store queued it — load-bearing under multiplex: secondaries live in
         ``_profile_adapters`` and the key must be namespaced ``agent:<profile>:...`` or nobody reads it."""
-        cli_session_id = row["id"]
+        cli_session_id = await self._handoff_source_session_id(row, profile_name)  # before any topic opens
         dest = await self._handoff_resolve_destination(row, profile_name)
         session_key = self._handoff_session_key(dest, profile_name)
-        await self._handoff_repoint(dest, session_key, cli_session_id)
+        await self._handoff_repoint_with_topic_binding(dest, session_key, cli_session_id)
         # Evict the cached AIAgent (rebuild against the CLI session_id, like /resume) and clear stale
         # running-agent state so the synthetic turn isn't queued behind it.
         self._evict_cached_agent(session_key)

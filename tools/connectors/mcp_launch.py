@@ -27,7 +27,8 @@ import shlex
 import unicodedata
 from typing import Any, Optional
 
-from agent.redact import SECRET_HEADER_NAME_LIST, sanitize_command_for_display
+from agent.redact import sanitize_command_for_display
+from agent.redact_headers import SECRET_HEADER_NAME_LIST
 
 # A flag or query name that says its value is secret, after camelCase/snake_case fold to kebab. The
 # word ends its segment (``--access-token``, ``--apikey``; not ``--tokenizer``, ``--max-tokens``),

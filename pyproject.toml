@@ -50,7 +50,6 @@ dependencies = [
   "fire==0.7.1; python_version >= '3.14'",
   "httpx[socks]==0.28.1; python_version >= '3.14'",
   "rich==14.3.4; python_version >= '3.14'",
-  "tenacity==9.2.1; python_version >= '3.14'",
   "tomli-w==1.2.0; python_version >= '3.14'",  # Preserve relative dependency paths in staged plugin metadata.
   # 0.18.17 requires ruamel.yaml.clib on 3.14, which has no Windows ARM64 wheel.
   "ruamel.yaml==0.18.16; python_version >= '3.14'",
@@ -310,6 +309,11 @@ voice = [
   # onnxruntime has no darwin-x64 wheel/sdist (darwin-x64). Gate the local
   # STT path off both; sounddevice/numpy still ship.
   "faster-whisper==1.2.1; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or platform_system != 'Darwin') and sys_platform != 'android'",
+  # faster-whisper 1.2.1 passes `metadata_errors` to av.open(), a kwarg PyAV 19
+  # removed, so every local transcription dies with a TypeError (#135245). The fix
+  # (SYSTRAN/faster-whisper#1495) is unreleased and faster-whisper declares only
+  # av>=11, so pin av until a faster-whisper release carries it.
+  "av==18.1.0; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or platform_system != 'Darwin') and sys_platform != 'android'",
   "sounddevice==0.5.6",
   "numpy==2.5.4",
 ]
@@ -343,6 +347,8 @@ discord = ["discord.py[voice]==2.7.1"]
 # stt-whisper + audio-io compose [voice] (faster-whisper / sounddevice / numpy).
 stt-whisper = [
   "faster-whisper==1.2.1; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or platform_system != 'Darwin') and sys_platform != 'android'",
+  # Same av pin as [voice]: PyAV 19 breaks faster-whisper 1.2.1 (#135245).
+  "av==18.1.0; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or platform_system != 'Darwin') and sys_platform != 'android'",
 ]
 audio-io = ["sounddevice==0.5.6", "numpy==2.5.4"]
 # WeChat voice decode (tools/transcription_tools.py self-heal path).
@@ -595,6 +601,19 @@ hermes-acp = "acp_adapter.entry:main"
 # misaki[en]: installed when the user picks it, not preinstalled.
 opt-in-extras = ["kittentts"]
 
+# What `hermes update` compiles before it moves the checkout to this tree, and again after: the
+# launcher and `hermes_bootstrap` import closure plus the CLI entry modules. Every file listed here
+# must exist; an update to a tree that lacks one is refused. A change that moves one of these
+# files updates its path here.
+update-startup-files = [
+  "hermes_bootstrap.py", "hermes_cli/_parser.py", "hermes_cli/_launchers.py",
+  "hermes_cli/_early_recovery.py", "hermes_cli/update_lock.py", "hermes_cli/update_custody.py",
+  "hermes_cli/update_handoff.py", "hermes_cli/venv_sync.py", "pm/__init__.py", "pm/environments.py",
+  "hermes_cli/main.py", "hermes_cli/config.py", "hermes_cli/__init__.py",
+  "hermes_cli/web_server.py", "cli.py", "run_agent.py", "model_tools.py", "toolsets.py",
+  "hermes_constants.py",
+]
+
 # Per-extra platform gates (settled 2026-09-02): an extra listed here is
 # only installable on platforms matching the marker. pm consults this
 # table (pm.extras.extra_supported) — ensure_import/sync_venv refuse a
@@ -706,6 +725,8 @@ include = [
   "providers.*",
   "hermes_platform",
   "hermes_platform.*",
+  "hermes_agent",
+  "hermes_agent.*",
   "pm",
   "pm.*",
   "tools",

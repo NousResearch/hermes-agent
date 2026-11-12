@@ -59,20 +59,27 @@ function isConsoleMessageDetails(value: unknown): value is ConsoleMessageDetails
   )
 }
 
-/** Format Electron's canonical console-message event object into one line, or
- *  null for non-error or malformed events. Hermes's pinned Electron line
- *  puts severity and source metadata on the event object itself; accepting one
+/** Format errors and Bot Chat wake warnings into one line, or null otherwise.
+ *  Hermes's pinned Electron line puts severity and source metadata on the
+ *  event object itself; accepting one
  *  listener argument also avoids Electron's deprecated positional
  *  `(event, level, message, line, sourceId)` path. */
 export function formatRendererConsoleLine(label: string, details: ConsoleMessageEventLike): string | null {
-  if (!isConsoleMessageDetails(details) || details.level !== 'error') {
+  if (!isConsoleMessageDetails(details)) {
+    return null
+  }
+
+  // Retain the existing quiet console policy outside this support diagnostic.
+  const isWakeWarning = details.level === 'warning' && details.message.startsWith('[bot-wake] ')
+
+  if (details.level !== 'error' && !isWakeWarning) {
     return null
   }
 
   return `[renderer console:${label}] ${details.message} (${details.sourceId}:${String(details.lineNumber)})`
 }
 
-/** Attach the error-level console hook to a renderer window. `log` is the
+/** Attach the diagnostic console hook to a renderer window. `log` is the
  *  desktop.log sink (rememberLog in main.ts). */
 export function attachRendererConsoleCapture(win: WindowLike, label: string, log: (line: string) => void): void {
   win.webContents.on('console-message', event => {

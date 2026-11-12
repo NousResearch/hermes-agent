@@ -1769,16 +1769,12 @@ def _dispatch_profile_allowlist(normalize_profile_name) -> Optional[frozenset]:
 
 
 def dispatch_profile_allowlist_summary() -> str:
-    """Human-readable resolution of ``kanban.dispatch_profiles`` for this home.
-
-    Surfaced by ``hermes kanban diagnostics`` so an operator on a shared board
-    can see what a home believes it may claim (#113620): ``any`` (key absent),
-    the sorted allowed names, or ``none (fail-closed: ...)``.
-    """
+    """What this home may claim, for ``hermes kanban diagnostics`` (#113620): ``any``
+    (key absent; also when profiles cannot import, as the gate then stays open too),
+    the sorted allowed names, or ``none (fail-closed: ...)``, as `_profile_exists_fn`."""
     try:
         from hermes_cli.profiles import normalize_profile_name
     except Exception as exc:
-        # Match the dispatcher's gate-disabled semantics when no allowlist exists.
         if _dispatch_profile_allowlist(str) is None:
             return "any"
         return f"none (fail-closed: profiles unavailable: {exc})"

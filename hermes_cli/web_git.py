@@ -503,6 +503,8 @@ def _pr_query(owner: str, name: str, branches: list[str], numbers: list[int]) ->
     # A PR recovered from a transcript is known by number; asking directly also
     # yields its branch, so it lands in the same by-branch map.
     fields += [f"n{i}: pullRequest(number: {n}) {{ {_PR_NODE_FIELDS} }}" for i, n in enumerate(numbers)]
+    # The trunk's name, so a PR opened FROM the trunk never badges a trunk session.
+    fields.append("defaultBranchRef { name }")
     return (f"query {{ repository(owner: {json.dumps(owner)}, name: {json.dumps(name)}) {{\n"
             + "\n".join(fields) + "\n} }")
 
@@ -547,9 +549,14 @@ def review_pr_list(cwd: str, branches: list[str], numbers: list[int] | None = No
         # A failed/malformed chunk drops its branches; the rest still resolve.
         data = _gh_json(cwd, ["api", "graphql", "-f", f"query={_pr_query(owner, name, branch_chunk, number_chunk)}"])
         repository = ((data or {}).get("data") or {}).get("repository") or {}
+        # A PR whose head is the trunk (e.g. main -> a baseline branch) is never a session's
+        # PR: every session on the trunk would carry it, closed or not.
+        trunk = (repository.get("defaultBranchRef") or {}).get("name")
         for key, field in repository.items():
+            if key == "defaultBranchRef":
+                continue
             pr = _own_pr(key, field) if field else None
-            if pr and pr.get("headRefName"):
+            if pr and pr.get("headRefName") and pr.get("headRefName") != trunk:
                 prs.append(_pr_payload(pr))
     return {"ghReady": True, "prs": prs}
 

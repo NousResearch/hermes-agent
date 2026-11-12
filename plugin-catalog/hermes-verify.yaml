@@ -2,7 +2,7 @@
 name: hermes-verify
 repo: https://github.com/BrandonDucar/hermes-verify
 sha: 22cd13c6ae7e07296a333b31c828db44455098ef
-description: Configurable tool-risk flags, bounded local receipt metadata and held unverified-prose labels.
+description: "Configurable tool-risk flags, bounded local receipt metadata and held unverified-prose labels. Disclosure — prepends an \"unverified agent prose\" banner to every final reply (stored in the transcript), holds streaming so replies arrive only after labeling, and replaces any reply over 100,000 characters with an omission notice; the verify_claim tool fetches model-supplied public http(s) URLs (private addresses refused); flagged tool calls are logged locally and blocked only when blocking_mode is on."
 maintainer: BrandonDucar
 tier: community
 category: tools

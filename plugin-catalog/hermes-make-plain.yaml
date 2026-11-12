@@ -1,12 +1,12 @@
 name: hermes-make-plain
 repo: https://github.com/hey-yx/hermes-make-plain
-sha: 202bd0e91d4b2bc81dc8037e1dec5e4e82fdf9ca
-description: "One-click composer polish for the Hermes Desktop chat: a wand button at the right of the input box rewrites the draft in place into a clearer version that keeps the original meaning, with nothing added and nothing dropped. The rewrite is wording cleanup only: it never explains, interprets, comments on or answers the draft, and questions and guesses stay as written. It stays in the draft's language and keeps every concrete detail exactly as written: names, numbers, versions, ports, paths, file names, URLs, @-references, /commands and code. The message is never sent; the button spins while the rewrite is in flight, rejects an empty box before any work starts, and never overwrites a draft edited while the call is running. Disclosure — one model call per click through the llm.oneshot auxiliary route to the auxiliary.title_generation model; no other network calls, no telemetry, no analytics; reads and writes only the composer draft through the official SDK and keeps no copy of the text (plugin storage is a one-field load heartbeat); no shell commands, no credentials."
+sha: e25016458f2a8725e905d31ad9f9b35385362e9d
+description: "One-click composer polish for the Hermes Desktop chat: a wand button at the right of the input box rewrites the draft in place into a clear request an AI can act on, with nothing added and nothing dropped. The rewrite re-lays out the draft as one goal sentence followed by a numbered list of requirements, drops pure filler and repeated restatements, and keeps every concrete detail exactly as written: names, numbers, versions, ports, paths, file names, URLs, @-references, /commands and code. It stays in the draft's language and never translates. The message is never sent; the button spins while the rewrite is in flight, rejects an empty box before any work starts, and never overwrites a draft edited while the call is running. Disclosure: one model call per click through the llm.oneshot auxiliary route to the auxiliary.title_generation model; no other network calls, no telemetry, no analytics; reads and writes only the composer draft through the official SDK and keeps no copy of the text (plugin storage is a one-field load heartbeat); no shell commands, no credentials."
 maintainer: hey-yx
 tier: community
 category: desktop
 requires_hermes: ">=0.22.0"
-version: "0.3.1"
+version: "0.3.3"
 title: "Hermes MakePlain"
 image: https://raw.githubusercontent.com/hey-yx/hermes-make-plain/202bd0e91d4b2bc81dc8037e1dec5e4e82fdf9ca/assets/cover-en.png
 screenshots: []

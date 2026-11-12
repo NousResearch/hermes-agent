@@ -1,6 +1,6 @@
 name: coursewright
 repo: https://github.com/NehuenD/hermes_coursewright
-sha: 8f756d4ecb300f20888469ae919bb62e737ca2ef
+sha: ac05bb2e1542ee6b0008b404ab77142b8c61b902
 title: Coursewright
 description: >-
   `/course <topic>` turns a subject into one self-contained HTML course at three depths, novice,
@@ -19,14 +19,14 @@ tier: community
 category: tools
 requires_hermes: ">=0.23"
 docs_url: https://github.com/NehuenD/hermes_coursewright#readme
-version: "0.5.1"
+version: "0.6.0"
 platforms: []
 screenshots:
-  - https://raw.githubusercontent.com/NehuenD/hermes_coursewright/8f756d4ecb300f20888469ae919bb62e737ca2ef/docs/screenshots/cover-graphite.png
-  - https://raw.githubusercontent.com/NehuenD/hermes_coursewright/8f756d4ecb300f20888469ae919bb62e737ca2ef/docs/screenshots/cover-seaglass.png
-  - https://raw.githubusercontent.com/NehuenD/hermes_coursewright/8f756d4ecb300f20888469ae919bb62e737ca2ef/docs/screenshots/cover-carbon-gold.png
-  - https://raw.githubusercontent.com/NehuenD/hermes_coursewright/8f756d4ecb300f20888469ae919bb62e737ca2ef/docs/screenshots/cover-risograph.png
-  - https://raw.githubusercontent.com/NehuenD/hermes_coursewright/8f756d4ecb300f20888469ae919bb62e737ca2ef/docs/screenshots/figure-sequence.png
+  - https://raw.githubusercontent.com/NehuenD/hermes_coursewright/ac05bb2e1542ee6b0008b404ab77142b8c61b902/docs/screenshots/cover-graphite.png
+  - https://raw.githubusercontent.com/NehuenD/hermes_coursewright/ac05bb2e1542ee6b0008b404ab77142b8c61b902/docs/screenshots/cover-seaglass.png
+  - https://raw.githubusercontent.com/NehuenD/hermes_coursewright/ac05bb2e1542ee6b0008b404ab77142b8c61b902/docs/screenshots/cover-carbon-gold.png
+  - https://raw.githubusercontent.com/NehuenD/hermes_coursewright/ac05bb2e1542ee6b0008b404ab77142b8c61b902/docs/screenshots/cover-risograph.png
+  - https://raw.githubusercontent.com/NehuenD/hermes_coursewright/ac05bb2e1542ee6b0008b404ab77142b8c61b902/docs/screenshots/figure-sequence.png
 capabilities:
   provides_tools:
     - coursewright_plan

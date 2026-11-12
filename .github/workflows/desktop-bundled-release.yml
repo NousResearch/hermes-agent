@@ -1299,7 +1299,7 @@ jobs:
           python3 -m scripts.ci.desktop_commands "$GITHUB_WORKSPACE/.build/desktop-job/prepared.json"
 
       - name: Save dependency inputs before building
-        if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' && inputs.build_commit == '' && inputs.channel == '' }}
         uses: ./.github/actions/desktop-build-cache
         with:
           phase: save

@@ -2,10 +2,7 @@ name: evident-evidence
 title: "Evident — Is this evident?"
 repo: https://github.com/Evident-Scalelabs/evident-hermes-plugin
 sha: bfc0f924e4e4a19d950a3b275885bbd8f06fe38e
-description: >-
-  Follow real buyer journeys, compare website claims with independent AI answers
-  and suggested competitors, and produce one visual report with highlighted
-  evidence, practical changes and repeatable checks.
+description: "Follow real buyer journeys, compare website claims with independent AI answers and suggested competitors, and produce one visual report with highlighted evidence, practical changes and repeatable checks. Disclosure — Opens the websites you ask it to review (and up to three suggested competitor/source pages) in a fresh headless Chromium on this machine and fetches them anonymously; when you enable `allow_model_interpretation`, the captured page text and screenshots are sent to your configured Hermes model for several extra calls per report (model cost applies), and reports include an optional link to evident.so (`show_evident_cta`, on by default; nothing is uploaded)."
 maintainer: Evident-Scalelabs
 tier: community
 category: web

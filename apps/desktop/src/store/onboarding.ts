@@ -16,9 +16,11 @@ import {
   validateProviderCredential
 } from '@/hermes'
 import { translateNow } from '@/i18n'
+import { writeClipboardText } from '@/lib/clipboard'
 import { restOfLongPollGap } from '@/lib/long-poll'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
+import { readKey, writeKey } from '@/lib/storage'
 import {
   $freeTierStatus,
   ackFreeTierNotice,
@@ -28,10 +30,13 @@ import {
 } from '@/store/free-tier'
 import { followHandoff, handoffStillMoving } from '@/store/free-tier-sign-in'
 import { $gatewayBootGeneration } from '@/store/live-sync'
+import { $localModelsEnabled } from '@/store/local-models-flag'
 import { setMainModelAssignment } from '@/store/model-assignment'
 import { dismissNotification, notify, notifyError } from '@/store/notifications'
 import { afterOnboardingSurfaceClear, onboardingSurfaceOpen } from '@/store/onboarding-presence'
 import { captureOnboardingScope, type OnboardingScope } from '@/store/onboarding-scope'
+import { requestRoute } from '@/store/recovery-requests'
+import { setModelPickerOpen } from '@/store/session'
 import type { AppHandoffStatus, OAuthPollResponse, OAuthProvider, OAuthStartResponse } from '@/types/hermes'
 
 type PkceStart = Extract<OAuthStartResponse, { flow: 'pkce' }>
@@ -154,31 +159,15 @@ function writeCachedConfigured(value: boolean) {
   }
 }
 
+// Through the storage choke point: the skip is a machine-level preference,
+// so every browser and origin of this machine honours it (#145600).
 function readCachedSkipped(): boolean {
-  if (typeof window === 'undefined') {
-    return false
-  }
-
-  try {
-    return window.localStorage.getItem(SKIP_CACHE_KEY) === '1'
-  } catch {
-    return false
-  }
+  return typeof window !== 'undefined' && readKey(SKIP_CACHE_KEY) === '1'
 }
 
 function writeCachedSkipped(value: boolean) {
-  if (typeof window === 'undefined') {
-    return
-  }
-
-  try {
-    if (value) {
-      window.localStorage.setItem(SKIP_CACHE_KEY, '1')
-    } else {
-      window.localStorage.removeItem(SKIP_CACHE_KEY)
-    }
-  } catch {
-    // localStorage unavailable — degrade silently.
+  if (typeof window !== 'undefined') {
+    writeKey(SKIP_CACHE_KEY, value ? '1' : null)
   }
 }
 
@@ -315,6 +304,58 @@ function shouldPreserveConfiguredOnBootRace(runtime: RuntimeReadinessResult, sta
     !state.requested &&
     isInsideBootRaceWindow()
   )
+}
+
+// The selected model is the managed local runtime and its server is down (Desktop closed and took
+// its server with it, still loading, or switched off). The provider IS set up, and provider sign-in
+// cannot start a local server, so this never opens onboarding: the app stays usable, the status bar
+// reads "inference unavailable", and a notice names the cause with the way forward.
+const LOCAL_RUNTIME_UNAVAILABLE = 'local_runtime_unavailable'
+const LOCAL_MODELS_ROUTE = '/settings?tab=providers&pview=local'
+
+const LOCAL_RUNTIME_NOTICE_ID = 'local-runtime-unavailable'
+
+function isLocalRuntimeDown(runtime: RuntimeReadinessResult, state: DesktopOnboardingState): boolean {
+  return runtime.source === 'runtime_check' && runtime.errorCode === LOCAL_RUNTIME_UNAVAILABLE && !state.requested
+}
+
+/** True while the verdict is "the local model server is down": a server that is starting or being
+ *  switched back on announces nothing to this window, so the readiness tracker keeps re-checking. */
+export function isLocalRuntimeUnavailable(runtime: RuntimeReadinessResult | null): boolean {
+  return runtime?.ready === false && runtime.errorCode === LOCAL_RUNTIME_UNAVAILABLE
+}
+
+/** Readiness answered ready: the server came up, so the notice raised while it was down goes. The
+ *  onboarding exemption means no onboarding round runs on recovery to clear it there. */
+export function settleLocalRuntimeNotice(runtime: RuntimeReadinessResult) {
+  if (runtime.ready) {
+    dismissNotification(LOCAL_RUNTIME_NOTICE_ID)
+  }
+}
+
+// The Webapp has no Local models pane (the flag is Electron-only), so there the way forward it can
+// offer is another model, and the sentence must not send the user to a pane they cannot open.
+const WEBAPP_LOCAL_RUNTIME_DOWN =
+  "The local model server isn't serving. Start it from the Hermes desktop app or `hermes model` in a terminal, or choose another model."
+
+// Desktop has the pane, so its notice names it next to the button that opens it.
+const DESKTOP_LOCAL_RUNTIME_DOWN =
+  "The local model server isn't serving. It may still be starting, or it was turned off: check Settings → Providers → Local models, or choose another model."
+
+function keepConfiguredWithLocalRuntimeDown(reason: string) {
+  const pane = $localModelsEnabled.get()
+
+  writeCachedConfigured(true)
+  patch({ configured: true, reason })
+  notify({
+    action: pane
+      ? { label: 'Open Local models', onClick: () => requestRoute(LOCAL_MODELS_ROUTE) }
+      : { label: 'Choose another model', onClick: () => setModelPickerOpen(true) },
+    id: LOCAL_RUNTIME_NOTICE_ID,
+    kind: 'warning',
+    message: pane ? DESKTOP_LOCAL_RUNTIME_DOWN : WEBAPP_LOCAL_RUNTIME_DOWN,
+    title: 'Local model unavailable'
+  })
 }
 
 function notifyReady(provider: string) {
@@ -762,6 +803,7 @@ export function closeManualOnboarding() {
 export function completeDesktopOnboarding(connected = false) {
   clearPoll()
   dismissNotification('runtime-not-ready')
+  dismissNotification(LOCAL_RUNTIME_NOTICE_ID)
   writeCachedConfigured(true)
 
   if (connected) {
@@ -863,6 +905,12 @@ export async function refreshOnboarding(ctx: OnboardingContext, stillWanted?: ()
   }
 
   const reason = runtime.reason || state.reason || DEFAULT_ONBOARDING_REASON
+
+  if (isLocalRuntimeDown(runtime, state)) {
+    keepConfiguredWithLocalRuntimeDown(reason)
+
+    return false
+  }
 
   if (shouldPreserveConfiguredOnBootRace(runtime, state)) {
     // The backend answered inside its boot window with a not-ready that is
@@ -1125,7 +1173,7 @@ export function cancelOnboardingFlow() {
 
 async function copyAndFlash(text: string, predicate: (flow: OnboardingFlow) => boolean) {
   try {
-    await navigator.clipboard.writeText(text)
+    await writeClipboardText(text)
   } catch {
     return
   }

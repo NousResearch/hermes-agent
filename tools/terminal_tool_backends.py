@@ -233,28 +233,36 @@ def _stamp_sandbox_home(env_obj, provider, cwd) -> None:
             pass
 
 
+def _refuse_plugin_host_provider(provider, env_type) -> None:
+    from hermes_cli.plugin_host import is_hosted_object
+    if is_hosted_object(provider):
+        # The environment would come back as an opaque placeholder, and its execute() would run outside
+        # this process's interrupt, activity and terminal-scope state: refuse before the host starts a
+        # sandbox nothing here could use or clean up.
+        raise ValueError(
+            f"terminal.backend is {env_type}, a plugin that runs in the plugin host (plugins.isolation: host), "
+            f"and the host cannot hand its environment to Hermes, so commands cannot run in it. Set "
+            f"plugins.isolation: in_process to use this backend.")
+
+
+def _stamp_plugin_env(env_obj, provider, cwd):
+    # Stamp the backend name so path-resolution and progress surfaces can identify plugin
+    # backends without class-name sniffing. Test doubles may reject attributes.
+    try:
+        env_obj._hermes_backend_name = provider.name.strip().lower()
+    except AttributeError:
+        pass
+    _stamp_sandbox_home(env_obj, provider, cwd)
+    return env_obj
+
+
 def _build_plugin_env(*, env_type, image, cwd, timeout, cc, task_id, **_):
     provider = _get_plugin_env_provider(env_type)
     if provider is not None:
-        from hermes_cli.plugin_host import is_hosted_object
-        if is_hosted_object(provider):
-            # The environment would come back as an opaque placeholder, and its execute() would run outside
-            # this process's interrupt, activity and terminal-scope state: refuse before the host starts a
-            # sandbox nothing here could use or clean up.
-            raise ValueError(
-                f"terminal.backend is {env_type}, a plugin that runs in the plugin host (plugins.isolation: host), "
-                f"and the host cannot hand its environment to Hermes, so commands cannot run in it. Set "
-                f"plugins.isolation: in_process to use this backend.")
+        _refuse_plugin_host_provider(provider, env_type)
         env_obj = provider.create_environment(cwd=cwd, timeout=timeout, task_id=task_id, image=image,
                                               container_config=cc)
-        # Stamp the backend name so path-resolution and progress surfaces can identify plugin
-        # backends without class-name sniffing. Test doubles may reject attributes.
-        try:
-            env_obj._hermes_backend_name = provider.name.strip().lower()
-        except AttributeError:
-            pass
-        _stamp_sandbox_home(env_obj, provider, cwd)
-        return env_obj
+        return _stamp_plugin_env(env_obj, provider, cwd)
     try:
         from agent.terminal_env_registry import plugin_backend_names
         plugin_names = plugin_backend_names()
@@ -271,6 +279,19 @@ _ENV_BUILDERS = {"local": _build_local_env, "docker": _build_docker_env, "modal"
                  "ssh": _build_ssh_env}
 
 
+def _build_hosted_env(*, env_type, image, cwd, timeout, cc, **_):
+    """The bound hosted agent's sandbox. Only a plugin backend declaring ``serves_hosted_scopes`` can
+    serve it; a built-in backend runs on this host or on a sandbox keyed by task, so it is refused.
+    The caller's task id is not passed on: the sandbox is the scope's (``sandbox_scope``)."""
+    from tools.environments.sandbox_scope import create_hosted_environment
+    provider = None if env_type in _ENV_BUILDERS else _get_plugin_env_provider(env_type)
+    if provider is not None:
+        _refuse_plugin_host_provider(provider, env_type)
+    env_obj = create_hosted_environment(env_type, provider, cwd=cwd, timeout=timeout, image=image,
+                                        container_config=cc)
+    return _stamp_plugin_env(env_obj, provider, cwd)
+
+
 def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
                         ssh_config: dict | None = None, container_config: dict | None = None,
                         local_config: dict | None = None, task_id: str = "default",
@@ -278,11 +299,15 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     """Create an execution environment (instance with ``execute()``) for *env_type*. ``image`` is ignored
     for local/ssh/vercel; ``container_config`` carries the container_*/docker_* resource keys; ``host_cwd`` is
     the host dir bound into Docker when cwd mounting is enabled. ``probe_only`` asks ssh for a throwaway
-    connection with no remote setup/sync (the prompt-time probe). Unknown types fall through to plugin backends."""
+    connection with no remote setup/sync (the prompt-time probe). Unknown types fall through to plugin backends.
+    Inside a hosted scope the environment is always the bound agent's sandbox (:func:`_build_hosted_env`)."""
+    from tools.environments.sandbox_scope import hosted_scope
     builder = _ENV_BUILDERS.get(env_type)
     kwargs = dict(image=image, cwd=cwd, timeout=timeout, cc=container_config or {}, task_id=task_id,
                   ssh_config=ssh_config, local_config=local_config, host_cwd=host_cwd, probe_only=probe_only)
-    if builder is not None:
+    if hosted_scope() is not None:
+        env = _build_hosted_env(env_type=env_type, **kwargs)
+    elif builder is not None:
         env = builder(**kwargs)
     else:
         env = _build_plugin_env(env_type=env_type, **kwargs)

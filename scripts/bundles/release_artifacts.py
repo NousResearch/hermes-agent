@@ -7,6 +7,7 @@ import json
 import os
 import plistlib
 import re
+import stat
 import subprocess
 import tempfile
 import urllib.request
@@ -62,6 +63,16 @@ def desktop_application(manifest: ET.Element, channel_request: dict | None) -> E
     return application
 
 
+def require_owner_write(archive: zipfile.ZipFile) -> None:
+    """Squirrel.Mac's ShipIt clears quarantine on every file and directory of the
+    update before swapping it in, and aborts the whole install when one is
+    read-only (#138659). Symlinks and entries without a Unix mode are skipped."""
+    locked = [info.filename for info in archive.infolist()
+              if (mode := info.external_attr >> 16) and not stat.S_ISLNK(mode) and not mode & stat.S_IWUSR]
+    if locked:
+        raise ValueError(f"{len(locked)} update ZIP entries lack owner write; ShipIt cannot install it ({locked[:3]})")
+
+
 def record(platform: str, arch: str, root: Path, tag: str, commit: str, out: Path,
            *, channel_request: dict | None = None) -> None:
     """Read identities from the built packages, never from the workflow matrix."""
@@ -110,6 +121,7 @@ def record(platform: str, arch: str, root: Path, tag: str, commit: str, out: Pat
         if not team:
             raise ValueError("Signed app has no Developer ID team")
         with zipfile.ZipFile(package) as archive:
+            require_owner_write(archive)
             info = plistlib.loads(archive.read(single(n for n in archive.namelist() if re.fullmatch(r"[^/]+\.app/Contents/Info.plist", n))))
             stamp = json.loads(archive.read(single(n for n in archive.namelist() if re.fullmatch(r"[^/]+\.app/Contents/Resources/install-stamp.json", n))))
         stamp_matches(stamp, tag, commit, channel_request=channel_request)
@@ -161,7 +173,7 @@ def validate_windows_bundle(bundle: Path, windows: list[dict]) -> None:
         raise ValueError("Universal bundle must cover both architectures")
 
 
-ALL_HANDOFFS = ("win32-x64", "win32-arm64", "darwin-x64", "darwin-arm64", "termux", "windows-universal")
+ALL_HANDOFFS = ("win32-x64", "win32-arm64", "darwin-arm64", "termux", "windows-universal")
 
 
 def assemble(root: Path, tag: str, commit: str, public_base: str, out: Path,
@@ -367,10 +379,7 @@ def promote(manifest: dict, root: Path, public_base: str) -> None:
         raise ValueError("APT indexes staged for a release without a Termux candidate")
     # Every package and index must exist before the first channel write.
     # The merged feed points at the attempt archive; the version stays plain.
-    # macOS Intel is opt-in: without it the feed carries the arm64 leg alone.
-    arches = tuple(arch for arch in ("arm64", "x64")
-                   if any(row["platform"] == "macos" and row["arch"] == arch for row in manifest["packages"]))
-    finalize(tag=manifest["tag"], dir=root, archive=manifest["archive"], arches=arches, verify_bytes=False)
+    finalize(tag=manifest["tag"], dir=root, archive=manifest["archive"], verify_bytes=False)
     def publish_pointer(key, file):
         put(tag=manifest["tag"], key=key, file=file, key_is_full=True)
         digest = hashlib.sha256()

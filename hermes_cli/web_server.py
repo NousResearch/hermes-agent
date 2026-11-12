@@ -26,11 +26,14 @@ from hermes_cli.install_identity import get_install_id as _shared_get_install_id
 from hermes_cli.process_identity import is_desktop_owned_backend
 from hermes_cli.pty_session import run_reaper
 from hermes_cli import web_server_file_tickets as _file_tickets
+from hermes_cli.web_server_session_token import resolve_session_token
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 
-PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+from hermes_cli._startup_fast import project_root_str
+
+PROJECT_ROOT = Path(project_root_str())
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -217,14 +220,10 @@ from hermes_cli.memory_oauth import router as _memory_oauth_router
 
 app.include_router(_memory_oauth_router)
 
-# Session token for sensitive endpoints. The desktop shell mints it via
-# HERMES_DASHBOARD_SESSION_TOKEN; otherwise fresh per server start. It dies with
-# the process and is injected into the SPA HTML so only the web UI can use it.
-def _resolve_session_token() -> str:
-    return os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN") or secrets.token_urlsafe(32)
-
-
-_SESSION_TOKEN = _resolve_session_token()
+# Session token for sensitive endpoints. Resolution lives in the
+# web_server_session_token sibling; it dies with the process and is injected
+# into the SPA HTML so only the web UI can use it.
+_SESSION_TOKEN = resolve_session_token()
 _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
 _SSH_OWNER_NONCE: Optional[str] = None
 _SSH_RUNTIME_PURELIB: Optional[tuple[str, int, int]] = None
@@ -357,11 +356,13 @@ from hermes_cli.web_server_boundary import (  # re-exported: web_server.<name> s
     _DESKTOP_ATTACHMENT_WS_MAX_BYTES,
     _LOOPBACK_HOST_VALUES,
     _dashboard_public_hosts,
+    _dashboard_public_origins,
     _desktop_loopback_auth_exempt,
     _host_header_hostname,
     _is_accepted_host,
     public_hosts_engage_gate,
     public_url_hosts,
+    public_url_origins,
     should_require_auth,
 )
 
@@ -483,8 +484,11 @@ async def _token_auth_seam(request: Request, call_next):
 
     A registered token route is owned here — authenticate, attach the principal
     + ``token_authenticated`` so downstream gates skip enforcement. Non-token
-    routes pass through untouched.
+    routes pass through untouched. ``/api/peer/`` is owned by the peer-pass check instead.
     """
+    from hermes_cli.dashboard_auth.peer_pass import is_peer_path, peer_pass_middleware
+    if is_peer_path(request.url.path):  # only a peer pass opens it; nothing else is tried
+        return await peer_pass_middleware(request, call_next)
     from hermes_cli.dashboard_auth.native_http import authenticate_native_http, native_profile_scope
     from hermes_cli.dashboard_auth.token_auth import token_auth_middleware
     rejection = await authenticate_native_http(request)
@@ -555,25 +559,35 @@ async def _dashboard_health_middleware(request: Request, call_next):
     except Exception as exc:
         DASHBOARD_HEALTH.record_error(type(exc).__name__, request.url.path)
         raise
-    if response.status_code >= 500:
+    # /api/peer answers carry the gateway api_server's status (asleep, restarting, its own errors),
+    # which the gateway component reports; they say nothing about this process.
+    from hermes_cli.dashboard_auth.peer_pass import is_peer_path
+    if response.status_code >= 500 and not is_peer_path(request.url.path):
         DASHBOARD_HEALTH.record_error(f"http_{response.status_code}", request.url.path)
     return response
 
 
-# CORS: restrict to localhost origins only.  The web UI is intended to run
-# locally; binding to 0.0.0.0 with allow_origins=["*"] would let any website
-# read/modify config and secrets.
+def _is_trusted_local_origin(origin: str) -> bool:
+    """The dashboard app's :func:`hermes_cli.web_server_boundary.is_trusted_local_origin`."""
+    from hermes_cli.web_server_boundary import is_trusted_local_origin
+    return is_trusted_local_origin(origin, app.state)
+
+
+class _LocalOriginCORSMiddleware(CORSMiddleware):
+    def is_allowed_origin(self, origin: str) -> bool:
+        return _is_trusted_local_origin(origin)
+
+
+# CORS: the trusted loopback origins only (web_server_boundary.is_trusted_local_origin, the same
+# rule the WebSocket Origin gate applies). allow_origins=["*"] on 0.0.0.0 would let any website
+# read/modify config and secrets; any local port would let a page on another port read
+# index.html's session token.
 #
 # Registered AFTER all ``@app.middleware("http")`` decorators so it is the
 # *outermost* middleware (Starlette's onion: last-added runs first).
 # Without this, an OPTIONS preflight from a cross-origin SPA hits the auth
 # middlewares before CORS can answer, producing 401 instead of 204 + headers.
-app.add_middleware(
-    CORSMiddleware,
-    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app.add_middleware(_LocalOriginCORSMiddleware, allow_methods=["*"], allow_headers=["*"])
 
 
 # Authenticated-route self-test: one in-process request per minute against a
@@ -667,12 +681,6 @@ def get_install_id() -> Optional[str]:
     """Process-lifetime-cached stable install id."""
     return _shared_get_install_id(cache=_INSTALL_ID_CACHE)
 
-
-# Serializes config.yaml read-modify-write cycles for handlers on worker threads
-# (asyncio.to_thread): config.py's _CONFIG_LOCK covers each load/save call, not
-# the span between them, so two off-loop updates could drop each other's writes.
-# RLock so nested helpers that also take it can't self-deadlock.
-_CONFIG_MUTATION_LOCK = threading.RLock()
 
 # A finished ``gateway-restart`` child does not mean the gateway is back (it
 # exits once the restart is handed off), so in-flight reuse stops coalescing
@@ -785,6 +793,7 @@ from hermes_cli.web_routers import (
     config_env as _config_env_routes,
     models as _models_routes,
     messaging as _messaging_routes,
+    messaging_relay as _messaging_relay_routes,
     oauth as _oauth_routes,
     cron as _cron_routes,
     mcp as _mcp_routes,
@@ -799,8 +808,14 @@ from hermes_cli.web_routers import (
     shared_metrics as _shared_metrics_routes,
     delegation as _delegation_routes,
     webapp_access as _webapp_access_routes,
+    ui_preferences as _ui_preferences_routes,
+    gateway_connections as _gateway_connections_routes,
+    gateway_connections_reach as _gateway_connections_reach_routes,
+    webapp_relay_proxy as _webapp_relay_proxy_routes,
+    peer as _peer_routes,
 )
 
+import hermes_cli.web_routers.desktop_plugins as _desktop_plugin_routes
 import hermes_cli.web_routers.uploads as _upload_routes
 from fastapi import Depends as _Depends
 from hermes_cli.web_server_surface import route_on as _route_on
@@ -808,6 +823,7 @@ from hermes_cli.web_server_surface import route_on as _route_on
 app.include_router(_files_routes.router)
 # The Webapp's routes exist only on the surfaces whose policy names them (404 elsewhere).
 app.include_router(_upload_routes.router, dependencies=[_Depends(_route_on("browser_files"))])
+app.include_router(_desktop_plugin_routes.router, dependencies=[_Depends(_route_on("desktop_plugins"))])
 app.include_router(_git_routes.router)
 app.include_router(_local_models_routes.router)
 app.include_router(_status_routes.router)
@@ -823,6 +839,7 @@ app.include_router(_config_env_routes.config_router)
 app.include_router(_models_routes.router)
 app.include_router(_config_env_routes.router)
 app.include_router(_messaging_routes.router)
+app.include_router(_messaging_relay_routes.router)
 app.include_router(_oauth_routes.router)
 app.include_router(_sessions_routes.manage_router)
 app.include_router(_status_routes.logs_router)
@@ -838,9 +855,15 @@ app.include_router(_chat_ws_routes.router)
 app.include_router(_chat_workspaces_routes.router)
 app.include_router(_dashboard_ui_routes.router)
 app.include_router(_webapp_routes.router)
+# The saved-connections proxy checks its surface per request (WebSocket routes take no Request).
+app.include_router(_webapp_relay_proxy_routes.router)
+app.include_router(_peer_routes.router)
 app.include_router(_shared_metrics_routes.router)
 app.include_router(_delegation_routes.router)
 app.include_router(_webapp_access_routes.router, dependencies=[_Depends(_route_on("web_access"))])
+app.include_router(_ui_preferences_routes.router, dependencies=[_Depends(_route_on("ui_preferences"))])
+app.include_router(_gateway_connections_routes.router, dependencies=[_Depends(_route_on("gateway_connections"))])
+app.include_router(_gateway_connections_reach_routes.router, dependencies=[_Depends(_route_on("gateway_connections"))])
 
 # Plugin API routes and the dashboard auth routes (/login, /auth/*, /api/auth/*)
 # mount before the SPA catch-all so /{full_path:path} doesn't swallow them. Auth
@@ -908,6 +931,11 @@ def _no_auth_provider_message(host: str) -> str:
         "print(hash_password('your-password'))\")\n"
         "  • OAuth: run `hermes dashboard register` (Nous Portal) or "
         "install a DashboardAuthProvider plugin.\n"
+        "  • Deployment token: provision HERMES_DASHBOARD_SESSION_TOKEN "
+        "(a literal token, or 'file:<path>' naming a secret-manager-decrypted "
+        "token file) — the bundled session-token provider then authorizes "
+        "bearer REST + /api/ws ?token= for token-mode clients such as the "
+        "Desktop's remote-gateway 'Session token' field.\n"
         "There is no unauthenticated public-dashboard option. For "
         f"local-only use, bind 127.0.0.1 and leave {setting} "
         "unset; a configured external public URL requires auth even "
@@ -963,6 +991,8 @@ def _configure_auth_gate(
     own_url = getattr(app.state, "listener_public_url", None)
     app.state.trusted_public_hosts = (
         _dashboard_public_hosts() if own_url is None else public_url_hosts(own_url))
+    app.state.trusted_public_origins = (  # its exact loopback origin: a proxy on another local port
+        _dashboard_public_origins() if own_url is None else public_url_origins(own_url))
     # auth_required drives middleware, SPA-token injection, WS auth, the
     # startup refusal, the gate-on banner and uvicorn proxy_headers.
     if own_url is None and _desktop_loopback_auth_exempt(host, ssh_session_token, ssh_owner_nonce):
@@ -1058,6 +1088,9 @@ def _build_uvicorn_server(host: str, port: int, *, ssh_isolated: bool = False):
         forwarded_allow_ips=_dashboard_forwarded_allow_ips(_dash_cfg),
         ws_ping_interval=ping_interval,
         ws_ping_timeout=ping_timeout,
+        # Per-frame zlib on the loop buys nothing for a local client (build_listener_server); a peer
+        # behind a tunnel (SSH-isolated backend, public gate) keeps it.
+        ws_per_message_deflate=ssh_isolated or not _is_loopback or bool(app.state.auth_required),
         ws_max_size=_DESKTOP_ATTACHMENT_WS_MAX_BYTES,
         # Desktop sends a single SIGTERM and escalates to SIGKILL ~5s later;
         # uvicorn's default (None) waits on lingering ASGI tasks forever, so a
@@ -1381,7 +1414,14 @@ def _run_serve(serve, config, host: str, port: int) -> None:
         raise
 
 
-def start_server(
+def start_server(*args, **kwargs):
+    """Run the dashboard/serve backend; no lazy install may prompt on an inherited TTY (#125607)."""
+    from pm.extras import suppress_interactive_install_prompts
+    with suppress_interactive_install_prompts():
+        return _start_server_runtime(*args, **kwargs)
+
+
+def _start_server_runtime(
     host: str = "127.0.0.1",
     port: int = 9119,
     open_browser: bool = True,
@@ -1408,6 +1448,8 @@ def start_server(
     until the ready sentinel is written so its SDK import can't hold the GIL
     against the pre-bind path.
     """
+    from hermes_cli.update_proxy_env import restore_user_proxy_env
+    restore_user_proxy_env()  # a backend an update replayed keeps the user's proxy env, not the update's
     _apply_ssh_session_token(ssh_session_token or "")
     _apply_ssh_owner_nonce(ssh_owner_nonce)
 

@@ -81,6 +81,18 @@ def test_full_payload_shape_and_edge_integrity(tmp_path):
     assert all("timestamp" in n for n in graph["nodes"])
 
 
+def test_build_skill_nodes_skips_profile_install_swap_leftover(tmp_path):
+    """A locked old tree a force install left in ``.hermes-dist`` is not a second copy."""
+    from agent.skill_utils import DIST_SWAP_DIR
+
+    skills = tmp_path / "skills"
+    for skill_dir, body in ((skills / "demo", "new"), (skills / DIST_SWAP_DIR / "demo.old-1", "old")):
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(f"---\nname: demo-{body}\n---\n", encoding="utf-8")
+
+    assert set(learning_graph.build_skill_nodes([("profile", skills)])) == {"demo-new"}
+
+
 def test_foreground_created_skill_is_in_journey_before_first_use(tmp_path):
     """A skill created in the foreground (/learn, skill_manage) shows in the journey with zero
     uses, while an unmarked never-used local skill (hand-written) stays out."""

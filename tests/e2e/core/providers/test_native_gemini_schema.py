@@ -25,7 +25,7 @@ import pytest
 
 from tests.e2e.core._pending_fixes import known_gate
 from tests.e2e.core.providers import _native_helpers as nh
-from tests.fakes.providers.gemini_native import HERMES_ENV, Call, Calls, GeminiFake, Recorded, Text, hermes_model
+from tests.fakes.providers.gemini_native import HERMES_CONFIG, HERMES_ENV, Call, Calls, GeminiFake, Recorded, Text, hermes_model
 
 KNOWN: dict[str, tuple[str, str]] = {
     "ref_dropped_v1": (r"\$ref-typed parameter lost its shape on the v1 wire",
@@ -107,6 +107,7 @@ def _scenario(root: Path, schema: dict[str, Any], base_url: str | None) -> Outco
     server.write_text(_MCP_SERVER, encoding="utf-8")
     tools = [{"name": "lookup", "description": "Look something up.", "inputSchema": schema}]
     extra = {
+        **HERMES_CONFIG,
         # Keep the MCP tool in the model-facing array (not behind the tool_search bridge) and let
         # discovery finish before the one-shot turn is built.
         "tools": {"tool_search": {"enabled": "off"}},

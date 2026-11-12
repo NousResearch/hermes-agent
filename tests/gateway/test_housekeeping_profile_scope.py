@@ -229,7 +229,8 @@ def test_profile_scope_setup_failure_restores_the_callers_home(two_homes, monkey
     def _boom(home):
         raise OSError(f"cannot read {home}/.env")
 
-    monkeypatch.setattr(gateway_run, "_load_profile_secret_scope", _boom)
+    import hermes_cli.env_loader
+    monkeypatch.setattr(hermes_cli.env_loader, "hydrate_profile_secret_sources", _boom)
 
     with pytest.raises(OSError):
         with gateway_run._profile_runtime_scope(b):

@@ -488,19 +488,32 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
             agentPackages = builtins.filter (p: (p.pname or "") == "hermes-agent") cfg.home.packages;
 
             # The backend of the service, as the unit or the agent runs it.
+            backendArgvList =
+              if pkgs.stdenv.hostPlatform.isDarwin then
+                cfg.launchd.agents.hermes-backend.config.ProgramArguments
+              else
+                [ cfg.systemd.user.services.hermes-backend.Service.ExecStart ];
+            backendArgvText = lib.concatStringsSep " " (lib.flatten backendArgvList);
             backendScript =
               let
-                argv =
-                  if pkgs.stdenv.hostPlatform.isDarwin then
-                    cfg.launchd.agents.hermes-backend.config.ProgramArguments
-                  else
-                    [ cfg.systemd.user.services.hermes-backend.Service.ExecStart ];
-                first = lib.head (lib.flatten argv);
                 # writeShellScript gives a store path. Read the real text, so
                 # the check tests the script and not the option that made it.
-                path = lib.head (lib.splitString " " first);
+                path = lib.head (lib.splitString " " (lib.head (lib.flatten backendArgvList)));
               in
               builtins.readFile path;
+            # The unit text that carries the token's path: an Environment
+            # list (systemd) or an EnvironmentVariables set (launchd).
+            backendTokenText =
+              # Same NAME=value shape on both platforms, so one assertion
+              # covers each: systemd renders an Environment list (with the
+              # value quoted), launchd an attribute set that holds the bare
+              # value.
+              if pkgs.stdenv.hostPlatform.isDarwin then
+                "HERMES_DASHBOARD_SESSION_TOKEN=file:"
+                + (cfg.launchd.agents.hermes-backend.config.EnvironmentVariables.HERMES_DASHBOARD_SESSION_TOKEN
+                  or "")
+              else
+                lib.concatStringsSep "\n" cfg.systemd.user.services.hermes-backend.Service.Environment;
 
             failures =
               lib.optional (
@@ -524,20 +537,35 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
               ++ lib.optional (
                 !lib.hasInfix "HERMES_DESKTOP_REMOTE_TOKEN" wrapper
               ) "the launcher must give a token with the URL: the desktop resolver throws when the URL is set alone"
-              ++ lib.optional (
-                !lib.hasInfix "HERMES_DASHBOARD_SESSION_TOKEN" backendScript
-              ) "the backend must read the session token, or it makes a new one that the application cannot know"
 
               # ── The token never enters the Nix store ────────────────────
-              # Each side must read the file at start time. A --set flag or
-              # an Environment= value writes the literal into a store path
-              # that all users can read.
+              # The desktop launcher reads the file at start time (--run, not
+              # --set: a --set value writes the token into a store path that
+              # all users can read). The backend unit instead carries the
+              # token's PATH in its environment and hermes reads the file
+              # itself, so the store never sees the token either way.
               ++ lib.optional (
                 !lib.hasInfix tokenFile wrapper || !lib.hasInfix "--run" wrapper
               ) "the launcher must read the token from ${tokenFile} at start time, with --run"
               ++ lib.optional (
-                !lib.hasInfix tokenFile backendScript
-              ) "the backend must read the token from ${tokenFile} at start time"
+                !lib.hasInfix "HERMES_DASHBOARD_SESSION_TOKEN=" backendTokenText
+                || !lib.hasInfix "file:${tokenFile}" backendTokenText
+              ) "the backend unit must name the token file in its environment, or hermes mints a token the application cannot know"
+              # With no waitFor, a token must no longer force the launcher:
+              # nothing in the command line has to read a secret any more.
+              ++ lib.optional (
+                lib.hasInfix "hermes-backend-launch" backendArgvText
+              ) "a sessionTokenFile alone must not force the launcher; the token path rides in the unit environment (got: ${backendArgvText})"
+
+              # Secret managers leave a "$XDG_RUNTIME_DIR" placeholder in
+              # secret paths for a shell to expand (agenix's Home Manager
+              # module does). escapeShellArg freezes the placeholder into a
+              # literal, so the desktop reader must expand it before its
+              # readability check. The backend takes the path from the unit
+              # environment verbatim, so nothing renders it through a shell.
+              ++ lib.optional (
+                !lib.hasInfix ''_token_file=''${_token_file//\$\{XDG_RUNTIME_DIR\}/''${XDG_RUNTIME_DIR:-}}'' wrapper
+              ) "the desktop launcher must expand an unexpanded \"$XDG_RUNTIME_DIR\" in the token path"
               ++ lib.optional (
                 setValue "HERMES_DESKTOP_REMOTE_TOKEN" != null
               ) "the token must never be a --set value: makeWrapper writes it into the world-readable Nix store";
@@ -1020,12 +1048,19 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
                 waitFor = null;
                 interfaceName = null;
                 waitTimeout = 120;
-                # No token here: this case asserts the plain argv, which the
-                # module builds only when nothing must run before the
-                # backend. A token needs the launcher script instead.
+                # No token here: this case asserts the plain argv. The
+                # withToken case below proves a token alone still yields the
+                # same plain argv -- only a wait needs the launcher.
                 sessionTokenFile = null;
               };
             };
+            withToken =
+              (cfgFor "serve")
+              // {
+                backend = (cfgFor "serve").backend // {
+                  sessionTokenFile = "/run/secrets/hermes-argv-probe-token";
+                };
+              };
             sentinel = "--hermes-nix-argv-probe";
             probe = argv: lib.escapeShellArgs (argv ++ [ sentinel ]);
           in
@@ -1058,6 +1093,7 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
             check "gateway"   ${probe (common.gatewayArgv (cfgFor "none"))}
             check "serve"     ${probe (common.backendArgv { inherit pkgs; cfg = cfgFor "serve"; })}
             check "dashboard" ${probe (common.backendArgv { inherit pkgs; cfg = cfgFor "dashboard"; })}
+            check "serve+token" ${probe (common.backendArgv { inherit pkgs; cfg = withToken; })}
 
             mkdir -p $out
             echo "ok" > $out/result

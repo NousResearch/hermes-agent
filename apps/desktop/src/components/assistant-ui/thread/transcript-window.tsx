@@ -11,7 +11,7 @@ export interface TranscriptWindowValue {
   returnToLatest?: () => void
   isHistorical?: boolean
   newerAvailable?: boolean
-  /** Exactly the selected bounded source slice, not the full live store. */
+  /** Selected historical page; live navigation reads the session store. */
   currentMessages?: readonly ChatMessage[]
   /** Pull a page, capturing the reader immediately before the prepend commits.
    * A remote page resolves false on failure; callers can retry without growing

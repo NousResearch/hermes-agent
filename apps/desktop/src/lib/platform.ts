@@ -38,6 +38,11 @@ export function browserLaunchProfile(): string {
   return String((window as Window & BrowserHostGlobals).__HERMES_DASHBOARD_PROFILE__ ?? '').trim()
 }
 
+/** The profile a request that names none reaches: the one the server runs as, else `default`. */
+export function browserLaunchProfileOrDefault(): string {
+  return browserLaunchProfile() || 'default'
+}
+
 /**
  * The server served this page as the browser-hosted Desktop: a gated host
  * (cookie auth) or the Webapp surface (its session arrives by launch link).
@@ -62,4 +67,14 @@ export function isBrowserHostedDesktop() {
   // can classify a browser page as native before the marker is written.
   return document.documentElement.dataset.hermesDesktopHost === 'browser' ||
     (!window.hermesDesktop && hasBrowserHostBootstrap())
+}
+
+/**
+ * The profile the renderer's gateway route starts on, before boot adopts its primary. A browser
+ * host's boot adopts the profile its server runs as, and requests that name the tab's profile can
+ * go out before that: on `default` they would name a profile a gateway launched as another one may
+ * not serve, and it refuses them (`profile_mismatch`). Native Desktop starts on `default`.
+ */
+export function initialGatewayProfile(): string {
+  return isBrowserHostedDesktop() ? browserLaunchProfileOrDefault() : 'default'
 }

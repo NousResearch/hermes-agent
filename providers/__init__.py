@@ -47,6 +47,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from hermes_cli.plugins import get_bundled_plugins_dir
 from providers.base import ProviderProfile
 
 logger = logging.getLogger(__name__)
@@ -64,6 +65,9 @@ _REGISTRY_GENERATION = 0
 _discovered = False
 _discovering = False
 _PLUGIN_DIR_STAMP_TTL_SECONDS = 1.0
+# Widest directory mtime granularity in use (FAT rounds to 2 s, HFS+ to 1 s; a kernel without
+# fine-grained timestamps stamps every change within one ~4 ms clock tick alike).
+_PLUGIN_DIR_MTIME_TICK_NS = 2_000_000_000
 
 
 @dataclass
@@ -80,11 +84,16 @@ class _HomeLayer:
     registry: dict[str, ProviderProfile] = field(default_factory=dict)
     aliases: dict[str, str] = field(default_factory=dict)
     stamps: tuple = ()
+    # ``plugins.disabled`` when the last scan skipped a plugin it names, else None: enabling it changes no dir
+    disabled: frozenset | None = None
     stamp_checked_at: float | None = None
     # name -> when its miss last forced a stamp check (see ``_miss_recheck_due``)
     misses: dict[str, float] = field(default_factory=dict)
     # plugin dir name -> the error its import raised (``plugin_load_error``), until an import succeeds
     errors: dict[str, str] = field(default_factory=dict)
+    # module names of plugins whose profiles this layer already holds as plugin-host proxies: the
+    # hosted path's ``sys.modules`` check, so a rescan never re-imports, re-warns or swaps proxies
+    hosted: set[str] = field(default_factory=set)
 
 
 _HOME_LAYERS: dict[str, _HomeLayer] = {}
@@ -94,14 +103,14 @@ _HOME_LAYERS_LOCK = threading.Lock()
 # across the import itself — a thread mid-``import hermes_cli.auth`` (whose import calls
 # ``list_providers()``) would block on it while the scanning thread waits on that module's import lock.
 _REGISTRATION_TARGET: ContextVar[_HomeLayer | None] = ContextVar("_provider_registration_target", default=None)
+# Set by :func:`bundled_profiles`: registrations made in this context are collected, nothing else.
+_COLLECT: ContextVar[list | None] = ContextVar("_provider_collect", default=None)
 # Profile names an in-process import may register (None = all). Set while a hosted plugin's
 # profiles that cannot cross the host boundary are imported here: its hosted siblings stay hosted.
 _REGISTRATION_ONLY: ContextVar[frozenset[str] | None] = ContextVar("_provider_registration_only", default=None)
 
 # Repo-root ``plugins/model-providers/`` — populated at discovery time.
-_BUNDLED_PLUGINS_DIR = (
-    Path(__file__).resolve().parent.parent / "plugins" / "model-providers"
-)
+_BUNDLED_PLUGINS_DIR = get_bundled_plugins_dir() / "model-providers"
 
 
 def _sync_auth_registry() -> None:
@@ -118,6 +127,7 @@ def _sync_auth_registry() -> None:
     for module, attr in (
         ("hermes_cli.auth", "sync_plugin_provider_registry"),
         ("hermes_cli.models_catalog_static", "sync_plugin_provider_catalog"),
+        ("hermes_cli.config_provider_env", "sync_registered_providers"),
     ):
         sync = getattr(sys.modules.get(module), attr, None)
         if sync is None:
@@ -137,6 +147,10 @@ def register_provider(profile: ProviderProfile) -> None:
     ``$HERMES_HOME`` plugin is being imported lands in that home's layer.
     """
     global _PROVIDER_LIST_CACHE, _REGISTRY_GENERATION
+    collect = _COLLECT.get()
+    if collect is not None:
+        collect.append(profile)
+        return
     only = _REGISTRATION_ONLY.get()
     if only is not None and profile.name not in only:
         return
@@ -182,11 +196,11 @@ _NAMED_CUSTOM_MEMO_NO_SIG = object()
 
 
 def _has_named_custom_provider(name: str, home: Path | None, hkey: str) -> bool:
-    """``has_named_custom_provider`` memoized on the home's config file signature."""
-    from utils import file_signature
+    """``has_named_custom_provider`` memoized on the home's config cache version."""
+    from hermes_cli.config_backend import config_cache_version
 
     try:
-        sig = file_signature((home / "config.yaml").stat()) if home is not None else None
+        sig = config_cache_version(home / "config.yaml") if home is not None else None
     except OSError:
         sig = None  # no readable config: nothing configured, stable until one appears
     memo = _NAMED_CUSTOM_MEMO.get(hkey)
@@ -451,9 +465,16 @@ def _refresh_home_layer(layer: _HomeLayer, home: Path | None, key: str, *, force
     ):
         return False
     stamps = _plugin_dir_stamps(home)
-    if stamps != layer.stamps:
+    if stamps != layer.stamps or _skipped_plugin_enabled(layer):
+        # Judge the stamps' age before scanning: a slow scan must not let a stamp read before it
+        # look settled afterwards and get remembered over an install that landed mid-scan.
+        settled = _plugin_dir_stamps_settled(stamps)
+        layer.disabled = None  # the scan records it again if it still skips a plugin
         _scan_home_layer(layer, key)
-        layer.stamps = stamps
+        # A stamp still inside its mtime tick may not move for an install landing in that same
+        # tick, which would hide the plugin until some later change: keep it unremembered so the
+        # next periodic check scans again, until the stamps settle.
+        layer.stamps = stamps if settled else ()
         # Publish the completed layer -- stamps AND check time -- before auth
         # sync: it calls list_providers(), which re-enters this function. An
         # unpublished stamp rescanned forever; an unpublished check time
@@ -465,6 +486,15 @@ def _refresh_home_layer(layer: _HomeLayer, home: Path | None, key: str, *, force
     return True
 
 
+def _skipped_plugin_enabled(layer: _HomeLayer) -> bool:
+    """Whether ``plugins.disabled`` moved since a scan skipped a plugin; config is read only in that case."""
+    if layer.disabled is None:
+        return False
+    from hermes_cli.plugins_discovery import _get_disabled_plugins
+
+    return frozenset(_get_disabled_plugins()) != layer.disabled
+
+
 def _plugin_dir_stamps(home: Path) -> tuple:
     """mtimes of ``plugins/`` and ``plugins/model-providers/``: they change when a child is added."""
     def stamp(path: Path):
@@ -473,6 +503,12 @@ def _plugin_dir_stamps(home: Path) -> tuple:
         except OSError:
             return None
     return (stamp(home / "plugins"), stamp(home / "plugins" / "model-providers"))
+
+
+def _plugin_dir_stamps_settled(stamps: tuple) -> bool:
+    """Whether every stamp is at least one mtime tick away from now (either side: clock skew)."""
+    now = time.time_ns()
+    return all(s is None or abs(now - s) >= _PLUGIN_DIR_MTIME_TICK_NS for s in stamps)
 
 
 def _user_plugins_dir() -> Path | None:
@@ -502,39 +538,41 @@ def _installed_plugins_dir() -> Path | None:
         return None
 
 
-def _declares_model_provider_kind(plugin_dir: Path) -> bool:
-    """Whether ``plugin_dir``'s manifest declares ``kind: model-provider``.
-
-    Only that kind is imported from the flat install directory — every other
-    plugin there belongs to ``PluginManager``, which owns its lifecycle and
-    consent flow. Parsed with ruamel.yaml when available, falling back to a line
-    scan so provider discovery never hard-depends on it.
-    """
+def _manifest_field(plugin_dir: Path, key: str) -> str | None:
+    """Top-level ``key`` of ``plugin_dir``'s manifest, or None. Parsed with ruamel.yaml when available,
+    falling back to a line scan so provider discovery never hard-depends on it."""
     for filename in ("plugin.yaml", "plugin.yml"):
         manifest = plugin_dir / filename
         if not manifest.is_file():
             continue
         try:
             text = manifest.read_text(encoding="utf-8", errors="replace")
-        except Exception:
-            return False
+        except OSError:
+            return None
+        from hermes_yaml import YAMLError
+        from utils import fast_safe_load
         try:
-            from utils import fast_safe_load
-
             data = fast_safe_load(text)
-            if isinstance(data, dict):
-                return str(data.get("kind", "")).strip() == "model-provider"
-        except Exception:
-            pass
+        except YAMLError:
+            data = None  # malformed third-party manifest: the line scan below recovers the field
+        if isinstance(data, dict):
+            value = data.get(key)
+            return None if value is None else str(value).strip()
         for line in text.splitlines():
             stripped = line.strip()
             if stripped.startswith("#") or ":" not in stripped:
                 continue
-            key, _, value = stripped.partition(":")
-            if key.strip() == "kind":
-                return value.strip().strip("\"'") == "model-provider"
-        return False
-    return False
+            name, _, value = stripped.partition(":")
+            if name.strip() == key:
+                return value.strip().strip("\"'")
+        return None
+    return None
+
+
+def _declares_model_provider_kind(plugin_dir: Path) -> bool:
+    """Whether the manifest declares ``kind: model-provider``: only that kind is imported from the flat
+    install directory; every other plugin there belongs to ``PluginManager``."""
+    return _manifest_field(plugin_dir, "kind") == "model-provider"
 
 
 def _scan_home_layer(layer: _HomeLayer, key: str) -> None:
@@ -566,6 +604,23 @@ def _scan_home_layer(layer: _HomeLayer, key: str) -> None:
         _discovering = prior_discovering
 
 
+def _plugin_disabled(plugin_dir: Path) -> bool:
+    """Whether ``plugins.disabled`` names this plugin, so its import-time code never runs (#137671).
+    Names mirror ``gate_manifest``: the manifest name, the dir, and ``model-providers/<dir>``."""
+    from hermes_cli.plugins import _get_disabled_plugins
+
+    disabled = _get_disabled_plugins()
+    if not disabled:
+        return False
+    names = {plugin_dir.name, f"model-providers/{plugin_dir.name}", _manifest_field(plugin_dir, "name")}
+    if not names & disabled:
+        return False
+    layer = _REGISTRATION_TARGET.get()
+    if layer is not None:
+        layer.disabled = frozenset(disabled)
+    return True
+
+
 def _user_module_name(plugin_dir: Path, home_key: str) -> str:
     digest = hashlib.sha1(home_key.encode("utf-8")).hexdigest()[:10]
     return f"_hermes_user_provider_{digest}_{plugin_dir.name.replace('-', '_')}"
@@ -577,6 +632,9 @@ def _import_plugin_dir(plugin_dir: Path, source: str, *, home_key: str = "") -> 
     ``source`` is "bundled" or "user"; it is recorded per registered profile (``_SOURCES``).
     """
     if not (plugin_dir / "__init__.py").exists():
+        return
+    if source != "bundled" and _plugin_disabled(plugin_dir):
+        logger.debug("Skipping disabled provider plugin %s (plugins.disabled)", plugin_dir.name)
         return
     if source != "bundled":
         from hermes_cli.plugin_isolation import ISOLATION_HOST, isolation_mode
@@ -601,6 +659,9 @@ def _import_hosted_plugin_dir(plugin_dir: Path, source: str, module_name: str) -
     so it never takes its hosted siblings down with it."""
     global _current_source
     from hermes_cli.plugin_host_profiles import load_hosted_profiles
+    layer = _REGISTRATION_TARGET.get()
+    if layer is not None and module_name in layer.hosted:
+        return  # already imported into this home's layer
     _current_source = source
     try:
         hosted, in_process = load_hosted_profiles(plugin_dir, module_name)
@@ -612,16 +673,19 @@ def _import_hosted_plugin_dir(plugin_dir: Path, source: str, module_name: str) -
         return
     finally:
         _current_source = None
-    if not in_process:
-        return
-    for name, reason in in_process.items():
-        logger.warning("Provider plugin %s: profile %r cannot run in the plugin host (%s); loading it "
-                       "in-process, NOT isolated by plugins.isolation: host", plugin_dir.name, name, reason)
-    token = _REGISTRATION_ONLY.set(frozenset(in_process))
-    try:
-        _exec_plugin_module(plugin_dir, source, module_name)
-    finally:
-        _REGISTRATION_ONLY.reset(token)
+    if in_process:
+        for name, reason in in_process.items():
+            logger.warning("Provider plugin %s: profile %r cannot run in the plugin host (%s); loading it "
+                           "in-process, NOT isolated by plugins.isolation: host", plugin_dir.name, name, reason)
+        token = _REGISTRATION_ONLY.set(frozenset(in_process))
+        try:
+            _exec_plugin_module(plugin_dir, source, module_name)
+        finally:
+            _REGISTRATION_ONLY.reset(token)
+        if module_name not in sys.modules:
+            return  # the in-process import failed: the next scan retries the plugin
+    if layer is not None:
+        layer.hosted.add(module_name)
 
 
 def _exec_plugin_module(plugin_dir: Path, source: str, module_name: str) -> None:
@@ -793,6 +857,37 @@ def _requires_arguments(fn) -> bool:
         ) and param.default is inspect.Parameter.empty:
             return True
     return False
+
+
+def bundled_profiles() -> list[ProviderProfile]:
+    """Every bundled provider profile, one per name (the last registration wins, in discovery
+    order), WITHOUT config and without touching the registry: each bundled plugin is executed into
+    a private module whose registrations are collected. For descriptive catalogs, which must not
+    depend on config or on discovery having run."""
+    from agent.safe_worker_policy import safe_worker_enabled
+
+    if safe_worker_enabled():  # a safe worker loads no plugin code, bundled included (as list_providers)
+        return []
+    collected: list[ProviderProfile] = []
+    token = _COLLECT.set(collected)
+    try:
+        for child in sorted(_BUNDLED_PLUGINS_DIR.iterdir()) if _BUNDLED_PLUGINS_DIR.is_dir() else ():
+            init = child / "__init__.py"
+            if not child.is_dir() or child.name.startswith(("_", ".")) or not init.exists():
+                continue
+            name = f"_hermes_provider_catalog_{child.name.replace('-', '_')}"
+            spec = importlib.util.spec_from_file_location(name, init, submodule_search_locations=[str(child)])
+            if spec is None or spec.loader is None:
+                continue
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[name] = module  # relative imports inside the plugin
+            try:
+                spec.loader.exec_module(module)
+            except Exception as exc:  # health: allow BLE001 -- one broken plugin never breaks the catalog
+                logger.debug("provider catalog skipped %s: %s", child.name, exc)
+    finally:
+        _COLLECT.reset(token)
+    return list({p.name: p for p in collected}.values())
 
 
 def _discover_providers() -> None:

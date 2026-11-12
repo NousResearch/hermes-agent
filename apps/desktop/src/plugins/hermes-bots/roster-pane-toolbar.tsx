@@ -11,7 +11,7 @@ import {
   Tip
 } from '@hermes/plugin-sdk'
 
-import { seatableGroupBots, useGroupCapability } from './canonical-group-capabilities'
+import { connectionName, groupSelectionElsewhere, seatableGroupBots, useGroupCapability } from './canonical-group-capabilities'
 import { botSourceStatus } from './data'
 import type { useBots } from './i18n'
 import { setActivityToasts } from './roster-actions'
@@ -21,20 +21,35 @@ import type { RosterActivityFilter, RosterKindFilter, RosterRow } from './types'
 
 interface NewGroupChatItemProps {
   label: string
+  /** The dialog's "these bots all live on <connection>" note. */
+  elsewhereNote: (connection: string) => string
   onSelect: () => void
   roster: RosterRow[]
 }
 
 /** Mounted only while the menu is open, so the capability read happens on
- *  demand. Offered only when the dialog it opens can seat two bots: the same
- *  predicate the dialog's picker uses, or it opened to a dead Create button. */
-function NewGroupChatItem({ label, onSelect, roster }: NewGroupChatItemProps) {
+ *  demand. Offered only when the dialog it opens can create a room: two
+ *  seatable bots by the same predicate the dialog's picker uses, and not all of
+ *  them on ONE other connection (every selection there is refused, so the item
+ *  says why instead of opening a dead Create button). */
+function NewGroupChatItem({ elsewhereNote, label, onSelect, roster }: NewGroupChatItemProps) {
   const { connectionId, mode, seatable } = useGroupCapability(true)
+  const seatableBots = seatableGroupBots(roster, { connectionId, mode, seatable })
+  const elsewhere = mode === 'canonical' && groupSelectionElsewhere(seatableBots, connectionId)
 
   return (
-    <DropdownMenuItem disabled={seatableGroupBots(roster, { connectionId, mode, seatable }).length < 2} onSelect={onSelect}>
+    <DropdownMenuItem disabled={seatableBots.length < 2 || elsewhere} onSelect={onSelect}>
       <Codicon className="mr-1.5" name="organization" />
-      {label}
+      {elsewhere ? (
+        <span className="grid gap-0.5">
+          <span>{label}</span>
+          <span className="text-xs text-(--ui-text-secondary)" role="note">
+            {elsewhereNote(connectionName(seatableBots[0]))}
+          </span>
+        </span>
+      ) : (
+        label
+      )}
     </DropdownMenuItem>
   )
 }
@@ -91,11 +106,11 @@ export function renderRosterToolbar({
     <>
       <div className="flex items-center justify-between gap-2 px-2.5 pt-2.5 pb-1.5">
         <span className="text-[0.6875rem] font-semibold uppercase tracking-wider text-(--ui-text-quaternary)">
-          Bots
+          {b.roster.title}
         </span>
         <div className="flex items-center gap-0.5">
           <Tip
-            label={activityToasts ? 'Activity toasts on — click to silence' : 'Activity toasts off — click to enable'}
+            label={activityToasts ? b.roster.toastsOn : b.roster.toastsOff}
           >
             <Button
               className="rounded-md text-(--ui-text-tertiary) hover:text-foreground"
@@ -107,7 +122,7 @@ export function renderRosterToolbar({
             </Button>
           </Tip>
           <DropdownMenu>
-            <Tip label="New…">
+            <Tip label={b.roster.newMenu}>
               <DropdownMenuTrigger asChild>
                 <Button
                   aria-label={b.roster.newBotOrGroup}
@@ -124,7 +139,12 @@ export function renderRosterToolbar({
                 <Codicon className="mr-1.5" name="hubot" />
                 {b.bot.newTitle}
               </DropdownMenuItem>
-              <NewGroupChatItem label={b.group.newTitle} onSelect={() => setGroupCreateOpen(true)} roster={roster} />
+              <NewGroupChatItem
+                elsewhereNote={b.crossGateway.selectionElsewhere}
+                label={b.group.newTitle}
+                onSelect={() => setGroupCreateOpen(true)}
+                roster={roster}
+              />
               <DropdownMenuSeparator />
               <DropdownMenuItem onSelect={() => setSectionDialog({ mode: 'create' })}>
                 <Codicon className="mr-1.5" name="new-folder" />
@@ -151,10 +171,10 @@ export function renderRosterToolbar({
           )}
           {showRosterFilters ? (
             <DropdownMenu key={'roster-filters'}>
-              <Tip label={activeFilterCount ? `Filters (${activeFilterCount} active)` : 'Filter roster'}>
+              <Tip label={activeFilterCount ? b.roster.filtersActive(activeFilterCount) : b.roster.filter}>
                 <DropdownMenuTrigger asChild>
                   <Button
-                    aria-label={activeFilterCount ? `Filter roster, ${activeFilterCount} active` : 'Filter roster'}
+                    aria-label={activeFilterCount ? b.roster.filtersActive(activeFilterCount) : b.roster.filter}
                     className={cn(
                       'size-7 shrink-0 rounded-md text-(--ui-text-tertiary) hover:text-foreground',
                       activeFilterCount && 'text-(--ui-accent)'
@@ -197,7 +217,7 @@ export function renderRosterToolbar({
                 {gatewayOptions.length > 1 ? (
                   <DropdownMenuItem onSelect={() => setGatewayFilter('all')}>
                     <Codicon className="mr-1.5" name="globe" />
-                    <span className="min-w-0 flex-1">All gateways</span>
+                    <span className="min-w-0 flex-1">{b.roster.allGateways}</span>
                     {gatewayFilter === 'all' ? <Codicon name="check" /> : null}
                   </DropdownMenuItem>
                 ) : null}

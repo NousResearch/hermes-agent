@@ -664,7 +664,37 @@ def _part_function_call(part: dict[str, Any]) -> Optional[dict[str, Any]]:
     return fc if isinstance(fc, dict) and fc.get("name") else None
 
 
+# Guidance per ``promptFeedback.blockReason`` value with a specific remedy; the rest (OTHER, Vertex's
+# MODEL_ARMOR / JAILBREAK) get the generic text. A prompt-level block is an HTTP 200 with no candidates;
+# translated as-is it becomes an empty "stop" turn the user sees as silence.
+_BLOCK_REASON_GUIDANCE = {
+    "BLOCKLIST": "The prompt includes blocked terms. Rephrase and try again.",
+    "PROHIBITED_CONTENT": "The prompt may contain prohibited content. Adjust it and try again.",
+    "SAFETY": "The prompt was blocked by Gemini's safety filters. Adjust it and try again.",
+    "IMAGE_SAFETY": "The image was blocked for safety reasons.",
+}
+
+
+def raise_on_prompt_block(payload: dict[str, Any]) -> None:
+    """Raise a terminal error when ``promptFeedback.blockReason`` is set (unary response or stream event).
+
+    No HTTP status: the wire said 200. ``agent.error_classifier`` keys on the ``gemini_prompt_blocked`` code
+    and routes it to content_policy_blocked — deterministic for the unchanged prompt, so no retry."""
+    feedback = payload.get("promptFeedback")
+    reason = feedback.get("blockReason") if isinstance(feedback, dict) else None
+    if not reason:
+        return
+    reason = str(reason).upper()
+    # Vertex explains the block in ``blockReasonMessage``; prefer it over the canned guidance.
+    message = feedback.get("blockReasonMessage")
+    guidance = (message.strip() if isinstance(message, str) and message.strip()
+                else _BLOCK_REASON_GUIDANCE.get(reason, "The prompt was blocked. Adjust it and try again."))
+    raise GeminiAPIError(f"Gemini blocked this prompt (blockReason={reason}): {guidance}",
+                         code="gemini_prompt_blocked", details={"promptFeedback": feedback})
+
+
 def translate_gemini_response(resp: dict[str, Any], model: str) -> SimpleNamespace:
+    raise_on_prompt_block(resp)
     candidates = resp.get("candidates") or []
     cand = parts = None
     if isinstance(candidates, list) and candidates:
@@ -773,6 +803,7 @@ def _tool_call_slot(fc: dict[str, Any], part: dict[str, Any], part_index: int, a
 
 
 def translate_stream_event(event: dict[str, Any], model: str, tool_call_indices: dict[str, dict[str, Any]]) -> list[_GeminiStreamChunk]:
+    raise_on_prompt_block(event)
     candidates = event.get("candidates") or []
     if not candidates:
         return []

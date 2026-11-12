@@ -1,0 +1,17 @@
+name: better-capabilities
+repo: https://github.com/apoapostolov/hermes-agent-awesome-plugins
+sha: 184725016633448af8f1c12f326529516b948ad3
+subdir: public/better-capabilities
+description: "Delete and package skills, browse their markdown files, and save per-profile on/off presets from one Settings page. Disclosure — deleting a skill from its page moves the skill folder out of `<HERMES_HOME>/skills` (on Windows to the Recycle Bin by running `powershell.exe`, elsewhere to `<HERMES_HOME>/better-capabilities-trash/`); applying a preset switches skills, toolsets and agent plugins on or off, including for other profiles the preset names."
+maintainer: apoapostolov
+tier: community
+category: desktop
+requires_hermes: ">=0.21.6"
+version: "1.1.0"
+image: https://raw.githubusercontent.com/apoapostolov/hermes-agent-awesome-plugins/184725016633448af8f1c12f326529516b948ad3/public/better-capabilities/docs/hero.png
+docs_url: https://github.com/apoapostolov/hermes-agent-awesome-plugins/tree/main/public/better-capabilities
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -1,0 +1,19 @@
+name: asyntai
+title: Asyntai AI Support Agent
+repo: https://github.com/asyntai/mcp-bridge
+sha: 75680ed683534aea4e158b49a7ad629c656e10a5
+subdir: hermes
+version: "1.0.0"
+description: "Run your website's Asyntai AI support agent from Hermes through Asyntai's hosted MCP server (73 tools): add knowledge, edit agent instructions, change the widget, read conversations, leads and analytics, answer tickets and emails, and reply live to visitors. Agent Plugins v1 package (plugin.json + mcp.json + one skill), configuration only. Disclosure: runs the pinned @asyntai/mcp@1.0.2 bridge over npx stdio (Node.js 18+); every tool call goes to https://asyntai.com/mcp. The first call opens a browser for OAuth 2.1 PKCE sign-in, and the tokens are stored in ~/.asyntai/mcp-credentials.json; in unattended runs the call fails at the MCP timeout. The package marks the server untrusted, so Hermes asks before every tool that is not annotated read-only and refuses them in unattended runs. The tool set is served by the remote server at runtime and is not covered by the pinned sha."
+maintainer: Asyntai
+tier: community
+category: tools
+docs_url: https://asyntai.com/documentation/integrations/hermes/
+requires_hermes: ">=0.23.1"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

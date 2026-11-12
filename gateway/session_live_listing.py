@@ -77,12 +77,16 @@ def _execution_state(pending) -> str:
 def _readable(authority, actor, session_id) -> bool:
     if session_id not in authority.sessions:
         return False  # retired since the snapshot: a listing never restores a session
+    from gateway.session_retirement import LISTING_READ
+    token = LISTING_READ.set(True)
     try:
         authority.authorize(actor, SessionRef(actor.profile_id, session_id), 'session:read')
     except RuntimeStoreError as exc:
         if exc.reason not in _SKIPPED_REASONS:
             raise
         return False
+    finally:
+        LISTING_READ.reset(token)
     return True
 
 

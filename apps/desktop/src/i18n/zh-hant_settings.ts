@@ -2,6 +2,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import type { TranslationOverrides } from './define-locale'
 import { zhHantDelegationRouting } from './zh-hant_delegation_routing'
+import { zhHantMemoryLayers } from './zh-hant_memory_layers'
 import { zhHantUpdateChannel } from './zh-hant_update_channel'
 
 export const zhHantSettings = {
@@ -16,6 +17,7 @@ export const zhHantSettings = {
   },
 
   settings: {
+    memoryLayers: zhHantMemoryLayers,
     subpages: {
       appearanceTheme: '主題',
       appearanceTypography: '字體與縮放',
@@ -48,7 +50,7 @@ export const zhHantSettings = {
       advancedOutput: '輸出限制',
       advancedDelegation: '子代理',
       advancedDesktop: '桌面與啟動',
-      gatewayConnection: '目前視窗',
+      gatewayConnection: '主要閘道',
       gatewayDevices: '已儲存的連線',
       gatewayManagedUpdates: '遠端更新',
       gatewayManagedUpdatesUnavailable: '遠端更新需要支援受管理 SSH 更新的桌面版本。',
@@ -88,6 +90,14 @@ export const zhHantSettings = {
         versionLabel: '版本',
         reviewedPin: sha => (sha ? `已審核的固定提交 ${sha}` : '已審核的固定提交'),
         latestCommit: '最新提交',
+        sourceMoved: sha => (sha ? `自你審閱後儲存庫已變更。請先審閱新版本（提交 ${sha}）再安裝。` : '自你審閱後儲存庫已變更。正在讀取新版本…'),
+        legacyBackendConfirm:
+          '此後端比本應用程式舊，無法保證安裝的就是你審閱過的版本：如果儲存庫之後有變更，安裝的會是較新的版本。更新後端即可獲得這項保證。',
+        installAnyway: '仍要安裝',
+        partialInstall: sha =>
+          sha
+            ? `外掛只安裝了一部分：代理部分已安裝在提交 ${sha}，但由於儲存庫在你審閱後有變更，桌面部分未能隨之安裝。在「進階」中開啟強制重新安裝，可用顯示的版本取代兩部分；或取消，只保留代理部分。`
+            : '外掛只安裝了一部分：代理部分已安裝，但由於儲存庫在你審閱後有變更，桌面部分未能隨之安裝。在「進階」中開啟強制重新安裝，可用顯示的版本取代兩部分；或取消，只保留代理部分。',
         nothingToInstall: '此套件在這裡沒有可安裝的內容。'
       }
     },
@@ -232,6 +242,17 @@ export const zhHantSettings = {
         plugin: {
           label: '外掛通知',
           description: 'Hermes 在背景時，桌面外掛傳送了通知。'
+        }
+      },
+      browserPermission: {
+        title: '瀏覽器通知',
+        allow: '允許',
+        states: {
+          default: '分頁在背景時由此瀏覽器顯示提醒。在你允許之前，只有分頁標題會閃爍。',
+          granted: '已允許。此分頁在背景時會顯示提醒，分頁標題也會閃爍。',
+          denied: '已在此瀏覽器的網站設定中被封鎖。分頁標題仍會閃爍。',
+          insecure: '需要 HTTPS，例如 Tailscale serve。使用一般 HTTP 時只有分頁標題會閃爍。',
+          unsupported: '此瀏覽器無法顯示通知。分頁標題仍會閃爍。'
         }
       },
       test: '傳送測試通知',
@@ -871,7 +892,14 @@ export const zhHantSettings = {
       unavailableDesc: '桌面 IPC 橋接器未公開閘道設定。',
       webappHostTitle: 'Hermes 主機',
       webappHostDesc:
-        'Webapp 一律使用提供它的 Hermes 主機。如需切換閘道、登入 Hermes Cloud 或管理已儲存的連線，請使用 Hermes Desktop 應用程式。',
+        'Webapp 一律在提供它的 Hermes 主機上執行。下方已儲存的連線是這台機器的清單，與 Hermes Desktop 應用程式共用；其他閘道透過此主機連線。',
+      webappOauthPaste: {
+        title: '完成登入',
+        description: '如果登入分頁停在無法開啟的位址（此瀏覽器不在閘道所在的機器上），請將該位址貼到這裡。',
+        placeholder: 'http://127.0.0.1:…/webapp/gateway-connections/oauth/callback?…',
+        finish: '完成',
+        failed: '無法完成登入'
+      },
       title: '閘道連線',
       envOverride: '環境變數覆寫',
       intro:
@@ -995,8 +1023,16 @@ export const zhHantSettings = {
         unavailableDetail: reason => `閘道無法提供網頁應用程式：${reason}`,
         restartBusy: '已儲存。有對話正在進行，因此閘道沒有重新啟動。對話結束後請選擇「重新啟動閘道」。',
         restartFailed: '已儲存，但閘道無法重新啟動。請選擇「重新啟動閘道」重試。',
+        restartFailedBecause: reason => `閘道無法重新啟動：${reason}`,
         startTimedOut: '閘道未能在 90 秒內提供網頁應用程式。',
         stopTimedOut: '閘道未能在 90 秒內停止提供網頁應用程式。',
+        startStages: {
+          preparing: '正在準備網頁應用程式。建置可能需要幾分鐘。',
+          building: '正在建置網頁應用程式，可能需要幾分鐘。',
+          registering: '正在為此位址設定 Nous 登入。',
+          restarting: '正在重新啟動閘道以提供網頁應用程式。'
+        },
+        startElapsed: time => `已經過 ${time}`,
         start: '啟動',
         stop: '停止',
         restartGateway: '重新啟動閘道',
@@ -1107,7 +1143,6 @@ export const zhHantSettings = {
       tasks: {
         vision: { label: '視覺', hint: '圖片分析' },
         compression: { label: '壓縮', hint: '上下文壓縮' },
-        skills_hub: { label: '技能中心', hint: '技能搜尋' },
         approval: { label: '核准', hint: '智慧自動核准' },
         mcp: { label: 'MCP', hint: 'MCP 工具路由' },
         title_generation: { label: '標題生成', hint: '工作階段標題' },
@@ -1183,6 +1218,8 @@ export const zhHantSettings = {
       updateTitle: '引擎有可用更新',
       updateDetail: (next, current) =>
         `新的 llama.cpp 組建（${next}）可以安裝——目前為 ${current}。下載期間模型仍可正常使用。`,
+      updateSameBuildDetail: tag =>
+        `Hermes 現在為 llama.cpp ${tag} 附帶執行所需的檔案。更新會重新下載引擎，下載期間模型仍可正常使用。`,
       updateAction: '更新引擎',
       updating: '正在更新引擎…',
       upToDateTitle: '引擎已是最新',
@@ -1531,7 +1568,7 @@ export const zhHantSettings = {
       autoArchiveFailed: '無法更新自動封存設定',
       defaultDirTitle: '預設專案目錄',
       defaultDirDesc: '新工作階段預設從此資料夾開始，除非您選擇其他目錄。留空則使用您的家目錄。',
-      defaultDirUpdated: '預設專案目錄已更新',
+      defaultDirUpdated: () => '預設專案目錄已更新',
       defaultsTo: label => `預設使用 ${label}。`,
       change: '變更',
       choose: '選擇',
@@ -1619,15 +1656,20 @@ export const zhHantSettings = {
       browserRealProfile: {
         label: '使用我的真實瀏覽器設定檔',
         description:
-          '將預設瀏覽器的登入資訊與 Cookie 複製到受管理的快照中，代理使用該快照進行瀏覽。絕不會直接開啟你的真實設定檔。將套用於新工作階段。',
+          '將預設瀏覽器的登入資訊與 Cookie 複製到受管理的快照中，代理使用該快照進行瀏覽，應用程式內瀏覽器也會用它們登入。絕不會直接開啟你的真實設定檔。將套用於新工作階段。',
         enabledTitle: '真實設定檔瀏覽：已開啟',
         enabledMessage: '新工作階段將使用預設瀏覽器設定檔的快照進行瀏覽。',
         disabledTitle: '真實設定檔瀏覽：已關閉',
-        disabledMessage: '設定檔快照將被刪除；新工作階段使用乾淨的瀏覽器。',
+        disabledMessage: '設定檔快照將被刪除，應用程式內瀏覽器也會登出這些登入；新工作階段使用乾淨的瀏覽器。',
         failedSave: '無法儲存真實設定檔設定',
+        reimportSignins: '重新匯入登入資訊',
+        signinsImportedTitle: '應用程式內瀏覽器登入',
+        signinsImported: count => `已使用瀏覽器設定檔中的 ${count} 個 Cookie 登入應用程式內瀏覽器。`,
+        signinsRemote: '此後端在另一台機器上執行，因此不會將其瀏覽器設定檔匯入應用程式內瀏覽器。',
+        signinsFailed: '無法將登入資訊匯入應用程式內瀏覽器',
         prompt: {
           title: '讓網站保持登入狀態',
-          body: '讓 Hermes 使用預設瀏覽器設定檔的快照進行瀏覽，網站開啟時即已登入。',
+          body: '讓 Hermes 使用預設瀏覽器設定檔的快照進行瀏覽，無論是代理還是應用程式內瀏覽器，網站開啟時即已登入。',
           bulletSnapshot: 'Cookie 與登入資訊會複製到受管理的快照中。',
           bulletLiveProfile: '絕不會直接開啟你的真實瀏覽器設定檔。',
           bulletLocal: '所有資料都不會離開這台電腦。',

@@ -7,6 +7,9 @@ const actOnActivePreview = vi.hoisted(() => vi.fn())
 const readActivePreview = vi.hoisted(() => vi.fn())
 const activePreviewScriptRunner = vi.hoisted(() => vi.fn(() => null))
 const activePreviewNav = vi.hoisted(() => vi.fn(() => null))
+const evaluatePreviewVaultBinding = vi.hoisted(() => vi.fn())
+const openPreviewVaultBinding = vi.hoisted(() => vi.fn())
+const closePreviewVaultBinding = vi.hoisted(() => vi.fn())
 
 type Listener = (event: MessageEvent) => void
 
@@ -71,6 +74,12 @@ vi.mock('./preview-nav', () => ({
   activePreviewNav: () => activePreviewNav()
 }))
 
+vi.mock('./preview-vault', () => ({
+  evaluatePreviewVaultBinding: (...args: unknown[]) => evaluatePreviewVaultBinding(...args),
+  openPreviewVaultBinding: (...args: unknown[]) => openPreviewVaultBinding(...args),
+  closePreviewVaultBinding: (...args: unknown[]) => closePreviewVaultBinding(...args)
+}))
+
 /** Loopback stand-in for the preload IPC relay (window.hermesDesktop.windowRelay). */
 function installDesktopRelay() {
   const listeners = new Set<(payload: unknown) => void>()
@@ -107,6 +116,9 @@ describe('preview pop-out bridge', () => {
     readActivePreview.mockReset()
     activePreviewScriptRunner.mockReturnValue(null)
     activePreviewNav.mockReturnValue(null)
+    evaluatePreviewVaultBinding.mockReset()
+    openPreviewVaultBinding.mockReset()
+    closePreviewVaultBinding.mockReset()
   })
 
   it('reports a live surface when a script runner is registered', { timeout: 60_000 }, async () => {
@@ -214,5 +226,60 @@ describe('preview pop-out bridge', () => {
     const { installPopoutPreviewResponder } = await import('./preview-popout-bridge')
 
     expect(installPopoutPreviewResponder()).not.toThrow()
+  })
+
+  // F5 (SECURITY): a Stop on the chat window must abort the pop-out's in-flight fill BEFORE it reaches
+  // the page. The chat window owns the gate; it forwards a cancel by request id and the pop-out aborts
+  // its local controller. Pre-fix the pop-out ran evaluate with no signal, so a stopped request could
+  // still dispatch the password/code once guest activity was acquired.
+  it('aborts a forwarded vault fill when the chat window stops the request', async () => {
+    isBrowserWindow.mockReturnValue(true)
+    vi.useFakeTimers()
+    let dispatched = false
+
+    // Model the pop-out acquiring guest activity on a short delay, then dispatching the fill to the
+    // page UNLESS its signal was aborted first. The chat window's Stop aborts that signal before the
+    // delay elapses, so the password is never written. Pre-fix no signal reached here at all.
+    evaluatePreviewVaultBinding.mockImplementation(
+      ({ signal }: { signal?: AbortSignal }) =>
+        new Promise(resolve => {
+          const timer = setTimeout(() => {
+            dispatched = true
+            resolve({ result: 'filled', success: true })
+          }, 50)
+
+          signal?.addEventListener(
+            'abort',
+            () => {
+              clearTimeout(timer)
+              resolve({ error: 'interrupted', success: false })
+            },
+            { once: true }
+          )
+        })
+    )
+
+    const { installPopoutPreviewResponder, requestPopoutPreviewVault } = await import('./preview-popout-bridge')
+    const stop = installPopoutPreviewResponder()
+    const controller = new AbortController()
+
+    try {
+      const pending = requestPopoutPreviewVault(
+        { expression: 'fill', operation: 'evaluate', owner: undefined, scope: {} as never, target: 'bind-1' },
+        undefined,
+        controller.signal
+      )
+
+      // The user hits Stop while the pop-out is still waiting to acquire guest activity.
+      controller.abort()
+      // Let the (cancelled) guest-activity delay elapse: a correct fix already aborted it.
+      await vi.advanceTimersByTimeAsync(200)
+
+      expect(await pending).toBeNull()
+      expect(dispatched).toBe(false)
+    } finally {
+      vi.useRealTimers()
+      stop()
+    }
   })
 })

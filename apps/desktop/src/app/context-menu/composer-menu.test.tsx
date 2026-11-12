@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, createEvent, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { createRef, type RefObject } from 'react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -127,6 +127,41 @@ describe('composer context-menu contribution area', () => {
     fireEvent.contextMenu(editor)
 
     expect(await screen.findByText('Plugin row')).toBeTruthy()
+  })
+
+  // The browser host has no contextMenuEdit: its own menu has the working edit verbs, but plugin
+  // rows exist only in ours.
+  it('keeps plugin rows in the browser Webapp, without the edit verbs it cannot run', async () => {
+    const items = vi.fn((context: ComposerContextMenuContext) =>
+      context.word === 'teh' ? [{ label: 'Plugin row', onSelect: vi.fn() }] : []
+    )
+
+    plugin('alpha', items)
+    window.document.documentElement.dataset.hermesDesktopHost = 'browser'
+
+    try {
+      const editor = composer('teh quick fox')
+
+      select(editor, 1)
+      const withRows = createEvent.contextMenu(editor, { bubbles: true, cancelable: true })
+      fireEvent(editor, withRows)
+
+      expect(await screen.findByText('Plugin row')).toBeTruthy()
+      expect(withRows.defaultPrevented).toBe(true)
+      expect(screen.getByText('Select all')).toBeTruthy()
+      expect(['Cut', 'Copy', 'Paste'].filter(label => screen.queryByText(label))).toEqual([])
+      expect(items).toHaveBeenCalledTimes(1)
+
+      act(() => $contextMenu.set(null))
+      select(editor, 6)
+      const withoutRows = createEvent.contextMenu(editor, { bubbles: true, cancelable: true })
+      fireEvent(editor, withoutRows)
+
+      expect(withoutRows.defaultPrevented).toBe(false)
+      expect($contextMenu.get()).toBeNull()
+    } finally {
+      delete window.document.documentElement.dataset.hermesDesktopHost
+    }
   })
 
   it('hands a provider only the word under the caret and the composer selection', async () => {

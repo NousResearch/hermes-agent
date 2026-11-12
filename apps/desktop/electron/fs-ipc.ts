@@ -8,6 +8,8 @@ import path from 'node:path'
 
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 
+import { PLUGIN_CATALOG_NAME_RE } from '../../shared/src/desktop-plugin-files'
+
 import { platformDefaultHermesHome } from './data-paths'
 import { installDesktopPluginFromGit, probePluginRepo } from './desktop-plugin-install'
 import { removeDesktopPlugin } from './desktop-plugin-remove'
@@ -15,6 +17,7 @@ import {
   DESKTOP_PLUGINS_DIR,
   ensureDir,
   migrateProfileScopedDesktopPlugins,
+  reconcileDesktopHalvesReport,
   reconcileUnifiedDesktopHalves
 } from './desktop-plugins-root'
 import { DESKTOP_PROFILE_NAME_RE } from './desktop-profile'
@@ -154,11 +157,12 @@ export function registerFsIpc({
 
   // Re-run the unified-half reconcile on demand (after an agent-plugin install /
   // update / uninstall through the gateway) so the app-level copy tracks the
-  // package without waiting for the next root resolution.
+  // package without waiting for the next root resolution. Answers which
+  // packages' halves it refused too, so the install dialog can say so.
   ipcMain.handle('hermes:fs:reconcileDesktopPlugins', async () => {
     const root = await ensureDir(path.join(hermesHome, DESKTOP_PLUGINS_DIR))
 
-    return reconcileUnifiedDesktopHalves(hermesHome, root)
+    return reconcileDesktopHalvesReport(hermesHome, root)
   })
 
   // The LOCAL logs root (`<HERMES_HOME>/logs`, profile-aware) — the error
@@ -187,12 +191,14 @@ export function registerFsIpc({
       return { ok: false, error: 'identifier is required' }
     }
 
-    return installDesktopPluginFromGit(
-      resolveGitBinary(),
-      identifier,
-      await desktopPluginsRoot(),
-      Boolean(payload?.force)
-    )
+    const catalogName = typeof payload?.catalogName === 'string' ? payload.catalogName.trim() : ''
+
+    return installDesktopPluginFromGit(resolveGitBinary(), identifier, await desktopPluginsRoot(), {
+      force: Boolean(payload?.force),
+      sha: typeof payload?.sha === 'string' ? payload.sha : undefined,
+      // Recorded on disk as the plugin's catalog entry: only a name the catalog could carry.
+      catalogName: PLUGIN_CATALOG_NAME_RE.test(catalogName) ? catalogName : undefined
+    })
   })
 
   // Uninstall a standalone desktop plugin by FOLDER NAME under the app-level

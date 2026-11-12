@@ -34,7 +34,7 @@ async def test_batched_thread_updates_retire_the_alias_through_connected_bot(mon
         monkeypatch.setattr(discord_platform, "commands", commands)
         monkeypatch.setattr(discord_platform, "Intents", discord.Intents)
         monkeypatch.setattr(discord_platform, "DISCORD_AVAILABLE", True)
-        monkeypatch.setattr(discord_platform, "_load_opus_codec", lambda: None)
+        monkeypatch.setattr(discord_platform, "load_opus_codec", lambda: None)
         adapter = discord_platform.DiscordAdapter(PlatformConfig(
             enabled=True, token="fake", extra={"slash_commands": False}))
         monkeypatch.setattr(adapter, "_start_liveness_probe", lambda: None)

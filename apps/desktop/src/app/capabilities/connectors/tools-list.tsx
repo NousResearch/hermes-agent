@@ -404,7 +404,7 @@ function ToolViewport({
   return (
     <div
       aria-label={label}
-      className="min-h-0 flex-1 overflow-y-auto overscroll-contain [overflow-anchor:none] outline-none focus-visible:ring-[0.1875rem] focus-visible:ring-ring/50"
+      className="min-h-0 flex-1 overflow-y-auto overscroll-contain [overflow-anchor:none] focus-visible:outline-hidden focus-visible:ring-[0.1875rem] focus-visible:ring-ring/50"
       data-slot="tools-viewport"
       onKeyDown={onKeyDown}
       onScroll={event => setScrollTop(event.currentTarget.scrollTop)}

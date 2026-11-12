@@ -45,6 +45,15 @@ async def _stop_exec_tree(proc) -> None:
         await asyncio.wait_for(proc.wait(), timeout=5)
 
 
+def _carry_replied_voice_answer(event, rewritten, new_text: str) -> None:
+    """``dataclasses.replace`` drops the adapter's private typed-answer attribute, and without it a
+    clarify reads the replied-to voice note's speech as the answer. Carry it: the plugin's rewritten
+    text is the answer, or the typed text when the plugin returned the text unchanged."""
+    attr = "_telegram_replied_voice_typed_text"  # read by _prepare_clarify_reply_text
+    if (typed := getattr(event, attr, None)) is not None:
+        setattr(rewritten, attr, typed if new_text == event.text else new_text.strip())
+
+
 class GatewayInboundHooksMixin:
     """Hook, quick-command and plugin-command dispatch for ``GatewayInboundMixin``."""
 
@@ -103,9 +112,16 @@ class GatewayInboundHooksMixin:
                 _new_text = _result.get("text")
                 if isinstance(_new_text, str):
                     from gateway.session_ingress_context import carry_callback
-                    rewritten = dataclasses.replace(event, text=_new_text)
-                    carry_callback(event, rewritten)
-                    event = rewritten
+                    if getattr(event, '_busy_observed', False):
+                        # Its observer closes the hooks using this exact event. Replacing it loses
+                        # the process-local admission handle assigned after this hook returns.
+                        _carry_replied_voice_answer(event, event, _new_text)
+                        event.text = _new_text
+                    else:
+                        rewritten = dataclasses.replace(event, text=_new_text)
+                        carry_callback(event, rewritten)
+                        _carry_replied_voice_answer(event, rewritten, _new_text)
+                        event = rewritten
                 break
             if _action == "allow":
                 break
@@ -188,7 +204,7 @@ class GatewayInboundHooksMixin:
                 env=build_subprocess_env(), cwd=cwd,
                 # Its own process group, so cleanup can reach what the shell started (POSIX;
                 # Windows ignores it and _stop_exec_tree walks the tree with taskkill /T).
-                start_new_session=True,
+                start_new_session=True,  # detached-spawn: ok — awaited; the timeout/cancel path kills its group
             )
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=_EXEC_QUICK_COMMAND_TIMEOUT)
             output = (stdout or stderr).decode().strip()

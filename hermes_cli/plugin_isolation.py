@@ -19,9 +19,13 @@ cannot drift apart.
 
 from __future__ import annotations
 
+import contextlib
+import importlib.util
 import logging
 import os
-from typing import Any, Dict, FrozenSet, List, Mapping, Optional
+import sys
+from types import ModuleType
+from typing import Any, Dict, FrozenSet, Iterator, List, Mapping, Optional
 
 logger = logging.getLogger("hermes_cli.plugins")
 
@@ -34,6 +38,7 @@ _ISOLATION_MODES = frozenset({ISOLATION_IN_PROCESS, ISOLATION_HOST})
 # launch-scope dashboard auth registry. A plugin calling one of these runs only in-process.
 HOST_UNSUPPORTED_CTX_METHODS: dict[str, str] = {
     "register_login_backend": "browser-vault fills hold a server-local context manager",
+    "register_browser_page_backend": "browser-vault fill scripts carry credentials that stay in the Hermes process",
     "register_platform": "platform adapters run on the gateway's event loop with native SDK clients",
     "register_platform_handler": "the handler factory receives the platform's native SDK client",
     "register_telegram_handler": "the handler factory receives the native Telegram Application",
@@ -130,6 +135,28 @@ def in_process_import_refusal(what: str, *, source: str = "user",
             f"never runs inside the Hermes process); set plugins.isolation: in_process to load it")
 
 
+def import_user_code(path: Any, module_name: str) -> Optional[ModuleType]:
+    """Import the Python file *path* as *module_name* into this process: shared import steps for
+    loaders that execute a single file of plugin code in-process. ``None`` when *path* has no module
+    spec.
+
+    The module sits in ``sys.modules`` while its body runs (forward references under ``from
+    __future__ import annotations`` resolve by module name) and is removed again if the body raises.
+    It applies no ``plugins.isolation`` check; callers keep their own.
+    """
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    if spec is None or spec.loader is None:
+        return None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        sys.modules.pop(module_name, None)
+        raise
+    return module
+
+
 def user_plugin_host() -> Any:
     """The active profile's plugin host when ``plugins.isolation`` is ``host``, else ``None``.
 
@@ -140,3 +167,28 @@ def user_plugin_host() -> Any:
         return None
     from hermes_cli.plugins import get_plugin_manager
     return get_plugin_manager()._plugin_host()
+
+
+@contextlib.contextmanager
+def transient_plugin_host(before_stop: Optional[Any] = None) -> Iterator[None]:
+    """Stop the active profile's plugin host on exit when it was started inside the block: a one-shot
+    call for another profile (a profile lifecycle hook) must not leave a process behind. A host
+    that was already running is left alone; a stopped one restarts on its next use.
+    ``before_stop`` runs first, to drop registrations that would point at the stopped host.
+
+    A request that starts using the same profile's host while the block runs (the dashboard
+    serving that new profile at that moment) can lose its in-flight call; its next call restarts it."""
+    if isolation_mode() != ISOLATION_HOST:
+        yield
+        return
+    from hermes_cli.plugins import get_plugin_manager
+    manager = get_plugin_manager()
+    was_running = manager._running_plugin_host() is not None
+    try:
+        yield
+    finally:
+        host = manager._running_plugin_host()
+        if host is not None and not was_running:
+            if before_stop is not None:
+                before_stop()
+            host.shutdown()

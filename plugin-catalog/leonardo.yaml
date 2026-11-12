@@ -1,0 +1,23 @@
+name: leonardo
+repo: https://github.com/RichardChua1234/hermes-plugin-leonardo
+sha: f8fc01d9c8a0db04d31ddd30f459c7a1a59f55b3
+subdir: ""
+description: "Leonardo.AI video generation backend for video_generate: Motion 2.0 text-to-video and image-to-video through the Leonardo REST API, using only the Python standard library. Disclosure — the prompt and any reference image URL are sent to cloud.leonardo.ai and the finished clip is fetched from cdn.leonardo.ai, authenticated with your LEONARDO_API_KEY, which the plugin reads through Hermes's secret scope and never from a file or the ambient environment; generation is billed to your Leonardo API token balance (about 200 tokens per 5-second clip, purchased separately from a Leonardo web subscription); the job is polled in-process with a bounded wall-clock deadline, and the token cost is reported back but no budget is enforced, so an unattended run can spend your balance; no telemetry, no shell commands, no background processes, no stored credentials and no self-updates. Zero Python dependencies."
+maintainer: RichardChua1234
+tier: community
+category: tools
+requires_hermes: ">=0.20.2"
+docs_url: https://github.com/RichardChua1234/hermes-plugin-leonardo#readme
+version: "1.0.1"
+title: "Leonardo.AI Video"
+platforms: []
+known_issues:
+  - "Image-to-video accepts a public image URL only; local file paths are not supported and the URL path has not been exercised end-to-end."
+  - "Only the Leonardo Motion 2.0 model family is verified. Other models reachable through the same asynchronous endpoint (Veo, Kling, Seedance, Wan) share the transport but their model ids are unverified and are not advertised."
+  - "A clip costs roughly 200 Leonardo API tokens. The plugin reports the cost per call but cannot cap spend, so allow it to run unattended only with a balance you are willing to burn."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - LEONARDO_API_KEY

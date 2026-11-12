@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
+import json
 import logging
 import os
 import shlex
@@ -19,6 +20,7 @@ from agent.turn_context import extract_api_content_sidecar
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
+from gateway.run_topics import TopicLinkedElsewhere
 from gateway.session import SessionSource, build_session_key, is_shared_multi_user_session
 from gateway.session_transcript import TranscriptReadError
 from gateway.slash_commands_branch_thread import (
@@ -42,6 +44,26 @@ _BRANCH_COPIED_FIELDS = ("content", "tool_calls", "tool_call_id", "finish_reason
 def _sattr(obj, name: str) -> str:
     """``str(getattr(obj, name) or "")`` — normalized identity field for origin comparisons."""
     return str(getattr(obj, name, "") or "")
+
+
+def _telegram_private_chat_owner(platform, chat_type, chat_id, user_id) -> tuple:
+    """``(chat_id, user_id)`` of a Telegram private chat with both ids known, else ``()``."""
+    platform = getattr(platform, "value", platform)
+    if str(platform or "") != Platform.TELEGRAM.value or str(chat_type or "").lower() != "dm":
+        return ()
+    chat_id, user_id = str(chat_id or ""), str(user_id or "")
+    return (chat_id, user_id) if chat_id and user_id else ()
+
+
+def _private_topic_lanes_of_one_chat(current, origin) -> bool:
+    """Whether two sources are topic lanes of ONE Telegram private chat (maintainer ruling on
+    #57821): the same person's own DM, so /resume may cross its topics. Groups, forums, other
+    platforms' threads and chats with an unknown owner keep strict thread scoping."""
+    mine = _telegram_private_chat_owner(current.platform, _sattr(current, "chat_type"),
+                                        _sattr(current, "chat_id"), _sattr(current, "user_id"))
+    theirs = _telegram_private_chat_owner(origin.platform, _sattr(origin, "chat_type"),
+                                          _sattr(origin, "chat_id"), _sattr(origin, "user_id"))
+    return bool(mine) and mine == theirs
 
 
 def _manual_compression_reply_lines(summary: dict, compressor, focus_topic) -> list[str]:
@@ -135,6 +157,29 @@ async def discard_lost_turns(authority, session_id) -> str:
     return t("gateway.discard.done", count=done) if done else t("gateway.discard.nothing")
 
 
+async def paused_followers(runner, session_id) -> int:
+    """How many chat messages are saved behind a turn lost in a restart on *session_id*, else 0.
+    ``/new`` leaves them saved there (the pause notice promised so), so its reply names them and the
+    way back: ``/resume`` that id, then ``/discard`` (#145177). Telegram and the other chats have no
+    resume button, so unsaid they look lost. Counted after the route rotated: nothing can join the
+    old queue from then on, so the count includes a message admitted while the reset ran."""
+    from gateway.session_authorities import active_authority
+    from hermes_state_runtime import list_session_admissions
+    authority = active_authority(runner)
+    if authority is None or not session_id:
+        return 0
+    rows = await asyncio.to_thread(list_session_admissions, authority.db,
+                                   session_id=authority.logical_owner(session_id))
+    if not any(row['status'] == 'unknown' for row in rows):
+        return 0
+    return sum(row['status'] == 'queued' and row['principal_id'].startswith('messaging:') for row in rows)
+
+
+def discard_command_for(source) -> str:
+    """The lost-turn discard command this chat can send: Slack registers no native ``/discard``."""
+    return '/hermes discard' if getattr(getattr(source, 'platform', None), 'value', None) == 'slack' else '/discard'
+
+
 class GatewaySessionCommandsMixin:
     """Session-transcript slash commands (/new, /resume, /sessions, /branch, /title, /save, /undo, /retry, /topic, /compress)."""
 
@@ -149,8 +194,16 @@ class GatewaySessionCommandsMixin:
         if _old_agent is None:
             return
         try:
+            # The teardown fires the memory-provider lifecycle hooks (``flush_pending`` ->
+            # ``on_session_end`` -> ``shutdown``), which read the caller profile from the
+            # context at call time. The reset path runs on the main loop with no scope
+            # installed, so under multiplexing ``on_session_end`` failed closed and the old
+            # session's transcript was never extracted (#151672). ``_run_release_in_profile_scope``
+            # enters the OWNING profile's scope from ``session_key``, exactly like the
+            # shutdown path (run_shutdown) and cache eviction.
             await asyncio.wait_for(
-                self._run_housekeeping_in_executor(self._cleanup_agent_resources, _old_agent),
+                self._run_housekeeping_in_executor(
+                    self._run_release_in_profile_scope, self._cleanup_agent_resources, (_old_agent,), session_key),
                 timeout=_RESET_CLEANUP_TIMEOUT_S)
         except TimeoutError:
             logger.warning(
@@ -168,13 +221,30 @@ class GatewaySessionCommandsMixin:
         arbitrarily), then session:end and session:reset."""
         platform_value = source.platform.value if source.platform else ""
         with contextlib.suppress(Exception):
+            # session_key: the reset runs unscoped (confirm button, main loop), so finalize enters the
+            # OWNING profile's scope, like the old agent's cleanup above (#151672).
             messages = await self._finalize_session_off_loop(
                 session_id=old_sid, platform=platform_value, reason="new_session",
-                old_session_id=old_sid, new_session_id=new_sid)
+                old_session_id=old_sid, new_session_id=new_sid, session_key=session_key)
             await self._deliver_session_end_messages(messages, source=source, session_key=session_key)
         hook_payload = {"platform": platform_value, "user_id": source.user_id, "session_key": session_key}
-        await self.hooks.emit("session:end", dict(hook_payload))
-        await self.hooks.emit("session:reset", dict(hook_payload))
+        # Gateway event-hook registries resolve from the ambient profile home. /new can arrive on an
+        # unscoped callback, so bind the owner of the session that ended: the key names it, like the
+        # old agent's cleanup; a key with no named owner falls back to the source's routed profile.
+        from gateway.run import _async_profile_runtime_scope
+        store = getattr(self, "session_store", None)
+        owner = store._profile_home_for_key(session_key) if store is not None else None
+        async with _async_profile_runtime_scope(owner) if owner else self._async_profile_scope_for_source(source):
+            await self.hooks.emit("session:end", dict(hook_payload))
+            await self.hooks.emit("session:reset", dict(hook_payload))
+
+    async def _fire_plugin_session_reset(self, source: SessionSource, session_key: str, old_sid, new_sid) -> None:
+        """Plugin ``on_session_reset`` for the session /new opened: off-loop, bounded, and under the
+        profile owning ``session_key`` (#151672), as the viewer-close /new path does."""
+        await self._reset_session_off_loop(
+            session_key=session_key, session_id=new_sid, reason="new_session",
+            platform=source.platform.value if source.platform else "",
+            old_session_id=old_sid, new_session_id=new_sid)
 
     async def _handle_discard_command(self, event: MessageEvent) -> str:
         """``/discard``: drop this chat's turn lost in a gateway restart so its queue runs again."""
@@ -227,6 +297,7 @@ class GatewaySessionCommandsMixin:
         async with route_owner_lock(self, _old_sid):
             new_entry = await self.async_session_store.reset_session(session_key)
             await move_route_wakes(self, session_key, _old_sid)  # main #114456: a parked wake survives /new
+            paused_count = await paused_followers(self, _old_sid)
         await self._fire_session_reset_hooks(source, session_key, _old_sid,
                                              new_entry.session_id if new_entry else None)
         # Scoped to the profile serving this source so a multiplexed /new banner reports the
@@ -253,19 +324,17 @@ class GatewaySessionCommandsMixin:
                 logger.debug("Failed to rebind Telegram topic after /new", exc_info=True)
         _new_sid = new_entry.session_id if new_entry else None
         # Plugin on_session_reset hook (new session guaranteed to exist); best-effort.
-        try:
-            from hermes_cli.lifecycle import invoke_hook as _invoke_hook
-            _invoke_hook("on_session_reset", session_id=_new_sid, reason="new_session",
-                         platform=source.platform.value if source.platform else "",
-                         old_session_id=_old_sid, new_session_id=_new_sid)
-        except Exception:
-            pass
+        await self._fire_plugin_session_reset(source, session_key, _old_sid, _new_sid)
         try:
             from hermes_cli.tips import get_random_tip
             _tip_line = t("gateway.reset.tip", tip=get_random_tip())
         except Exception:
             _tip_line = ""
         body = f"{header}\n\n{session_info}" if session_info else header
+        if paused_count:
+            from gateway.session_authorities import active_authority
+            body += t("gateway.reset.paused_left", count=paused_count, discard=discard_command_for(source),
+                      session_id=active_authority(self).logical_owner(_old_sid))
         return EphemeralReply(f"{body}{_tip_line}")
 
     async def _reset_titled_header(self, header: str, session_id: str, title_arg: str) -> str:
@@ -318,6 +387,10 @@ class GatewaySessionCommandsMixin:
             return False
         if origin.platform != current.platform or origin.chat_id != current.chat_id:
             return False
+        # Topic lanes of one Telegram private chat are the same person's own DM: /resume may move
+        # a conversation between them (#57821). Every other thread is a different session.
+        if _private_topic_lanes_of_one_chat(current, origin):
+            return True
         # thread_id is part of every session key: threads of one chat are DIFFERENT sessions.
         if _sattr(current, "thread_id") != _sattr(origin, "thread_id"):
             return False
@@ -331,11 +404,17 @@ class GatewaySessionCommandsMixin:
             org_pid = str(origin.user_id_alt or origin.user_id or "")
             return bool(cur_pid) and cur_pid == org_pid
         # Non-DM: a shared key is one session for everyone; a per-user key compares the participant
-        # it is built from, failing closed when either side lacks one.
-        if self._is_shared_session_source(current):
+        # it is built from, failing closed when either side lacks one. The TARGET's key decides: a
+        # caller on a shared key (Telegram observe-mode commands) may still not take over another
+        # member's per-user session in the same chat (#151756). A participant-less origin (observe
+        # sessions stored before ``shared_session`` existed) is the shared key for a shared caller,
+        # as ``_row_is_shared_session`` rules for stored rows; a per-user caller still fails closed.
+        if self._is_shared_session_source(origin):
             return True
         cur_pid = current.user_id_alt or current.user_id
         org_pid = origin.user_id_alt or origin.user_id
+        if not org_pid and getattr(current, "shared_session", False):
+            return True
         return bool(cur_pid and org_pid) and cur_pid == org_pid
 
     def _is_shared_session_source(self, source: SessionSource) -> bool:
@@ -344,6 +423,22 @@ class GatewaySessionCommandsMixin:
         return is_shared_multi_user_session(
             source, group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
             thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False))
+
+    def _row_is_shared_session(self, source: SessionSource, row: dict) -> bool:
+        """Whether a same-chat persisted *row* is on a shared key. The caller's own ``shared_session``
+        flag (Telegram observe-mode commands) says nothing about the row: the chat can still hold
+        members' per-user rows. The row is shared when the config shares this chat shape, its stored
+        origin carries the flag, or a shared caller meets a participant-less row (the observe source
+        stores none)."""
+        if self._is_shared_session_source(dataclasses.replace(source, shared_session=False)):
+            return True
+        try:
+            origin = json.loads(row.get("origin_json") or "{}")
+        except (TypeError, ValueError):
+            origin = {}
+        if isinstance(origin, dict) and origin.get("shared_session"):
+            return True
+        return not row.get("user_id") and bool(getattr(source, "shared_session", False))
 
     def _resume_caller_is_admin(self, source: SessionSource) -> bool:
         """Whether *source* is an EXPLICITLY-configured admin (cross-origin /resume, /sessions).
@@ -368,6 +463,11 @@ class GatewaySessionCommandsMixin:
         if not caller_uid:
             return False
         row_thread = str(row.get("thread_id") or "")
+        caller_dm = _telegram_private_chat_owner(source.platform, _sattr(source, "chat_type"),
+                                                 _sattr(source, "chat_id"), caller_uid)
+        if caller_dm and caller_dm == _telegram_private_chat_owner(
+                row_src, row.get("chat_type"), row.get("chat_id"), row.get("user_id")):
+            return True  # another topic lane of the caller's own Telegram DM (#57821)
         if not (row_src and caller_src and str(row_src) == str(caller_src)
                 and row_thread == _sattr(source, "thread_id")):
             return False  # blank/legacy source cannot prove the platform; other thread = other session
@@ -384,8 +484,10 @@ class GatewaySessionCommandsMixin:
         if not (row_chat and caller_chat and row_chat == caller_chat):
             return False
         # A SHARED group/thread is one session for everyone: same-chat proof suffices (a user-id
-        # check would block co-members). A per-user key still requires the same owner.
-        if self._is_shared_session_source(source):
+        # check would block co-members). A per-user key still requires the same owner. The ROW's key
+        # decides, not the caller's: an observe-mode caller is shared but the chat still holds
+        # members' per-user rows (#151756).
+        if self._row_is_shared_session(source, row):
             return True
         if caller_keys_on_alt:
             return False
@@ -645,8 +747,15 @@ class GatewaySessionCommandsMixin:
             logger.debug("undo: cached-agent eviction skipped: %s", e)
         target_text = result["target_text"]
         preview = target_text[:200] + "..." if len(target_text) > 200 else target_text
-        return t("gateway.undo.removed", turns=result["turns_undone"],
-                 count=result["rewound_count"], preview=preview)
+        reply = t("gateway.undo.removed", turns=result["turns_undone"],
+                  count=result["rewound_count"], preview=preview)
+        if (mgr := self._checkpoint_manager(source)) is not None:
+            # Same manager and cwd /rollback lists.
+            from tools.checkpoint_undo_hint import format_undo_rollback_hint, undo_changed_files
+            files = await asyncio.to_thread(undo_changed_files, mgr, self._terminal_cwd(), result.get("undo_since"))
+            if line := format_undo_rollback_hint(files):
+                reply += "\n" + line
+        return reply
 
     # --------------------------------------------------------------------- /compress
 
@@ -756,7 +865,8 @@ class GatewaySessionCommandsMixin:
             finalize_context_engine_compression_notification(tmp_agent, committed=False)
             self._evict_cached_agent(session_key)  # next turn rebuilds the prompt from current files
             # Off-loop + bounded: teardown can block on subprocess/network/SQLite.
-            await self._cleanup_agent_resources_off_loop(tmp_agent, context="manual compression")
+            await self._cleanup_agent_resources_off_loop(tmp_agent, context="manual compression",
+                                                         session_key=session_key)
         return "\n".join(_manual_compression_reply_lines(summary, compressor, request.focus_topic))
 
     async def _build_manual_compression_agent(self, session_id: str, model, runtime_kwargs: dict):
@@ -871,7 +981,6 @@ class GatewaySessionCommandsMixin:
             return t("gateway.topic.enable_failed", error=exc)
 
         if not source.thread_id:
-            await self._ensure_telegram_system_topic(source)
             return await self._telegram_topic_root_status_message(source)
         try:
             binding = await self._session_db.get_telegram_topic_binding(
@@ -1088,12 +1197,24 @@ class GatewaySessionCommandsMixin:
         current_entry = await self.async_session_store.get_or_create_session(source)
         if current_entry.session_id == target_id:
             return t("gateway.resume.already_on", name=name)
+        conflict = await self._telegram_topic_switch_conflict(source, target_id)
+        if conflict is not None:
+            return conflict
         self._release_running_agent_state(session_key)
-        new_entry = await self.async_session_store.switch_session(
-            session_key, target_id, preserve_prompt_pin=False,
-        )
-        if not new_entry:
-            return t("gateway.resume.switch_failed")
+        with self._telegram_topic_publication(source):
+            new_entry = await self.async_session_store.switch_session(
+                session_key, target_id, preserve_prompt_pin=False,
+            )
+            if not new_entry:
+                return t("gateway.resume.switch_failed")
+            try:
+                await self._follow_telegram_topic_switch(source, new_entry, reason="resume-command",
+                                                         departed=current_entry)
+            except TopicLinkedElsewhere as refused:  # bound elsewhere since the check: route put back
+                return str(refused)
+        # /resume also leaves the paused chat's queued messages on the departed conversation.
+        # Count only after the route switched, as /new does, so fresh admissions use the new route.
+        left_count = await paused_followers(self, current_entry.session_id)
         if local_owner is not None and authority is not None:  # a Desktop still viewing it follows it
             follow_hand_off(authority, source, session_key, authority.logical_owner(target_id), local_owner)
         # Conversation boundary: all conversation-scoped state + security state in one funnel call.
@@ -1109,22 +1230,26 @@ class GatewaySessionCommandsMixin:
         # provider cached _session_id at initialize() and would keep writing to the wrong session.
         self._evict_cached_agent(session_key)
         title = await self._session_db.get_session_title(target_id) or name
+        await self._rename_telegram_topic_after_switch(source, new_entry, title)
+        left_notice = (t("gateway.reset.paused_left", count=left_count,
+                         session_id=current_entry.session_id, discard=discard_command_for(source))
+                       if left_count else "")
         try:
             history = await self.async_session_store.load_transcript(target_id)
         except TranscriptReadError:
             # The resume itself succeeded; only the count is missing — say so rather than "empty".
-            return t("gateway.resume.resumed_no_count", title=title) + "\n" + history_unreadable()
+            return t("gateway.resume.resumed_no_count", title=title) + "\n" + history_unreadable() + left_notice
         msg_count = len([m for m in history if m.get("role") == "user"]) if history else 0
         if source.platform == Platform.MATRIX and allow_cross_room:
             msg_part = t("gateway.resume.msg_count_one" if msg_count == 1 else "gateway.resume.msg_count_other",
                          count=msg_count) if msg_count else ""
             return t("gateway.resume.matrix_cross_room_success", title=title,
-                     room=source.chat_name or source.chat_id, msg_part=msg_part)
+                     room=source.chat_name or source.chat_id, msg_part=msg_part) + left_notice
         if not msg_count:
-            return t("gateway.resume.resumed_no_count", title=title)
+            return t("gateway.resume.resumed_no_count", title=title) + left_notice
         if msg_count == 1:
-            return t("gateway.resume.resumed_one", title=title, count=msg_count)
-        return t("gateway.resume.resumed_many", title=title, count=msg_count)
+            return t("gateway.resume.resumed_one", title=title, count=msg_count) + left_notice
+        return t("gateway.resume.resumed_many", title=title, count=msg_count) + left_notice
 
     def _resume_listing_reply(self, source, titled: list[dict], allow_all: bool) -> str:
         """Numbered /resume list; a non-admin ``--all`` falls back to same-origin scoping and says so
@@ -1273,11 +1398,20 @@ class GatewaySessionCommandsMixin:
             # Materialize the thread's own entry, then point IT at the clone; ``session_key`` (this
             # chat) is never touched, so the original conversation stays live here.
             await self.async_session_store.get_or_create_session(dest_source)
-        new_entry = await self.async_session_store.switch_session(dest_key, new_session_id)
+        with self._telegram_topic_publication(dest_source):
+            new_entry = await self.async_session_store.switch_session(dest_key, new_session_id)
+            try:
+                if new_entry and in_place:
+                    await self._follow_telegram_topic_switch(dest_source, new_entry, reason="branch-command",
+                                                             departed=current_entry)
+            except TopicLinkedElsewhere as refused:  # bound elsewhere since the switch: route put back
+                return str(refused)
         if not new_entry:
             return t("gateway.branch.switch_failed")
         self._clear_session_boundary_security_state(dest_key)
         self._evict_cached_agent(dest_key)
+        if in_place:
+            await self._rename_telegram_topic_after_switch(dest_source, new_entry, branch_title)
         msg_count = len([m for m in history if m.get("role") == "user"])
         if in_place:
             key = "gateway.branch.branched_one" if msg_count == 1 else "gateway.branch.branched_many"

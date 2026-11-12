@@ -1263,6 +1263,12 @@ hermes kanban notify-unsubscribe t_abcd \
 
 A subscription removes itself automatically once the task reaches `done` or `archived`; no cleanup needed.
 
+When an agent runs `notify-subscribe` from inside a gateway chat (through its terminal tool) and the
+target is that same chat (and topic), a missing `--user-id` is filled with the sender of the turn. In groups with
+`group_sessions_per_user` (the default), that keeps the wake in the participant's own session instead
+of a second, shared one. Subscriptions to any other chat or topic never take the caller's id, and
+neither does one given an explicit `--user-id-alt`.
+
 **Discord threads under `profile_routes`:** when the gateway multiplexes profiles and routes a *channel*
 to a profile, a subscription created from the CLI for a *thread* in that channel needs the thread's route
 anchors, or the notifier cannot match it to any route and skips it (logged once at WARNING). Pass them
@@ -1275,6 +1281,10 @@ hermes kanban notify-subscribe t_abcd \
 ```
 
 Subscriptions created from inside the chat (`/kanban create`, `kanban_create`) record these anchors automatically.
+A Telegram forum topic, or a Slack DM thread, lives inside its own chat (`chat_id` is the group or DM, not
+the thread), so it needs no `--parent-chat-id`: the notifier matches it against the route that names that chat.
+That needs a stated `--chat-type` (`dm`, `group` or `channel`; the gateway records it for you). A row without one
+may store the thread's own id as `chat_id`, so it still needs `--parent-chat-id` to reach a channel route.
 
 ### Delivery modes
 
@@ -1354,11 +1364,16 @@ ledger also pauses reclaim. Once that bound interpreter is itself dead, nothing 
 still be running the attempt, so the crash sweep reclaims it like any dead worker:
 the run closes as crashed and the card returns to `ready` (or `review`) under the
 normal crash budget, which can re-execute effects the lost attempt already had.
-Resolve an unknown admission explicitly using `prompt.resolve_unknown` with its
-admission ID and execution generation. This acknowledges uncertainty; it does
-**not** authorize another Kanban attempt. Inspect the effects, then explicitly
-complete or block the card; unblock a blocked card only when a new attempt is
-intended. Confirmed timeouts and provider rate-limit results retain their ordinary
+A run that never bound an interpreter is released the same way once its owner has
+settled the admission (a lost card attempt's admission settles `interrupted`):
+when every worker pid recorded for the run is dead, or, with none recorded, once
+its claim has expired, the run closes as crashed (reclaimed if its claim had already
+lapsed) and the card returns to `ready`
+under the same crash budget. Resolving an unknown admission explicitly
+(`prompt.resolve_unknown` with its admission ID and execution generation) settles
+it the same way, so it can lead to another attempt. To avoid that, inspect the
+effects and complete or block the card first; unblock a blocked card only when a
+new attempt is intended. Confirmed timeouts and provider rate-limit results retain their ordinary
 retry/failure-accounting behavior.
 
 A task is a logical unit of work; a **run** is one attempt to execute it. When the dispatcher claims a ready task it creates a row in `task_runs` and points `tasks.current_run_id` at it. When that attempt ends — completed, blocked, crashed, timed out, spawn-failed, reclaimed — the run row closes with an `outcome` and the task's pointer clears. A task that's been attempted three times has three `task_runs` rows.

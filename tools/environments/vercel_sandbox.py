@@ -305,7 +305,14 @@ class VercelSandboxEnvironment(BaseEnvironment):
         if not snapshot_id:
             logger.warning("Vercel: filesystem snapshot for task %s did not return a snapshot id", self._task_id)
             return
-        _store_snapshot(self._task_id, snapshot_id)
+        # snapshot() already stopped the sandbox: a failed metadata write must not escape cleanup
+        # (it would skip the stop below and leave the closed env's processes unsettled).
+        try:
+            _store_snapshot(self._task_id, snapshot_id)
+        except Exception as exc:
+            logger.warning("Vercel: saving snapshot %s for task %s failed: %s", snapshot_id, self._task_id, exc,
+                           exc_info=True)
+            return
         logger.info("Vercel: saved filesystem snapshot %s for task %s", snapshot_id, self._task_id)
 
     def _ensure_sandbox_ready(self) -> None:

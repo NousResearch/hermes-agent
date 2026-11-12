@@ -35,6 +35,18 @@ export const enNotifications = {
       description: 'A desktop plugin sent a notification while Hermes was in the background.'
     }
   },
+  browserPermission: {
+    title: 'Browser notifications',
+    allow: 'Allow',
+    states: {
+      default:
+        'Show alerts from this browser while the tab is in the background. Until you allow it, only the tab title flashes.',
+      granted: 'Allowed. Alerts show while this tab is in the background; the tab title flashes too.',
+      denied: "Blocked in this browser's site settings. The tab title still flashes.",
+      insecure: 'Needs HTTPS, such as Tailscale serve. Over plain HTTP the tab title still flashes.',
+      unsupported: 'This browser cannot show notifications. The tab title still flashes.'
+    }
+  },
   test: 'Send test notification',
   testTitle: 'Hermes',
   testBody: 'Notifications are working.',

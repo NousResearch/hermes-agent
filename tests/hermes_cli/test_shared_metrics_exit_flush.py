@@ -153,6 +153,7 @@ def test_sigtermed_kanban_worker_writes_the_open_sessions_summary(metrics_home, 
     assert "hermes.session.count" in _metric_names(home)
 
 
+@pytest.mark.platforms("posix")  # the legacy parent watchdog is POSIX-only
 def test_orphaned_slash_worker_writes_the_open_sessions_summary(metrics_home, monkeypatch):
     from tui_gateway import slash_worker
 
@@ -160,10 +161,10 @@ def test_orphaned_slash_worker_writes_the_open_sessions_summary(metrics_home, mo
     _finished_task_in_open_session()
     _wait_for(home, "hermes.task_run.finished")
     exited = threading.Event()
-    monkeypatch.setattr(slash_worker, "_is_orphaned", lambda ppid: True)
     monkeypatch.setattr(slash_worker.os, "_exit", lambda code: exited.set())
 
-    slash_worker._start_parent_death_watchdog(1)
+    # A worker a pre-update gateway launched (--parent-pid) whose parent is gone: the live ppid differs.
+    slash_worker._start_legacy_parent_watchdog(os.getppid() + 1_000_000, poll_s=0.01, grace_s=0)
 
     assert exited.wait(10)
     assert "hermes.session.count" in _metric_names(home)
@@ -210,7 +211,14 @@ def test_exit_flush_applies_each_profiles_own_consent(tmp_path, monkeypatch):
             token = set_hermes_home_override(str(home))
             try:
                 _finished_task_in_open_session(f"open-{home.name}")
-                _wait_for(home, "hermes.task_run.finished")
+                # Relay delivers the task end event on its own thread, and the subscriber commits
+                # that one event's counters one by one (task_run.finished, then task_run.duration).
+                # The Relay barrier returns once the whole event is stored; polling for the first
+                # row snapshotted the turn mid-event, and its duration row "appeared" at exit.
+                runtime = relay_shared_metrics._get_runtime()
+                assert runtime is not None
+                runtime.relay.subscribers.flush()
+                assert "hermes.task_run.finished" in _metric_names(home)
             finally:
                 reset_hermes_home_override(token)
         _write_policy(revoked, enabled=False, send=False)

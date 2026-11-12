@@ -9,6 +9,11 @@ export interface NotificationSettingsTranslations {
     'approval' | 'backgroundDone' | 'credits' | 'input' | 'plugin' | 'turnDone' | 'turnError',
     { label: string; description: string }
   >
+  browserPermission: {
+    title: string
+    allow: string
+    states: Record<'default' | 'denied' | 'granted' | 'insecure' | 'unsupported', string>
+  }
   test: string
   testTitle: string
   testBody: string

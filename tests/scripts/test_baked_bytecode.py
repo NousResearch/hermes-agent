@@ -1,6 +1,5 @@
 """Baked bytecode: staging contract and launcher marker behavior."""
 
-import os
 import sys
 from pathlib import Path
 
@@ -22,7 +21,7 @@ def _make_payload(root: Path) -> Path:
     return root
 
 
-def test_bake_produces_readonly_unchecked_hash_pycs(tmp_path):
+def test_bake_produces_owner_writable_unchecked_hash_pycs(tmp_path):
     root = _make_payload(tmp_path)
     result = bake_bytecode(root, Path(sys.executable))
     assert (root / MARKER).read_text().strip() == "unchecked-hash"
@@ -31,8 +30,10 @@ def test_bake_produces_readonly_unchecked_hash_pycs(tmp_path):
     # hash-based (bit0) and unchecked (bit1 clear). Timestamp pycs would be 0;
     # checked-hash would be 3.
     assert pyc.read_bytes()[4:8] == b"\x01\x00\x00\x00"
-    # read-only before packaging: a cache-miss write cannot land
-    assert not os.access(pyc, os.W_OK) or pyc.stat().st_mode & 0o222 == 0
+    # owner write before packaging: Squirrel.Mac's ShipIt clears the
+    # quarantine attribute of every bundled file and aborts the whole
+    # macOS update with EACCES on any read-only one (#138659)
+    assert pyc.stat().st_mode & 0o200
     assert result["modules"] >= 3
 
 
@@ -56,7 +57,6 @@ def test_uncovered_reports_parseable_module_without_pyc(tmp_path):
     missing, unparseable = _uncovered(root / "hermes-agent")
     assert missing == [] and unparseable == 0
     pyc = Path(cache_from_source(root / "hermes-agent" / "pkg" / "mod.py"))
-    pyc.chmod(0o644)  # pycs are sealed read-only; dirs stay writable
     pyc.unlink()
     missing, _ = _uncovered(root / "hermes-agent")
     assert [m.name for m in missing] == ["mod.py"]

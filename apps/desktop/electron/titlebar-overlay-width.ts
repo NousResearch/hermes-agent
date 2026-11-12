@@ -1,4 +1,10 @@
+import type { BrowserWindow } from 'electron'
+
 export const OVERLAY_FALLBACK_WIDTH = 144
+
+export function isHexColor(value: unknown): value is string {
+  return typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value)
+}
 
 interface TitleBarOverlayOptionsInput {
   platform?: 'linux' | 'mac' | 'windows' | 'wslg'
@@ -63,6 +69,23 @@ export function titleBarOverlayOptions({
     color,
     height: scaledOverlayHeight(titlebarHeight, zoomFactor),
     symbolColor: foreground || (dark ? '#f7f7f7' : '#242424')
+  }
+}
+
+/** Apply refreshed options, tolerating platforms/builds without native overlays. */
+export function applyTitleBarOverlay(
+  win: BrowserWindow | null | undefined,
+  options: ReturnType<typeof titleBarOverlayOptions>
+) {
+  if (!options || typeof options !== 'object') {
+    return
+  }
+
+  try {
+    win?.setTitleBarOverlay?.(options)
+  } catch {
+    // Overlay not supported on this platform/build — leave the frameless
+    // titlebar as-is.
   }
 }
 

@@ -20,7 +20,7 @@ import textwrap
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from hermes_cli import gateway_service_owner, setup_platforms
+from hermes_cli import _startup_fast, gateway_service_owner, setup_platforms
 
 # UV's bundled Python ships a minimal PATH; ensure launchctl/systemctl are discoverable.
 if os.name == "posix":
@@ -30,10 +30,11 @@ if os.name == "posix":
     if _missing:
         os.environ["PATH"] = os.environ.get("PATH", "") + os.pathsep + os.pathsep.join(sorted(_missing))
 
-PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+PROJECT_ROOT = Path(_startup_fast.project_root_str())
 
 from gateway.config import coerce_systemd_watchdog_seconds, load_gateway_config
 from gateway.status import terminate_pid
+from agent.deadline import poll_until
 from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
     EXTERNAL_GATEWAY_SUPERVISOR_ENV,
@@ -69,6 +70,9 @@ from hermes_cli.setup import (
 )
 from hermes_cli.colors import Colors, color
 from hermes_cli.gateway_profile_lifecycle import owned_gateway_pid as _owned_gateway_pid
+# Module level on purpose: the update's restart watcher runs after the checkout moved, when a lazy
+# import would load the REPLACEMENT tree (tests/hermes_cli/test_update_post_swap_imports.py).
+from hermes_cli.gateway_restart_env import restart_watcher_env
 logger = logging.getLogger(__name__)
 
 # Shared ``subprocess.run`` kwargs for text-mode probes (stdout/stderr captured, decode-tolerant).
@@ -1050,14 +1054,6 @@ def _restart_argv_is_host_gateway(argv: list[str]) -> bool:
         return False
 
 
-def _host_gateway_watcher_env() -> dict[str, str]:
-    """Scrubbed default-profile env for a detached host-gateway respawn watcher."""
-    from tools.environments.local import host_gateway_child_env
-    env = host_gateway_child_env()
-    env.pop("_HERMES_GATEWAY", None)
-    return env
-
-
 def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: bool | None = None, home: str | None = None) -> bool:
     """Spawn the detached watcher that respawns ``run_argv`` once ``old_pid`` exits. Watcher and respawn
     both need platform-appropriate detach: POSIX setsid; on Windows ``start_new_session`` does NOT detach
@@ -1168,21 +1164,19 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: b
 
     watcher_argv = [sys.executable, "-c", watcher, str(old_pid), *run_argv]
     devnull = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
-    # Host respawn must not inherit a named launcher's dotenv. The watcher copies os.environ
-    # into the gateway child, so the scrub has to be the watcher's own environ.
-    watcher_env = _host_gateway_watcher_env() if (
-        _restart_argv_is_host_gateway(run_argv) if host is None else host
-    ) else None
-    popen_env = {"env": watcher_env} if watcher_env is not None else {}
+    # The watcher copies os.environ into the gateway child, so the child's env is the watcher's: a
+    # host respawn gets the default root's secrets, a sibling profile's its own (never the launcher's).
+    popen_env = {"env": restart_watcher_env(
+        run_argv, host=_restart_argv_is_host_gateway(run_argv) if host is None else host, home=home)}
     # Same detach for the watcher itself, so closing the terminal doesn't kill it.
     try:
-        subprocess.Popen(watcher_argv, **devnull, **popen_env, **windows_detach_popen_kwargs())
+        subprocess.Popen(watcher_argv, **devnull, **popen_env, **windows_detach_popen_kwargs())  # detached-spawn: ok — restart watcher, must outlive the process that asked for the restart
     except OSError:
         # Parent job object rejected CREATE_BREAKAWAY_FROM_JOB; retry without it (Windows only —
         # ``start_new_session=True`` cannot raise OSError on POSIX).
         fallback_kwargs: dict = (
             {"creationflags": windows_detach_flags_without_breakaway()} if sys.platform == "win32"
-            else {"start_new_session": True}
+            else {"start_new_session": True}  # detached-spawn: ok — restart watcher, must outlive the process that asked for the restart
         )
         try:
             subprocess.Popen(watcher_argv, **devnull, **popen_env, **fallback_kwargs)
@@ -2420,13 +2414,10 @@ def _ensure_user_systemd_env() -> None:
 
 def _wait_for_user_dbus_socket(timeout: float = 3.0) -> bool:
     """Poll up to ``timeout`` s for a user systemd control socket (user@.service takes a moment after enable-linger)."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if _user_systemd_socket_ready():
-            _ensure_user_systemd_env()
-            return True
-        time.sleep(0.2)
-    return _user_systemd_socket_ready()
+    if not poll_until(_user_systemd_socket_ready, timeout, 0.2):
+        return False
+    _ensure_user_systemd_env()
+    return True
 
 
 def _wait_for_target_user_bus(uid: int, timeout: float = 5.0) -> bool:
@@ -2434,12 +2425,7 @@ def _wait_for_target_user_bus(uid: int, timeout: float = 5.0) -> bool:
     Only the D-Bus socket counts — ``systemd/private`` alone is enough for ``systemctl --user`` but not for
     the ``systemd-run --user`` that restart-safe workers need. Never adopts anything into our env."""
     bus = Path(f"/run/user/{uid}/bus")
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if _path_exists_safe(bus):
-            return True
-        time.sleep(0.2)
-    return _path_exists_safe(bus)
+    return poll_until(lambda: _path_exists_safe(bus), timeout, 0.2)
 
 
 def _loginctl_enable_linger(username: str) -> subprocess.CompletedProcess:
@@ -4015,19 +4001,18 @@ def _wait_for_tcp_port_free(host: str, port: int, *, timeout: float = 10.0) -> b
     the race logs EADDRINUSE and keeps running with no API. Connection-refused means the
     listener is gone; a timed-out connect is a live listener with a slow accept queue.
     """
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
+    def _port_free() -> bool:
         try:
             with socket.create_connection((host, port), timeout=0.2):
-                pass
+                return False
         except ConnectionRefusedError:
             return True
         except TimeoutError:
-            pass  # a slow accept queue is still a live listener
+            return False  # a slow accept queue is still a live listener
         except OSError:
             return True  # unresolvable/unreachable address: nothing to wait for; the bind retry covers it
-        time.sleep(0.1)
-    return False
+
+    return poll_until(_port_free, timeout, 0.1)
 
 
 def _wait_for_api_server_port_free(*, timeout: float = 10.0) -> bool:
@@ -4565,7 +4550,7 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
     _attach_to_host_gateway_or_guard(force=force, replace=replace)
     _guard_supervised_gateway_conflict(force=force)
     _guard_existing_gateway_process_conflict(replace=replace)
-    sys.path.insert(0, str(PROJECT_ROOT))
+    sys.path[:0] = [] if str(PROJECT_ROOT) in sys.path else [str(PROJECT_ROOT)]
     _apply_startup_watchdog_config()
     from hermes_cli.observability.shared_metrics_process import begin_process
     begin_process("gateway")
@@ -4852,7 +4837,7 @@ def _dispatch_via_service_manager_if_s6(action: str, profile: str | None = None)
             getattr(mgr, action)(service)
         except GatewayNotRegisteredError:
             # A profile created from the HOST against a bind-mounted home has a directory but no
-            # slot (`profile create` cannot reach the container's /run/service). Only `start`
+            # slot (`profile create` cannot reach the container's /run/hermes-service). Only `start`
             # repairs that; stop/restart on a missing slot stay an error.
             if action != "start" or not register_unregistered_profile_gateway(mgr, profile):
                 raise
@@ -5675,24 +5660,3 @@ def _gateway_command_inner(args):
     handler = _GATEWAY_SUBCOMMANDS.get(getattr(args, "gateway_command", None))
     if handler is not None:
         handler(args)
-
-
-def _pm_runtime_venv_dir(project_root: Path | None = None) -> Path | None:
-    """The venv pm provisioned for this install, resolved through
-    ``runtime_paths.selected_venv`` — the committed-environment contract —
-    never from interpreter state.
-
-    Under no-boot-through-venv the gateway runs the store python with the
-    venv's site-packages on PYTHONPATH, so ``sys.prefix`` always equals
-    ``sys.base_prefix`` and ``VIRTUAL_ENV`` is unset in bundled installs;
-    prefix/env probing silently degrades. Resolution follows the committed-
-    environment contract: a committed selection is returned as-is, a host
-    with nothing committed yields nothing launchable, and a malformed
-    selection raises — fail closed, never a silently wrong venv.
-    """
-    root = Path(project_root) if project_root is not None else PROJECT_ROOT
-    from pm.environments import selected_venv
-
-    venv = selected_venv(root)  # a malformed committed selection raises: fail closed
-    return venv if venv.is_dir() else None
-

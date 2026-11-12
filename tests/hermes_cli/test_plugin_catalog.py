@@ -192,6 +192,41 @@ def test_live_cache_write_never_truncates_the_previous_copy(tmp_path, monkeypatc
     assert not list(cache.parent.glob("*.tmp*"))  # no leftover temp file either
 
 
+def _serve(monkeypatch, doc: dict):
+    class _Resp:
+        content = json.dumps(doc).encode()
+        def raise_for_status(self): pass
+        def json(self): return json.loads(self.content)
+
+    import httpx
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: _Resp())
+    monkeypatch.setattr(pc, "_live_fetch_failed_until", 0.0)
+
+
+def test_a_catalog_doc_past_two_mib_is_still_accepted(tmp_path, monkeypatch):
+    """The published doc crossed 2 MiB on 2026-11-09 (1,268 entries). A 2 MiB cap made every client drop
+    the live doc and install its in-tree pin instead, so catalog bumps merged after the client's own copy
+    never reached `hermes plugins install <name>`. A doc of today's size and shape must be taken and cached."""
+    cache = _fresh_cache(tmp_path, monkeypatch, {"entries": [], "removed": []})
+    cache.unlink()
+    entries = [_entry(f"plugin-{i}", description="x" * 1600, version="1.0.0") for i in range(1400)]
+    _serve(monkeypatch, {"generated_at": "2026-11-09T10:18:17Z", "entries": entries, "removed": []})
+    doc = pc.fetch_live_catalog(force=True)
+    assert doc is not None and len(doc["entries"]) == 1400
+    assert len(json.dumps(doc).encode()) > 2 * 1024 * 1024
+    assert json.loads(cache.read_text())["generated_at"] == "2026-11-09T10:18:17Z"
+
+
+def test_a_catalog_doc_over_the_cap_is_refused(tmp_path, monkeypatch):
+    """The cap still bounds a broken or hostile response: an oversized doc reads as a failed fetch."""
+    cache = _fresh_cache(tmp_path, monkeypatch, {"entries": [], "removed": []})
+    cache.unlink()
+    _serve(monkeypatch, {"entries": [_entry("big", description="x" * 4096)], "removed": []})
+    monkeypatch.setattr(pc, "_MAX_LIVE_BYTES", 1024)
+    assert pc.fetch_live_catalog(force=True) is None
+    assert not cache.exists()
+
+
 def test_curated_fields_the_published_doc_lacks_come_from_the_checkout(tmp_path, monkeypatch):
     """The docs build stamps generated_at at build time, so a doc rebuilt from an older catalog is "newer"
     than a checkout that just added `onboarding`. At the same pin, a curated field the doc does not carry

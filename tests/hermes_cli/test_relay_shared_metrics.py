@@ -1275,9 +1275,15 @@ def test_package_builder_rejects_tampered_dimensions(tmp_path):
 @pytest.mark.parametrize(("metric_name", "dimensions"), [
     ("hermes.tool_enabled_unused.count", {"toolset": "start_chat", "used": "yes"}),
     ("hermes.tool.usage.count", {"error_class": "none", "outcome": "success", "tool_name": "setup_choose"}),
+    # Spotify left core after v0.21.6; the browser_vault_* tools became one browser_vault after v0.21.7.
+    ("hermes.tool_enabled_unused.count", {"toolset": "spotify", "used": "no"}),
+    ("hermes.tool.usage.count", {"error_class": "none", "outcome": "success", "tool_name": "spotify_search"}),
+    ("hermes.tool_unavailable.count", {"model": "custom", "provider": "custom", "tool_name": "spotify_playback"}),
+    ("hermes.tool_unavailable.count", {"model": "custom", "provider": "custom", "tool_name": "browser_vault_fill"}),
 ])
-def test_a_saved_row_naming_a_retired_setup_tool_or_toolset_still_packages(tmp_path, metric_name, dimensions):
-    # v0.21.6/7 recorded these names before the old setup flow was deleted; v4 only adds values.
+def test_a_saved_row_naming_a_retired_tool_or_toolset_still_packages(tmp_path, metric_name, dimensions):
+    # A stable release recorded these names before core dropped them; v4 only adds values, so the
+    # row exports as recorded instead of re-bucketing (or, with no bucket, being left out).
     database_path = tmp_path / "metrics.sqlite3"
     store = SharedMetricsStore(database_path, tmp_path / "outbox")
     store.record_model_call(_dimensions(), _resource())

@@ -1,0 +1,23 @@
+name: shared-memory-domains
+title: Shared Memory Domains
+repo: https://github.com/DrFreeman001/shared-memory-domains
+sha: 8502b8c909100f673a74b50c3519014088efa4f4
+version: "0.1.4"
+description: "One memory several Hermes profiles share, split into domains with per-agent read/write grants: agents only propose facts, a human verifies them before they are recalled, revocation is immediate and sticky, and decisions are audited. Disclosure — no network, no subprocess, no credentials; reads and writes one local SQLite file (default HERMES_HOME/plugin-data/shared-memory-domains/shared.db, or the shared db_path you configure, which is outside the plugin's data dir by design) and refuses any file it did not create; injects up to 6 verified facts per turn by default (`inject_limit`, 0–20; 0 disables recall) into the agent context (pre_llm_call); blocks the agent's own terminal/execute_code/file-tool calls that name the database (pre_tool_call trip-wire, trivially bypassed, not a sandbox); one /shared-memory admin command; admin commands and cross-domain views only from the cli surface by default. Cooperative access control inside the Hermes process: an agent with shell tools can bypass it, and facts already shown stay in conversation history and in any conversation-recording memory provider."
+maintainer: DrFreeman001
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/DrFreeman001/shared-memory-domains/blob/8502b8c909100f673a74b50c3519014088efa4f4/README.md
+readme: true
+platforms: [linux]
+capabilities:
+  provides_tools:
+    - shared_memory_search
+    - shared_memory_propose
+    - shared_memory_access
+  provides_hooks:
+    - pre_llm_call
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

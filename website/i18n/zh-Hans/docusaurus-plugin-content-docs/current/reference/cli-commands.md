@@ -919,6 +919,7 @@ hermes fallback <subcommand>
 | `add` | 选择 provider + 模型（与 `hermes model` 相同的选择器）并追加到链末尾 |
 | `remove`（别名：`rm`） | 选择要从链中删除的条目 |
 | `clear` | 删除所有 fallback 条目 |
+| `check [--live] [--json]` | 检查每个条目能否解析并带有可用凭据（`--live`：对每个静态就绪的固定路由条目发送一次最小请求，核对该条目的 provider/模型）。任一条目不可用时退出码为 1，不创建 agent 会话 |
 
 参见 [Fallback Providers](../user-guide/features/fallback-providers.md)。
 

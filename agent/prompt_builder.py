@@ -29,7 +29,7 @@ from agent.skill_utils import (
     skill_matches_platform, skill_matches_platform_list,
 )
 from tools.threat_patterns import scan_for_threats as _scan_for_threats
-from utils import atomic_json_write, file_signature
+from utils import atomic_json_write, file_cache_version
 
 logger = logging.getLogger(__name__)
 
@@ -685,7 +685,7 @@ PLATFORM_HINTS = {
     "desktop": (
         # Every claim verified against the shipping renderer (inline-preview-directive.tsx). Widget text is
         # recipe-first: HOW (an inline widget IS a ::preview'd HTML file) and WHY (the frame injects the theme
-        # prelude first; width adopts the first measured span). setup_mcp is taught by its own tool schema.
+        # prelude first; the frame spans the column up to its cap). setup_mcp is taught by its own tool schema.
         "You are chatting inside the Hermes desktop app, a graphical chat surface. Markdown renders with full GitHub "
         "flavor (tables, syntax-highlighted code, math via $...$, task lists, callouts). Deliver files by writing "
         "MEDIA:/absolute/path/to/file — any file type: images/audio/video render inline, everything else becomes a "
@@ -695,11 +695,12 @@ PLATFORM_HINTS = {
         "frame already themes it — the app's live theme arrives as var(--foreground), var(--muted-foreground), "
         "var(--accent), var(--border), var(--card), plus the app font, zero margins, and a transparent background, "
         "injected before your styles — so use those vars for color and don't set your own background, font, or margins "
-        "(only a standalone PAGE — mockup, poster, game — overrides them). The frame sizes itself to your content: "
-        "height live, width from the content's first measured span — lay content flush left with no centering wrappers "
-        "or it measures full-bleed. Widgets talk back: data-hermes-send=\"prompt\" on any clickable element (or "
-        "window.hermes.send(\"prompt\")) sends that prompt as a hidden user turn — answer it by updating the widget's "
-        "file, not with prose."
+        "(only a standalone PAGE — mockup, poster, game — overrides them). The frame spans the chat column up to 960px "
+        "and follows it on resize, and its height follows your content live up to 1200px: lay content out fluidly and "
+        "flush left, with no centering wrappers, and size charts from the frame's current width, redrawing on resize. "
+        "Widgets talk back: data-hermes-send=\"prompt\" on any clickable "
+        "element (or window.hermes.send(\"prompt\")) sends that prompt as a hidden user turn — answer it by updating "
+        "the widget's file, not with prose."
     ),
     "api_server": (
         "You're responding through an API server. The rendering layer is unknown — assume plain text. No markdown "
@@ -723,6 +724,7 @@ PLATFORM_HINTS = {
 # described a renderer that does not exist anywhere in web/. If a real WebUI chat surface ships, write a
 # hint from its actual renderer — do not resurrect this text.
 TELEGRAM_RICH_MESSAGES_HINT = (
+    "Rich messages are on for this chat, so the bullets/no-tables advice above does not apply. "
     "Telegram now supports rich Markdown, so lean into it: whenever it makes the answer clearer or easier to scan, "
     "actively reach for real Markdown tables (pipe `| col | col |` syntax), bullet and numbered lists, task lists (`- "
     "[ ]` / `- [x]`), headings, nested blockquotes, collapsible details, footnotes/references, math/formulas (`$...$`, "
@@ -878,8 +880,13 @@ def _format_backend_probe(output: str) -> str:
 
 
 def _probe_remote_backend(env_type: str) -> str | None:
-    """Describe the active non-local backend via a live probe; None if it failed (cached, failures included)."""
+    """Describe the active non-local backend via a live probe; None if it failed (cached, failures included).
+    None in a hosted scope: the probe builds and tears down a throwaway environment, and a hosted agent's
+    only environment is its own sandbox."""
     from hermes_constants import hermes_home_key
+    from tools.hosted_tool_policy import host_feature_enabled
+    if not host_feature_enabled("backend_probe"):
+        return None
     cache_key = (hermes_home_key(), env_type, _tenv_read("TERMINAL_CWD", ""))
     formatted = _BACKEND_PROBE_CACHE.get(cache_key)
     if formatted is None:
@@ -1110,7 +1117,7 @@ def _build_skills_manifest(skills_dir: Path) -> dict[str, list[int]]:
             try:
                 if filename in files:
                     st = os.stat(path)
-                    manifest[path[prefix_len:]] = list(file_signature(st))
+                    manifest[path[prefix_len:]] = list(file_cache_version(path, st, always_digest=True))
             except OSError:
                 pass
     return manifest
@@ -1243,8 +1250,9 @@ def build_skills_system_prompt(
     ContextVar would otherwise leak the default profile's skills into a bot's prompt.
     """
     from agent.safe_worker_policy import safe_worker_enabled
+    from tools.hosted_tool_policy import host_feature_enabled
 
-    if safe_worker_enabled():
+    if safe_worker_enabled() or not host_feature_enabled("skills"):
         return ""
     _home_token = None
     if skills_dir_override is not None:
@@ -1521,8 +1529,9 @@ def load_soul_md(context_length: Optional[int] = None, home_override: Path | Non
     the skills-index leak fixed in #86313).
     """
     from agent.safe_worker_policy import safe_worker_enabled
+    from tools.hosted_tool_policy import host_feature_enabled
 
-    if safe_worker_enabled():
+    if safe_worker_enabled() or not host_feature_enabled("context_files"):
         return None
     try:
         from hermes_cli.config import ensure_hermes_home
@@ -1728,9 +1737,10 @@ def build_context_files_prompt(
     from HERMES_HOME is independent and always included unless *skip_soul* (already the identity slot).
     """
     from agent.safe_worker_policy import safe_worker_enabled
+    from tools.hosted_tool_policy import host_feature_enabled
 
-    if safe_worker_enabled():
-        return ""
+    if safe_worker_enabled() or not host_feature_enabled("context_files"):
+        return ""  # hosted: the project's files are in the agent's sandbox, this host's are not its
     cwd_path = Path(cwd if cwd is not None else os.getcwd()).resolve()
     if _project_context_suppressed(cwd, cwd_path, allow_install_tree_fallback):
         logger.warning(

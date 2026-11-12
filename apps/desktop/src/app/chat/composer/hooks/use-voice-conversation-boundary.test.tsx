@@ -11,7 +11,7 @@ const mocks = vi.hoisted(() => ({
   config: vi.fn(),
   mic: {
     cancel: vi.fn(),
-    start: vi.fn(async () => undefined),
+    start: vi.fn(async (): Promise<void> => undefined),
     stop: vi.fn(async () => ({
       audio: new Blob(['fixture']),
       heardSpeech: true,
@@ -144,4 +144,78 @@ it('speaks a sealed narration while busy and keeps the session open for the fina
     await vi.advanceTimersByTimeAsync(300)
   })
   expect(inputs).toEqual([narration, answer])
+})
+
+it.each(['end', 'mute', 'disable'] as const)('keeps late detector readiness from reviving %s', async boundary => {
+  const ready = Promise.withResolvers<void>()
+  mocks.mic.start.mockImplementationOnce(() => ready.promise)
+  const onFatalError = vi.fn()
+
+  const hook = renderHook(
+    ({ enabled }) => useVoiceConversation({
+      enabled,
+      busy: false,
+      consumePendingResponse: vi.fn(),
+      onSubmit: vi.fn(),
+      onTranscribeAudio: async () => 'hello',
+      pendingResponse: () => null,
+      onFatalError
+    }),
+    { initialProps: { enabled: true } }
+  )
+
+  let starting!: Promise<void>
+  await act(async () => {
+    starting = hook.result.current.start()
+    await Promise.resolve()
+  })
+  expect(hook.result.current.status).toBe('idle')
+  await act(async () => {
+    if (boundary === 'end') {
+      await hook.result.current.end()
+    } else if (boundary === 'mute') {
+      hook.result.current.toggleMute()
+    } else {
+      hook.rerender({ enabled: false })
+    }
+  })
+  await act(async () => {
+    ready.resolve()
+    await starting
+  })
+
+  expect(hook.result.current.status).toBe('idle')
+  expect(onFatalError).not.toHaveBeenCalled()
+})
+
+it('resumes listening after a busy turn interrupts detector startup', async () => {
+  const ready = Promise.withResolvers<void>()
+  mocks.mic.start.mockImplementationOnce(() => ready.promise)
+
+  const hook = renderHook(
+    ({ busy }) => useVoiceConversation({
+      busy,
+      enabled: true,
+      consumePendingResponse: vi.fn(),
+      onSubmit: vi.fn(),
+      onTranscribeAudio: async () => 'hello',
+      pendingResponse: () => null
+    }),
+    { initialProps: { busy: false } }
+  )
+
+  let starting!: Promise<void>
+  await act(async () => {
+    starting = hook.result.current.start()
+    await Promise.resolve()
+  })
+  hook.rerender({ busy: true })
+  await act(async () => {
+    ready.resolve()
+    await starting
+  })
+  expect(hook.result.current.status).toBe('idle')
+
+  await act(async () => hook.rerender({ busy: false }))
+  expect(hook.result.current.status).toBe('listening')
 })

@@ -1,9 +1,9 @@
 """`hermes sessions adopt` brings a profile's pre-gateway chats under its gateway, as the host.
 
 The Webapp's browser reaches the gateway through its dashboard mount as the login it authenticated
-(on a loopback bind, the session-token owner), which may not make the first claim on an unowned
-historical row (gateway-local-sessions.md, shared operator access). The host's own native client
-adopts them in one pass, after which the browser login continues each.
+(on a loopback bind, the session-token owner). Hermes is single-user, so that login is the machine
+owner: like native Desktop it may claim an old chat by opening it, and `adopt` brings the rest under
+the gateway in one pass, after which the browser login continues each.
 """
 import argparse
 import asyncio
@@ -76,14 +76,16 @@ async def _browser_resume(home, descriptor, sid):
 def test_adopting_old_chats_lets_the_browser_login_continue_them(tmp_path, model_peer, monkeypatch, capsys):
     with running_owner(tmp_path, model_peer, prepare=_seed, extra_env=_OWNER_ENV) as (home, descriptor, _env):
         monkeypatch.setenv('HERMES_HOME', str(home))
-        assert asyncio.run(_browser_resume(home, descriptor, 'old-desktop'))['error']['message'] == 'not_found'
+        # The browser login is the machine owner, exactly as native Desktop: it opens an old chat
+        # itself, and that first claim is the owner's (the adopt pass no longer offers it).
+        first = asyncio.run(_browser_resume(home, descriptor, 'old-desktop'))
+        assert first.get('result', {}).get('session_id') == 'old-desktop', first
 
         status, out = _adopt(capsys, '--dry-run')
-        assert status == 0 and '3 pre-gateway chat(s) to adopt (1 cli, 2 desktop)' in out, out
-        assert asyncio.run(_browser_resume(home, descriptor, 'old-desktop'))['error']['message'] == 'not_found'
+        assert status == 0 and '2 pre-gateway chat(s) to adopt (1 cli, 1 desktop)' in out, out
 
         status, out = _adopt(capsys)
-        assert status == 0 and 'Adopted 3 chat(s).' in out, out
+        assert status == 0 and 'Adopted 2 chat(s).' in out, out
         for sid in ('old-desktop', 'old-desktop-nous', 'old-cli'):
             resumed = asyncio.run(_browser_resume(home, descriptor, sid))
             assert resumed.get('result', {}).get('session_id') == sid, resumed

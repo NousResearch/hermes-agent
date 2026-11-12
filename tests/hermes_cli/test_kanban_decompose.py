@@ -51,12 +51,6 @@ def _patch_aux_client(content: str, *, model: str = "test-model"):
     )
 
 
-def _patch_extra_body():
-    # No-op shim retained for call-site compatibility: extra_body plumbing
-    # now lives inside call_llm, which _patch_aux_client already mocks.
-    return patch("agent.auxiliary_client.get_auxiliary_extra_body", return_value={})
-
-
 def _patch_list_profiles(names: list[str]):
     """Pretend the named profiles exist. The decomposer uses
     profiles_mod.list_profiles() to build the roster + valid-set, and
@@ -93,7 +87,7 @@ def test_decompose_with_fanout_creates_children(kanban_home):
     for p in patches:
         p.start()
     try:
-        with _patch_aux_client(llm_payload), _patch_extra_body():
+        with _patch_aux_client(llm_payload):
             outcome = decomp.decompose_task(tid, author="me")
     finally:
         for p in patches:
@@ -137,7 +131,7 @@ def test_decompose_fanout_children_inherit_root_assignee_when_unrouted(kanban_ho
     for p in patches:
         p.start()
     try:
-        with _patch_aux_client(llm_payload), _patch_extra_body(), patch(
+        with _patch_aux_client(llm_payload), patch(
             "hermes_cli.config.load_config_readonly",
             return_value={},
         ):
@@ -179,7 +173,7 @@ def test_decompose_explicit_default_assignee_wins_over_root_assignee(kanban_home
     for p in patches:
         p.start()
     try:
-        with _patch_aux_client(llm_payload), _patch_extra_body(), patch(
+        with _patch_aux_client(llm_payload), patch(
             "hermes_cli.config.load_config_readonly",
             return_value={"kanban": {"default_assignee": "docs"}},
         ):
@@ -212,7 +206,7 @@ def test_decompose_fanout_false_invalid_llm_assignee_uses_default(kanban_home):
     for p in patches:
         p.start()
     try:
-        with _patch_aux_client(llm_payload), _patch_extra_body(), patch(
+        with _patch_aux_client(llm_payload), patch(
             "hermes_cli.config.load_config_readonly",
             return_value={"kanban": {"default_assignee": "fallback"}},
         ):

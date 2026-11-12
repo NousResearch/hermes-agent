@@ -716,6 +716,71 @@ def _launcher_python(target: Path) -> Path | None:
         return None
 
 
+def _launcher_checkout(target: Path) -> Path | None:
+    """Checkout an existing Windows launcher starts, else None.
+
+    Reads the script ``_launcher_script`` wrote: the ``__main__.py`` of the
+    distlib executable, or the base64 payload of the ``.cmd`` fallback. Its
+    first ``sys.path.insert`` names the checkout.
+    """
+    import ast
+    import base64
+    import re
+    from zipfile import BadZipFile, ZipFile
+
+    try:
+        if Path(target).suffix.lower() == ".exe":
+            with ZipFile(target) as archive:
+                script = archive.read("__main__.py").decode("utf-8")
+        else:
+            encoded = re.search(r"exec\(base64\.b64decode\('([A-Za-z0-9+/=]+)'\)\)",
+                                Path(target).read_text(encoding="utf-8-sig"))
+            if encoded is None:
+                return None
+            script = base64.b64decode(encoded[1], validate=True).decode("utf-8")
+        inserted = re.search(r"""^sys\.path\.insert\(0, ('(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*")\)\r?$""",
+                             script, re.MULTILINE)
+        return Path(ast.literal_eval(inserted[1])) if inserted else None
+    except (OSError, BadZipFile, KeyError, ValueError, SyntaxError):
+        # binascii.Error and UnicodeDecodeError are ValueErrors.
+        return None
+
+
+def _launcher_of_another_checkout(directory: Path, root: Path) -> Path | None:
+    """A working command in *directory* that starts a checkout other than *root*, else None.
+
+    Only the file Windows runs counts: PATHEXT resolves ``.exe`` before
+    ``.cmd``. A launcher whose checkout or interpreter is gone does not count,
+    and neither does one this module cannot read.
+    """
+    for name in WINDOWS_BIN_LAUNCHERS:
+        try:
+            runs = next((target for target in (directory / f"{name}.exe", directory / f"{name}.cmd")
+                         if target.is_file()), None)
+            if runs is None:
+                continue
+            checkout, python = _launcher_checkout(runs), _launcher_python(runs)
+            if (checkout is not None and python is not None and checkout != root
+                    and checkout.is_dir() and python.is_file()):
+                return runs
+        except OSError:
+            continue
+    return None
+
+
+def _is_home_checkout(root: Path, store: Path) -> bool:
+    """Is *root* the checkout the default data root was installed with?
+
+    That checkout sits at ``<home>/<checkout>`` and runs ``<home>/tools``. The
+    layout alone is not proof: a root that only borrows the checkout can match
+    it through HERMES_RUNTIME_DIR=<home>/tools, so the home must also own it.
+    """
+    from hermes_constants import get_default_hermes_root
+    home = get_default_hermes_root().resolve()
+    return (root.parent == home and store.resolve() == (home / "tools").resolve()
+            and owning_home_root(root) is None)
+
+
 def _kept_shared_launcher(name: str, local: Path, store: Path, own: Path | None) -> Path | None:
     """Existing checkout launcher already bound outside this root's store.
 
@@ -773,15 +838,9 @@ def ensure_install_launchers(repo_root: Path, out_dir: Path) -> list[str]:
     local.mkdir(parents=True, exist_ok=True)
     store = store_root(root)
     own = resolve_store_python(root)
-    from hermes_constants import get_default_hermes_root
-    home = get_default_hermes_root().resolve()
-    # The data root this checkout was installed into (<home>/hermes-agent with
-    # <home>/tools) always republishes, which also heals an install that an
-    # earlier foreign launch already rebound. The layout alone is not proof: a
-    # root that only borrows the checkout can match it through
-    # HERMES_RUNTIME_DIR=<home>/tools, so it must also own the checkout.
-    owner = (root.parent == home and store.resolve() == (home / "tools").resolve()
-             and owning_home_root(root) is None)
+    # The checkout this data root was installed with always republishes, which
+    # also heals an install that an earlier foreign launch already rebound.
+    owner = _is_home_checkout(root, store)
     written = []
     for name in WINDOWS_BIN_LAUNCHERS:
         # ponytail: one guard here covers every caller (launch, sync, repair,
@@ -1011,6 +1070,10 @@ def _expose_windows_user_bin(root: Path, *, create: bool) -> dict:
     so an update converges a machine installed under the older venv\\Scripts
     convention instead of leaving it there forever. The registration happens
     only when new consoles resolve this home (``owns_user_path``).
+
+    Commands there that start another checkout which still exists stay in
+    place unless *root* is the home's own checkout: a review tree or worktree
+    started against the home leaves the installed ``hermes`` alone.
     """
     from hermes_constants import get_default_hermes_root
 
@@ -1020,6 +1083,9 @@ def _expose_windows_user_bin(root: Path, *, create: bool) -> dict:
             # Bootstrap: repair only commands we already own, enable nothing new.
             published = _publish_conveniences(root, directory, WINDOWS_BIN_LAUNCHERS, create=False)
             return {"ok": True, "written": [path.name for path, changed in published.items() if changed]}
+        if not _is_home_checkout(root, store_root(root)) and (
+                other := _launcher_of_another_checkout(directory, root)) is not None:
+            return {"ok": True, "skipped": f"{other} starts another checkout"}
         directory.mkdir(parents=True, exist_ok=True)
         written = ensure_install_launchers(root, directory)
         if len(written) != len(WINDOWS_BIN_LAUNCHERS):

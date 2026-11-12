@@ -694,6 +694,12 @@ def _refresh_nous_pool_entry(pool: CredentialPool, entry: Any, pool_api_key: str
 def _resolve_from_pool(provider: str, requested_provider: str, model_cfg: dict[str, Any], explicit_api_key, explicit_base_url,
                        target_model) -> Optional[dict[str, Any]]:
     """Runtime from the provider's credential pool, or None to continue down the ladder."""
+    # The anthropic pool entry IS the Claude Code OAuth token, and a Foundry endpoint rejects those
+    # (_anthropic_env_runtime). Pairing it with a config-stored Foundry model.base_url is an auth
+    # failure that also presents the subscription token to a non-Anthropic host, so let the
+    # anthropic env rung pick the Azure key instead (#154242).
+    if provider == "anthropic" and base_url_host_matches(_anthropic_cfg_base_url(model_cfg), "azure.com"):
+        return None
     should_use_pool = provider != "openrouter" or _openrouter_should_use_pool(requested_provider, model_cfg, explicit_api_key,
                                                                              explicit_base_url)
     try:

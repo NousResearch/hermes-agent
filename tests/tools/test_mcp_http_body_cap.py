@@ -1,13 +1,13 @@
 """Wire-body cap for MCP HTTP/SSE transports.
 
-Exercises ``_make_mcp_body_cap_transport`` with a real httpx AsyncClient over
-a MockTransport: oversized finite bodies and oversized SSE events fail with a
-ReadError naming the byte cap; bodies/events under the cap pass; long-lived
+Exercises ``_make_mcp_body_cap_transport`` with a real httpx2 AsyncClient over
+a MockTransport: oversized finite bodies raise ReadError and oversized SSE
+events raise SSEError, naming the byte cap; bodies/events under the cap pass; long-lived
 SSE connections reset accounting at event boundaries so cumulative keepalive
 traffic is unlimited.
 """
 
-import httpx
+import httpx2 as httpx
 import pytest
 
 from tools.mcp_tool_errors import _MCP_HTTP_MAX_BODY_BYTES, _make_mcp_body_cap_transport
@@ -75,7 +75,7 @@ async def test_sse_event_over_cap_rejected():
             headers={"content-type": "text/event-stream"},
         )
     async with _client_for(handler) as client:
-        with pytest.raises(httpx.ReadError, match=r"SSE event exceeds"):
+        with pytest.raises(httpx.SSEError, match=r"SSE event exceeds"):
             async with client.stream("GET", "http://mcp.test/sse") as resp:
                 async for _ in resp.aiter_bytes():
                     pass
@@ -126,7 +126,7 @@ async def test_sse_event_split_across_chunks_counts_prefix():
             headers={"content-type": "text/event-stream"},
         )
     async with _client_for(handler) as client:
-        with pytest.raises(httpx.ReadError, match=r"SSE event exceeds"):
+        with pytest.raises(httpx.SSEError, match=r"SSE event exceeds"):
             async with client.stream("GET", "http://mcp.test/sse") as resp:
                 async for _ in resp.aiter_bytes():
                     pass
@@ -181,7 +181,7 @@ async def test_sse_crlf_split_across_chunks_inside_event_is_not_a_boundary():
     # the cap would evade it.
     chunks = [_EVENT1 + b"\r", b"\n" + _EVENT2 + b"\r\n\r\n"]
     async with _sse_client(chunks) as client:
-        with pytest.raises(httpx.ReadError, match=r"SSE event exceeds"):
+        with pytest.raises(httpx.SSEError, match=r"SSE event exceeds"):
             async with client.stream("GET", "http://mcp.test/sse") as resp:
                 async for _ in resp.aiter_bytes():
                     pass

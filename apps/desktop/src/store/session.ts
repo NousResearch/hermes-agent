@@ -1753,6 +1753,9 @@ export const getComposerModelSelection = (): ComposerModelSelection => ({
   source: getCurrentModelSource()
 })
 
+/** Which owner's saved pick the composer reads now; fences a write that outlives an await. */
+export const getComposerSelectionScope = (): null | string => composerSelectionScope
+
 export const restoreComposerModelSelection = (): void => {
   const selection = getComposerModelSelection()
   setCurrentModelTransient(selection.model)

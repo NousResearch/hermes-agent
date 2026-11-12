@@ -14,8 +14,16 @@ import { cn } from '@/lib/utils'
 
 import { DetailColumn, ListColumn, MasterDetail } from '../../master-detail'
 import { PanelEmpty } from '../../overlays/panel'
+import {
+  AgentCapabilityBanner,
+  AgentCapabilityMore,
+  AgentCapabilityRow,
+  AgentCapabilitySection
+} from '../ui/agent-capability'
+import { useAgentCapabilityCopy } from '../ui/agent-capability-copy'
 import { CapabilitySearch } from '../ui/capability-search'
 
+import { agentCatalogSections, agentCatalogTags, AVAILABLE_PREVIEW } from './agent-catalog-sections'
 import { CatalogAddButton } from './catalog-add-button'
 import { CatalogAlert } from './catalog-alert'
 import { CatalogCard, type CatalogCardVariant } from './catalog-card'
@@ -373,6 +381,8 @@ interface AgentCatalogProps extends Pick<
   'kind' | 'query' | 'onQueryChange' | 'searchHints' | 'isInstalled' | 'actions' | 'headerActions' | 'notice'
 > {
   entries: CatalogEntry[]
+  /** Every entry the library offers, for the banner's count; undefined while it loads. */
+  libraryCount?: number
   facets: CatalogFacets
   onClear: () => void
   limit: number
@@ -388,6 +398,8 @@ interface AgentCatalogProps extends Pick<
   details: ReactNode
 }
 
+/** One agent's Skills or Plugins (Figma 895:14967, 895:16810): the library banner, then the
+ *  agent's own sections, each row with its switch and ⋯ (or + Add for what it has not got). */
 function AgentCatalog({
   kind,
   query,
@@ -398,6 +410,7 @@ function AgentCatalog({
   headerActions,
   notice,
   entries,
+  libraryCount,
   facets,
   onClear,
   limit,
@@ -412,31 +425,37 @@ function AgentCatalog({
   onSelect,
   details
 }: AgentCatalogProps) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const c = t.catalog
-  const builtIn = entries.filter(entry => isInstalled(entry) && entry.source === 'built-in')
-  const installed = entries.filter(entry => isInstalled(entry) && entry.source !== 'built-in')
-  const available = entries.filter(entry => !isInstalled(entry))
+  const copy = useAgentCapabilityCopy()
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set())
+  const banner = kind === 'skills' ? copy.skills : copy.plugins
+
   const activeFacetCount =
     facets.sources.length +
     facets.categories.length +
     facets.tags.length +
     Number(facets.installedOnly) +
     Number(facets.updatesOnly)
-  const groups = [
-    { id: 'built-in', label: t.skills.provenance.bundled, entries: builtIn },
-    { id: 'installed', label: c.installed, entries: installed },
-    { id: 'available', label: c.moreToExplore, entries: available.slice(0, limit) }
-  ]
+
+  const sections = agentCatalogSections({ kind, entries, isInstalled, copy })
+
+  const open = (entry: CatalogEntry) => {
+    onSelect(entry.id)
+    onDetailOpenChange(true)
+  }
 
   return (
-    <div className="agent-capability-list capabilities-scroll">
-      <div className="agent-capability-banner">
-        <p>{t.skills.agentScopeHint}</p>
-        <Button asChild size="sm" variant="outline">
-          <Link to={`/capabilities?tab=${kind}`}>{kind === 'skills' ? c.exploreSkills : c.explorePlugins}</Link>
-        </Button>
-      </div>
+    <div className="agent-capability-list">
+      <AgentCapabilityBanner
+        action={
+          <Button asChild variant="outline">
+            <Link to={`/capabilities?tab=${kind}`}>{banner.browse}</Link>
+          </Button>
+        }
+        description={libraryCount ? banner.bannerBody(libraryCount.toLocaleString(locale)) : undefined}
+        title={banner.bannerTitle}
+      />
       <CapabilitySearch
         actions={
           <>
@@ -462,33 +481,42 @@ function AgentCatalog({
         </CatalogAlert>
       )}
       {!entries.length && pending ? <PageLoader label={t.skills.loading} /> : null}
-      {groups
-        .filter(group => group.entries.length > 0)
-        .map(group => (
-          <section key={group.id}>
-            <h3>{group.label}</h3>
-            <div className="agent-capability-rows">
-              {group.entries.map(entry => (
-                <div className="agent-capability-row" key={entry.id}>
-                  <button
-                    aria-label={entry.name}
-                    className="agent-capability-entry"
-                    onClick={() => {
-                      onSelect(entry.id)
-                      onDetailOpenChange(true)
-                    }}
-                    type="button"
-                  >
-                    <span>{entry.name}</span>
-                    <span>{entry.description}</span>
-                  </button>
-                  {renderAction(entry)}
-                </div>
-              ))}
-            </div>
-            {group.id === 'available' && available.length > limit && <CatalogMoreButton onMore={onMore} />}
-          </section>
-        ))}
+      {sections.map(section => {
+        const all = expanded.has(section.id) || Boolean(query)
+        // The library can hold ~100k entries: it opens on a preview, then pages, never "all".
+        const cap = section.id === 'available' ? (all ? limit : AVAILABLE_PREVIEW) : all ? undefined : section.preview
+        const shown = cap === undefined ? section.entries : section.entries.slice(0, cap)
+        const total = section.entries.length
+        const expand = () => setExpanded(current => new Set(current).add(section.id))
+
+        const footer =
+          shown.length >= total ? null : section.id === 'available' ? (
+            <AgentCapabilityMore label={c.more} onClick={all ? onMore : expand} />
+          ) : (
+            <AgentCapabilityMore label={copy.showAll(total)} onClick={expand} />
+          )
+
+        return (
+          <AgentCapabilitySection
+            description={section.describe(shown.length, total)}
+            footer={footer}
+            key={section.id}
+            title={section.title}
+          >
+            {shown.map(entry => (
+              <AgentCapabilityRow
+                controls={renderAction(entry)}
+                description={entry.description}
+                entryId={entry.id}
+                key={entry.id}
+                name={entry.name}
+                onOpen={() => open(entry)}
+                tags={agentCatalogTags(kind, entry)}
+              />
+            ))}
+          </AgentCapabilitySection>
+        )
+      })}
       {entries.length === 0 && !pending && !error && <CatalogNoResults onClear={onClear} />}
       {selected && (
         <CatalogDetailDialog
@@ -663,6 +691,7 @@ export const CatalogBrowser = memo(function CatalogBrowser({
         headerActions={headerActions}
         isInstalled={isInstalled}
         kind={kind}
+        libraryCount={data?.length}
         limit={limit}
         notice={notice}
         onClear={clearFilters}

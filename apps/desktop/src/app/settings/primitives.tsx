@@ -178,6 +178,8 @@ export function ListRow({
     // views) stacks instead of squishing the label against minmax(15rem,…).
     <div
       className={cn('@container', className)}
+      // One setting, for the Advanced disclosure's count (settings-card.tsx).
+      data-setting=""
       data-slot="settings-row"
       data-tour={dataTour}
       data-wide={wide || undefined}

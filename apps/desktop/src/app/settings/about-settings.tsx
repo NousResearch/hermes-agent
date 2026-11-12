@@ -142,7 +142,7 @@ function RedesignAbout({ clientOwned, includeUninstall, showBackend, version }: 
           </SettingsCard>
         </SettingsGroup>
         {version && (
-          <SettingsDisclosure count={1} description={pages.about.detailsDesc} title={t.settings.sections.advanced}>
+          <SettingsDisclosure description={pages.about.detailsDesc} title={t.settings.sections.advanced}>
             <VersionDetails version={version} />
           </SettingsDisclosure>
         )}

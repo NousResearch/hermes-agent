@@ -39,7 +39,7 @@ describe('statusbar whole-bar visibility', () => {
     expect(store.$statusbarShown.get()).toBe(true)
 
     setPortalPreferred(true)
-    expect(store.$statusbarStripAvailable.get()).toBe(false)
+    expect((await import('./statusbar-strip')).$statusbarStripAvailable.get()).toBe(false)
     expect(store.$statusbarShown.get()).toBe(false)
     store.toggleStatusbarVisible()
     expect(store.$statusbarVisible.get()).toBe(true)

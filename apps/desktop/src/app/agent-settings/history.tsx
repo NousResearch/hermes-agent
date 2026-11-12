@@ -288,7 +288,7 @@ function AgentHistoryContent({ owner, onClose }: AgentHistoryProps) {
             <Codicon name="archive" />
             {c.archive}
           </Button>
-          <Button disabled={busy} onClick={() => setDeleting(selectedRows)} size="sm" variant="destructive">
+          <Button disabled={busy} onClick={() => setDeleting(selectedRows)} size="sm" variant="destructiveOutline">
             {c.delete}
           </Button>
           <Button disabled={busy} onClick={() => setSelected(new Set())} size="sm" variant="ghost">

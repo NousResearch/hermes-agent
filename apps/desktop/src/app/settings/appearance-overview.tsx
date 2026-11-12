@@ -16,6 +16,7 @@ import { appearanceOverviewCopy } from './appearance-overview-copy'
 import { ListRow, SettingsContent, ToggleRow } from './primitives'
 import { SettingsCard, SettingsDisclosure } from './settings-card'
 import { SETTING_IDS, settingElementId } from './settings-manifest'
+import { forHost, useSettingsPagesCopy } from './settings-pages-copy'
 import { useSettingDeepLink } from './use-setting-deep-link'
 
 const modes = ['light', 'dark', 'system'] as const
@@ -28,6 +29,7 @@ interface AppearanceOverviewProps {
 export function AppearanceOverview({ advanced }: AppearanceOverviewProps) {
   const { t, locale, isSavingLocale } = useI18n()
   const copy = appearanceOverviewCopy(locale)
+  const pages = useSettingsPagesCopy()
   const { themeName, mode, setMode } = useTheme()
   const chatTextScale = useStore($chatTextScale)
   const tipsEnabled = useStore($tipsEnabled)
@@ -100,7 +102,7 @@ export function AppearanceOverview({ advanced }: AppearanceOverviewProps) {
         <section aria-label={copy.reading} className="global-settings-section">
           <div className="global-settings-section-head">
             <h3>{copy.reading}</h3>
-            <span aria-label={`${copy.size}: ${chatTextScale}%`}>{chatTextScale}%</span>
+            <span>{forHost(pages.savedHere)}</span>
           </div>
           <SettingsCard>
             <ListRow

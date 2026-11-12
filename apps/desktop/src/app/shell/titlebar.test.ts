@@ -16,7 +16,7 @@ import {
   titlebarToolsRightCss,
   TOUCH_TITLEBAR_HEIGHT
 } from './titlebar'
-import { useTitlebarHeight } from './use-touch-titlebar'
+import { installTitlebarBandProperty, useTitlebarHeight } from './use-touch-titlebar'
 
 describe('titlebarControlsPosition', () => {
   afterEach(() => vi.restoreAllMocks())
@@ -90,5 +90,18 @@ describe('titlebarBandHeight', () => {
     expect(result.current).toBe(TITLEBAR_HEIGHT)
     act(() => $shellChoice.set(null))
     expect(result.current).toBe(PORTAL_TITLEBAR_HEIGHT)
+  })
+
+  it('publishes the band on the root for body-portalled surfaces, in both shells', () => {
+    const root = document.createElement('html')
+    const band = () => root.style.getPropertyValue('--titlebar-band-height')
+    const stop = installTitlebarBandProperty(root)
+
+    expect(band()).toBe(`${PORTAL_TITLEBAR_HEIGHT}px`)
+    $shellChoice.set(false)
+    expect(band()).toBe(`${TITLEBAR_HEIGHT}px`)
+    $shellChoice.set(null)
+    expect(band()).toBe(`${PORTAL_TITLEBAR_HEIGHT}px`)
+    stop()
   })
 })

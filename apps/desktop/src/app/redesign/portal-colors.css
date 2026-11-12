@@ -22,11 +22,15 @@
   --ui-stroke-secondary: color-mix(in srgb, var(--ui-base) 14%, transparent);
   --ui-stroke-tertiary: color-mix(in srgb, var(--ui-base) 5%, transparent);
   --ui-stroke-quaternary: color-mix(in srgb, var(--ui-base) 5%, transparent);
+  /* Text ladder. Figma steps ink 1 / .8 / .6 / .5 / .4 / .3, but .4 and .3 fail AA for the 12-13px
+     meta and labels that use them, so the ladder's floor is the least ink that keeps 4.5:1 on every
+     real surface (sidebar, stage, page canvas, cards, popovers, selected rows), and the rungs above
+     are spaced by contrast, not alpha: light ≈ 16 / 8.9 / 6.7 / 5.1:1, dark ≈ 17 / 8.7 / 6.6 / 4.9:1.
+     Dark ink on light canvases loses contrast faster, so light needs more alpha per rung. */
   --ui-text-primary: var(--ui-base);
-  --ui-text-secondary: color-mix(in srgb, var(--ui-base) 70%, transparent);
-  /* Light mode needs more ink than the dark reference to keep small copy readable. */
-  --ui-text-tertiary: color-mix(in srgb, var(--ui-base) 62%, transparent);
-  --ui-text-quaternary: color-mix(in srgb, var(--ui-base) 50%, transparent);
+  --ui-text-secondary: color-mix(in srgb, var(--ui-base) 80%, transparent);
+  --ui-text-tertiary: color-mix(in srgb, var(--ui-base) 72%, transparent);
+  --ui-text-quaternary: color-mix(in srgb, var(--ui-base) 64%, transparent);
   --sidebar-edge-border: var(--ui-stroke-quaternary);
   --portal-selection-background: color-mix(in srgb, var(--portal-brand-fill) 10%, transparent);
   --portal-neutral-selection-background: color-mix(in srgb, var(--ui-base) 5%, transparent);
@@ -34,8 +38,9 @@
 }
 
 :root.dark[data-shell='portal'] {
-  --ui-text-tertiary: color-mix(in srgb, var(--ui-base) 50%, transparent);
-  --ui-text-quaternary: color-mix(in srgb, var(--ui-base) 40%, transparent);
+  --ui-text-secondary: color-mix(in srgb, var(--ui-base) 70%, transparent);
+  --ui-text-tertiary: color-mix(in srgb, var(--ui-base) 60%, transparent);
+  --ui-text-quaternary: color-mix(in srgb, var(--ui-base) 50%, transparent);
   --portal-brand-ink: #8585ff;
   --portal-selection-background: color-mix(in srgb, var(--portal-brand-fill) 25%, transparent);
 }

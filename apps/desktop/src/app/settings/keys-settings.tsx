@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { useI18n } from '@/i18n'
 import { $settingsRequestProfile } from '@/store/settings-scope'
+import type { EnvVarInfo } from '@/types/hermes'
 
 import { CredentialKeyCard, credentialPlaceholder, credentialRowLabel } from './credential-key-ui'
 import { useEnvCredentials } from './env-credentials'
@@ -33,7 +34,7 @@ const VIEW_CATEGORIES: Record<KeysView, readonly string[]> = {
 
 const credentialElementId = (key: string) => `credential-key-${key}`
 
-export function KeysSettings({ view }: KeysSettingsProps) {
+export function KeysSettings({ view, groupBy }: KeysSettingsProps) {
   const { t } = useI18n()
   // Shared settings "Applies to" scope: fetch + edit the selected profile's
   // env store instead of the active one (undefined → active, the default
@@ -82,30 +83,43 @@ export function KeysSettings({ view }: KeysSettingsProps) {
     return <SettingsSkeleton sections={[{ rows: 5 }]} />
   }
 
+  const renderCard = (rows: [string, EnvVarInfo][]) => (
+    <SettingsCard classicClassName="grid gap-2" className="credential-keys-card">
+      {rows.map(([key, info]) => {
+        const label = credentialRowLabel(key, info)
+
+        return (
+          <div className="scroll-mt-6 rounded-[6px]" id={credentialElementId(key)} key={key}>
+            <CredentialKeyCard
+              expanded={openKey === key}
+              info={info}
+              label={label}
+              onExpand={() => setOpenKey(key)}
+              onToggle={() => setOpenKey(prev => (prev === key ? null : key))}
+              placeholder={credentialPlaceholder(key, info, label)}
+              rowProps={rowProps}
+              varKey={key}
+            />
+          </div>
+        )
+      })}
+    </SettingsCard>
+  )
+
   return (
     <SettingsContent>
       <SettingsProfileScope className="mb-5" />
       {entries.length > 0 ? (
-        <SettingsCard classicClassName="grid gap-2" className="credential-keys-card">
-          {entries.map(([key, info]) => {
-            const label = credentialRowLabel(key, info)
-
-            return (
-              <div className="scroll-mt-6 rounded-[6px]" id={credentialElementId(key)} key={key}>
-                <CredentialKeyCard
-                  expanded={openKey === key}
-                  info={info}
-                  label={label}
-                  onExpand={() => setOpenKey(key)}
-                  onToggle={() => setOpenKey(prev => (prev === key ? null : key))}
-                  placeholder={credentialPlaceholder(key, info, label)}
-                  rowProps={rowProps}
-                  varKey={key}
-                />
-              </div>
-            )
-          })}
-        </SettingsCard>
+        groupBy ? (
+          groupEntries(entries, groupBy).map(([group, rows]) => (
+            <section className="credential-keys-group" key={group}>
+              <h4>{group}</h4>
+              {renderCard(rows)}
+            </section>
+          ))
+        ) : (
+          renderCard(entries)
+        )
       ) : (
         <div className="rounded-lg border border-dashed border-(--ui-stroke-tertiary) px-4 py-8 text-center text-[length:var(--conversation-caption-font-size)] text-muted-foreground">
           {t.settings.keys.empty}
@@ -117,4 +131,24 @@ export function KeysSettings({ view }: KeysSettingsProps) {
 
 interface KeysSettingsProps {
   view: KeysView
+  /** Group the keys under labelled cards, lowest `order` first (Tools › Advanced, 895:23456). */
+  groupBy?: (info: EnvVarInfo) => KeyGroup
+}
+
+export interface KeyGroup {
+  label: string
+  order: number
+}
+
+function groupEntries(entries: [string, EnvVarInfo][], groupBy: (info: EnvVarInfo) => KeyGroup) {
+  const groups = new Map<string, { order: number; rows: [string, EnvVarInfo][] }>()
+
+  for (const entry of entries) {
+    const { label, order } = groupBy(entry[1])
+    const group = groups.get(label) ?? { order, rows: [] }
+    group.rows.push(entry)
+    groups.set(label, group)
+  }
+
+  return [...groups].sort(([, a], [, b]) => a.order - b.order).map(([label, { rows }]) => [label, rows] as const)
 }

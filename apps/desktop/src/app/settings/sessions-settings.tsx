@@ -1,18 +1,12 @@
 import { useStore } from '@nanostores/react'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useId, useState } from 'react'
 
 import { restoreListedSession } from '@/app/session/hooks/use-session-actions/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tip } from '@/components/ui/tooltip'
-import {
-  deleteSession,
-  getHermesConfigRecord,
-  peekConfigReadOrigin,
-  retainConfigReadOrigin,
-  saveHermesConfig,
-  setSessionArchived
-} from '@/hermes'
+import { deleteSession, setSessionArchived } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { selectDesktopPaths } from '@/lib/desktop-fs'
@@ -30,8 +24,9 @@ import { untombstoneSessions } from '@/store/session-removal'
 import { forgetSessionUnread } from '@/store/session-unread'
 import { usePortalShell } from '@/store/shell-variant'
 import { listEveryArchivedSession } from '@/store/sidebar-archive'
-import type { HermesConfigRecord, SessionInfo } from '@/types/hermes'
+import type { SessionInfo } from '@/types/hermes'
 
+import { AUTO_ARCHIVE_PERIODS, useAutoArchiveConfig } from './auto-archive'
 import { EmptyState, ListRow, SectionHeading, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
 import {
   SettingsCard,
@@ -52,8 +47,6 @@ function newSessionShortcut(): null | string {
 
   return combo ? formatCombo(combo) : null
 }
-
-const DEFAULT_AUTO_ARCHIVE_DAYS = 3
 
 interface SessionsSettingsProps {
   subpage?: string
@@ -82,6 +75,8 @@ function ArchivedSessionsSettings({ includeDefaultDirectory }: { includeDefaultD
   const [sessions, setLocalSessions] = useState<SessionInfo[]>([])
   const [loading, setLoading] = useState(true)
   const [busyId, setBusyId] = useState<string | null>(null)
+  const [archiveOpen, setArchiveOpen] = useState(false)
+  const archiveListId = useId()
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -157,11 +152,65 @@ function ArchivedSessionsSettings({ includeDefaultDirectory }: { includeDefaultD
     [s]
   )
 
-  useDeepLinkHighlight({
+  const linkedSession = useDeepLinkHighlight({
     elementId: id => `archived-session-${id}`,
     param: 'session',
-    ready: id => !loading && sessions.some(session => session.id === id)
+    ready: id => !loading && (archiveOpen || !redesign) && sessions.some(session => session.id === id)
   })
+
+  // A link to an archived chat opens the redesign's collapsed archive so the row can be shown.
+  if (linkedSession && redesign && !archiveOpen) {
+    setArchiveOpen(true)
+  }
+
+  const archivedList =
+    sessions.length === 0 ? (
+      <EmptyState description={s.emptyArchivedDesc} title={s.emptyArchivedTitle} />
+    ) : (
+      <div className="grid gap-1">
+        {sessions.map(session => {
+          const label = pathLeaf(session.cwd)
+          const busy = busyId === session.id
+
+          return (
+            <div className="scroll-mt-6 rounded-lg" id={`archived-session-${session.id}`} key={session.id}>
+              <ListRow
+                action={
+                  <div className="flex items-center gap-1.5">
+                    <Button
+                      disabled={busy}
+                      onClick={() => void unarchive(session)}
+                      size="sm"
+                      type="button"
+                      variant="textStrong"
+                    >
+                      {busy ? <Loader2 className="size-3.5 animate-spin" /> : <ArchiveOff className="size-3.5" />}
+                      <span>{s.unarchive}</span>
+                    </Button>
+                    <Tip label={s.deletePermanently}>
+                      <Button
+                        aria-label={s.deletePermanently}
+                        className="text-muted-foreground hover:text-destructive"
+                        disabled={busy}
+                        onClick={() => void remove(session)}
+                        size="icon"
+                        type="button"
+                        variant="ghost"
+                      >
+                        <Trash2 className="size-3.5" />
+                      </Button>
+                    </Tip>
+                  </div>
+                }
+                description={session.preview || undefined}
+                hint={label ? `${label} · ${s.messages(session.message_count)}` : s.messages(session.message_count)}
+                title={sessionTitle(session)}
+              />
+            </div>
+          )
+        })}
+      </div>
+    )
 
   if (loading) {
     return <SettingsSkeleton sections={[{ rows: 1 }, { heading: true, rows: 4 }]} />
@@ -174,79 +223,52 @@ function ArchivedSessionsSettings({ includeDefaultDirectory }: { includeDefaultD
         {includeDefaultDirectory && !redesign && <DefaultProjectDirSetting />}
 
         <SettingsGroup title={pages.archive}>
-          <SettingsCard classicClassName="">
-            <AutoArchiveSetting />
-          </SettingsCard>
+          {redesign ? (
+            <>
+              <SettingsCard>
+                <AutoArchivePeriodRow />
+                <ListRow
+                  action={
+                    <Button
+                      aria-controls={archiveListId}
+                      aria-expanded={archiveOpen}
+                      onClick={() => setArchiveOpen(open => !open)}
+                      variant="secondary"
+                    >
+                      {archiveOpen ? pages.archiveChats.hide : pages.archiveChats.view}
+                    </Button>
+                  }
+                  description={pages.archiveChats.archivedDesc}
+                  title={pages.archiveChats.archived}
+                />
+              </SettingsCard>
+              {archiveOpen && <SettingsCard id={archiveListId}>{archivedList}</SettingsCard>}
+            </>
+          ) : (
+            <>
+              <SettingsCard classicClassName="">
+                <AutoArchiveSetting />
+              </SettingsCard>
 
-          <SettingsDisclosure
-            classicHeading={
-              <SectionHeading
-                icon={Archive}
-                meta={sessions.length ? String(sessions.length) : undefined}
+              <SettingsDisclosure
+                classicHeading={
+                  <SectionHeading
+                    icon={Archive}
+                    meta={sessions.length ? String(sessions.length) : undefined}
+                    title={s.archivedTitle}
+                  />
+                }
+                count={sessions.length}
                 title={s.archivedTitle}
-              />
-            }
-            count={sessions.length}
-            title={s.archivedTitle}
-          >
-            <p className="mb-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-              {s.archivedIntro}
-            </p>
+              >
+                <p className="mb-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                  {s.archivedIntro}
+                </p>
 
-            {sessions.length === 0 ? (
-              <EmptyState description={s.emptyArchivedDesc} title={s.emptyArchivedTitle} />
-            ) : (
-              <div className="grid gap-1">
-                {sessions.map(session => {
-                  const label = pathLeaf(session.cwd)
-                  const busy = busyId === session.id
-
-                  return (
-                    <div className="scroll-mt-6 rounded-lg" id={`archived-session-${session.id}`} key={session.id}>
-                      <ListRow
-                        action={
-                          <div className="flex items-center gap-1.5">
-                            <Button
-                              disabled={busy}
-                              onClick={() => void unarchive(session)}
-                              size="sm"
-                              type="button"
-                              variant="textStrong"
-                            >
-                              {busy ? (
-                                <Loader2 className="size-3.5 animate-spin" />
-                              ) : (
-                                <ArchiveOff className="size-3.5" />
-                              )}
-                              <span>{s.unarchive}</span>
-                            </Button>
-                            <Tip label={s.deletePermanently}>
-                              <Button
-                                aria-label={s.deletePermanently}
-                                className="text-muted-foreground hover:text-destructive"
-                                disabled={busy}
-                                onClick={() => void remove(session)}
-                                size="icon"
-                                type="button"
-                                variant="ghost"
-                              >
-                                <Trash2 className="size-3.5" />
-                              </Button>
-                            </Tip>
-                          </div>
-                        }
-                        description={session.preview || undefined}
-                        hint={
-                          label ? `${label} · ${s.messages(session.message_count)}` : s.messages(session.message_count)
-                        }
-                        title={sessionTitle(session)}
-                      />
-                    </div>
-                  )
-                })}
-              </div>
-            )}
-          </SettingsDisclosure>
+                {archivedList}
+              </SettingsDisclosure>
+            </>
+          )}
         </SettingsGroup>
         {includeDefaultDirectory && redesign && (
           <SettingsGroup title={pages.newSessions}>
@@ -260,95 +282,25 @@ function ArchivedSessionsSettings({ includeDefaultDirectory }: { includeDefaultD
   )
 }
 
-// Opt-in retention: soft-hide chats untouched for N days. The policy itself
-// (last-activity sweep, pin exemption) lives in the backend
-// (sessions.auto_archive in config.yaml + SessionDB.maybe_auto_archive); this
-// just toggles the config keys, so CLI / gateway / Desktop all honour one
-// setting. Pins are exempt on the backend, so pinned chats survive regardless.
 function AutoArchiveSetting() {
   const { t } = useI18n()
   const s = t.settings.sessions
-  const [config, setConfig] = useState<HermesConfigRecord | null>(null)
-  const [enabled, setEnabled] = useState(false)
-  const [days, setDays] = useState(DEFAULT_AUTO_ARCHIVE_DAYS)
+  const archive = useAutoArchiveConfig(s.autoArchiveFailed)
 
-  useEffect(() => {
-    // Config REST is only reachable through the Electron bridge; skip in
-    // non-Electron contexts (tests/storybook) rather than throwing.
-    if (!window.hermesDesktop) {
-      return
-    }
-
-    let alive = true
-
-    void getHermesConfigRecord()
-      .then(record => {
-        if (!alive) {
-          return
-        }
-
-        const sessions = (record.sessions ?? {}) as Record<string, unknown>
-        const parsedDays = Number(sessions.auto_archive_days)
-        setConfig(record)
-        setEnabled(Boolean(sessions.auto_archive))
-        setDays(Number.isFinite(parsedDays) && parsedDays > 0 ? Math.round(parsedDays) : DEFAULT_AUTO_ARCHIVE_DAYS)
-      })
-      .catch(() => {
-        // Leave the control unmounted if config can't be read.
-      })
-
-    return () => {
-      alive = false
-    }
-  }, [])
-
-  const persist = useCallback(
-    async (autoArchive: boolean, archiveDays: number) => {
-      if (!config) {
-        return
-      }
-
-      const sessions = {
-        ...((config.sessions ?? {}) as Record<string, unknown>),
-        auto_archive: autoArchive,
-        auto_archive_days: archiveDays
-      }
-
-      // Read the route at save time from the record itself, and carry it onto
-      // the replacement snapshot so the next save still targets the gateway
-      // that served the original GET.
-      const writeScope = peekConfigReadOrigin(config)
-
-      setConfig(retainConfigReadOrigin({ ...config, sessions }, config))
-
-      try {
-        // Sparse patch: PUT /api/config deep-merges, and echoing the cached
-        // snapshot would overwrite keys other surfaces changed since it loaded.
-        await saveHermesConfig({ sessions: { auto_archive: autoArchive, auto_archive_days: archiveDays } }, writeScope)
-      } catch (err) {
-        notifyError(err, s.autoArchiveFailed)
-      }
-    },
-    [config, s.autoArchiveFailed]
-  )
-
-  if (!config) {
+  if (!archive) {
     return null
   }
 
   return (
     <div className="mb-6">
       <ToggleRow
-        checked={enabled}
+        checked={archive.enabled}
         description={s.autoArchiveDesc}
         id={settingElementId(SETTING_IDS.sessions.autoArchive)}
         label={s.autoArchiveTitle}
-        onChange={on => {
-          setEnabled(on)
-          void persist(on, days)
-        }}
+        onChange={on => archive.save(on, archive.days)}
       />
-      {enabled && (
+      {archive.enabled && (
         <ListRow
           action={
             <div className="flex items-center gap-2">
@@ -356,10 +308,10 @@ function AutoArchiveSetting() {
                 aria-label={s.autoArchiveDaysLabel}
                 className="w-20"
                 min={1}
-                onBlur={() => void persist(true, days)}
-                onChange={e => setDays(Math.max(1, Math.round(Number(e.target.value) || 1)))}
+                onBlur={() => archive.save(true, archive.days)}
+                onChange={e => archive.setDays(Math.max(1, Math.round(Number(e.target.value) || 1)))}
                 type="number"
-                value={days}
+                value={archive.days}
               />
               <span className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
                 {s.autoArchiveDaysUnit}
@@ -370,6 +322,48 @@ function AutoArchiveSetting() {
         />
       )}
     </div>
+  )
+}
+
+/** The redesign's auto-archive row (856:5981): one period select, "Never" turning the sweep off. */
+function AutoArchivePeriodRow() {
+  const { t, locale } = useI18n()
+  const s = t.settings.sessions
+  const copy = settingsPagesCopy(locale).archiveChats
+  const archive = useAutoArchiveConfig(s.autoArchiveFailed)
+
+  if (!archive) {
+    return null
+  }
+
+  const periods = [...new Set([...AUTO_ARCHIVE_PERIODS, archive.days])].sort((a, b) => a - b)
+
+  return (
+    <ListRow
+      action={
+        <Select
+          onValueChange={value =>
+            value === 'off' ? archive.save(false, archive.days) : archive.save(true, Number(value))
+          }
+          value={archive.enabled ? String(archive.days) : 'off'}
+        >
+          <SelectTrigger aria-label={copy.period} className="min-w-40">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="off">{copy.off}</SelectItem>
+            {periods.map(days => (
+              <SelectItem key={days} value={String(days)}>
+                {copy.afterDays(days)}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      }
+      description={s.autoArchiveDesc}
+      id={settingElementId(SETTING_IDS.sessions.autoArchive)}
+      title={s.autoArchiveTitle}
+    />
   )
 }
 

@@ -1,4 +1,5 @@
 import { type BundledLocale, isBundledLocale, useI18n } from '@/i18n'
+import { hostHas } from '@/lib/host-capabilities'
 
 /** Copy the redesigned global Settings pages draw that classic never shows (Figma 856:*, 895:*):
  *  page descriptions, section names and the few row labels that differ from classic. */
@@ -7,6 +8,19 @@ export interface SettingsPagesCopy {
   newSessions: string
   version: string
   intro: { account: string; gateways: string; sessions: string; about: string }
+  /** Device-scoped pages, worded for where this renderer runs (Figma web note 832:2953). */
+  hostIntro: { notifications: HostWording; keybinds: HostWording }
+  /** The quiet note on a section whose settings live in this renderer's storage (856:2641). */
+  savedHere: HostWording
+  archiveChats: {
+    period: string
+    off: string
+    afterDays: (days: number) => string
+    archived: string
+    archivedDesc: string
+    view: string
+    hide: string
+  }
   gateway: {
     connectionMode: string
     thisHost: string
@@ -17,7 +31,8 @@ export interface SettingsPagesCopy {
   }
   about: { whatsNew: string; checkForUpdates: string; gateway: string; detailsDesc: string }
   keybinds: { bindings: string; all: string; allDesc: string; reset: string }
-  notifications: { advancedDesc: string }
+  /** `browserAlerts` names the alerts group in a browser tab (856:4096); the app keeps its own. */
+  notifications: { advancedDesc: string; browserAlerts: string; completionSound: string }
   account: { planCredits: string }
   schedules: { scheduled: string; scheduledDesc: string }
   model: { fallbacks: string; fallbacksDesc: string }
@@ -26,11 +41,41 @@ export interface SettingsPagesCopy {
   vault: { credentials: string; credentialsDesc: string; managers: string; managersDesc: string }
 }
 
+interface HostWording {
+  browser: string
+  device: string
+}
+
+/** The wording for where this renderer runs: a browser tab (the Webapp) or the desktop app. */
+export function forHost(wording: HostWording): string {
+  return hostHas('webappCopy') ? wording.browser : wording.device
+}
+
 const COPY: Record<BundledLocale, SettingsPagesCopy> = {
   en: {
     archive: 'Archive',
     newSessions: 'New sessions',
     version: 'Version',
+    hostIntro: {
+      notifications: {
+        browser: 'Alerts from this browser when Hermes needs you while the tab is in the background.',
+        device: 'Alerts from this computer when Hermes needs you while the app is in the background.'
+      },
+      keybinds: {
+        browser: 'Key bindings for this browser. Click a shortcut to change it.',
+        device: 'Key bindings for this computer. Click a shortcut to change it.'
+      }
+    },
+    savedHere: { browser: 'Saved to this browser', device: 'Saved on this computer' },
+    archiveChats: {
+      period: 'Archive after',
+      off: 'Never',
+      afterDays: days => (days === 1 ? 'After 1 day' : `After ${days} days`),
+      archived: 'Archived chats',
+      archivedDesc: 'Unarchive chats or delete them permanently.',
+      view: 'View archive',
+      hide: 'Hide archive'
+    },
     intro: {
       account: 'Your Nous account: plan, credits and payment. The same on every device you sign in to.',
       gateways:
@@ -58,7 +103,11 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
       allDesc: 'The full, editable list of key bindings.',
       reset: 'Reset shortcuts to defaults'
     },
-    notifications: { advancedDesc: 'Less common alerts' },
+    notifications: {
+      advancedDesc: 'Less common alerts',
+      browserAlerts: 'Browser notifications',
+      completionSound: 'Completion sound'
+    },
     account: { planCredits: 'Plan & credits' },
     schedules: { scheduled: 'Scheduled', scheduledDesc: 'Each run starts fresh and posts where you choose.' },
     model: { fallbacks: 'Fallbacks', fallbacksDesc: 'Tried in order if the main model fails.' },
@@ -81,6 +130,26 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
     archive: 'Archives',
     newSessions: 'Nouvelles sessions',
     version: 'Version',
+    hostIntro: {
+      notifications: {
+        browser: 'Alertes de ce navigateur quand Hermes a besoin de vous et que l’onglet est en arrière-plan.',
+        device: 'Alertes de cet ordinateur quand Hermes a besoin de vous et que l’app est en arrière-plan.'
+      },
+      keybinds: {
+        browser: 'Raccourcis de ce navigateur. Cliquez sur un raccourci pour le modifier.',
+        device: 'Raccourcis de cet ordinateur. Cliquez sur un raccourci pour le modifier.'
+      }
+    },
+    savedHere: { browser: 'Enregistré dans ce navigateur', device: 'Enregistré sur cet ordinateur' },
+    archiveChats: {
+      period: 'Archiver après',
+      off: 'Jamais',
+      afterDays: days => (days === 1 ? 'Après 1 jour' : `Après ${days} jours`),
+      archived: 'Conversations archivées',
+      archivedDesc: 'Désarchivez des conversations ou supprimez-les définitivement.',
+      view: 'Voir les archives',
+      hide: 'Masquer les archives'
+    },
     intro: {
       account:
         'Votre compte Nous : forfait, crédits et paiement. Identique sur chaque appareil où vous vous connectez.',
@@ -109,7 +178,11 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
       allDesc: 'La liste complète et modifiable des raccourcis.',
       reset: 'Rétablir les raccourcis par défaut'
     },
-    notifications: { advancedDesc: 'Alertes moins courantes' },
+    notifications: {
+      advancedDesc: 'Alertes moins courantes',
+      browserAlerts: 'Notifications du navigateur',
+      completionSound: 'Son de fin'
+    },
     account: { planCredits: 'Forfait et crédits' },
     schedules: {
       scheduled: 'Planifiées',
@@ -135,6 +208,26 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
     archive: 'Archiv',
     newSessions: 'Neue Sitzungen',
     version: 'Version',
+    hostIntro: {
+      notifications: {
+        browser: 'Hinweise von diesem Browser, wenn Hermes dich braucht und der Tab im Hintergrund ist.',
+        device: 'Hinweise von diesem Computer, wenn Hermes dich braucht und die App im Hintergrund ist.'
+      },
+      keybinds: {
+        browser: 'Tastenkürzel für diesen Browser. Klicke auf ein Kürzel, um es zu ändern.',
+        device: 'Tastenkürzel für diesen Computer. Klicke auf ein Kürzel, um es zu ändern.'
+      }
+    },
+    savedHere: { browser: 'In diesem Browser gespeichert', device: 'Auf diesem Computer gespeichert' },
+    archiveChats: {
+      period: 'Archivieren nach',
+      off: 'Nie',
+      afterDays: days => (days === 1 ? 'Nach 1 Tag' : `Nach ${days} Tagen`),
+      archived: 'Archivierte Chats',
+      archivedDesc: 'Chats wiederherstellen oder endgültig löschen.',
+      view: 'Archiv anzeigen',
+      hide: 'Archiv ausblenden'
+    },
     intro: {
       account: 'Dein Nous-Konto: Tarif, Guthaben und Zahlung. Auf jedem Gerät gleich, auf dem du angemeldet bist.',
       gateways:
@@ -162,7 +255,11 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
       allDesc: 'Die vollständige, bearbeitbare Liste der Tastenkürzel.',
       reset: 'Tastenkürzel zurücksetzen'
     },
-    notifications: { advancedDesc: 'Seltenere Hinweise' },
+    notifications: {
+      advancedDesc: 'Seltenere Hinweise',
+      browserAlerts: 'Browser-Benachrichtigungen',
+      completionSound: 'Abschlusston'
+    },
     account: { planCredits: 'Tarif & Guthaben' },
     schedules: { scheduled: 'Geplant', scheduledDesc: 'Jeder Lauf startet frisch und postet, wo du es festlegst.' },
     model: { fallbacks: 'Ausweichmodelle', fallbacksDesc: 'Der Reihe nach versucht, wenn das Hauptmodell ausfällt.' },
@@ -185,6 +282,26 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
     archive: 'Archivo',
     newSessions: 'Sesiones nuevas',
     version: 'Versión',
+    hostIntro: {
+      notifications: {
+        browser: 'Avisos de este navegador cuando Hermes te necesita y la pestaña está en segundo plano.',
+        device: 'Avisos de este ordenador cuando Hermes te necesita y la app está en segundo plano.'
+      },
+      keybinds: {
+        browser: 'Atajos de teclado de este navegador. Haz clic en un atajo para cambiarlo.',
+        device: 'Atajos de teclado de este ordenador. Haz clic en un atajo para cambiarlo.'
+      }
+    },
+    savedHere: { browser: 'Guardado en este navegador', device: 'Guardado en este ordenador' },
+    archiveChats: {
+      period: 'Archivar tras',
+      off: 'Nunca',
+      afterDays: days => (days === 1 ? 'Tras 1 día' : `Tras ${days} días`),
+      archived: 'Chats archivados',
+      archivedDesc: 'Desarchiva chats o elimínalos para siempre.',
+      view: 'Ver archivo',
+      hide: 'Ocultar archivo'
+    },
     intro: {
       account: 'Tu cuenta de Nous: plan, créditos y pago. Igual en cada dispositivo donde inicies sesión.',
       gateways:
@@ -212,7 +329,11 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
       allDesc: 'La lista completa y editable de atajos.',
       reset: 'Restablecer atajos predeterminados'
     },
-    notifications: { advancedDesc: 'Alertas menos habituales' },
+    notifications: {
+      advancedDesc: 'Alertas menos habituales',
+      browserAlerts: 'Notificaciones del navegador',
+      completionSound: 'Sonido de finalización'
+    },
     account: { planCredits: 'Plan y créditos' },
     schedules: { scheduled: 'Programadas', scheduledDesc: 'Cada ejecución empieza de cero y publica donde elijas.' },
     model: { fallbacks: 'Alternativos', fallbacksDesc: 'Se prueban en orden si falla el modelo principal.' },
@@ -235,6 +356,26 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
     archive: 'アーカイブ',
     newSessions: '新しいセッション',
     version: 'バージョン',
+    hostIntro: {
+      notifications: {
+        browser: 'タブがバックグラウンドのときに Hermes が呼びかける、このブラウザーの通知です。',
+        device: 'アプリがバックグラウンドのときに Hermes が呼びかける、このコンピューターの通知です。'
+      },
+      keybinds: {
+        browser: 'このブラウザーのキー割り当てです。ショートカットをクリックして変更します。',
+        device: 'このコンピューターのキー割り当てです。ショートカットをクリックして変更します。'
+      }
+    },
+    savedHere: { browser: 'このブラウザーに保存', device: 'このコンピューターに保存' },
+    archiveChats: {
+      period: 'アーカイブまでの期間',
+      off: 'しない',
+      afterDays: days => `${days}日後`,
+      archived: 'アーカイブ済みのチャット',
+      archivedDesc: 'チャットをアーカイブから戻すか、完全に削除します。',
+      view: 'アーカイブを表示',
+      hide: 'アーカイブを隠す'
+    },
     intro: {
       account: 'Nous アカウント：プラン、クレジット、支払い。サインインしたどのデバイスでも同じです。',
       gateways:
@@ -262,7 +403,7 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
       allDesc: '編集できるキー割り当ての一覧。',
       reset: 'ショートカットを既定に戻す'
     },
-    notifications: { advancedDesc: 'あまり使わない通知' },
+    notifications: { advancedDesc: 'あまり使わない通知', browserAlerts: 'ブラウザー通知', completionSound: '完了音' },
     account: { planCredits: 'プランとクレジット' },
     schedules: { scheduled: 'スケジュール済み', scheduledDesc: '実行ごとに新しく始まり、選んだ場所に投稿します。' },
     model: { fallbacks: 'フォールバック', fallbacksDesc: 'メインモデルが失敗したときに順番に試します。' },
@@ -285,6 +426,26 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
     archive: '归档',
     newSessions: '新会话',
     version: '版本',
+    hostIntro: {
+      notifications: {
+        browser: '标签页在后台、Hermes 需要你时，由此浏览器发出的提醒。',
+        device: '应用在后台、Hermes 需要你时，由此电脑发出的提醒。'
+      },
+      keybinds: {
+        browser: '此浏览器的快捷键。点击快捷键即可修改。',
+        device: '此电脑的快捷键。点击快捷键即可修改。'
+      }
+    },
+    savedHere: { browser: '保存在此浏览器', device: '保存在此电脑' },
+    archiveChats: {
+      period: '归档时间',
+      off: '从不',
+      afterDays: days => `${days} 天后`,
+      archived: '已归档的聊天',
+      archivedDesc: '取消归档聊天，或将其永久删除。',
+      view: '查看归档',
+      hide: '隐藏归档'
+    },
     intro: {
       account: '你的 Nous 账户：套餐、额度和付款。在你登录的每台设备上都一样。',
       gateways: '你的智能体在哪里运行，以及 Hermes 能连接的机器。智能体从你连接的网关中发现。',
@@ -311,7 +472,7 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
       allDesc: '完整且可编辑的按键绑定列表。',
       reset: '恢复默认快捷键'
     },
-    notifications: { advancedDesc: '不常用的提醒' },
+    notifications: { advancedDesc: '不常用的提醒', browserAlerts: '浏览器通知', completionSound: '完成提示音' },
     account: { planCredits: '套餐与额度' },
     schedules: { scheduled: '已计划', scheduledDesc: '每次运行都会重新开始，并发布到你选择的位置。' },
     model: { fallbacks: '备用模型', fallbacksDesc: '主模型失败时按顺序尝试。' },
@@ -334,6 +495,26 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
     archive: '封存',
     newSessions: '新工作階段',
     version: '版本',
+    hostIntro: {
+      notifications: {
+        browser: '分頁在背景、Hermes 需要你時，由此瀏覽器發出的提醒。',
+        device: '應用程式在背景、Hermes 需要你時，由此電腦發出的提醒。'
+      },
+      keybinds: {
+        browser: '此瀏覽器的快捷鍵。點選快捷鍵即可修改。',
+        device: '此電腦的快捷鍵。點選快捷鍵即可修改。'
+      }
+    },
+    savedHere: { browser: '儲存在此瀏覽器', device: '儲存在此電腦' },
+    archiveChats: {
+      period: '封存時間',
+      off: '永不',
+      afterDays: days => `${days} 天後`,
+      archived: '已封存的聊天',
+      archivedDesc: '取消封存聊天，或將其永久刪除。',
+      view: '檢視封存',
+      hide: '隱藏封存'
+    },
     intro: {
       account: '你的 Nous 帳戶：方案、點數和付款。在你登入的每部裝置上都相同。',
       gateways: '你的代理在哪裡執行，以及 Hermes 能連線的機器。代理會從你連線的閘道中找到。',
@@ -360,7 +541,7 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
       allDesc: '完整且可編輯的按鍵綁定清單。',
       reset: '還原預設快速鍵'
     },
-    notifications: { advancedDesc: '較少用的提醒' },
+    notifications: { advancedDesc: '較少用的提醒', browserAlerts: '瀏覽器通知', completionSound: '完成提示音' },
     account: { planCredits: '方案與點數' },
     schedules: { scheduled: '已排程', scheduledDesc: '每次執行都會重新開始，並發布到你選擇的位置。' },
     model: { fallbacks: '備用模型', fallbacksDesc: '主要模型失敗時依序嘗試。' },
@@ -383,6 +564,26 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
     archive: 'Архив',
     newSessions: 'Новые сеансы',
     version: 'Версия',
+    hostIntro: {
+      notifications: {
+        browser: 'Оповещения этого браузера, когда Hermes нужен ваш ответ, а вкладка в фоне.',
+        device: 'Оповещения этого компьютера, когда Hermes нужен ваш ответ, а приложение в фоне.'
+      },
+      keybinds: {
+        browser: 'Сочетания клавиш для этого браузера. Нажмите на сочетание, чтобы изменить его.',
+        device: 'Сочетания клавиш для этого компьютера. Нажмите на сочетание, чтобы изменить его.'
+      }
+    },
+    savedHere: { browser: 'Сохранено в этом браузере', device: 'Сохранено на этом компьютере' },
+    archiveChats: {
+      period: 'Архивировать через',
+      off: 'Никогда',
+      afterDays: days => `Через ${days} дн.`,
+      archived: 'Архивные чаты',
+      archivedDesc: 'Верните чаты из архива или удалите их навсегда.',
+      view: 'Открыть архив',
+      hide: 'Скрыть архив'
+    },
     intro: {
       account: 'Ваш аккаунт Nous: тариф, кредиты и оплата. Одинаков на всех устройствах, где вы вошли.',
       gateways: 'Где работают ваши агенты и какие машины доступны Hermes. Агенты находятся через подключённые шлюзы.',
@@ -409,7 +610,11 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
       allDesc: 'Полный редактируемый список сочетаний клавиш.',
       reset: 'Сбросить сочетания по умолчанию'
     },
-    notifications: { advancedDesc: 'Редкие уведомления' },
+    notifications: {
+      advancedDesc: 'Редкие уведомления',
+      browserAlerts: 'Уведомления браузера',
+      completionSound: 'Звук завершения'
+    },
     account: { planCredits: 'Тариф и кредиты' },
     schedules: {
       scheduled: 'Запланированные',
@@ -435,6 +640,26 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
     archive: 'الأرشيف',
     newSessions: 'الجلسات الجديدة',
     version: 'الإصدار',
+    hostIntro: {
+      notifications: {
+        browser: 'تنبيهات من هذا المتصفح عندما يحتاجك Hermes والتبويب في الخلفية.',
+        device: 'تنبيهات من هذا الحاسوب عندما يحتاجك Hermes والتطبيق في الخلفية.'
+      },
+      keybinds: {
+        browser: 'اختصارات لوحة المفاتيح لهذا المتصفح. انقر على اختصار لتغييره.',
+        device: 'اختصارات لوحة المفاتيح لهذا الحاسوب. انقر على اختصار لتغييره.'
+      }
+    },
+    savedHere: { browser: 'محفوظ في هذا المتصفح', device: 'محفوظ على هذا الحاسوب' },
+    archiveChats: {
+      period: 'الأرشفة بعد',
+      off: 'أبدًا',
+      afterDays: days => (days === 1 ? 'بعد يوم واحد' : `بعد ${days} أيام`),
+      archived: 'المحادثات المؤرشفة',
+      archivedDesc: 'ألغِ أرشفة المحادثات أو احذفها نهائيًا.',
+      view: 'عرض الأرشيف',
+      hide: 'إخفاء الأرشيف'
+    },
     intro: {
       account: 'حسابك في Nous: الخطة والأرصدة والدفع. هو نفسه على كل جهاز تسجّل الدخول منه.',
       gateways: 'أين تعمل وكلاؤك، والأجهزة التي يصل إليها Hermes. تُكتشف الوكلاء من البوابات التي توصلها.',
@@ -461,7 +686,11 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
       allDesc: 'القائمة الكاملة القابلة للتعديل لاختصارات المفاتيح.',
       reset: 'إعادة الاختصارات إلى الافتراضي'
     },
-    notifications: { advancedDesc: 'تنبيهات أقل شيوعًا' },
+    notifications: {
+      advancedDesc: 'تنبيهات أقل شيوعًا',
+      browserAlerts: 'إشعارات المتصفح',
+      completionSound: 'صوت الإكمال'
+    },
     account: { planCredits: 'الخطة والأرصدة' },
     schedules: { scheduled: 'المجدولة', scheduledDesc: 'يبدأ كل تشغيل من جديد وينشر حيث تختار.' },
     model: { fallbacks: 'البدائل', fallbacksDesc: 'تُجرَّب بالترتيب إذا فشل النموذج الرئيسي.' },

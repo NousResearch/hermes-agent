@@ -404,7 +404,7 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
 
     await renderSkills('researcher', 'homelab')
 
-    fireEvent.click(await screen.findByText('Vision / Image Analysis'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Vision / Image Analysis: 1 tool' }))
 
     const link = await screen.findByRole('button', { name: /Choose vision model in Settings/ })
     await waitFor(() =>

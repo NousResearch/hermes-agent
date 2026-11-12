@@ -36,6 +36,10 @@
   text-transform: uppercase;
 }
 .agent-settings-nav-group button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   width: 100%;
   min-height: 2rem;
   padding: 0.375rem 0.625rem;
@@ -45,6 +49,12 @@
   letter-spacing: 0.01em;
   line-height: 1.4;
   text-align: start;
+}
+/* Sub-nav counts (895:13886 "Tools 13"): 11px, quiet, right-aligned. */
+.agent-settings-nav-count {
+  color: var(--ui-text-tertiary);
+  font-size: 0.6875rem;
+  font-variant-numeric: tabular-nums;
 }
 .agent-settings-nav-group button:hover {
   background: color-mix(in srgb, var(--ui-base) 3%, transparent);
@@ -56,8 +66,7 @@
   color: var(--ui-text-primary);
   font-weight: 500;
 }
-.agent-settings-nav-group button:focus-visible,
-.agent-settings-advanced-toggle:focus-visible {
+.agent-settings-nav-group button:focus-visible {
   outline: 2px solid var(--portal-brand-ink);
   outline-offset: -2px;
 }
@@ -98,12 +107,6 @@
   border: 1px solid var(--ui-stroke-tertiary);
   border-radius: 4px;
   background: var(--ui-bg-card);
-}
-/* Tools › Advanced (895:13886): the shared Advanced disclosure look, opened by route. */
-.agent-settings-advanced {
-  border: 1px solid color-mix(in srgb, var(--ui-base) 10%, transparent);
-  border-radius: 4px;
-  background: color-mix(in srgb, var(--ui-base) 3%, transparent);
 }
 .agent-settings-card > [class~='@container'] {
   padding-inline: 16px;
@@ -165,31 +168,6 @@
   font-size: 0.8125rem;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.agent-settings-advanced-toggle {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  width: 100%;
-  min-height: 4.375rem;
-  padding: 0.875rem 1rem;
-  border-radius: 3px;
-  cursor: pointer;
-  text-align: start;
-}
-.agent-settings-advanced-toggle:hover {
-  background: color-mix(in srgb, var(--ui-base) 2%, transparent);
-}
-.agent-settings-advanced > div {
-  display: grid;
-  gap: 24px;
-  padding: 16px;
-  border-top: 1px solid var(--ui-stroke-tertiary);
-}
-.agent-settings-advanced [data-slot='settings-content'] > div > .grid {
-  padding: 0;
-  border: 0;
-  background: none;
 }
 .agent-settings-subpages {
   display: flex;
@@ -258,6 +236,16 @@
   max-height: none;
   min-height: 0;
 }
+/* The agent body is the one scroller: the embedded capability page grows to its content instead
+   of clipping it inside the page shell's own frame. */
+.agent-settings-body > .agent-settings-capabilities {
+  min-height: auto;
+  overflow: visible;
+}
+.agent-settings-capabilities .page-search-body {
+  flex: none;
+  overflow: visible;
+}
 
 @container (min-width: 28rem) {
   .agent-settings-body [data-slot='settings-row']:not([data-wide]) > div {
@@ -302,4 +290,12 @@
 .agent-color-swatches > button:focus-visible {
   outline: 2px solid var(--portal-brand-ink);
   outline-offset: 3px;
+}
+/* Tools › Advanced (895:23456): key rows and the toolset config fields sit directly on the
+   disclosure, under their group labels, not on a second card inside it. */
+.agent-settings-body .global-settings-disclosure-body .credential-keys-card,
+.agent-settings-body .global-settings-disclosure-body [data-slot='settings-content'] > div > .grid {
+  padding: 0;
+  border: 0;
+  background: none;
 }

@@ -13,7 +13,7 @@ import { $decideExit, $introStartExit, $introView } from '@/store/onboarding-int
 import { $onboardingDecided } from '@/store/onboarding-presence'
 import { $gatewayState } from '@/store/session'
 import { $decideExit as $guideDecideExit } from '@/store/setup-guide'
-import { usePortalShell } from '@/store/shell-variant'
+import { $setupGuideOnboarding } from '@/store/shell-policy'
 import { isMainWindow } from '@/store/windows'
 
 // Decode mechanics live in the shared <DecodeText> primitive
@@ -123,7 +123,7 @@ function ConnectingOverlayView({ decoding, onExit, phase }: ConnectingOverlayVie
  * brings that screen back after boot.
  */
 function useOnboardingHold(previewing: boolean) {
-  const redesign = usePortalShell()
+  const setupGuide = useStore($setupGuideOnboarding)
   const onboardingDecided = useStore($onboardingDecided)
   const introView = useStore($introView)
   const introStartExit = useStore($introStartExit)
@@ -131,13 +131,13 @@ function useOnboardingHold(previewing: boolean) {
   const guideDecideExit = useStore($guideDecideExit)
 
   const watching = !previewing && isMainWindow()
-  const introStarting = watching && !redesign && introView === 'starting'
+  const introStarting = watching && !setupGuide && introView === 'starting'
   const deciding = watching && !onboardingDecided
 
   return {
     holds: introStarting || deciding,
     introStarting,
-    onExit: introStarting ? introStartExit : deciding ? (redesign ? guideDecideExit : decideExit) : null
+    onExit: introStarting ? introStartExit : deciding ? (setupGuide ? guideDecideExit : decideExit) : null
   }
 }
 

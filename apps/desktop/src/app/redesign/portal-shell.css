@@ -113,11 +113,6 @@
   color: var(--ui-text-primary);
 }
 
-:root[data-shell='portal'] .portal-chrome-button:focus-visible {
-  outline: 1.5px solid var(--portal-brand-ink);
-  outline-offset: 1px;
-}
-
 :root[data-shell='portal'] .portal-chrome-button:disabled {
   opacity: 0.4;
 }

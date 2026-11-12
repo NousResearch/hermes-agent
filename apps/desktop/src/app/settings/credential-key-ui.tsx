@@ -182,6 +182,7 @@ export function CredentialKeyCard({
         expandable && !expanded && 'row-hover',
         expanded && 'bg-(--ui-bg-quaternary) ring-1 ring-(--ui-stroke-secondary)'
       )}
+      data-setting=""
       onClick={expandable ? onToggle : undefined}
       onKeyDown={
         expandable
@@ -269,6 +270,7 @@ export function ProviderKeyRows({ expanded, group, onExpand, onToggle, rowProps 
         expandable && !expanded && 'row-hover',
         expanded && 'bg-(--ui-bg-quaternary) ring-1 ring-(--ui-stroke-secondary)'
       )}
+      data-setting=""
       onClick={expandable ? onToggle : undefined}
       onKeyDown={
         expandable

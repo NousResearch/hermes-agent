@@ -442,3 +442,22 @@
     grid-template-columns: minmax(0, 1fr) minmax(0, 18rem);
   }
 }
+
+/* Tools › Advanced keys grouped by the toolset that calls them (895:23456): 10px uppercase label. */
+.credential-keys-group {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.credential-keys-group + .credential-keys-group {
+  margin-top: 1.25rem;
+}
+
+.credential-keys-group > h4 {
+  color: var(--ui-text-tertiary);
+  font-size: 0.625rem;
+  font-weight: 400;
+  letter-spacing: 0.06em;
+  line-height: 1.4;
+  text-transform: uppercase;
+}

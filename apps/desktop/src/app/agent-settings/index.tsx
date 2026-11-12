@@ -52,6 +52,7 @@ import { AgentNavigation } from './directory'
 import { AgentHistory } from './history'
 import { AgentOverviewActions } from './overview-actions'
 import { RoutineDialog } from './routine-dialog'
+import { agentCapabilityCounts } from './settings-counts'
 import { AgentSettingsEditor } from './settings-editor'
 
 interface AgentSettingsViewProps extends SettingsPageProps {
@@ -268,13 +269,14 @@ function AgentSettingsContent({
   const jobs = useQuery({
     queryKey: [...agentSettingsKey(owner), 'routines'],
     queryFn: () => getAgentRoutines(owner),
-    enabled: !panel
+    // The settings sub-nav counts routines and channels too; History needs neither.
+    enabled: panel !== 'history'
   })
 
   const messaging = useQuery({
     queryKey: [...agentSettingsKey(owner), 'messaging'],
     queryFn: () => getAgentMessaging(owner),
-    enabled: !panel
+    enabled: panel !== 'history'
   })
 
   const history = panel === 'history'
@@ -397,7 +399,17 @@ function AgentSettingsContent({
         <AgentHistory key={JSON.stringify(editorOwner)} onClose={props.onClose} owner={editorOwner} />
       ) : panel === 'settings' || panel === 'capabilities' || panel === 'messaging' ? (
         <div className="agent-management-editor">
-          <AgentSettingsEditor {...props} onClose={back} owner={editorOwner} />
+          <AgentSettingsEditor
+            {...props}
+            counts={agentCapabilityCounts({
+              jobs: jobs.data,
+              messaging: messaging.data,
+              skills: skills.data,
+              tools: tools.data
+            })}
+            onClose={back}
+            owner={editorOwner}
+          />
         </div>
       ) : (
         <div className="agent-management-scroll">

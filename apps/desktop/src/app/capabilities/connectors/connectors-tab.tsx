@@ -11,8 +11,11 @@ import { notifyError } from '@/store/notifications'
 
 import { installBundledEntry } from '../mcp/install-catalog-entry'
 import { useMcpServers } from '../mcp/use-mcp-servers'
+import { AgentCapabilityBanner } from '../ui/agent-capability'
+import { useAgentCapabilityCopy } from '../ui/agent-capability-copy'
 
 import { AddServerDialog } from './add-dialog'
+import { AgentConnectors } from './agent-connectors'
 import { ConnectorsDirectory } from './connectors-directory'
 import { $abandonedConnects } from './data/account-operations'
 import { claimRouteLink } from './data/deep-link'
@@ -52,6 +55,7 @@ export function ConnectorsTab({ gateway, profile, agentControls = true, agentLay
   const { t } = useI18n()
   const navigate = useNavigate()
   const copy = t.connectorsPage
+  const agentCopy = useAgentCapabilityCopy()
 
   const hosted = useHostedConnectors(profile)
   const mcp = useMcpServers({ gateway, profile })
@@ -188,50 +192,74 @@ export function ConnectorsTab({ gateway, profile, agentControls = true, agentLay
   const busySlug = hostedActions.busySlug
   const busyKey = installing ?? (busySlug === null ? null : hostedCardKey(busySlug))
 
+  const loading = (hosted.phase === 'loading' || mcp.configLoading || mcp.catalogLoading) && cards.length === 0
+  const notices = <HostedNotice hasGuest={freeTier?.has_guest === true} phase={hosted.phase} />
+
+  const onServerToggle = agentControls
+    ? (card: ConnectorCardModel, next: boolean) => {
+        if (card.plugin === undefined) {
+          void mcp.setServerEnabled(localServerName(card), next)
+        }
+      }
+    : undefined
+
   return (
     <div
       className={
-        agentLayout
-          ? 'agent-capability-connectors flex h-full min-h-0 flex-col gap-3'
-          : 'capabilities-page flex h-full min-h-0 flex-col gap-3 pt-5 pb-2'
+        agentLayout ? 'agent-capability-list' : 'capabilities-page flex h-full min-h-0 flex-col gap-3 pt-5 pb-2'
       }
     >
-      {agentLayout && (
-        <div className="agent-capability-banner">
-          <p>{t.skills.inventoryScopeHint}</p>
-          <Button onClick={() => navigate('/capabilities?tab=connectors')} size="sm" variant="outline">
-            {t.connectorsPage.title}
-          </Button>
-        </div>
+      {agentLayout ? (
+        <>
+          <AgentCapabilityBanner
+            action={
+              <Button onClick={() => navigate('/capabilities?tab=connectors')} variant="outline">
+                {agentCopy.connectors.browse}
+              </Button>
+            }
+            description={agentCopy.connectors.bannerBody}
+            title={agentCopy.connectors.bannerTitle}
+          />
+          <AgentConnectors
+            addDisabled={mcp.profilePending}
+            busyKey={busyKey}
+            cards={cards}
+            filter={filter}
+            hostedFailed={hosted.phase === 'failed'}
+            loading={loading}
+            notices={notices}
+            onAddServer={() => setAddOpen(true)}
+            onFilterChange={setFilter}
+            onOpen={card => setOpenKey(cardKey(card))}
+            onPrefetch={card => prefetchConnectorTools(profile, card)}
+            onRetryHosted={hosted.refetch}
+            onServerToggle={onServerToggle}
+            onVerb={runVerb}
+            selectedKey={openKey}
+          />
+        </>
+      ) : (
+        <ConnectorsDirectory
+          addYourOwn={
+            <Button disabled={mcp.profilePending} onClick={() => setAddOpen(true)} size="xs" variant="outline">
+              {copy.add.action}
+            </Button>
+          }
+          busyKey={busyKey}
+          cards={cards}
+          filter={filter}
+          hostedFailed={hosted.phase === 'failed'}
+          loading={loading}
+          notices={notices}
+          onFilterChange={setFilter}
+          onOpen={card => setOpenKey(cardKey(card))}
+          onPrefetch={card => prefetchConnectorTools(profile, card)}
+          onRetryHosted={hosted.refetch}
+          onServerToggle={onServerToggle}
+          onVerb={runVerb}
+          selectedKey={openKey}
+        />
       )}
-      <ConnectorsDirectory
-        addYourOwn={
-          <Button disabled={mcp.profilePending} onClick={() => setAddOpen(true)} size="xs" variant="outline">
-            {copy.add.action}
-          </Button>
-        }
-        busyKey={busyKey}
-        cards={cards}
-        filter={filter}
-        hostedFailed={hosted.phase === 'failed'}
-        loading={(hosted.phase === 'loading' || mcp.configLoading || mcp.catalogLoading) && cards.length === 0}
-        notices={<HostedNotice hasGuest={freeTier?.has_guest === true} phase={hosted.phase} />}
-        onFilterChange={setFilter}
-        onOpen={card => setOpenKey(cardKey(card))}
-        onPrefetch={card => prefetchConnectorTools(profile, card)}
-        onRetryHosted={hosted.refetch}
-        onServerToggle={
-          agentControls
-            ? (card, next) => {
-                if (card.plugin === undefined) {
-                  void mcp.setServerEnabled(localServerName(card), next)
-                }
-              }
-            : undefined
-        }
-        onVerb={runVerb}
-        selectedKey={openKey}
-      />
 
       {openCard && openCard.ways.hosted === null ? (
         <LocalConnectorDialog

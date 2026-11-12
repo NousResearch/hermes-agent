@@ -7,16 +7,14 @@ import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { Kbd, KbdCombo } from '@/components/ui/kbd'
 import { SearchField } from '@/components/ui/search-field'
 import { Tip } from '@/components/ui/tooltip'
-import { useContributions } from '@/contrib/react/use-contributions'
 import { useI18n } from '@/i18n'
 import {
-  allKeybindActions,
+  $offeredKeybindActions,
   KEYBIND_CATEGORIES,
   KEYBIND_PANEL_ACTION,
   KEYBIND_READONLY,
   type KeybindActionMeta,
-  type KeybindReadonly,
-  KEYBINDS_AREA
+  type KeybindReadonly
 } from '@/lib/keybinds/actions'
 import { formatCombo } from '@/lib/keybinds/combo'
 import { arraysEqual } from '@/lib/storage'
@@ -37,7 +35,7 @@ import { HudModifierSettings } from './hud-modifier-settings'
 import { SettingsBreadcrumbContext, SettingsContent } from './primitives'
 import { ScreenshotSettings } from './screenshot-settings'
 import { SettingsCard, SettingsDisclosure, SettingsGroup, SettingsOverview } from './settings-card'
-import { useSettingsPagesCopy } from './settings-pages-copy'
+import { forHost, useSettingsPagesCopy } from './settings-pages-copy'
 import { useSettingDeepLink } from './use-setting-deep-link'
 
 interface KeybindSettingsProps {
@@ -74,11 +72,8 @@ function ShortcutSettings({ includeScreenshot }: { includeScreenshot: boolean })
   const bindings = useStore($bindings)
   const k = t.keybinds
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
-  // Subscribe so contributed actions appear/disappear live in the map. The
-  // snapshot feeds the list: under React Compiler an independently called
-  // allKeybindActions() stays memoized across that registration.
-  const contributions = useContributions(KEYBINDS_AREA)
-  const allActions = allKeybindActions(contributions)
+  // Live list: follows contributed actions and availability (e.g. a shell flip).
+  const allActions = useStore($offeredKeybindActions)
   const primaryActions = redesign ? allActions.filter(action => action.id === 'nav.commandPalette') : []
   const actionList = allActions.filter(action => !primaryActions.includes(action))
   const [query, setQuery] = useState('')
@@ -141,7 +136,7 @@ function ShortcutSettings({ includeScreenshot }: { includeScreenshot: boolean })
           <div className="min-w-0">
             {!hasBreadcrumb && <h2 className="text-sm font-semibold text-foreground">{k.title}</h2>}
             <p className="mt-0.5 text-[0.72rem] text-muted-foreground" data-slot="page-description">
-              {k.subtitle(openCombo ? formatCombo(openCombo) : '')}
+              {redesign ? forHost(pages.hostIntro.keybinds) : k.subtitle(openCombo ? formatCombo(openCombo) : '')}
             </p>
           </div>
           {!redesign && (
@@ -161,7 +156,7 @@ function ShortcutSettings({ includeScreenshot }: { includeScreenshot: boolean })
             <ScreenshotSettings />
           )}
 
-        <SettingsGroup title={pages.keybinds.bindings}>
+        <SettingsGroup meta={forHost(pages.savedHere)} title={pages.keybinds.bindings}>
           {primaryActions.length > 0 && (
             <SettingsCard className="global-shortcut-primary">
               {primaryActions.map(action => (
@@ -232,9 +227,9 @@ function ShortcutSettings({ includeScreenshot }: { includeScreenshot: boolean })
         </SettingsGroup>
         {/* The desktop gestures Figma does not draw (HUD, screenshot) fold under Advanced so the page
             is one destination; classic keeps them as their own subpages. */}
-        {redesign && (
+        {/* Both gestures need the desktop bridge; a browser tab has neither, so no empty Advanced. */}
+        {redesign && (window.hermesDesktop?.hudModifier || window.hermesDesktop?.screenshot) && (
           <SettingsDisclosure
-            count={2}
             description={`${t.settings.subpages.hudGesture} · ${t.settings.subpages.screenCapture}`}
             title={t.settings.sections.advanced}
           >

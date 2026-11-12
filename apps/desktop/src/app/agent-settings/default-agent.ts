@@ -19,7 +19,11 @@ export function useDefaultAgent(owner: AgentSettingsOwner, profile?: ProfileInfo
   const defaultRoute = useStore($defaultProfileRoute)
   const [saving, setSaving] = useState(false)
   const route = { connectionId: owner.connectionId ?? null, profile: owner.profile }
-  const isDefault = defaultRoute?.connectionId === route.connectionId && defaultRoute.profile === route.profile
+  // No stored route means the app opens the backend's own default profile, so that agent is the
+  // default until the user picks another (keeps this in step with the DEFAULT chip).
+  const isDefault = defaultRoute
+    ? defaultRoute.connectionId === route.connectionId && defaultRoute.profile === route.profile
+    : Boolean(profile?.is_default) && (!route.connectionId || route.connectionId === LOCAL_CONNECTION_ID)
 
   const canSetDefault =
     Boolean(window.hermesDesktop?.profile?.setDefault) &&

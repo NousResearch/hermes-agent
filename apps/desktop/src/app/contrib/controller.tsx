@@ -105,7 +105,8 @@ import {
 import { watchSessionPins } from '@/store/session-pin-sync'
 import { $botChatScopes } from '@/store/session-states'
 import { watchUnreadWriteGuard } from '@/store/session-unread-remote'
-import { $statusbarShown, $statusbarStripAvailable, $statusbarVisible } from '@/store/statusbar-prefs'
+import { $statusbarShown, $statusbarVisible } from '@/store/statusbar-prefs'
+import { $statusbarStripAvailable } from '@/store/statusbar-strip'
 import { isBrowserWindow, isHudWindow } from '@/store/windows'
 
 import { BrowserPopoutShell } from '../chat/browser-popout-shell'

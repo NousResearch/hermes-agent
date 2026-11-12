@@ -28,6 +28,7 @@ import { $hudMode } from '@/store/hud'
 import { $chatOnboardingSolo } from '@/store/onboarding-intro'
 import { sessionBlockingPrompt } from '@/store/prompts'
 import { $gatewayState } from '@/store/session'
+import { $setupGuideOnboarding } from '@/store/shell-policy'
 import { usePortalShell } from '@/store/shell-variant'
 import { useForcedTextDirection } from '@/store/text-direction'
 import { $threadScrolledUpBySession } from '@/store/thread-scroll'
@@ -148,6 +149,9 @@ export function ChatBar({
 }: ChatBarProps) {
   const hudMode = useStore($hudMode)
   const redesigned = usePortalShell()
+  // Behaviour, not looks: the classic first run's composer rules follow the window-independent
+  // preference, so a HUD (classic look) never runs them while the redesign is preferred.
+  const setupGuide = useStore($setupGuideOnboarding)
   const touchPointer = useStore($touchPointer)
   const tapFocus = useMemo(() => (touchPointer ? touchTapFocusHandlers() : undefined), [touchPointer])
   const hudWindowing = window.hermesDesktop?.hud?.windowing
@@ -203,7 +207,7 @@ export function ChatBar({
 
   const guidedChat = useSetupChatView()
   const onboardingSolo = useStore($chatOnboardingSolo)
-  const chatOnboardingSolo = !redesigned && onboardingSolo
+  const chatOnboardingSolo = !setupGuide && onboardingSolo
 
   const composerTourMarker = useTourMarker('composer')
 
@@ -1107,7 +1111,7 @@ export function ChatBar({
       busy={busy}
       busyAction={busyAction}
       canSubmit={canSubmit}
-      cardWaiting={!redesigned && cardWaiting}
+      cardWaiting={cardWaiting}
       compactModelPill={poppedOut || compactPill}
       conversation={{
         active: voiceConversationActive,
@@ -1293,7 +1297,7 @@ export function ChatBar({
               request={requestBusyConfig}
               sessionKey={activeQueueSessionKey}
             />
-            {!redesigned && <OnboardingSkip sessionId={statusSessionId} />}
+            {!setupGuide && <OnboardingSkip sessionId={statusSessionId} />}
           </div>
           {/* Session-scoped status stack (todos, subagents, background tasks,
               queue). An in-flow dock child: the dock is bottom-anchored, so it

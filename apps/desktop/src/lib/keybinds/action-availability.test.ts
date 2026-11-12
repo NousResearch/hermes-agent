@@ -1,12 +1,10 @@
-// Declares the statusbar toggle's availability, as the app does when it loads the statusbar.
-import '@/store/statusbar-prefs'
-
 import { afterEach, describe, expect, it } from 'vitest'
 
+// The bindings store every keybind surface reads; it declares window-dependent availability itself.
 import { $bindings, conflictsFor } from '@/store/keybinds'
 import { $shellChoice } from '@/store/shell-variant'
 
-import { allKeybindActions, defaultBindings } from './actions'
+import { $offeredKeybindActions, allKeybindActions, defaultBindings } from './actions'
 
 const listed = (id: string) => allKeybindActions().some(action => action.id === id)
 
@@ -20,6 +18,20 @@ describe('shell-dependent shortcuts', () => {
 
     $shellChoice.set(null)
     expect(listed('view.toggleStatusbar')).toBe(false)
+  })
+
+  it('updates a live list of offered actions when the shell flips', () => {
+    const seen: boolean[] = []
+
+    const stop = $offeredKeybindActions.subscribe(actions =>
+      seen.push(actions.some(action => action.id === 'view.toggleStatusbar'))
+    )
+
+    $shellChoice.set(false)
+    $shellChoice.set(null)
+    stop()
+
+    expect(seen).toEqual([false, true, false])
   })
 
   it('keeps its binding while unlisted, so a flip back to classic finds the chord where it was', () => {

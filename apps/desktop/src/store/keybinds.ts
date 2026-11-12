@@ -1,11 +1,19 @@
 import { atom, computed } from 'nanostores'
 
 import { $registryVersion } from '@/contrib/registry'
-import { defaultBindings, keybindAction, keybindActionCatalog, type KeybindBindings } from '@/lib/keybinds/actions'
+import {
+  declareKeybindAvailability,
+  defaultBindings,
+  keybindAction,
+  keybindActionCatalog,
+  type KeybindBindings
+} from '@/lib/keybinds/actions'
 import { followBrowserWindowKind } from '@/lib/keybinds/app-window'
 import { canonicalizeCombo } from '@/lib/keybinds/combo'
 import { persistStore } from '@/lib/persist-store'
 import { arraysEqual, persistString, storedString, type WriteOptions } from '@/lib/storage'
+
+import { $statusbarStripAvailable } from './statusbar-strip'
 
 const STORAGE_KEY = 'hermes.desktop.keybinds'
 
@@ -116,6 +124,10 @@ function keepOffUserChords(id: string, combos: string[]): boolean {
 
 // "Open in Chrome" turns an app window into a tab without a reload.
 followBrowserWindowKind($bindings, defaultBindings, keepOffUserChords)
+
+// Window-dependent actions, declared beside the bindings every keybind surface (panel, dispatcher,
+// hints) already reads, so none of them depends on which store happened to load first.
+declareKeybindAvailability('view.toggleStatusbar', $statusbarStripAvailable)
 
 /** Live combos for an action: explicit binding → stored override → default. */
 export function bindingsFor(id: string, bindings: KeybindBindings = $bindings.get()): string[] {

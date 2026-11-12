@@ -1,6 +1,6 @@
 import { QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { MemoryRouter } from 'react-router'
+import { MemoryRouter, useLocation } from 'react-router'
 import { afterEach, beforeAll, beforeEach, expect, it, vi } from 'vitest'
 
 import { $apiRequestScope } from '@/api/client'
@@ -240,16 +240,41 @@ it('starts a newly selected settings section at the top without moving its navig
 })
 
 it('expands tool configuration in place without scrolling away from its disclosure', async () => {
-  mount('/settings?agentProfile=default&connection=beta&panel=settings&tab=agent:tools')
-  const advanced = await screen.findByRole('button', { name: /^Advanced/ })
+  let search = ''
+
+  function LocationProbe() {
+    search = useLocation().search
+
+    return null
+  }
+
+  const location = () => ({ search })
+
+  render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={['/settings?agentProfile=default&connection=beta&panel=settings&tab=agent:tools']}>
+        <SettingsView onClose={() => {}} />
+        <LocationProbe />
+      </MemoryRouter>
+    </QueryClientProvider>
+  )
+
+  const advanced = (await screen.findByText(en.settings.sections.advanced, { selector: 'summary *' })).closest(
+    'details'
+  )!
+
   const body = advanced.closest('section')!
 
   body.scrollTop = 240
-  fireEvent.click(advanced)
-  await waitFor(() => expect(advanced.getAttribute('aria-expanded')).toBe('true'))
+  advanced.open = true
+  fireEvent(advanced, new Event('toggle'))
+  await waitFor(() => expect(location().search).toContain('tools-advanced'))
+  expect(advanced.open).toBe(true)
   expect(body.scrollTop).toBe(240)
-  fireEvent.click(advanced)
-  await waitFor(() => expect(advanced.getAttribute('aria-expanded')).toBe('false'))
+  advanced.open = false
+  fireEvent(advanced, new Event('toggle'))
+  await waitFor(() => expect(location().search).not.toContain('tools-advanced'))
+  expect(advanced.open).toBe(false)
   expect(body.scrollTop).toBe(240)
 })
 

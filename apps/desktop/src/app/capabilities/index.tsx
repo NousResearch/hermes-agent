@@ -218,7 +218,8 @@ export function CapabilitiesView({
       }
       tabsAlign="start"
     >
-      <div className="flex h-full flex-col">
+      {/* An agent editor scrolls as one page, so its capability list sizes to content. */}
+      <div className={presentation.agentLayout ? 'grid' : 'flex h-full flex-col'}>
         {!agentControls && (
           <CapabilityInventoryScope
             onOpenAgentSettings={openAgentSettings}
@@ -227,7 +228,7 @@ export function CapabilitiesView({
             scope={scope}
           />
         )}
-        <div className="flex min-h-0 flex-1 flex-col">
+        <div className={presentation.agentLayout ? 'grid' : 'flex min-h-0 flex-1 flex-col'}>
           <CapabilityLoadGate
             error={skillsError}
             failed={skillsFailed || toolsetsFailed}

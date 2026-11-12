@@ -5,7 +5,9 @@
 // like navigate / theme); labels come from i18n (`t.keybinds.actions[id]`). To
 // add a hotkey, add a row here and a handler there — nothing else.
 
-import { registry } from '@/contrib/registry'
+import { atom, computed, onMount, type ReadableAtom } from 'nanostores'
+
+import { $registryVersion, registry } from '@/contrib/registry'
 import type { Contribution } from '@/contrib/types'
 import { hostHas } from '@/lib/host-capabilities'
 import { isMacPlatform } from '@/lib/platform'
@@ -219,7 +221,7 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // `workbench.action.toggleStatusbarVisibility` unbound (it's a chord-free
   // gap in their View family) and Hermes has no chord dispatcher, so this
   // takes the nearest free single combo instead of a ⌘K ⌘S two-stroke.
-  // Offered only where the shell has a strip (store/statusbar-prefs.ts declares it).
+  // Offered only where the shell has a strip (store/keybinds.ts declares it).
   { id: 'view.toggleStatusbar', category: 'view', defaults: ['mod+shift+s'] },
   // ⌥⌘T — "t" for tabs, reaching past ⇧ because ⌘⇧T is reopen-closed-tab
   // everywhere. Ships BOUND, unlike VS Code's settings-only tab-bar switch:
@@ -362,19 +364,56 @@ export function keybindActionCatalog(contributions?: readonly Contribution[]): K
   ]
 }
 
-const availability = new Map<string, () => boolean>()
+const availability = new Map<string, ReadableAtom<boolean>>()
 
-/** A shell-dependent command declares when it does anything in this window. The store that owns
- *  that policy declares it, so this table stays free of app state. An unavailable action keeps
- *  its bindings (a shell flip brings its context back) but leaves the shortcut map. */
-export function declareKeybindAvailability(id: string, available: () => boolean): void {
-  availability.set(id, available)
+// Bumped whenever a declared availability changes, so `$offeredKeybindActions` recomputes. It
+// watches the declared stores only while something watches it: a declaration made at import never
+// evaluates window state (the window kind) before the app reads it.
+const $keybindAvailability = atom(0)
+const availabilityWatches = new Map<string, () => void>()
+
+const bumpAvailability = () => $keybindAvailability.set($keybindAvailability.get() + 1)
+
+const watchAvailability = (id: string, $available: ReadableAtom<boolean>) => {
+  availabilityWatches.get(id)?.()
+  availabilityWatches.set(id, $available.listen(bumpAvailability))
+}
+
+onMount($keybindAvailability, () => {
+  availability.forEach(($available, id) => watchAvailability(id, $available))
+
+  return () => {
+    availabilityWatches.forEach(stop => stop())
+    availabilityWatches.clear()
+  }
+})
+
+/** A window-dependent command declares when it does anything here, as a store, so this table stays
+ *  free of app state (store/keybinds.ts makes the declarations). An unavailable action keeps its
+ *  bindings and conflicts (a shell flip brings its context back) but leaves the shortcut map, and
+ *  the dispatcher lets its chord through instead of swallowing it. */
+export function declareKeybindAvailability(id: string, $available: ReadableAtom<boolean>): void {
+  availability.set(id, $available)
+
+  if ($keybindAvailability.lc > 0) {
+    watchAvailability(id, $available)
+    bumpAvailability()
+  }
+}
+
+export function keybindActionAvailable(id: string): boolean {
+  return availability.get(id)?.get() ?? true
 }
 
 /** The actions this window offers right now: what the shortcut map lists. */
 export function allKeybindActions(contributions?: readonly Contribution[]): KeybindActionMeta[] {
-  return keybindActionCatalog(contributions).filter(action => availability.get(action.id)?.() ?? true)
+  return keybindActionCatalog(contributions).filter(action => keybindActionAvailable(action.id))
 }
+
+/** `allKeybindActions` as a store for a list that must stay live: it follows late plugin
+ *  registrations and a runtime shell flip, which a memoized `allKeybindActions(contributions)`
+ *  call (React Compiler keys it on `contributions` alone) would miss. */
+export const $offeredKeybindActions = computed([$registryVersion, $keybindAvailability], () => allKeybindActions())
 
 export function keybindAction(id: string): KeybindActionMeta | undefined {
   return ACTION_BY_ID.get(id) ?? keybindActionCatalog().find(action => action.id === id)

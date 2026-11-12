@@ -1,6 +1,6 @@
 import './global-overviews.css'
 
-import type { ComponentProps, ReactNode, Ref } from 'react'
+import { type ComponentProps, type ReactNode, type Ref, useLayoutEffect, useRef, useState } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
 import { cn } from '@/lib/utils'
@@ -97,14 +97,50 @@ interface SettingsDisclosureProps {
   children: ReactNode
   title: ReactNode
   description?: ReactNode
-  /** Number of settings inside, shown as a badge beside the caret. */
+  /** Badge beside the caret. Omitted, it counts the settings rendered inside; pass it when the
+   *  body lists items rather than settings (archived chats, the full shortcut list). */
   count?: number
   /** What classic renders above the children instead of a summary row. */
   classicHeading?: ReactNode
   className?: string
   /** Starts expanded (a deep link points inside it). */
   open?: boolean
+  /** The user opened or closed it (a route that owns the expanded state follows along). */
+  onOpenChange?: (open: boolean) => void
   ref?: Ref<HTMLDetailsElement>
+}
+
+/** Every setting control row carries it: ListRow (and so ToggleRow), credential key cards. */
+const SETTINGS_ROW = '[data-setting]'
+
+/** Top-level settings under `body`: a row nested in another row's `below` is part of that one. */
+function countSettingsRows(body: HTMLElement) {
+  return [...body.querySelectorAll(SETTINGS_ROW)].filter(
+    row => !body.contains(row.parentElement?.closest(SETTINGS_ROW) ?? null)
+  ).length
+}
+
+/** Live count of the settings a disclosure body renders; rows mount late (config loads), so it follows the DOM. */
+function useRenderedSettingsCount(enabled: boolean) {
+  const body = useRef<HTMLDivElement>(null)
+  const [count, setCount] = useState(0)
+
+  useLayoutEffect(() => {
+    const element = body.current
+
+    if (!enabled || !element) {
+      return
+    }
+
+    const update = () => setCount(countSettingsRows(element))
+    const observer = new MutationObserver(update)
+    update()
+    observer.observe(element, { childList: true, subtree: true })
+
+    return () => observer.disconnect()
+  }, [enabled])
+
+  return { body, count }
 }
 
 /** A collapsed card (856:3467): title, optional description and count, chevron that flips on open. */
@@ -115,10 +151,13 @@ export function SettingsDisclosure({
   count,
   description,
   open,
+  onOpenChange,
   ref,
   title
 }: SettingsDisclosureProps) {
   const redesign = usePortalShell()
+  const rendered = useRenderedSettingsCount(redesign && count === undefined)
+  const badge = count ?? (rendered.count || undefined)
 
   if (!redesign) {
     return (
@@ -130,16 +169,23 @@ export function SettingsDisclosure({
   }
 
   return (
-    <details className={cn('global-settings-disclosure group', className)} open={open || undefined} ref={ref}>
+    <details
+      className={cn('global-settings-disclosure group', className)}
+      onToggle={onOpenChange && (event => onOpenChange(event.currentTarget.open))}
+      open={open || undefined}
+      ref={ref}
+    >
       <summary>
         <span className="global-settings-disclosure-text">
           <span className="global-settings-disclosure-title">{title}</span>
           {description && <span className="global-settings-disclosure-description">{description}</span>}
         </span>
-        {count !== undefined && <span className="global-settings-disclosure-count">{count}</span>}
+        {badge !== undefined && <span className="global-settings-disclosure-count">{badge}</span>}
         <Codicon aria-hidden className="global-settings-disclosure-caret" name="chevron-down" />
       </summary>
-      <div className="global-settings-disclosure-body">{children}</div>
+      <div className="global-settings-disclosure-body" ref={rendered.body}>
+        {children}
+      </div>
     </details>
   )
 }

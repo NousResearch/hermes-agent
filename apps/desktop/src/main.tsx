@@ -30,6 +30,7 @@ import { createRoot } from 'react-dom/client'
 import { HashRouter } from 'react-router'
 
 import App from './app'
+import { installTitlebarBandProperty } from './app/shell/use-touch-titlebar'
 import { RootErrorBoundary } from './components/error-boundary'
 import { HapticsProvider } from './components/haptics-provider'
 import { RootTooltipProvider } from './components/ui/tooltip'
@@ -56,6 +57,8 @@ startUiPreferencesSync(window.hermesDesktop?.uiPreferences)
 // <html data-shell> gates every redesign rule, including body-portalled surfaces;
 // set it before the first render and keep it in step with runtime toggles.
 installShellAttribute()
+// Body-portalled surfaces clear the band through this root property, in every window.
+installTitlebarBandProperty()
 
 // The perf probe ships in dev, and in a production build ONLY when explicitly
 // opted in (VITE_PERF_PROBE=1) — this lets the perf harness measure a real,

@@ -36,7 +36,9 @@ export function PortalSessionTab() {
 
   return (
     <div className="portal-session-tab" data-slot="portal-session-tab">
-      <span className="portal-session-tab-title">{title}</span>
+      {/* The widest thing mid-band and not interactive, so it drags the window like the band
+          around it (its cluster is no-drag for the "+"). No tooltip: a drag region gets no hover. */}
+      <span className="portal-session-tab-title [-webkit-app-region:drag]">{title}</span>
       <Tip label={<TipKeybindLabel actionId="session.new" text={label} />} placement="toolbar">
         <Button
           aria-label={label}

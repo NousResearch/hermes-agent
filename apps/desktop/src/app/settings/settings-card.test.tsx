@@ -1,8 +1,9 @@
-import { act, fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { $shellChoice } from '@/store/shell-variant'
 
+import { ListRow, ToggleRow } from './primitives'
 import { SettingsCard, SettingsDisclosure } from './settings-card'
 
 afterEach(() => {
@@ -29,6 +30,46 @@ describe('SettingsDisclosure', () => {
     fireEvent.click(summary)
 
     expect(details.open).toBe(true)
+  })
+
+  it('counts the settings it renders when no count is given, and follows rows that mount later', async () => {
+    act(() => $shellChoice.set(true))
+
+    const { rerender } = render(
+      <SettingsDisclosure title="Advanced">
+        <ListRow title="Interface scale" />
+        <ToggleRow checked={false} label="Thread timeline" onChange={() => {}} />
+      </SettingsDisclosure>
+    )
+
+    const summary = () => screen.getByText('Advanced').closest('summary')!
+
+    expect(summary().textContent).toContain('2')
+
+    rerender(
+      <SettingsDisclosure title="Advanced">
+        <ListRow title="Interface scale" />
+        <ToggleRow checked={false} label="Thread timeline" onChange={() => {}} />
+        <ListRow below={<ListRow title="Nested detail" />} title="Chat font" />
+      </SettingsDisclosure>
+    )
+
+    // A row inside another row's `below` is part of that setting, not a second one.
+    await waitFor(() => expect(summary().textContent).toContain('3'))
+  })
+
+  it('shows no badge when it holds no settings', () => {
+    act(() => $shellChoice.set(true))
+
+    render(
+      <SettingsDisclosure title="Advanced">
+        <p>Build details</p>
+      </SettingsDisclosure>
+    )
+
+    expect(
+      screen.getByText('Advanced').closest('summary')!.querySelector('.global-settings-disclosure-count')
+    ).toBeNull()
   })
 
   it('keeps classic settings always visible under the classic heading', () => {

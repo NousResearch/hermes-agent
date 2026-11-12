@@ -1,17 +1,18 @@
+import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
 import { useOnboardingChatActive } from '@/components/onboarding/first-run/assembly'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
-import { usePortalShell } from '@/store/shell-variant'
+import { $setupGuideOnboarding } from '@/store/shell-policy'
 
 // Shown over the conversation while the live gateway swaps to another profile's
 // backend (lazily spawned). Keeps the last profile name through the fade-out so
 // the label doesn't blank. Purely visual — pointer-events-none.
 export function ChatSwapOverlay({ profile }: { profile: string | null }) {
   const { t } = useI18n()
-  const redesign = usePortalShell()
+  const setupGuide = useStore($setupGuideOnboarding)
   const onboarding = useOnboardingChatActive()
   const [label, setLabel] = useState<null | string>(profile)
 
@@ -22,7 +23,7 @@ export function ChatSwapOverlay({ profile }: { profile: string | null }) {
   }, [profile])
 
   // Classic setup owns its greeting while the default profile wakes.
-  if (!redesign && onboarding) {
+  if (!setupGuide && onboarding) {
     return null
   }
 

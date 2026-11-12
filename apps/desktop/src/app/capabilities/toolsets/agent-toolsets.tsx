@@ -1,7 +1,8 @@
-import { useRef, useState } from 'react'
+import { useId, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
 
 import { Button } from '@/components/ui/button'
+import { Codicon } from '@/components/ui/codicon'
 import { Switch } from '@/components/ui/switch'
 import { type ProfileScope, setToolsetEnabled } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -11,10 +12,20 @@ import { notifyError } from '@/store/notifications'
 import type { ToolsetInfo } from '@/types/hermes'
 
 import { asText, toolNames, toolsetDisplayLabel } from '../../settings/helpers'
+import {
+  AgentCapabilityBanner,
+  AgentCapabilityMore,
+  AgentCapabilityRow,
+  AgentCapabilitySection
+} from '../ui/agent-capability'
+import { useAgentCapabilityCopy } from '../ui/agent-capability-copy'
 import { CapabilitySearch } from '../ui/capability-search'
 
 import { ToolsetDetail } from './toolset-detail'
 import { filteredToolsets, toolsetsQueryKey } from './toolsets-data'
+
+/** Off toolsets the Off card lists before "Show all" (895:14956). */
+const OFF_PREVIEW = 9
 
 interface AgentToolsetsProps {
   profile: ProfileScope
@@ -23,8 +34,10 @@ interface AgentToolsetsProps {
   onQueryChange: (query: string) => void
 }
 
+/** One agent's toolsets (Figma 895:13886): On, then Off; each row's switch writes this profile. */
 export function AgentToolsets({ profile, toolsets, query, onQueryChange }: AgentToolsetsProps) {
   const { t } = useI18n()
+  const copy = useAgentCapabilityCopy()
   const navigate = useNavigate()
   const writing = useRef(false)
   const [busy, setBusy] = useState(false)
@@ -32,6 +45,7 @@ export function AgentToolsets({ profile, toolsets, query, onQueryChange }: Agent
   const visible = filteredToolsets(toolsets, query, {}, true)
   const on = visible.filter(toolset => toolset.enabled)
   const off = visible.filter(toolset => !toolset.enabled)
+  const offShown = showAll || query ? off : off.slice(0, OFF_PREVIEW)
 
   const refresh = () => {
     void queryClient.invalidateQueries({ queryKey: toolsetsQueryKey(profile), exact: true })
@@ -67,91 +81,113 @@ export function AgentToolsets({ profile, toolsets, query, onQueryChange }: Agent
 
   const rows = (items: ToolsetInfo[]) =>
     items.map(toolset => (
-      <div className="flex items-start gap-3 py-3" key={toolset.name}>
-        <ToolsetConfiguration onConfiguredChange={refresh} profile={profile} toolset={toolset} />
-        {!toolset.configured && <span className="text-xs text-(--ui-text-tertiary)">{t.skills.needsKeys}</span>}
-        <Switch
-          aria-label={t.skills.toggleToolset(toolsetDisplayLabel(toolset), !toolset.enabled)}
-          checked={toolset.enabled}
-          disabled={busy}
-          onCheckedChange={enabled => void toggle(toolset, enabled)}
-        />
-      </div>
+      <AgentToolsetRow
+        busy={busy}
+        key={toolset.name}
+        onConfiguredChange={refresh}
+        onToggle={enabled => void toggle(toolset, enabled)}
+        profile={profile}
+        toolset={toolset}
+      />
     ))
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto">
-      <div className="agent-capability-list">
-        <div className="agent-capability-banner">
-          <p>{t.skills.agentScopeHint}</p>
+    <div className="agent-capability-list">
+      <AgentCapabilityBanner
+        action={
           <Button onClick={() => navigate('/capabilities?tab=toolsets')} variant="outline">
             {t.skills.openToolLibrary}
           </Button>
-        </div>
-        <CapabilitySearch
-          onChange={onQueryChange}
-          placeholder={t.skills.searchToolsets}
-          scope={t.skills.tabToolsets}
-          value={query}
-        />
-        <section aria-label={t.common.on}>
-          <h3 className="text-sm text-(--ui-text-secondary)">
-            {t.common.on} · {on.length}
-          </h3>
-          <div className="agent-capability-rows">{rows(on)}</div>
-        </section>
-        <section aria-label={t.common.off}>
-          <h3 className="text-sm text-(--ui-text-secondary)">
-            {t.common.off} · {off.length}
-          </h3>
-          <div className="agent-capability-rows">{rows(showAll || query ? off : off.slice(0, 9))}</div>
-          {!showAll && !query && off.length > 9 && (
-            <Button onClick={() => setShowAll(true)} variant="textStrong">
-              {t.skills.showAllToolsets(off.length)}
-            </Button>
-          )}
-        </section>
-      </div>
+        }
+        description={copy.tools.bannerBody}
+        title={copy.tools.bannerTitle}
+      />
+      <CapabilitySearch
+        onChange={onQueryChange}
+        placeholder={t.skills.searchToolsets}
+        scope={t.skills.tabToolsets}
+        value={query}
+      />
+      {on.length > 0 && (
+        <AgentCapabilitySection description={copy.tools.onDesc} title={t.common.on}>
+          {rows(on)}
+        </AgentCapabilitySection>
+      )}
+      {off.length > 0 && (
+        <AgentCapabilitySection
+          description={copy.tools.offDesc(offShown.length, off.length)}
+          footer={
+            offShown.length < off.length && (
+              <AgentCapabilityMore label={copy.showAll(off.length)} onClick={() => setShowAll(true)} />
+            )
+          }
+          title={t.common.off}
+        >
+          {rows(offShown)}
+        </AgentCapabilitySection>
+      )}
     </div>
   )
 }
 
-function ToolsetConfiguration({
-  profile,
-  toolset,
-  onConfiguredChange
-}: {
+interface AgentToolsetRowProps {
   profile: ProfileScope
   toolset: ToolsetInfo
+  busy: boolean
+  onToggle: (enabled: boolean) => void
   onConfiguredChange: () => void
-}) {
+}
+
+/** "2 tools ⌄" opens the row to its tool keys and the toolset's own keys/provider settings. */
+function AgentToolsetRow({ profile, toolset, busy, onToggle, onConfiguredChange }: AgentToolsetRowProps) {
   const { t } = useI18n()
+  const copy = useAgentCapabilityCopy()
   const [open, setOpen] = useState(false)
+  const detailId = useId()
+  const label = toolsetDisplayLabel(toolset)
+  const tools = toolNames(toolset)
+  const expander = open ? copy.less : t.catalog.toolsets.toolCount(tools.length)
 
   return (
-    <details className="group/toolset min-w-0 flex-1" onToggle={event => setOpen(event.currentTarget.open)}>
-      <summary className="cursor-pointer text-sm">
-        {toolsetDisplayLabel(toolset)}
-        <span className="ml-2 text-xs text-(--ui-text-tertiary)">
-          {t.catalog.toolsets.toolCount(toolNames(toolset).length)}
-        </span>
-        <span className="mt-1 line-clamp-2 text-xs text-(--ui-text-tertiary) group-open/toolset:line-clamp-none">
-          {asText(toolset.description)}
-        </span>
-      </summary>
-      {open && (
-        <div className="grid gap-4 pt-4">
-          <ul className="flex flex-wrap gap-2 text-xs text-(--ui-text-secondary)">
-            {toolNames(toolset).map(name => (
-              <li className="break-all font-mono" key={name}>
-                {name}
-              </li>
-            ))}
-          </ul>
-          <p className="text-xs text-(--ui-text-tertiary)">{t.skills.toolSecretsHint}</p>
-          <ToolsetDetail onConfiguredChange={onConfiguredChange} profile={profile} toolCalls={{}} toolset={toolset} />
-        </div>
-      )}
-    </details>
+    <AgentCapabilityRow
+      below={
+        open && (
+          <div className="agent-capability-detail" id={detailId}>
+            <ul aria-label={label} className="agent-capability-tags">
+              {tools.map(name => (
+                <li key={name}>{name}</li>
+              ))}
+            </ul>
+            <p className="agent-capability-meta">{t.skills.toolSecretsHint}</p>
+            <ToolsetDetail onConfiguredChange={onConfiguredChange} profile={profile} toolCalls={{}} toolset={toolset} />
+          </div>
+        )
+      }
+      controls={
+        <>
+          {!toolset.configured && <span className="agent-capability-meta">{t.skills.needsKeys}</span>}
+          <button
+            aria-controls={open ? detailId : undefined}
+            aria-expanded={open}
+            aria-label={`${label}: ${expander}`}
+            className="agent-capability-expander"
+            onClick={() => setOpen(value => !value)}
+            type="button"
+          >
+            {expander}
+            <Codicon aria-hidden name={open ? 'chevron-up' : 'chevron-down'} size="0.75rem" />
+          </button>
+          <Switch
+            aria-label={t.skills.toggleToolset(label, !toolset.enabled)}
+            checked={toolset.enabled}
+            disabled={busy}
+            onCheckedChange={onToggle}
+          />
+        </>
+      }
+      description={asText(toolset.description)}
+      expanded={open}
+      name={label}
+    />
   )
 }

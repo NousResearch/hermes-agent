@@ -37,7 +37,7 @@ import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { onboardingChatStore } from '@/store/onboarding-session'
 import { $reasoningCollapsedByDefault, $showReasoning } from '@/store/reasoning-disclosure'
-import { usePortalShell } from '@/store/shell-variant'
+import { $setupGuideOnboarding } from '@/store/shell-policy'
 import { useForcedTextDirection } from '@/store/text-direction'
 import { $showToolActivity } from '@/store/tool-activity'
 
@@ -234,11 +234,11 @@ const ThinkingDisclosure: FC<{
   timerKey: string
 }> = ({ children, completedAt, messageRunning = false, pending = false, timestamp, timerKey }) => {
   const { t } = useI18n()
-  const redesign = usePortalShell()
+  const setupGuide = useStore($setupGuideOnboarding)
   const sessionId = useStore(useSessionView().$runtimeId)
   const onboardingChat = useStore(useMemo(() => onboardingChatStore(sessionId), [sessionId]))
   // Classic setup rests reasoning collapsed; redesigned chat follows the user's preference.
-  const reasoningCollapsedByDefault = useStore($reasoningCollapsedByDefault) || (!redesign && onboardingChat)
+  const reasoningCollapsedByDefault = useStore($reasoningCollapsedByDefault) || (!setupGuide && onboardingChat)
   // `null` = no explicit user toggle yet. Live reasoning remains visible by
   // default, unless the user opts into the low-jitter collapsed presentation.
   const [userOpen, setUserOpen] = useState<boolean | null>(null)

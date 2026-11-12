@@ -41,7 +41,7 @@ import { notify, notifyError } from '@/store/notifications'
 import { openCatalogPluginInstall } from '@/store/plugin-catalog-install'
 import { openPluginInstallRequest } from '@/store/plugin-install-request'
 import { $connection, $gatewayState } from '@/store/session'
-import { usePortalShell } from '@/store/shell-variant'
+import { $capabilitiesManagedPerAgent } from '@/store/shell-policy'
 
 import { Pill } from '../../settings/primitives'
 import { useSettingsOwner } from '../../settings/profile-scope'
@@ -359,7 +359,7 @@ function PackageRow({
   agentControls: boolean
 }) {
   const { t } = useI18n()
-  const redesigned = usePortalShell()
+  const redesigned = useStore($capabilitiesManagedPerAgent)
   const owner = useSettingsOwner()
   const [desktopBusy, setDesktopBusy] = useState(false)
   const p = t.skills.plugins
@@ -657,7 +657,7 @@ export const PluginsTab = memo(function PluginsTab({
 }) {
   const { t } = useI18n()
   const owner = useSettingsOwner()
-  const redesigned = usePortalShell()
+  const redesigned = useStore($capabilitiesManagedPerAgent)
   const p = t.skills.plugins
   const requestGateway = useSettingsGatewayRequest()
 

@@ -14,7 +14,8 @@
   --portal-sidebar-card: color-mix(in srgb, var(--ui-base) 5%, transparent);
   --portal-sidebar-label: var(--ui-text-tertiary);
   --portal-sidebar-meta: var(--ui-text-quaternary);
-  --portal-sidebar-ring: var(--portal-brand-ink);
+  /* The shared focus ring, recoloured where it would vanish into Light's solid-blue selection. */
+  --portal-sidebar-agent-selected-ring: var(--portal-on-brand);
   /* secondary/green and secondary/orange, darkened on light canvases for 4.5:1 labels. */
   --portal-sidebar-green: color-mix(in srgb, #00f279 50%, #000);
   --portal-sidebar-orange: color-mix(in srgb, #f27900 70%, #000);
@@ -28,9 +29,13 @@
   --portal-sidebar-orange: color-mix(in srgb, #f27900 85%, transparent);
   --portal-sidebar-agent-selected: color-mix(in srgb, var(--portal-brand-fill) 10%, transparent);
   --portal-sidebar-agent-selected-ink: var(--ui-text-primary);
+  --portal-sidebar-agent-selected-ring: var(--portal-focus-ring-color);
 }
 
 .portal-sidebar {
+  /* The list scrolls inside overflow:hidden panels, so focus rings sit inside each control. */
+  --portal-focus-ring-offset: var(--portal-focus-ring-inset);
+
   position: relative;
   height: calc(100% - var(--titlebar-height));
   margin-top: var(--titlebar-height);
@@ -148,10 +153,10 @@
   font-size: 0.75rem;
 }
 
-/* Shared focus treatment: a thin brand ring inside the control's own radius. */
+/* The shared ring (portal-controls.css) for the sidebar's own rows; Buttons get it from there. */
 .portal-sidebar :is(button, [data-slot='row-button'], input):focus-visible {
-  outline: 1.5px solid var(--portal-sidebar-ring);
-  outline-offset: -1.5px;
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-offset);
   box-shadow: none;
 }
 
@@ -365,7 +370,7 @@
 }
 
 .portal-sidebar .portal-sidebar-search:has(input:focus-visible) {
-  box-shadow: inset 0 0 0 1px var(--portal-sidebar-ring);
+  box-shadow: inset 0 0 0 var(--portal-focus-ring-width) var(--portal-focus-ring-color);
 }
 
 /* ── Sections: 28px label, chevron, trailing action ─────────────────────────────────────────── */
@@ -743,6 +748,8 @@ button.portal-section-title:hover {
 }
 
 .portal-sidebar [data-slot='agent-heading'][data-active-agent] {
+  --portal-focus-ring-color: var(--portal-sidebar-agent-selected-ring);
+
   background: var(--portal-sidebar-agent-selected);
   color: var(--portal-sidebar-agent-selected-ink);
 }
@@ -754,8 +761,8 @@ button.portal-section-title:hover {
 }
 
 .portal-sidebar [data-slot='agent-heading']:has(.portal-agent-chat:focus-visible) {
-  outline: 1.5px solid var(--portal-sidebar-ring);
-  outline-offset: -1.5px;
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-offset);
 }
 
 .portal-sidebar [data-slot='agent-heading'] .portal-agent-chat:focus-visible {

@@ -1,6 +1,6 @@
 import { appendFileSync } from 'node:fs'
 
-import { chromium, expect, type Page, test } from '@playwright/test'
+import { chromium, expect, type Locator, type Page, test } from '@playwright/test'
 
 import { composer, createCoreSandbox, freePort, send, webappLaunchLink, writeProviderHome } from './harness'
 import { startScriptedProvider } from './provider'
@@ -97,6 +97,14 @@ test('redesigned web app stays usable on touch screens and restores the classic 
     }
 
     const sidebarWidth = (await page.locator('.portal-sidebar').boundingBox())!.width
+
+    // Dark lets the wing show through the translucent sidebar; light's opaque panels hide it.
+    for (const colorScheme of ['dark', 'light'] as const) {
+      await page.emulateMedia({ colorScheme })
+      await expect(page.locator('html')).toHaveClass(colorScheme === 'dark' ? /\bdark\b/ : /^(?!.*\bdark\b)/)
+      await expectFaintWing(page, page.locator('.portal-sidebar'), colorScheme === 'dark')
+    }
+
     await go('/settings?tab=config:appearance&page=window-layout')
     await page.getByRole('button', { name: 'Simple', exact: true }).tap()
     await go('/')
@@ -129,9 +137,11 @@ test('redesigned web app stays usable on touch screens and restores the classic 
     await page.screenshot({ path: test.info().outputPath('redesign-safety.png') })
     await page.emulateMedia({ colorScheme: 'dark' })
     await expect(page.locator('html')).toHaveClass(/dark/)
+    await expectFaintWing(page, settings, true)
     await page.screenshot({ path: test.info().outputPath('redesign-safety-dark.png') })
     await page.emulateMedia({ colorScheme: 'light' })
     await expect(page.locator('html')).not.toHaveClass(/dark/)
+    await expectFaintWing(page, settings, false)
     await go('/settings?tab=config:appearance')
     await page.getByRole('button', { name: 'Switch language', exact: true }).tap()
     await page.getByRole('combobox').fill('العربية')
@@ -162,7 +172,9 @@ test('redesigned web app stays usable on touch screens and restores the classic 
     await expect(page.getByRole('dialog')).toBeVisible()
     // Body-portalled dialogs sit outside the shell and must still wear its rounder geometry.
     await expect
-      .poll(() => page.getByRole('dialog').evaluate(dialog => getComputedStyle(dialog).getPropertyValue('--radius-scalar').trim()))
+      .poll(() =>
+        page.getByRole('dialog').evaluate(dialog => getComputedStyle(dialog).getPropertyValue('--radius-scalar').trim())
+      )
       .toBe('0.6')
     await page.getByRole('dialog').getByRole('button', { name: 'Cancel', exact: true }).tap()
     await expect(page.getByRole('dialog')).not.toBeVisible()
@@ -216,6 +228,75 @@ test('redesigned web app stays usable on touch screens and restores the classic 
     await provider.close()
   }
 })
+
+// The largest per-channel change (0-255) the wing may make to any pixel: a trace, never the
+// full-strength art the bare canvas would show.
+const WING_FAINT_PEAK = 32
+
+/** The wing art's (portal-artwork.css) own contribution to `region`: the same pixels rendered with
+ *  it and with its strength set to zero, compared channel by channel. Content cancels out, so the
+ *  number is the art alone. */
+async function wingPeak(page: Page, region: Locator): Promise<number> {
+  const clip = (await region.boundingBox())!
+  const shoot = async () => (await page.screenshot({ animations: 'disabled', clip })).toString('base64')
+
+  const setStrength = (strength: null | string) =>
+    page.evaluate(strength => {
+      for (const name of ['--portal-wing-opacity', '--portal-page-wing-opacity']) {
+        if (strength === null) {
+          document.documentElement.style.removeProperty(name)
+        } else {
+          document.documentElement.style.setProperty(name, strength)
+        }
+      }
+    }, strength)
+
+  const withArt = await shoot()
+  await setStrength('0')
+  const withoutArt = await shoot()
+  await setStrength(null)
+
+  return page.evaluate(
+    async pngs => {
+      const pixels = await Promise.all(
+        pngs.map(async png => {
+          const image = new Image()
+          image.src = `data:image/png;base64,${png}`
+          await image.decode()
+          const canvas = document.createElement('canvas')
+          canvas.width = image.width
+          canvas.height = image.height
+          const context = canvas.getContext('2d')!
+          context.drawImage(image, 0, 0)
+
+          return context.getImageData(0, 0, image.width, image.height).data
+        })
+      )
+
+      const [withArt, withoutArt] = pixels as [Uint8ClampedArray, Uint8ClampedArray]
+      let peak = 0
+
+      for (let i = 0; i < withArt.length; i++) {
+        if (i % 4 !== 3) {
+          peak = Math.max(peak, Math.abs(withArt[i]! - withoutArt[i]!))
+        }
+      }
+
+      return peak
+    },
+    [withArt, withoutArt]
+  )
+}
+
+async function expectFaintWing(page: Page, region: Locator, shows: boolean) {
+  const peak = await wingPeak(page, region)
+
+  if (shows) {
+    expect(peak, 'the wing shows through').toBeGreaterThan(0)
+  }
+
+  expect(peak, 'the wing stays a faint trace').toBeLessThanOrEqual(WING_FAINT_PEAK)
+}
 
 async function exerciseHistoryPreview(page: Page) {
   await page.getByRole('button', { name: 'No thanks', exact: true }).tap()

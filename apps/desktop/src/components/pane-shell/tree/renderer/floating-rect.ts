@@ -20,7 +20,7 @@ export interface FloatingRect {
 export interface FloatingViewport {
   width: number
   height: number
-  /** Chrome reserved at the top (the 34px titlebar) — panes never cover it. */
+  /** Chrome reserved at the top (the window's titlebar band) — panes never cover it. */
   top: number
 }
 

@@ -30,7 +30,7 @@ import { CONTROL_TEXT } from './constants'
 import { ListRow, SectionHeading, SettingsContent, ToggleRow } from './primitives'
 import { SettingsCard, SettingsDisclosure, SettingsGroup, SettingsOverview } from './settings-card'
 import { notificationKindSettingId, SETTING_IDS, settingElementId } from './settings-manifest'
-import { useSettingsPagesCopy } from './settings-pages-copy'
+import { forHost, useSettingsPagesCopy } from './settings-pages-copy'
 import { useSettingDeepLink } from './use-setting-deep-link'
 
 const CAPTION = 'text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)'
@@ -188,7 +188,7 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
         }
         description={copy.completionSoundDesc}
         id={settingElementId(SETTING_IDS.notifications.completionSound)}
-        title={copy.completionSoundTitle}
+        title={redesign ? pages.notifications.completionSound : copy.completionSoundTitle}
       />
     </SettingsCard>
   )
@@ -198,7 +198,7 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
       className={cn(redesign ? 'mb-9' : 'mb-2', 'leading-(--conversation-caption-line-height)')}
       data-slot="page-description"
     >
-      {copy.intro}
+      {redesign ? forHost(pages.hostIntro.notifications) : copy.intro}
     </Caption>
   )
 
@@ -207,7 +207,17 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
       <SettingsContent>
         {showAlerts && caption}
         <SettingsOverview>
-          {showAlerts && <SettingsGroup title={t.settings.subpages.notificationAlerts}>{alertsCard}</SettingsGroup>}
+          {showAlerts && (
+            <SettingsGroup
+              meta={forHost(pages.savedHere)}
+              title={forHost({
+                browser: pages.notifications.browserAlerts,
+                device: t.settings.subpages.notificationAlerts
+              })}
+            >
+              {alertsCard}
+            </SettingsGroup>
+          )}
           <SettingsGroup title={t.settings.subpages.notificationSounds}>{soundsCard}</SettingsGroup>
           {showAlerts && (
             <SettingsDisclosure

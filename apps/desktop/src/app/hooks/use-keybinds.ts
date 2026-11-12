@@ -20,6 +20,7 @@ import { findBarClaimsCombo } from '@/lib/find-in-page'
 import {
   contributedKeybindHandler,
   keybindAction,
+  keybindActionAvailable,
   PROFILE_SLOT_COUNT,
   SESSION_SLOT_COUNT,
   TAB_SLOT_COUNT
@@ -139,6 +140,15 @@ const SWITCHER_MODIFIER_KEYS = new Set(['Alt', 'Control', 'Meta', 'Shift'])
 
 function hasWordEraseModifier(event: KeyboardEvent): boolean {
   return IS_MAC ? event.metaKey && !event.ctrlKey : event.ctrlKey
+}
+
+/** The actions bound to `combo` that this window offers, or undefined when none. An action it does
+ *  not offer (e.g. the statusbar toggle in the redesign) never claims its chord, so the key reaches
+ *  the next action or the page untouched instead of being swallowed as a silent no-op. */
+function offeredActionsFor(combo: string): string[] | undefined {
+  const offered = $comboIndex.get().get(combo)?.filter(keybindActionAvailable)
+
+  return offered?.length ? offered : undefined
 }
 
 // Mount once near the top of the app. Owns the single global keydown listener
@@ -554,7 +564,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
         return
       }
 
-      const actionIds = $comboIndex.get().get(combo)
+      const actionIds = offeredActionsFor(combo)
 
       // Unbound printable → type-to-focus. Bound chords (shift+n, …) win above.
       if (!actionIds) {

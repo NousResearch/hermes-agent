@@ -48,8 +48,8 @@
 }
 
 :root[data-shell='portal'] [data-page-surface] [data-tour='overlay-nav'] button[data-tour^='nav-']:focus-visible {
-  outline: 2px solid var(--portal-brand-ink);
-  outline-offset: -2px;
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-inset);
 }
 
 /* Selected (856:3214): neutral 5% fill, 0.5px 5% stroke, Medium label, full-strength icon. */

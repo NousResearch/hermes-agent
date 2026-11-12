@@ -9,7 +9,7 @@
 import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { PORTAL_TITLEBAR_HEIGHT } from '@/app/shell/titlebar'
+import { PORTAL_TITLEBAR_HEIGHT, TITLEBAR_HEIGHT } from '@/app/shell/titlebar'
 import type { registry as contributionRegistry } from '@/contrib/registry'
 import { reactRoot } from '@/test/react-root'
 
@@ -87,6 +87,17 @@ describe('FloatingPanes (live DOM)', () => {
     expect(el.style.top).toBe(`${PORTAL_TITLEBAR_HEIGHT + 12}px`)
     expect(el.style.width).toBe('224px')
     expect(document.querySelector('[data-testid="hud-body"]')?.textContent).toBe('live')
+  })
+
+  it('clears the classic band when the redesign is rolled back', async () => {
+    // Imported after resetModules, so it is the instance FloatingPanes reads.
+    const { $shellChoice } = await import('@/store/shell-variant')
+
+    $shellChoice.set(false)
+    registerHud({ anchor: 'top-right', height: '132px', placement: 'floating', width: '224px' })
+    mount.render(<FloatingPanes />)
+
+    expect(card()!.style.top).toBe(`${TITLEBAR_HEIGHT + 12}px`)
   })
 
   it('renders nothing for a non-floating placement', () => {

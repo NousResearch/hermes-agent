@@ -119,3 +119,28 @@ def test_memory_only_commentary_does_not_fall_back_to_partial_answer():
 
     assert seen == []
     assert agent._interim_assistant_visible_text(msg) == ""
+
+
+def _held_tool_round_row(agent, content: str, commentary: str | None = None) -> dict:
+    msg = SimpleNamespace(content=content, tool_calls=None)
+    if commentary is not None:
+        msg.codex_message_items = [{
+            "type": "message", "role": "assistant", "phase": "commentary",
+            "content": [{"type": "output_text", "text": commentary}],
+        }]
+    agent._hold_stream = True
+    return agent._build_assistant_message(msg, "tool_calls")
+
+
+def test_held_row_with_memory_only_commentary_stays_hidden():
+    """The interim fence must not decide what a held turn stores: the partial answer in ``content``
+    stays hidden until the held reply transform publishes the final row."""
+    row = _held_tool_round_row(_make_agent(), "Partial final answer.", commentary=ECHOED_BLOCK)
+
+    assert row["display_kind"] == "hidden"
+
+
+def test_held_row_with_memory_only_content_stays_hidden():
+    row = _held_tool_round_row(_make_agent(), ECHOED_BLOCK)
+
+    assert row["display_kind"] == "hidden"

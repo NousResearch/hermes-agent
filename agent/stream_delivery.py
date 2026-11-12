@@ -23,9 +23,14 @@ def withhold_held_row(agent: Any, assistant_msg: dict[str, Any]) -> dict[str, An
     continuation fragments, codex incomplete partials and an answer a stop gate sent back never reach
     a history load; ``finish_text_response`` publishes the one row the user gets
     (``publish_held_final_row``). The key never reaches the wire: the model's context and its cached
-    prefix are unchanged."""
-    if (getattr(agent, "_hold_stream", False) is True and not assistant_msg.get("display_kind")
-            and agent._interim_assistant_visible_text(assistant_msg)):
+    prefix are unchanged.
+
+    The test is on the stored text before the memory-context fence: the fence decides what interim
+    delivery shows, and a row whose commentary fences to nothing can still hold a partial answer."""
+    if getattr(agent, "_hold_stream", False) is not True or assistant_msg.get("display_kind"):
+        return assistant_msg
+    texts = [*_codex_commentary_texts(agent, assistant_msg), flatten_message_text(assistant_msg.get("content"))]
+    if any(agent._strip_think_blocks(text).strip() for text in texts):
         assistant_msg["display_kind"] = "hidden"
     return assistant_msg
 

@@ -5083,7 +5083,13 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
     def _discord_channel_keys_from_channel(
         self, channel: Any, parent_channel_id: Optional[str] = None
     ) -> set[str]:
-        """Same keys as :meth:`_discord_channel_keys` but from a channel object (slash-command path)."""
+        """Same keys as :meth:`_discord_channel_keys` but from a channel object (slash-command path).
+
+        Also yields the owning Discord **category** (ID, name, ``#name``) when the channel
+        sits inside one, so a single category ID in ``allowed_channels`` /
+        ``free_response_channels`` / ``ignored_channels`` gates every channel filed under
+        it — and a channel created later follows automatically with no config change.
+        """
         keys: set[str] = set()
         channel_id = getattr(channel, "id", None)
         if channel_id is not None:
@@ -5100,7 +5106,52 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         if parent_name:
             keys.add(parent_name)
             keys.add(f"#{parent_name}")
+        category = self._discord_channel_category(channel)
+        if category is not None:
+            category_id = getattr(category, "id", None)
+            if category_id is not None:
+                keys.add(str(category_id))
+            category_name = str(getattr(category, "name", "")).strip()
+            if category_name:
+                keys.add(category_name)
+                keys.add(f"#{category_name}")
         return keys
+
+    @staticmethod
+    def _discord_channel_category(channel: Any) -> Any:
+        """Return the Discord category that owns *channel*, if there is one.
+
+        discord.py exposes this natively on both channel kinds:
+        ``TextChannel.category`` (the channel's own category) and ``Thread.category``
+        (the parent channel's category). A plain text channel has no ``parent_id``
+        — only threads do — so the category cannot be derived from the parent chain
+        alone; it has to come from the category API.
+
+        Both properties raise ``ClientException`` when the parent channel is not
+        cached, so every access is guarded.
+        """
+        category_cls = getattr(discord, "CategoryChannel", None)
+        if category_cls is None:
+            return None
+        try:
+            category = getattr(channel, "category", None)
+        except Exception:
+            category = None
+        if category is None:
+            return None
+        if isinstance(category, category_cls):
+            return category
+        # A mock/stub channel may expose a category id without a category object.
+        category_id = getattr(channel, "category_id", None)
+        if category_id is not None:
+            guild = getattr(channel, "guild", None)
+            getter = getattr(guild, "get_channel", None)
+            if callable(getter):
+                with suppress(Exception):
+                    resolved = getter(category_id)
+                    if isinstance(resolved, category_cls):
+                        return resolved
+        return None
 
     def _discord_thread_require_mention(self) -> bool:
         """Whether threads still require @mention after the bot has participated (default False).

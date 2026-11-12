@@ -118,7 +118,7 @@ def test_rpc_scope_reaches_llm_oneshot_and_model_options(two_homes, monkeypatch)
 
     def fake_oneshot(**kwargs):
         seen["oneshot"] = (Path(os.environ.get("HERMES_HOME", "")), get_secret("B_ONLY_TOKEN"), get_secret("A_ONLY_TOKEN"))
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         seen["oneshot_home"] = Path(get_hermes_home())
         return "t"
 
@@ -126,7 +126,7 @@ def test_rpc_scope_reaches_llm_oneshot_and_model_options(two_homes, monkeypatch)
     monkeypatch.setattr(server, "_model_picker_context", lambda agent: object())
 
     def build_payload(ctx, **kwargs):
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         seen["options"] = (Path(get_hermes_home()), get_secret("B_ONLY_TOKEN"), get_secret("A_ONLY_TOKEN"))
         return {"providers": []}
 
@@ -144,7 +144,7 @@ def test_rpc_scope_reaches_llm_oneshot_and_model_options(two_homes, monkeypatch)
 def test_manual_compress_routes_bind_the_sessions_full_runtime_scope(two_homes, monkeypatch, route):
     """Manual compression must resolve secrets from its session across an A→B→A sequence."""
     from hermes_agent.agent.secret_scope import get_secret
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     root, b = two_homes
     seen = []
@@ -207,7 +207,7 @@ def test_manual_compress_routes_bind_the_sessions_full_runtime_scope(two_homes, 
 def test_live_review_binds_runtime_scope_under_multiplex(two_homes, monkeypatch):
     """Desktop /review is off-turn; start_review must still see the session's secrets (#117544)."""
     from hermes_agent.agent.secret_scope import UnscopedSecretError, get_secret
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.tui_gateway.transport import StdioTransport
 
     root, b = two_homes
@@ -271,7 +271,7 @@ def test_model_switch_mirror_binds_runtime_scope_under_multiplex(two_homes, monk
     reads ``get_secret`` with no scope active and the mirror reports "live session sync failed:
     ... UnscopedSecretError" while the session stays on its previous route."""
     from hermes_agent.agent.secret_scope import UnscopedSecretError, get_secret
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     root, b = two_homes
     seen = []
@@ -350,7 +350,7 @@ def test_launch_profile_agent_build_is_scoped_once_multiplexing(two_homes, monke
     """The C6 asymmetry: a default-profile session (``profile_home`` None) in a multiplexing process
     must bind the launch profile's own scope for its agent build instead of running unscoped."""
     from hermes_agent.agent.secret_scope import current_secret_scope, set_multiplex_active
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     root, _b = two_homes
     set_multiplex_active(True)  # the messaging gateway's flip (GatewayRunner.__init__)
@@ -369,7 +369,7 @@ class _MemoryManager:
     """Stands in for an external memory provider: ``system_prompt_block()`` reads its credential via get_secret."""
     def build_system_prompt(self):
         from hermes_agent.agent.secret_scope import get_secret
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         return f"{get_hermes_home()}|{get_secret('MEM_PROVIDER_KEY')}"
 
 

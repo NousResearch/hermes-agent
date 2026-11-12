@@ -20,7 +20,7 @@ class _AbortedStartupRunner:
         # and stops it on every exit path (same shape as test_startup_restart_race.py).
         from hermes_agent.gateway.session import SessionStore
         from hermes_agent.hermes_state import SessionDB
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         self.session_store = SessionStore(get_hermes_home() / 'sessions', config)
         self._session_db = SessionDB(get_hermes_home() / 'state.db')
         self.session_store._db = self._session_db

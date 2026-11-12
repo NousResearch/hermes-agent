@@ -12,8 +12,8 @@ from typing import Any, Dict, Optional
 
 from hermes_agent.agent.azure_identity_adapter import is_token_provider
 from hermes_agent.agent.secret_scope import get_secret_str
-from hermes_constants import OPENROUTER_BASE_URL
-from utils import base_url_host_matches, base_url_hostname, base_url_origin
+from hermes_agent.hermes_constants import OPENROUTER_BASE_URL
+from hermes_agent.utils import base_url_host_matches, base_url_hostname, base_url_origin
 
 
 def _rp():

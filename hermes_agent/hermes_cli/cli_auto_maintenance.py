@@ -20,7 +20,7 @@ def _run_state_db_auto_maintenance(session_db) -> None:
         return
     try:
         from hermes_agent.hermes_cli.config import load_config as _load_full_config
-        from hermes_constants import get_hermes_home as _get_hermes_home  # lazy: tests patch it
+        from hermes_agent.hermes_constants import get_hermes_home as _get_hermes_home  # lazy: tests patch it
         _hermes_home_maint = _get_hermes_home()
 
         # One-time repairs, each latched in state_meta once it has run.

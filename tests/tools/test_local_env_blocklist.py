@@ -143,7 +143,7 @@ def test_user_platform_plugin_secrets_belong_to_their_own_profile(child_env, mon
     """A profile's user-installed platform plugin declares secrets for that profile only: bound to
     it, the name is stripped from every child and refused for passthrough; bound to a sibling
     profile, the sibling's own same-named value is its user variable and reaches its children."""
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from hermes_agent.tools.env_passthrough import is_env_passthrough, register_env_passthrough
     a, b = child_env / "profiles" / "a", child_env / "profiles" / "b"
     _user_platform_plugin(a, "chatx", "CHATX_SIGNING_SECRET")
@@ -182,7 +182,7 @@ def test_user_platform_plugin_secrets_belong_to_their_own_profile(child_env, mon
 def test_a_failed_rescan_keeps_the_denials_it_already_knew(child_env, monkeypatch, layout):
     """healthy -> unreadable -> recovered: a plugin the scan cannot read right now still declared
     its secret a moment ago, and the value may already be in the process or profile overlay."""
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
     home = child_env / "profiles" / "a"
     if layout == "platforms":
         _user_platform_plugin(home, "chatx", "CHATX_SIGNING_SECRET")
@@ -216,7 +216,7 @@ def test_a_partial_scan_is_rescanned_on_the_next_spawn(child_env, monkeypatch):
     """A manifest read that fails once (same file signature afterwards) must not pin the partial
     result: the next spawn reads it and strips the secret."""
     import builtins
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
     home = child_env / "profiles" / "a"
     plugin_dir = home / "plugins" / "chatx"
     plugin_dir.mkdir(parents=True)
@@ -245,7 +245,7 @@ def test_a_partial_scan_is_rescanned_on_the_next_spawn(child_env, monkeypatch):
 
 @pytest.mark.platforms("posix")  # symlinks
 def test_a_symlinked_home_alias_shares_its_profiles_plugin_declarations(child_env, monkeypatch):
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from hermes_agent.tools.environments import local_env_policy as policy
     home = child_env / "profiles" / "a"
     _user_platform_plugin(home, "chatx", "CHATX_SIGNING_SECRET")

@@ -88,7 +88,7 @@ def test_run_job_cron_execute_code_deny_does_not_pollute_later_gateway_execute_c
     monkeypatch.setattr(approval_context, "_get_cron_approval_mode", lambda: "deny")
     monkeypatch.setattr("hermes_agent.run_agent.AIAgent", _FakeCronAgent)
     monkeypatch.setattr(
-        "hermes_constants.resolve_reasoning_config", lambda *_args, **_kwargs: None
+        "hermes_agent.hermes_constants.resolve_reasoning_config", lambda *_args, **_kwargs: None
     )
     monkeypatch.setattr(
         "hermes_agent.hermes_cli.runtime_provider.resolve_runtime_provider",

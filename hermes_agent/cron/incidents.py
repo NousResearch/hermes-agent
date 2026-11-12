@@ -21,8 +21,8 @@ from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
 from hermes_agent.cron import executions as _executions
-from hermes_constants import get_hermes_home
-from hermes_time import now as _hermes_now
+from hermes_agent.hermes_constants import get_hermes_home
+from hermes_agent.hermes_time import now as _hermes_now
 
 # Optional test override (mirrors ``hermes_agent.cron.executions.EXECUTIONS_FILE``).
 EXECUTIONS_FILE: Optional[Path] = None

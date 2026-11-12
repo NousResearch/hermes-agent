@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 from hermes_agent.hermes_cli.observability.shared_metrics_consent import OFFER_VERSION
 
 REPO_ROOT = Path(__file__).resolve().parents[4]

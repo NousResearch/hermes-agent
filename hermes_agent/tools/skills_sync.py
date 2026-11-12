@@ -23,13 +23,13 @@ for _stream in (sys.stdout, sys.stderr):
     if hasattr(_stream, "reconfigure"):
         with suppress(ValueError, TypeError):
             _stream.reconfigure(encoding="utf-8", errors="replace")
-from hermes_constants import get_bundled_skills_dir, get_hermes_home, get_optional_skills_dir
+from hermes_agent.hermes_constants import get_bundled_skills_dir, get_hermes_home, get_optional_skills_dir
 from hermes_agent.agent.skill_utils import ESSENTIAL_SKILLS, is_excluded_skill_path
 from hermes_agent.tools.skill_usage import read_skill_name
 from hermes_agent.tools.skills_sync_optional import (
     _backfill_optional_provenance, _ignore_runtime_cache, _is_runtime_cache, _read_hub_install_paths,
 )
-from utils import atomic_write_text
+from hermes_agent.utils import atomic_write_text
 
 logger = logging.getLogger(__name__)
 
@@ -160,7 +160,7 @@ def _read_suppressed_names() -> set:
 
 def _write_manifest(entries: dict[str, str]):
     """Atomic v2 write, preserving an existing file's mode/owner (not mkstemp's 0600)."""
-    from hermes_constants import mkdir_under_hermes_home
+    from hermes_agent.hermes_constants import mkdir_under_hermes_home
     mkdir_under_hermes_home(_manifest_file().parent)
     try:
         data = "".join(f"{n}:{h}\n" for n, h in sorted(entries.items()))

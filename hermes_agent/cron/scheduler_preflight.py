@@ -135,7 +135,7 @@ def _credential_store_scope_label() -> str:
     stored" that cannot be told apart from a real login gap (#116213).
     """
     from hermes_agent.hermes_cli.profiles import get_active_profile_name
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     return f"[profile '{get_active_profile_name() or 'default'}', HERMES_HOME {get_hermes_home()}]"
 
 
@@ -153,7 +153,7 @@ def _primary_profile_routes_for_current_home() -> list:
     ``duplicate_credential`` fatal).
     """
     try:
-        from hermes_constants import get_default_hermes_root, get_hermes_home
+        from hermes_agent.hermes_constants import get_default_hermes_root, get_hermes_home
         primary_home = get_default_hermes_root()
         current_home = _sched.Path(get_hermes_home())
         if (

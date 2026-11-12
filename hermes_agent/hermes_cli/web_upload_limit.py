@@ -8,7 +8,7 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from hermes_agent.hermes_cli.web_server_surface import policy
-from hermes_constants import WEBAPP_ATTACHMENT_MAX_BYTES
+from hermes_agent.hermes_constants import WEBAPP_ATTACHMENT_MAX_BYTES
 
 # The file cap remains exact in the handler; allow ordinary multipart headers
 # and boundaries without letting arbitrary extra parts consume unbounded disk.

@@ -126,7 +126,7 @@ def _container_profile() -> str:
     from a routed profile's chat), else the session's. A session with no profile name (a gateway launched as a
     named profile stamps none on its own chats) is the launch profile's, so it keys that profile by name, like
     the profile's Desktop sessions and its session-less work (:func:`_sessionless_container_key`)."""
-    from hermes_constants import get_hermes_home_override, profile_name_for_home
+    from hermes_agent.hermes_constants import get_hermes_home_override, profile_name_for_home
     from hermes_agent.tools.environments.local import _is_routed_home
 
     override = get_hermes_home_override()
@@ -467,7 +467,7 @@ def _routed_home_task_key(profile_scoped: bool) -> Optional[str]:
     Persistent Docker keys the profile name exactly like B's session-bound work, so B keeps ONE
     container instead of a second one per home path.
     """
-    from hermes_constants import get_hermes_home_override, profile_name_for_home
+    from hermes_agent.hermes_constants import get_hermes_home_override, profile_name_for_home
     from hermes_agent.tools.environments.local import _is_routed_home
 
     override = get_hermes_home_override()
@@ -728,7 +728,7 @@ def _ensure_terminal_env_bridged() -> None:
     if get_terminal_scope() is not None:
         return
     # Never write a secondary profile's terminal.* into process-global env.
-    from hermes_constants import get_hermes_home_override
+    from hermes_agent.hermes_constants import get_hermes_home_override
 
     if get_hermes_home_override() is not None:
         return

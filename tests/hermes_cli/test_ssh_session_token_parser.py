@@ -1,7 +1,7 @@
 import os
 
 import pytest
-from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+from hermes_agent.hermes_constants import set_hermes_home_override, reset_hermes_home_override
 
 from hermes_agent.hermes_cli.main_dashboard import _read_ssh_session_token_file
 

@@ -173,7 +173,7 @@ def sync_turn(self, user_content, assistant_content):
 
 ```python
 # 正确 — 按 profile 隔离
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 data_dir = get_hermes_home() / "my-provider"
 
 # 错误 — 所有 profile 共享

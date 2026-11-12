@@ -5,7 +5,7 @@ from __future__ import annotations
 import contextlib
 from typing import Optional
 
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 
 
 def _main_model_pin() -> tuple[Optional[str], Optional[str]]:

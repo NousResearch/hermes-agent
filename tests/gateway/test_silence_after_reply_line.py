@@ -45,7 +45,7 @@ def _source():
 
 
 async def _run(monkeypatch, tmp_path, *, queued_reply_expected=None, queued=False, **turn_kwargs):
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
 
     (tmp_path / "config.yaml").write_text(yaml.safe_dump({"display": {}}), encoding="utf-8")
     fake_dotenv = types.ModuleType("dotenv")

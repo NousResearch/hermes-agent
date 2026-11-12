@@ -144,7 +144,7 @@ def _start_gateway_configure_logging(verbosity: Optional[int]) -> None:
     _best_effort(_sync_skills)
 
     # Centralized logging (agent.log INFO+, errors.log WARNING+, gateway.log gateway-only); idempotent.
-    from hermes_logging import setup_logging, _safe_stderr
+    from hermes_agent.hermes_logging import setup_logging, _safe_stderr
     setup_logging(hermes_home=_hermes_home, mode="gateway")
 
     def _security_audit() -> None:
@@ -374,7 +374,7 @@ async def _start_gateway_start_control_socket(runner):
         # The Webapp's verbs answer from the socket's first moment ("starting" until the listener
         # settles): a client polling a restarting gateway must never read "unknown verb" as a failure.
         from hermes_agent.gateway.webapp_listener import register_control_verbs
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         register_control_verbs(runner, get_hermes_home(), server=_control_server)
         if not await _control_server.start():
             _control_server = None
@@ -533,7 +533,7 @@ def _launch_home_may_multiplex(config=None) -> bool:
     the operator's choice, so it is downgraded the way every other implicit-multiplex blocker is:
     this process comes up standalone, says why, and *config* is flipped in place so the boot below
     reserves and serves only the launch profile."""
-    from hermes_constants import profile_name_for_home
+    from hermes_agent.hermes_constants import profile_name_for_home
     from hermes_agent.gateway.run import get_hermes_home, logger
     name = profile_name_for_home(get_hermes_home())
     if name in (None, "default"):
@@ -571,7 +571,7 @@ def _reload_config_keeping_multiplex_verdict(first: GatewayConfig) -> GatewayCon
     from hermes_agent.gateway.config import load_gateway_config
     if getattr(first, "multiplex_profiles", False):
         from hermes_agent.gateway.run import _profile_runtime_scope
-        from hermes_constants import get_default_hermes_root
+        from hermes_agent.hermes_constants import get_default_hermes_root
         with _profile_runtime_scope(Path(get_default_hermes_root())):
             reloaded = load_gateway_config()
     else:

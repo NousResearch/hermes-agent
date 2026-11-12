@@ -14,11 +14,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Tuple, Union
 
-from utils import fast_safe_load
+from hermes_agent.utils import fast_safe_load
 from hermes_agent.hermes_cli.plugin_capabilities import parse_declared_capabilities as _parse_declared_capabilities
 
 try:
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
 except ImportError:  # pragma: no cover – yaml is optional at import time
     yaml = None  # type: ignore[assignment]
 

@@ -21,7 +21,7 @@ def client(monkeypatch, _isolate_hermes_home):
         pytest.skip("fastapi/starlette not installed")
 
     from hermes_agent import hermes_state
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
     home = get_hermes_home()
@@ -59,7 +59,7 @@ def test_operator_stopped_gateway_does_not_report_retained_startup_failure(clien
     """``hermes gateway stop`` keeps the last ``startup_failed`` + ``exit_reason`` on disk with
     ``desired_state: stopped``; the Channels page must read that as stopped, exactly like
     ``/api/status`` does, not wear a "Start failed" badge with the stale reason (#112517)."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     (get_hermes_home() / "gateway_state.json").write_text(json.dumps({
         "kind": "gateway", "pid": 999_999_999, "start_time": 1.0,

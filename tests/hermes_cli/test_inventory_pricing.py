@@ -235,7 +235,7 @@ def test_prewarm_preserves_context_and_runs_once_per_profile(tmp_path, monkeypat
         reset_secret_scope,
         set_secret_scope,
     )
-    from hermes_constants import (
+    from hermes_agent.hermes_constants import (
         hermes_home_key,
         reset_hermes_home_override,
         set_hermes_home_override,
@@ -322,7 +322,7 @@ def test_prewarm_deduplicates_inflight_scope_and_cleans_up(monkeypatch):
 
 def test_prewarm_endpoint_rotation_starts_a_new_worker(tmp_path, monkeypatch):
     """A live endpoint-A worker must not suppress endpoint B for its profile."""
-    from hermes_constants import (
+    from hermes_agent.hermes_constants import (
         reset_hermes_home_override,
         set_hermes_home_override,
     )
@@ -395,7 +395,7 @@ def test_prewarm_endpoint_rotation_starts_a_new_worker(tmp_path, monkeypatch):
 
 def test_prewarm_nous_rotation_when_another_provider_is_current(tmp_path, monkeypatch):
     """Nous endpoint identity must not depend on Nous being selected."""
-    from hermes_constants import (
+    from hermes_agent.hermes_constants import (
         reset_hermes_home_override,
         set_hermes_home_override,
     )
@@ -617,7 +617,7 @@ def test_prewarm_cache_scope_uses_custom_row_endpoint_identity(monkeypatch):
 
 def test_cached_only_dynamic_pricing_is_profile_scoped(tmp_path, monkeypatch):
     """Alternating profiles read the endpoint each profile warmed."""
-    from hermes_constants import (
+    from hermes_agent.hermes_constants import (
         reset_hermes_home_override,
         set_hermes_home_override,
     )

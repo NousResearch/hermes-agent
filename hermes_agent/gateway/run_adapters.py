@@ -1069,7 +1069,7 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
             # its served set in step with the live one (it is republished, never re-claimed).
             from hermes_agent.gateway.host_rendezvous import ROLE_GATEWAY, owns_host_lock, publish_record
             if owns_host_lock(ROLE_GATEWAY):
-                from hermes_constants import get_hermes_home
+                from hermes_agent.hermes_constants import get_hermes_home
                 publish_record(ROLE_GATEWAY, profiles=tuple(served), home=str(get_hermes_home()))
 
     async def _load_secondary_profile_config(self, profile_name: str, profile_home: Path):
@@ -1155,7 +1155,7 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         owner_home = None
         if owner == "default":
             try:
-                from hermes_constants import get_default_hermes_root
+                from hermes_agent.hermes_constants import get_default_hermes_root
                 owner_home = get_default_hermes_root()
             except Exception:
                 owner_home = None

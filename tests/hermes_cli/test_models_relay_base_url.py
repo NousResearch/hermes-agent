@@ -22,7 +22,7 @@ class _RecordingProfile:
 @pytest.mark.parametrize("provider", ["openai-codex", "nous", "opencode-zen", "openrouter"])
 def test_canonical_url_preserves_native_catalog_but_other_paths_stay_relays(monkeypatch, provider):
     from hermes_agent.hermes_cli.config import atomic_config_write
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.providers import get_provider_profile
 
     canonical = get_provider_profile(provider).base_url

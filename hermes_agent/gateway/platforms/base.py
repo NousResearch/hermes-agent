@@ -18,12 +18,12 @@ import time
 import uuid
 import weakref
 from abc import ABC, abstractmethod
-from hermes_dir_acl import make_user_dir, unusable_dir_remedy
+from hermes_agent.hermes_dir_acl import make_user_dir, unusable_dir_remedy
 from hermes_agent.gateway.platforms.base_log_safety import describe_proxy_error, env_proxy_for_redaction, safe_proxy_url_for_log, safe_url_for_log
 from hermes_agent.gateway.platforms.base_image_sniff import _looks_like_image
 from hermes_agent.gateway.platforms.base_media_flags import pad_inline_flags
 from hermes_agent.gateway.platforms.session_model import _SessionModelSettingsMixin
-from utils import normalize_proxy_url, unlink_files_older_than
+from hermes_agent.utils import normalize_proxy_url, unlink_files_older_than
 from hermes_agent.agent.i18n import t
 from hermes_agent.agent.retry_utils import jittered_backoff
 from hermes_agent.agent.proxy_bypass import first_proxy_env_value, should_bypass_proxy as _should_bypass_proxy
@@ -448,7 +448,7 @@ from hermes_agent.hermes_cli.observability.shared_metrics_gateway import records
 from hermes_agent.hermes_cli.home_data_layout import SECRET_CACHE_STORES
 from hermes_agent.gateway.session import SessionSource, build_session_key
 from hermes_agent.gateway.session_transcript import TranscriptReadError
-from hermes_constants import CONNECTOR_DOWNLOADS_SUBDIR, get_default_hermes_root, get_hermes_dir, get_hermes_home
+from hermes_agent.hermes_constants import CONNECTOR_DOWNLOADS_SUBDIR, get_default_hermes_root, get_hermes_dir, get_hermes_home
 from hermes_agent.agent.provider_media import GENERATED_SUBDIR, MEDIA_CACHE_MAX_AGE_HOURS
 
 if TYPE_CHECKING:

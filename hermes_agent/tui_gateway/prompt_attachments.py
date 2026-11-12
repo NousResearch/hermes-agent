@@ -249,7 +249,7 @@ def _stage_browser_file_attachment(session: dict, staged_upload: object, name: s
     source home, which must still be a live profile (``hermes_agent/hermes_cli/staged_uploads.py``). From there
     the copy is the native Desktop's out-of-workspace file attach, capped at the browser limit.
     """
-    from hermes_constants import WEBAPP_ATTACHMENT_MAX_BYTES
+    from hermes_agent.hermes_constants import WEBAPP_ATTACHMENT_MAX_BYTES
     from hermes_agent.hermes_cli.staged_uploads import parse_staged_upload, resolve_staged_upload
 
     raw_home, raw_path = parse_staged_upload(staged_upload)

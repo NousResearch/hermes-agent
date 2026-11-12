@@ -14,7 +14,7 @@ import time
 from datetime import datetime, timezone, UTC
 from typing import Any, Optional, Tuple
 
-from hermes_time import safe_strftime
+from hermes_agent.hermes_time import safe_strftime
 
 
 # Leading timestamp prefix, either the current human format

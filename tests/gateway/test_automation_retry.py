@@ -27,7 +27,7 @@ async def test_coalesced_siblings_survive_lost_ack_and_owner_restart(tmp_path, m
     source = adapter.build_source(chat_id='42', chat_type='dm', user_id='42')
     monkeypatch.setenv('DISCORD_ALLOWED_USERS', '42')
     human = MessageEvent(text='human', source=source, message_id='human')
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     with native_callback(runner, human, get_hermes_home()):
         await authority.admit_native(human)
     key = runner.session_store._generate_session_key(source)
@@ -63,7 +63,7 @@ async def test_unowned_completion_refunds_every_sibling_without_consuming_budget
     from hermes_agent.gateway.run import GatewayRunner
     from hermes_agent.gateway.session_authority import initialize_session_authority, SessionAuthority
     from hermes_agent.gateway.session_ingress_context import native_callback
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.hermes_state_runtime import list_session_admissions
     from tests.gateway.test_completion_admission import pending
     from plugins.platforms.discord.adapter import DiscordAdapter

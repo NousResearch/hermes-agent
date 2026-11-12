@@ -7,7 +7,7 @@ import sys
 
 import pytest
 
-from hermes_platform import declaration
+from hermes_agent.hermes_platform import declaration
 from hermes_agent.tools.mcp_liveness import parse_liveness
 
 def _decl(tmp_path, *, min_version=None):
@@ -143,7 +143,7 @@ def test_hydrated_error_shape_for_registered_declaration(tmp_path, monkeypatch):
 
 def test_connected_interactive_session_server_is_offerable_from_a_service_session(tmp_path, monkeypatch):
     from hermes_agent.hermes_cli import agent_plugins
-    from hermes_platform.host import facts
+    from hermes_agent.hermes_platform.host import facts
     from hermes_agent.tools import mcp_tool_handlers
 
     declaration.register("example-server", _decl(tmp_path))
@@ -159,7 +159,7 @@ def test_running_app_with_live_endpoint_reports_the_missing_connection(tmp_path,
     is missing. That must read as a missing connection with a reconnect action — not as
     \"<slug> is not running. Start <slug>\" for an app that IS running."""
     from hermes_agent.hermes_cli import agent_plugins
-    from hermes_platform.resolver.core import CheckState
+    from hermes_agent.hermes_platform.resolver.core import CheckState
     from hermes_agent.tools import mcp_liveness
 
     class _RunningApp:
@@ -217,7 +217,7 @@ def test_gpu_requirement_hides_a_connected_server_and_says_which_gpu(monkeypatch
     """A connected server whose `requires.gpu` the host misses is not offered, and its status is a
     state the Plugins tab can carry, with a sentence that names the GPU instead of "Install <app>"."""
     from hermes_agent.hermes_cli import agent_plugins
-    from hermes_platform.host import facts
+    from hermes_agent.hermes_platform.host import facts
     from hermes_agent.tools import mcp_liveness, mcp_tool_handlers
     from hermes_agent.tui_gateway.contracts.tools_mcp_plugins import PluginServerState
 

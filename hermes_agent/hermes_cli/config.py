@@ -28,7 +28,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Dict, Any, Literal, Optional, List, Tuple, Set
 
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 from hermes_agent.hermes_cli.cli_output import line_input
 from hermes_agent.hermes_cli.colors import Colors, color
@@ -38,13 +38,13 @@ from hermes_agent.hermes_cli.left_core_migration import profile_env_names as _le
 from hermes_agent.hermes_cli.secret_prompt import masked_secret_prompt
 # Managed-mode, container and HERMES_UID/GID policy live in hermes_constants (import-safe);
 # re-exported here so existing callers/patch targets keep working.
-from hermes_constants import (
+from hermes_agent.hermes_constants import (
     _IGNORED_MANAGED_VALUES, _LEGACY_MANAGED_SYSTEM, _MANAGED_FALSE_VALUES, _MANAGED_TRUE_VALUES,
     _chown_to_hermes_uid, _container_or_chmod_skipped, _resolve_hermes_uid_gid,
     apply_secure_dir_policy, get_managed_system)
 # Re-export from hermes_constants — canonical definition lives there.
-from hermes_constants import get_hermes_home, get_process_hermes_home
-from utils import atomic_replace, fast_safe_load, file_cache_version, file_signature, mkstemp_beside
+from hermes_agent.hermes_constants import get_hermes_home, get_process_hermes_home
+from hermes_agent.utils import atomic_replace, fast_safe_load, file_cache_version, file_signature, mkstemp_beside
 from hermes_agent.hermes_cli.config_issues import ConfigIssue, _issue
 from hermes_agent.hermes_cli.config_backend import (
     ConfigWriteError, config_cache_version, config_destination, config_exists, config_version,
@@ -311,9 +311,9 @@ def detect_install_method(project_root: Optional[Path] = None) -> str:
 
 
 def _running_in_container() -> bool:
-    """Import-safe wrapper around ``hermes_constants.is_container``."""
+    """Import-safe wrapper around ``hermes_agent.hermes_constants.is_container``."""
     try:
-        from hermes_constants import is_container
+        from hermes_agent.hermes_constants import is_container
 
         return is_container()
     except Exception:
@@ -406,7 +406,7 @@ def get_container_exec_info() -> Optional[dict]:
     if os.environ.get("HERMES_DEV") == "1":
         return None
 
-    from hermes_constants import is_container
+    from hermes_agent.hermes_constants import is_container
     if is_container():
         return None
 
@@ -490,7 +490,7 @@ def _secure_dir(path):
     deployments need this so profile subdirs created at runtime by kanban workers don't land as root:root
     and block subsequent uid-mapped workers).
 
-    Delegates to the canonical import-safe primitive ``hermes_constants.apply_secure_dir_policy``
+    Delegates to the canonical import-safe primitive ``hermes_agent.hermes_constants.apply_secure_dir_policy``
     so callers outside this package (``get_scratch_dir``) share one implementation (#117347).
     """
     return apply_secure_dir_policy(path)
@@ -575,7 +575,7 @@ def ensure_hermes_home():
 
     # Named profiles must be created explicitly. Check tombstones BEFORE the memo so a stale
     # empty shell cannot skip the deleted-profile guard.
-    from hermes_constants import assert_named_profile_home_live
+    from hermes_agent.hermes_constants import assert_named_profile_home_live
     assert_named_profile_home_live(home)
     if key in _HERMES_HOME_ENSURED and home.is_dir():
         return
@@ -1126,7 +1126,7 @@ def warn_deprecated_cwd_env_vars() -> None:
         if val:
             lines.append(f"  \033[33m⚠\033[0m {name}={val} found in .env — this is deprecated.")
     if lines:
-        from hermes_constants import display_hermes_home
+        from hermes_agent.hermes_constants import display_hermes_home
 
         hint_path = display_hermes_home()
         lines.insert(0, "\033[33m⚠ Deprecated .env settings detected:\033[0m")
@@ -2430,7 +2430,7 @@ def _note_policy(setter: str, raw: Any) -> None:
     """Record the loaded profile's redaction policy for the log formatter, which never reads config."""
     note = getattr(sys.modules.get("hermes_agent.agent.redact"), setter, None)
     if note is not None:
-        from hermes_constants import hermes_home_key
+        from hermes_agent.hermes_constants import hermes_home_key
         note(hermes_home_key(), raw)
 
 

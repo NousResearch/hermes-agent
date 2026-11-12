@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 import pytest
 
@@ -44,7 +44,7 @@ class TestSaveConfigValueAtomic:
         def exploding_write(*args, **kwargs):
             raise OSError("disk full")
 
-        monkeypatch.setattr("utils.atomic_roundtrip_yaml_update", exploding_write)
+        monkeypatch.setattr("hermes_agent.utils.atomic_roundtrip_yaml_update", exploding_write)
 
         from hermes_agent.cli import save_config_value
         result = save_config_value("display.skin", "broken")

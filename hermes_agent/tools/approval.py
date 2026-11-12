@@ -19,7 +19,7 @@ import os
 import threading
 from typing import Any, Iterable, Optional
 
-from utils import env_var_enabled, is_truthy_value
+from hermes_agent.utils import env_var_enabled, is_truthy_value
 from hermes_agent.agent.i18n import t
 from hermes_agent.tools import approval_context
 from hermes_agent.tools.approval_context import (
@@ -403,7 +403,7 @@ def _permanent_set() -> set:
     launch profile's "always" approvals must not pre-approve commands for a secondary, nor may a
     secondary's "always" choice be written back into the launch profile's config. Callers hold ``_lock``.
     """
-    from hermes_constants import get_hermes_home_override, hermes_home_key
+    from hermes_agent.hermes_constants import get_hermes_home_override, hermes_home_key
     if get_hermes_home_override() is None:
         approved, key = _permanent_approved, ""
     else:
@@ -499,7 +499,7 @@ def _read_permanent_allowlist() -> set:
     legacy = isinstance(raw, str)
     if legacy:
         # Old config-set versions serialized list values as scalar strings.
-        import hermes_yaml as yaml
+        import hermes_agent.hermes_yaml as yaml
         try:
             raw = yaml.safe_load(raw)
         except yaml.YAMLError:
@@ -524,7 +524,7 @@ _permanent_baseline_by_home: dict[str, set] = {}
 
 
 def _baseline_key() -> str:
-    from hermes_constants import get_hermes_home_override, hermes_home_key
+    from hermes_agent.hermes_constants import get_hermes_home_override, hermes_home_key
     return "" if get_hermes_home_override() is None else hermes_home_key()
 
 

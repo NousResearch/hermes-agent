@@ -77,7 +77,7 @@ def _digest(path):
 
 
 def _set_worktrees_config(text):
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     home = get_hermes_home()
     home.mkdir(parents=True, exist_ok=True)
     (home / "config.yaml").write_text(text, encoding="utf-8")
@@ -405,7 +405,7 @@ def test_cron_sweep_visits_only_the_active_profiles_registered_repos(repo, tmp_p
     """I7: a worktree made under profile A registers its repo for A's sweep only, and a
     registered repo that was deleted drops out."""
     import hermes_agent.cron.scheduler as sched
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     home_a, home_b = tmp_path / "home-a", tmp_path / "home-b"
     home_a.mkdir()

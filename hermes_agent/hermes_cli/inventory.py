@@ -1050,7 +1050,7 @@ def _prewarm_pricing_async(
 ) -> Optional[Thread]:
     """Warm picker pricing caches without delaying the current payload (one worker per
     profile + endpoint scope; a live worker is reused)."""
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
     from hermes_agent.hermes_cli.models_pricing import pricing_cache_scope
 
     slugs = {

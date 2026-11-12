@@ -15,7 +15,7 @@ from hermes_agent.hermes_cli.data_cleanup_holders import _refuse_backend_writers
 from hermes_agent.hermes_cli.process_identity import (
     _ledger_path, boot_start, install_id, ledger_entries, reap_orphaned_mcp_helpers, register_self,
 )
-from hermes_constants import get_scratch_dir, prune_scratch_dir
+from hermes_agent.hermes_constants import get_scratch_dir, prune_scratch_dir
 from tests.waiting import wait_until
 
 

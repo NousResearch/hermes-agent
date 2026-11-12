@@ -12,10 +12,10 @@ from __future__ import annotations
 import sys
 
 def test_drop_stale_root_modules_leaves_complete_utils_alone():
-    import utils
+    from hermes_agent import utils
     from hermes_agent.hermes_cli.stale_modules import drop_stale_root_modules
 
     assert hasattr(utils, "file_signature")
-    before = sys.modules["utils"]
+    before = sys.modules["hermes_agent.utils"]
     assert drop_stale_root_modules() == []
-    assert sys.modules["utils"] is before
+    assert sys.modules["hermes_agent.utils"] is before

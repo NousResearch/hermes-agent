@@ -139,6 +139,7 @@ docker/entrypoint.sh text eol=lf
 /hermes_cli/update_serve_resume.py linguist-generated=true
 /hermes_cli/update_stage.py linguist-generated=true
 /hermes_cli/version_info.py linguist-generated=true
+/hermes_constants.py linguist-generated=true
 /hermes_state_common.py linguist-generated=true
 /model_tools.py linguist-generated=true
 /providers/__init__.py linguist-generated=true

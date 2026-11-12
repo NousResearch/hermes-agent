@@ -509,7 +509,7 @@ def _admitted_python(spec: str) -> str | None:
     """An installed ``python3.N`` the target's ``requires-python`` admits (newest first), or None
     when this machine has none. No uv tier: Hermes never resolves the user's uv
     (tests/test_managed_runtime_resolution.py), and a missing interpreter only means this one judges."""
-    from hermes_platform.resolver import locate_command
+    from hermes_agent.hermes_platform.resolver import locate_command
 
     candidates = [res.command[0] for minor in range(40, sys.version_info[1], -1)
                   if (res := locate_command(f"python3.{minor}")).command][:3]

@@ -96,7 +96,7 @@ class TestRegistration:
         assert reg.register_source(object()) is False
 
     def test_same_name_is_isolated_by_profile(self, tmp_path):
-        from hermes_constants import (
+        from hermes_agent.hermes_constants import (
             reset_hermes_home_override,
             set_hermes_home_override,
         )

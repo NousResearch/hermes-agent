@@ -713,10 +713,10 @@ def _normalize_aux_reasoning_effort(value: Optional[str]) -> Optional[str]:
     canonical level (``none`` for a disable), 400 on an unknown level."""
     if value is None:
         return None
-    from hermes_constants import parse_reasoning_effort
+    from hermes_agent.hermes_constants import parse_reasoning_effort
     parsed = parse_reasoning_effort(value)
     if parsed is None:
-        from hermes_constants import VALID_REASONING_EFFORTS
+        from hermes_agent.hermes_constants import VALID_REASONING_EFFORTS
         raise HTTPException(status_code=400,
                             detail=f"reasoning_effort must be one of: none, {', '.join(VALID_REASONING_EFFORTS)}")
     return "none" if parsed.get("enabled") is False else parsed["effort"]

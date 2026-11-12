@@ -7,7 +7,7 @@ Keys match exactly except ``details_mode.<section>`` (prefix) and ``_DISPLAY_TOG
 import os
 
 from hermes_agent.hermes_cli.config_backend import ConfigWriteError
-from hermes_constants import INDICATOR_STYLES
+from hermes_agent.hermes_constants import INDICATOR_STYLES
 
 from .method_ctx import HandlerRegistry, bind_module
 
@@ -42,7 +42,7 @@ def _refuse_managed_model_pick(reasoning_effort: str = "", result=None) -> None:
     is switched or persisted. Without ``result`` (before resolution, or a pick queued mid-turn): the
     always-written keys. With the resolved ``result``: its exact plan, conditional clears included."""
     from hermes_agent.hermes_cli import managed_scope
-    from hermes_constants import parse_reasoning_effort
+    from hermes_agent.hermes_constants import parse_reasoning_effort
     if not managed_scope.managed_config_keys():
         return
     plan = ["default", "provider", "base_url", "api_mode"]
@@ -387,7 +387,7 @@ _REASONING_DISPLAY_WORDS = (
 
 @_cfgset_guarded
 def _set_reasoning(rid, params, key, value, session):
-    from hermes_constants import parse_reasoning_effort
+    from hermes_agent.hermes_constants import parse_reasoning_effort
     arg = _word(value)
     scope = _word(params.get("scope"))
     for words, reported, fields, thinking, show in _REASONING_DISPLAY_WORDS:

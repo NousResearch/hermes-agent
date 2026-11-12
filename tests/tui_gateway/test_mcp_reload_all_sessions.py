@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import hermes_constants
+from hermes_agent import hermes_constants
 from hermes_agent.agent.secret_scope import current_secret_scope
 from hermes_agent.tools import mcp_tool_agent as _mcp_agent
 from hermes_agent.tools import mcp_tool_discovery as _mcp_discovery

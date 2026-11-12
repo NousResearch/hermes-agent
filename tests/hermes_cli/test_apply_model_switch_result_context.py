@@ -127,7 +127,7 @@ def test_picker_path_falls_back_to_model_info_when_resolver_empty(monkeypatch):
 
 def test_global_switch_clears_context_pin_owned_by_previous_route(monkeypatch):
     import hermes_agent.cli as cli_mod
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
     from hermes_agent.hermes_cli.config import get_config_path, read_user_config_raw
 
     monkeypatch.setattr(cli_mod, "_cprint", lambda *_a, **_k: None)

@@ -53,7 +53,7 @@ async def test_cold_acp_load_retains_policy_and_executes_after_daemon_restart(da
     owned = psutil.Process(original_pid)
     os.kill(original_pid, signal.SIGINT)
     await asyncio.to_thread(owned.wait, 20)
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
     config = yaml.safe_load((home / 'config.yaml').read_text())
     config['platform_toolsets'] = {'acp': ['terminal']}
     (home / 'config.yaml').write_text(json.dumps(config))

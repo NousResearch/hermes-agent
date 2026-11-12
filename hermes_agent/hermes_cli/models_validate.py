@@ -15,8 +15,8 @@ from dataclasses import dataclass
 from difflib import get_close_matches
 from typing import Any, Callable, Optional
 
-from utils import base_url_host_matches
-from hermes_constants import openrouter_variant_base
+from hermes_agent.utils import base_url_host_matches
+from hermes_agent.hermes_constants import openrouter_variant_base
 
 
 # ── Verdicts ─────────────────────────────────────────────────────────────
@@ -180,7 +180,7 @@ def _stock_host(provider: str) -> str:
     endpoint — using it would exempt the real cloud host.
     """
     from hermes_agent.hermes_cli.providers import get_provider
-    from utils import base_url_hostname
+    from hermes_agent.utils import base_url_hostname
 
     token = _provider_token(provider)
     if not token:
@@ -207,7 +207,7 @@ def provider_allows_model_whitespace(provider: Optional[str], base_url: Optional
     url = str(base_url or "").strip()
     if not url:
         return False
-    from utils import base_url_hostname
+    from hermes_agent.utils import base_url_hostname
 
     host = base_url_hostname(url)
     if not host:

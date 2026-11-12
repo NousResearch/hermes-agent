@@ -27,7 +27,7 @@ _REPO = Path(__file__).resolve().parents[2]
 
 def _dir_of_a_dead_owner() -> Path:
     """A throwaway profile dir named for a Hermes process that has exited (it died mid-launch)."""
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
     code = ("import sys\n"
             "from hermes_agent.tools.browser_launcher import _default_user_data_dir, _prepare_dir\n"
             "udd = _default_user_data_dir('browser-exec-default', sys.argv[1])\n"
@@ -72,7 +72,7 @@ def test_an_unrecorded_live_browsers_throwaway_profile_survives_the_reclaim(tmp_
 def test_a_live_browsers_profile_survives_when_its_record_cannot_prove_the_pid(tmp_path):
     """A record whose start time no longer proves the pid is never signalled; its dir must not go either while a
     Chromium still runs on it."""
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
     script = write_fake_chromium(tmp_path / "chromium")
     udd = _dir_of_a_dead_owner()
     proc = _start_browser_on(script, udd, tmp_path / "chromium.log")

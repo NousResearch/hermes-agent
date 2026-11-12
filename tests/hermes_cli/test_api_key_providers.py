@@ -288,7 +288,7 @@ class TestHasAnyProviderConfigured:
 
     def test_config_provider_counts(self, monkeypatch, tmp_path):
         """config.yaml with model.provider set should count as configured."""
-        import hermes_yaml as yaml
+        import hermes_agent.hermes_yaml as yaml
         from hermes_agent.hermes_cli import config as config_module
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
@@ -336,7 +336,7 @@ class TestHasAnyProviderConfigured:
         loop in ``except Exception``, so we also record every call — any
         recorded call proves the sweep ran even if the raise was swallowed.
         """
-        import hermes_yaml as yaml
+        import hermes_agent.hermes_yaml as yaml
         hermes_home = self._setup_home(monkeypatch, tmp_path)
         (hermes_home / "config.yaml").write_text(yaml.safe_dump({
             "model": {"default": "anthropic/claude-opus-4.6", "provider": "openrouter"},
@@ -357,7 +357,7 @@ class TestHasAnyProviderConfigured:
     def test_config_base_url_api_key_skips_registry_sweep(self, monkeypatch, tmp_path):
         """Custom endpoint (base_url/api_key in config, no provider) must also
         short-circuit before the registry sweep."""
-        import hermes_yaml as yaml
+        import hermes_agent.hermes_yaml as yaml
         hermes_home = self._setup_home(monkeypatch, tmp_path)
         (hermes_home / "config.yaml").write_text(yaml.safe_dump({
             "model": {

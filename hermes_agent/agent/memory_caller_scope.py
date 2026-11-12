@@ -41,7 +41,7 @@ def refused_tool_message(tool_name: str) -> str:
 def _home_key(home: Any) -> Optional[str]:
     if not home:
         return None
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
     try:
         return hermes_home_key(home)
     except (OSError, RuntimeError, ValueError):  # unresolvable path: no key, so the call is refused
@@ -53,7 +53,7 @@ def _explicit_caller_home() -> Optional[str]:
     scope was built for. None when the context names no profile (``get_hermes_home()`` would only fall
     back to the process home, which proves nothing on a multiplexed process)."""
     from hermes_agent.agent.secret_scope import current_secret_scope_home
-    from hermes_constants import get_hermes_home_override
+    from hermes_agent.hermes_constants import get_hermes_home_override
     return get_hermes_home_override() or current_secret_scope_home()
 
 
@@ -82,7 +82,7 @@ def caller_scope(bound: Optional[dict[str, Any]], label: str) -> Optional[dict[s
         if multiplexed:
             _refuse(label, "the caller names no profile on a process serving several", None, bound_home, multiplexed)
             return None
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         caller_home = str(get_hermes_home())  # single-profile process: its own home is the only one
     if not bound_home:
         if multiplexed:
@@ -145,7 +145,7 @@ def in_owner_home(bound: Optional[dict[str, Any]], fn: Callable[[], Any]) -> Cal
         return fn
 
     def _run() -> Any:
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
         token = set_hermes_home_override(str(home))
         try:
             return fn()

@@ -142,7 +142,7 @@ def step_state_db_guard() -> dict:
     surfaced loudly in the log instead of the user silently losing session
     search. Read-only, idempotent.
     """
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.hermes_cli.backup import verify_sqlite_integrity
 
     state_path = get_hermes_home() / "state.db"
@@ -167,7 +167,7 @@ def step_drop_live_plugin_catalog() -> dict:
     so without this a pre-update snapshot out-votes the newer in-tree catalog
     for the rest of its TTL (#119340). Per home, like the boot record.
     """
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.hermes_cli.plugin_catalog import invalidate_live_cache_for_home
 
     invalidate_live_cache_for_home(get_hermes_home())
@@ -199,7 +199,7 @@ def step_adopt_blessed_checkout(project_root: Path | None = None) -> dict:
     import json
     import tempfile
 
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     root = install_root() if project_root is None else Path(project_root)
 

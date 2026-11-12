@@ -202,7 +202,7 @@ class TestCollectKanbanNotifications:
         have its subscription claimed from the one shared board — the poller
         needs no per-profile home binding.
         """
-        from hermes_constants import (
+        from hermes_agent.hermes_constants import (
             reset_hermes_home_override,
             set_hermes_home_override,
         )

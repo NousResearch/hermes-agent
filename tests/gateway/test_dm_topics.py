@@ -121,7 +121,7 @@ async def test_setup_dm_topics_mixed_persisted_and_new():
 async def test_setup_dm_topics_reuses_persisted_ids_after_adapter_rebuild(tmp_path):
     """A rebuilt adapter must not recreate topics whose thread_ids were persisted after its
     (startup-time) config snapshot was taken (#132522)."""
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
 
     # In-memory snapshot the gateway hands the rebuilt adapter: created on the first run,
     # still missing the thread_ids the adapter persisted to config.yaml afterwards.
@@ -217,7 +217,7 @@ async def test_ensure_dm_topic_creates_on_demand_and_persists():
 
 def test_persist_dm_topic_thread_id_writes_config(tmp_path):
     """Should write thread_id into the correct topic in config.yaml."""
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
 
     config_data = {
         "platforms": {
@@ -261,7 +261,7 @@ def test_persist_dm_topic_thread_id_writes_config(tmp_path):
 
 def test_persist_dm_topic_thread_id_preserves_config_on_write_failure(tmp_path):
     """Failed writes should leave the original config.yaml intact."""
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
 
     config_data = {
         "platforms": {
@@ -322,7 +322,7 @@ def test_get_dm_topic_info_finds_cached_topic():
 
 def test_get_dm_topic_info_hot_reloads_from_config(tmp_path):
     """Should find a topic added to config after startup (hot-reload)."""
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
 
     # Start with empty topics
     adapter = _make_adapter([
@@ -527,7 +527,7 @@ def test_recovered_lobby_message_carries_the_topics_prompt_inputs(lobby_thread_i
     """A lobby-shaped DM recovered into a topic runs in that topic's session, so it must carry
     the same prompt inputs as a message sent inside the topic: the session context prompt and
     the channel prompt would otherwise flip between the root's and the topic's every turn."""
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
     from hermes_agent.gateway.platforms.event import MessageType
 
     dm_topics = [{"chat_id": 111, "topics": [{"name": "Research", "skill": "arxiv", "thread_id": 100}]}]

@@ -175,7 +175,7 @@ def _spill_summary_to_file(task_index: int, summary: str) -> Optional[str]:
     ``credential_files._CACHE_DIRS``, so the parent's terminal/``read_file`` can page it on any backend). Absolute
     path, or None on failure — the trimmed head+tail is still returned regardless."""
     try:
-        from hermes_constants import get_hermes_dir
+        from hermes_agent.hermes_constants import get_hermes_dir
         import datetime as _dt
         cache_dir = get_hermes_dir("cache/delegation", "delegation_cache")
         cache_dir.mkdir(parents=True, exist_ok=True)

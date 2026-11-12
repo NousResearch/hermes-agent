@@ -32,7 +32,7 @@ import uuid
 from pathlib import Path
 
 import pytest
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 OLD_URL = "https://old-endpoint.invalid/v1"
 NEW_URL = "https://new-endpoint.invalid/v1"
@@ -60,7 +60,7 @@ def live_home(monkeypatch):
     # hermes_constants caches the resolved home at first read — the env var
     # alone doesn't repoint an already-imported process. Use the override API
     # (the same mechanism profile-scoped resumes use).
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     home_token = set_hermes_home_override(str(home))
     # Neutralize ambient provider creds so resolution uses ONLY the config

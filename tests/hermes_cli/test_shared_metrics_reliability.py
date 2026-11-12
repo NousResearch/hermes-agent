@@ -147,7 +147,7 @@ def test_turn_watchdog_abort_counts_once_per_turn_in_the_turn_profile(marks, tmp
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "other"))  # the watchdog thread's ambient home
     seen: list[str] = []
     monkeypatch.setattr(relay_shared_metrics, "record_process_mark", lambda mark, data: (
-        marks.rows.append((mark, data)), seen.append(str(__import__("hermes_constants").get_hermes_home()))))
+        marks.rows.append((mark, data)), seen.append(str(__import__("hermes_agent.hermes_constants", fromlist=["get_hermes_home"]).get_hermes_home()))))
     process_metrics.record_watchdog_turn_abort(agent)
     process_metrics.record_watchdog_turn_abort(agent)  # the second watchdog on the same turn
     assert [data["exit_kind"] for _, data in marks.rows] == ["watchdog"]

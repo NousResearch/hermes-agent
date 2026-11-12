@@ -92,7 +92,7 @@ def provider_present(name: str, home: Path) -> bool:
     plugins, entry point). The lookup reads the active home, so it is bound explicitly: the update
     hook walks several profile homes from one process."""
     from plugins.memory import find_provider_dir
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
     token = set_hermes_home_override(home)
     try:
         return find_provider_dir(name) is not None
@@ -122,7 +122,7 @@ def catalog_install_hint(name: str, *, category: Optional[str] = None) -> Option
         return None
     if entry is None or (category is not None and entry.category != category):
         return None
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     return _install_command(name, get_hermes_home())
 
 
@@ -145,7 +145,7 @@ def _install_command(name: str, home: Path) -> str:
     home while no sticky profile is set: a bare command run from a shell targets the sticky
     profile, never the home of the agent (Desktop, gateway, ``hermes -p``) that printed it."""
     from hermes_agent.hermes_cli.profiles import get_active_profile
-    from hermes_constants import profile_name_for_home
+    from hermes_agent.hermes_constants import profile_name_for_home
     profile = profile_name_for_home(home)
     if profile is None or (profile == "default" and get_active_profile() == "default"):
         return f"hermes plugins install {name}"
@@ -198,7 +198,7 @@ def _unattended_consent() -> bool:
 
 
 def _home_consent(home: Path) -> bool:
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
     token = set_hermes_home_override(home)
     try:
         return _unattended_consent()
@@ -209,7 +209,7 @@ def _home_consent(home: Path) -> bool:
 def _install_into(home: Path, *, consent: Optional[bool] = None) -> Callable[[str], dict]:
     def _install(name: str) -> dict:
         from hermes_agent.hermes_cli.plugins_cmd import dashboard_install_plugin
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
         token = set_hermes_home_override(home)
         try:
             return dashboard_install_plugin("", force=False, enable=True, catalog_name=name,
@@ -221,7 +221,7 @@ def _install_into(home: Path, *, consent: Optional[bool] = None) -> Callable[[st
 
 
 def _home_label(home: Path) -> str:
-    from hermes_constants import profile_name_for_home
+    from hermes_agent.hermes_constants import profile_name_for_home
     profile = profile_name_for_home(home)
     return f"profile '{profile}'" if profile else str(home)
 
@@ -281,7 +281,7 @@ def migrate_all_homes(*, say: Callable[[str], None] = print) -> list[str]:
 def recover_at_startup(name: str, *, say: Optional[Callable[[str], None]] = None) -> bool:
     """Agent-init hook for a configured provider that resolved nowhere. One attempt per process per
     home and name; honours ``security.allow_lazy_installs`` because it installs code. True when installed."""
-    from hermes_constants import get_hermes_home, hermes_home_key
+    from hermes_agent.hermes_constants import get_hermes_home, hermes_home_key
 
     home = get_hermes_home()
     key = (hermes_home_key(home), name)

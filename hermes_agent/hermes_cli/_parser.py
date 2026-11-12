@@ -34,7 +34,7 @@ def _cfg_path() -> str:
     "[HERMES_HOME fallback] ... wrong profile" warning on every ``hermes`` command for that
     throwaway help string. Read the process home directly: after the override it IS the profile home.
     """
-    from hermes_constants import display_hermes_home, get_process_hermes_home
+    from hermes_agent.hermes_constants import display_hermes_home, get_process_hermes_home
 
     return f"{display_hermes_home(get_process_hermes_home())}/config.yaml"
 

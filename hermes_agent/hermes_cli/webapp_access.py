@@ -67,7 +67,7 @@ def _public_url(raw: Optional[str]) -> str:
 def gateway_home() -> Path:
     """The home whose gateway serves the current one; its config holds the Webapp's settings."""
     from hermes_agent.hermes_cli.webapp_launcher import _gateway_home
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     return _gateway_home(get_hermes_home())
 
@@ -130,8 +130,8 @@ def _register_nous_sign_in(callback_url: str) -> None:
         _register_self_hosted_client,
         _resolve_portal_base_url,
     )
-    from hermes_constants import get_hermes_home
-    from utils import atomic_write_text
+    from hermes_agent.hermes_constants import get_hermes_home
+    from hermes_agent.utils import atomic_write_text
 
     home = get_hermes_home()
     portal = _resolve_portal_base_url(os.environ.get("HERMES_DASHBOARD_PORTAL_URL"))
@@ -204,7 +204,7 @@ def _port_to_serve(home: Path, host: str) -> tuple[int, Optional[int]]:
     the home in scope, whose config :func:`save_config` writes (Start runs in its gateway's scope)."""
     from hermes_agent.gateway.webapp_listener import DEFAULT_PORT, webapp_settings
     from hermes_agent.hermes_cli.auth import _file_lock
-    from hermes_constants import named_profile_home
+    from hermes_agent.hermes_constants import named_profile_home
 
     profile = named_profile_home(home)
     if _own_port(home) is not None or profile is None:
@@ -266,7 +266,7 @@ def _claimed_ports(home: Path) -> set[int]:
     set) and every other profile's own ``webapp.port``, whether or not its gateway runs now. Only that
     setting is read from their configs."""
     from hermes_agent.gateway.webapp_listener import DEFAULT_PORT
-    from hermes_constants import named_profile_home
+    from hermes_agent.hermes_constants import named_profile_home
 
     profile = named_profile_home(home)
     if profile is None:

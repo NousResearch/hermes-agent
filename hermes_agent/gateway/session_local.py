@@ -222,7 +222,7 @@ def project_plugins_warning(policy):
     """The plain notice for a session whose client opted into project plugins (its forwarded
     ``HERMES_ENABLE_PROJECT_PLUGINS``) in a folder that has some: the gateway never loads them."""
     from pathlib import Path
-    from utils import is_truthy_value
+    from hermes_agent.utils import is_truthy_value
     # The client's folder is a path on this host only for a client the gateway proved local.
     env = policy.client_env() if policy is not None and not policy.client_env_remote else None
     folder = Path(policy.cwd) / '.hermes' / 'plugins' if env else None
@@ -419,7 +419,7 @@ def _reasoning_fields(agent, policy, model, authority=None, override=None):
         return {}
     view = session_runtime_view(agent) if agent is not None else None
     if view is None:
-        from hermes_constants import resolve_reasoning_config
+        from hermes_agent.hermes_constants import resolve_reasoning_config
         effective, next_model = policy.effective(authority, secrets=False)
         route = effective.get('model') or {}
     config = (getattr(view, 'reasoning_config', None) if view is not None

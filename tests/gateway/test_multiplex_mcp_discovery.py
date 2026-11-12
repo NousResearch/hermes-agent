@@ -12,7 +12,7 @@ import pytest
 from hermes_agent.gateway.config import GatewayConfig, Platform
 from hermes_agent.gateway.platforms.event import MessageEvent
 from hermes_agent.gateway.session import SessionSource
-from hermes_constants import get_hermes_home, hermes_home_key
+from hermes_agent.hermes_constants import get_hermes_home, hermes_home_key
 
 
 @pytest.mark.asyncio
@@ -241,7 +241,7 @@ def test_shared_server_tools_are_callable_and_removed_on_non_owner_reload(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from hermes_agent.agent.secret_scope import set_multiplex_active
-    from hermes_constants import (
+    from hermes_agent.hermes_constants import (
         hermes_home_key,
         reset_hermes_home_override,
         set_hermes_home_override,
@@ -358,7 +358,7 @@ def test_deregister_scope_kwarg_targets_overlay_and_keeps_plugin_confinement() -
     assert reg.snapshot_registration("mcp__s__t", scope="/home/p1") is None
 
     # A plugin module may not name another profile's overlay.
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
     reg._plugin_module_scopes["hermes_plugins.p"] = {hermes_home_key("/home/p1")}
     reg._caller_module = staticmethod(lambda: "hermes_plugins.p")
     with pytest.raises(PermissionError):

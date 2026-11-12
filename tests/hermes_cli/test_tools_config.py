@@ -443,7 +443,7 @@ class TestChromiumPostSetup:
         with patch("pm.ensure", side_effect=error), patch(
             "hermes_agent.hermes_cli.browser_runtime.chromium_executable", return_value=None
         ), patch("hermes_agent.hermes_cli.browser_runtime.BAKED_EXECUTABLE_FILE", tmp_path / "absent"), patch(
-            "hermes_constants.is_termux", return_value=False
+            "hermes_agent.hermes_constants.is_termux", return_value=False
         ), patch("hermes_agent.hermes_cli.tools_config_post_setup._print_warning") as warn, patch(
             "hermes_agent.hermes_cli.tools_config_post_setup._print_info"
         ) as info:

@@ -10,7 +10,7 @@ import time
 
 import pytest
 
-import hermes_dir_acl
+from hermes_agent import hermes_dir_acl
 from hermes_agent.hermes_cli.gateway_runtime_service import remaining
 
 _REAL_PROCESS_IS_ELEVATED = hermes_dir_acl.process_is_elevated

@@ -211,7 +211,7 @@ def test_backend_selection(vendor, os_name, expected):
 ])
 def test_auto_vendor_detection_uses_host_gpu_class(monkeypatch, gpu_class, expected):
     from hermes_agent.hermes_cli.local_runtime import bootstrap, hardware
-    from hermes_platform.host import facts
+    from hermes_agent.hermes_platform.host import facts
 
     monkeypatch.setattr(hardware, "_cached_nvidia_gpu_query", lambda: None)
     monkeypatch.setattr(facts, "gpu_class", lambda: gpu_class)

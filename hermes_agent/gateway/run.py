@@ -5,7 +5,7 @@ Run via ``python -m hermes_agent.gateway.run`` or ``python cli.py --gateway``.""
 
 # hermes_bootstrap must be the very first import (UTF-8 stdio on Windows; no-op on POSIX).
 try:
-    import hermes_bootstrap
+    import hermes_agent.hermes_bootstrap as hermes_bootstrap  # noqa: PLR0402
 except ModuleNotFoundError as exc:  # a partial ``hermes update`` can leave the bootstrap unregistered
     if exc.name != "hermes_bootstrap" and not "hermes_bootstrap".startswith(f"{exc.name}."):
         raise  # the bootstrap exists but cannot load: skipping it would skip PM activation
@@ -1246,7 +1246,7 @@ def _build_gateway_agent_history(
     """Convert stored gateway transcript rows into agent replay messages.
 
     Observed context stays out of ``conversation_history`` so consecutive-user repair can't merge it in."""
-    from hermes_time import get_timezone as _get_msg_tz
+    from hermes_agent.hermes_time import get_timezone as _get_msg_tz
     from hermes_agent.gateway.message_timestamps import (
         render_user_content_with_timestamp as _render_msg_ts,
         strip_leading_message_timestamps as _strip_msg_ts,
@@ -1558,7 +1558,7 @@ def _planned_restart_notification_pending() -> bool:
 # Gateway marker so a lazily imported cli.py load_cli_config() doesn't clobber TERMINAL_CWD.
 os.environ["_HERMES_GATEWAY"] = "1"
 
-from hermes_constants import get_hermes_home, get_hermes_home_override, get_process_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home, get_hermes_home_override, get_process_hermes_home
 # The PROCESS's own home, never an import-time ContextVar: a multiplexed backend (``hermes serve``)
 # first imports this module lazily from a session's agent build, under that session's routed profile
 # override, and the import-time config bridge below would then latch the secondary's terminal.* and
@@ -1702,7 +1702,7 @@ def _enable_multiplex_log_routing(config: object) -> bool:
     if not getattr(config, "multiplex_profiles", False):
         return False
     try:
-        from hermes_logging import enable_profile_log_routing
+        from hermes_agent.hermes_logging import enable_profile_log_routing
         return enable_profile_log_routing([home for _name, home in _multiplex_profile_homes(config)])
     except Exception:
         logger.debug("could not enable per-profile log routing", exc_info=True)
@@ -1772,7 +1772,7 @@ def _terminal_scope_cwd(default: str = "") -> str:
 
 def _load_profile_secret_scope(profile_home: Path) -> dict:
     """Hydrate and load one profile's secrets under its home override."""
-    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    from hermes_agent.hermes_constants import set_hermes_home_override, reset_hermes_home_override
     # Caller already hydrated external sources off-loop (#99519).
     from hermes_agent.hermes_cli.env_loader import hydrate_profile_secret_sources
     from hermes_agent.tui_gateway.launch_profile_policy import owner_secret_scope
@@ -1793,7 +1793,7 @@ def _profile_runtime_scope(
     ``set_hermes_home_override`` is a contextvar (reaches the agent worker via ``copy_context()``);
     ``set_secret_scope`` makes the profile ``.env`` the credential source without mutating
     ``os.environ``, so subprocesses never inherit cross-profile secrets."""
-    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    from hermes_agent.hermes_constants import set_hermes_home_override, reset_hermes_home_override
     from hermes_agent.agent.secret_scope import set_secret_scope, reset_secret_scope
 
     home_token = secret_token = None
@@ -1856,7 +1856,7 @@ def load_gateway_config_for_runner() -> "GatewayConfig":
     except Exception:
         logger.debug("could not set multiplex-active before primary config load", exc_info=True)
     try:
-        from hermes_constants import get_default_hermes_root
+        from hermes_agent.hermes_constants import get_default_hermes_root
         home = get_default_hermes_root()
     except Exception:
         return cfg
@@ -1904,7 +1904,7 @@ def _platform_has_bot_credential(platform: "Platform", platform_config: "Platfor
     ``PlatformConfig.token`` (Signal session paths, port-binding HTTP adapters) always return True."""
     from hermes_agent.gateway.config import PLATFORM_TOKEN_ENV_NAMES, Platform
     if platform is Platform.WHATSAPP:
-        from hermes_constants import get_hermes_dir
+        from hermes_agent.hermes_constants import get_hermes_dir
         session = Path(platform_config.extra.get(
             "session_path", get_hermes_dir("platforms/whatsapp/session", "whatsapp/session")))
         return (session / "creds.json").exists()
@@ -2130,7 +2130,7 @@ if config_exists(_config_path):
 
 # IPv4 preference must apply before any HTTP clients are created.
 try:
-    from hermes_constants import apply_ipv4_preference
+    from hermes_agent.hermes_constants import apply_ipv4_preference
     _network_cfg = _cfg.get("network", {})
     if isinstance(_network_cfg, dict) and _network_cfg.get("force_ipv4"):
         apply_ipv4_preference(force=True)
@@ -2818,7 +2818,7 @@ def _check_unavailable_skill(command_name: str) -> str | None:
                     return t("gateway.skills.disabled", name=command_name)
 
         # Check optional skills (shipped with repo but not installed)
-        from hermes_constants import get_optional_skills_dir
+        from hermes_agent.hermes_constants import get_optional_skills_dir
         repo_root = Path(project_root_str())
         optional_dir = get_optional_skills_dir(repo_root / "optional-skills")
         if optional_dir.exists():
@@ -4170,7 +4170,7 @@ class GatewayRunner(
         from hermes_agent.gateway.profile_routing import ProfileRouteRejected
         from hermes_agent.gateway.session_identity import identity_of
         from hermes_agent.hermes_cli.profiles import get_active_profile_name, get_profile_dir, profile_exists
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         identity = identity_of(source)
         if identity is not None:
             return identity.runtime_home
@@ -5181,7 +5181,7 @@ def _exit_after_graceful_shutdown(exit_code: int) -> None:
     def _drain_logs() -> None:
         # os._exit bypasses the listener's atexit drain. Bounded, no restart — NOT flush_log_queue():
         # a listener wedged on the rotation lock would re-freeze shutdown in an unbounded stop() join.
-        from hermes_logging import drain_log_queue
+        from hermes_agent.hermes_logging import drain_log_queue
         drain_log_queue(timeout=1.0)
 
     for _step in (_release_locks, _mark_exited, _flush_metrics, _write_cpu_profile, _drain_logs):

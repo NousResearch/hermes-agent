@@ -33,7 +33,7 @@ def test_default_home_aliases_are_reported_as_default(tmp_path, monkeypatch):
 
 def test_profile_home_resolution_stamps_default_rows(tmp_path, monkeypatch):
     """Default and named homes resolve canonically, including lazy row creation."""
-    from hermes_constants import profile_name_for_home
+    from hermes_agent.hermes_constants import profile_name_for_home
     from hermes_agent.tui_gateway import server
 
     default_home, launch_home = _profile_layout(tmp_path)
@@ -91,7 +91,7 @@ def test_profile_home_resolution_stamps_default_rows(tmp_path, monkeypatch):
 
 def test_custom_default_root_real_session_db_owner_stamping(tmp_path, monkeypatch):
     """Custom default roots stamp real SessionDB rows as default without leaking to siblings."""
-    from hermes_constants import profile_name_for_home
+    from hermes_agent.hermes_constants import profile_name_for_home
     from hermes_agent.hermes_state import SessionDB
     from hermes_agent.tui_gateway import server
 

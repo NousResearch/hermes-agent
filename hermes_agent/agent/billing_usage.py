@@ -16,7 +16,7 @@ import os
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from hermes_time import safe_strftime
+from hermes_agent.hermes_time import safe_strftime
 
 logger = logging.getLogger(__name__)
 

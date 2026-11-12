@@ -180,7 +180,7 @@ def test_a_preinstalled_plugin_gets_the_scope_conversion_once(tmp_path):
 
     config = read_user_config_raw(home / "config.yaml")
     _save_platform_tools(config, "telegram", {"web", "homeassistant"})  # the user's later choice
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
     token = set_hermes_home_override(home)
     try:
         save_config(config)

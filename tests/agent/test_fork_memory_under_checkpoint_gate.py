@@ -197,7 +197,7 @@ def test_fork_keeps_builtin_memory_out_of_its_prompt():
     """The fork loads the provider for the checkpoint only: MEMORY.md and USER.md stay out of its
     system prompt, as with ``skip_memory=True``. The same config without the fork label loads them."""
     from hermes_agent.agent.system_prompt import build_system_prompt
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     memories = get_hermes_home() / "memories"
     memories.mkdir(parents=True, exist_ok=True)

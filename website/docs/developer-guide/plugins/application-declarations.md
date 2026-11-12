@@ -2,10 +2,10 @@
 
 A plugin whose MCP server fronts a desktop application declares which application that is and what the server needs of it. The core evaluates the declaration on the host and gates the server's tools, and any skill that names the application, on the answer. The parser imports only the standard library and `hermes_platform`.
 
-The vocabulary lives in `hermes_platform/declaration.py`. A declaration is data plus policy, parsed from plain mappings (already-decoded YAML, JSON, a dict literal — the parser never touches a file):
+The vocabulary lives in `hermes_agent/hermes_platform/declaration.py`. A declaration is data plus policy, parsed from plain mappings (already-decoded YAML, JSON, a dict literal — the parser never touches a file):
 
 ```python
-from hermes_platform import declaration
+from hermes_agent.hermes_platform import declaration
 
 decl = declaration.parse_declaration(
     "my-server",
@@ -72,7 +72,7 @@ app:
 | `flatpak` | `linux` | `app_id` | the system, then the per-user flatpak `exports/bin` |
 | `snap` | `linux` | `name` | `/snap/bin` |
 
-Each kind's OS, key, presence and locator are one `LOCATION_KINDS` entry in `hermes_platform/resolver/app.py`; the parser validates against that table, so a new kind is one entry there. The directories behind each kind live in `hermes_platform/resolver/known_dirs.py`.
+Each kind's OS, key, presence and locator are one `LOCATION_KINDS` entry in `hermes_agent/hermes_platform/resolver/app.py`; the parser validates against that table, so a new kind is one entry there. The directories behind each kind live in `hermes_agent/hermes_platform/resolver/known_dirs.py`.
 
 | field | type | rule | maps to `AppDef` |
 |---|---|---|---|
@@ -100,7 +100,7 @@ requires:
 |---|---|---|
 | `app` | bool | when true, `app:` must exist and the server is gated on presence |
 | `min_version` | str | requires `app: true`; dotted numeric; every `app.win32` and `app.darwin` must declare a real `version.kind`; `app.linux` may omit it (Linux has no version source) and is then gated on presence only, but a Linux-only declaration cannot set a minimum; compared numerically per segment, non-numeric characters in a segment are dropped (`2.3.0.12594` ≥ `2.3.0`; prerelease suffixes are not ordered) |
-| `gpu` | str | `nvidia`; the server is offered only on a host where `hermes_platform.host.facts.gpu_class()` reports that vendor. Independent of `app`: a server with no `app:` block can require a GPU. |
+| `gpu` | str | `nvidia`; the server is offered only on a host where `hermes_agent.hermes_platform.host.facts.gpu_class()` reports that vendor. Independent of `app`: a server with no `app:` block can require a GPU. |
 
 `requires.app: true` with no `app:` block is a `DeclarationError`.
 
@@ -108,7 +108,7 @@ requires:
 
 ## Availability: the one evaluation every reader uses
 
-`hermes_platform/resolver/availability.py::availability(decl) -> Availability`
+`hermes_agent/hermes_platform/resolver/availability.py::availability(decl) -> Availability`
 
 ```
 Availability(

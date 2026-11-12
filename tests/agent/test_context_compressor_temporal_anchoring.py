@@ -14,7 +14,7 @@ proves ``compress()`` routes into ``_generate_summary``.
 from datetime import datetime, timezone, UTC
 from unittest.mock import MagicMock, patch
 
-import hermes_time
+from hermes_agent import hermes_time
 from hermes_agent.agent.context_compressor import ContextCompressor, HISTORICAL_TASK_HEADING
 
 
@@ -74,7 +74,7 @@ def test_clock_failure_omits_rule_but_compaction_still_runs():
 
 
 def test_anchoring_rule_uses_date_from_hermes_time_now():
-    """The date is taken from hermes_time.now(), which respects the user's TZ."""
+    """The date is taken from hermes_agent.hermes_time.now(), which respects the user's TZ."""
     compressor = _compressor()
     fixed = datetime(2025, 12, 31, 23, 30, tzinfo=UTC)
     with patch.object(hermes_time, "now", lambda: fixed), patch(

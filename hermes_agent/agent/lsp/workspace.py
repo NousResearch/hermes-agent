@@ -162,7 +162,7 @@ def operator_workspace_roots() -> set[str]:
     from hermes_agent.agent.runtime_cwd import resolve_agent_cwd
     from hermes_agent.gateway.session_context import get_session_env
     from hermes_agent.tools.terminal_scope import TerminalPolicyUnavailable
-    from utils import is_truthy_value
+    from hermes_agent.utils import is_truthy_value
     # Work the model can schedule has no operator anchor: a kanban worker is launched in (with
     # TERMINAL_CWD =) the task's workspace and a cron run's session cwd is the job's workdir, and the
     # kanban_create / cronjob tools let the model pick both.

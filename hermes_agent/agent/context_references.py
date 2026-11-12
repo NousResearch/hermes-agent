@@ -546,7 +546,7 @@ def _resolve_path(cwd: Path, target: str, *, allowed_root: Path | None = None) -
 
 def _ensure_reference_path_allowed(path: Path) -> None:
     """Refuse credential/internal paths. Fails CLOSED: the gateway feeds untrusted remote text here."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     home, hermes_home = Path(os.path.expanduser("~")).resolve(), get_hermes_home().resolve()
     blocked_exact = {home / rel for rel in _SENSITIVE_HOME_FILES} | {hermes_home / ".env"}
     blocked_dirs = [home / rel for rel in HOME_CREDENTIAL_DIRS] + [hermes_home / rel for rel in _SENSITIVE_HERMES_DIRS]

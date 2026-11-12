@@ -16,7 +16,7 @@ def test_model_options_binds_requested_profile_home(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "_model_picker_context", lambda agent: object())
 
     def build_payload(ctx, **kwargs):
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
 
         seen["home"] = Path(get_hermes_home())
         return {"providers": []}

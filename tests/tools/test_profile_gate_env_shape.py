@@ -21,7 +21,7 @@ def test_routed_no_agent_script_env_keeps_operator_allowlist_and_drops_platform_
     """The cron ``no_agent`` spawn seam: a child built for ANOTHER profile drops Hermes gates but
     keeps the operator's script data, whatever its name looks like."""
     from hermes_agent.agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     launch = tmp_path / ".hermes"
     other = launch / "profiles" / "other"

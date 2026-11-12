@@ -12,8 +12,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Dict
 
-from hermes_constants import display_hermes_home
-from utils import atomic_json_write
+from hermes_agent.hermes_constants import display_hermes_home
+from hermes_agent.utils import atomic_json_write
 from hermes_agent.hermes_cli.config import cfg_get
 
 
@@ -29,7 +29,7 @@ class SubscriptionMutationConflict(RuntimeError):
 
 
 def _subscriptions_path() -> Path:
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     return get_hermes_home() / _SUBSCRIPTIONS_FILENAME
 
 

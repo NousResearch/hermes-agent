@@ -44,7 +44,7 @@ class OptionalSkillSource(SkillSource):
     _parse_frontmatter = staticmethod(_parse_frontmatter)
 
     def __init__(self, auth: Optional[GitHubAuth] = None):
-        from hermes_constants import get_optional_skills_dir
+        from hermes_agent.hermes_constants import get_optional_skills_dir
 
         from hermes_agent.hermes_cli._startup_fast import project_root_str
         self._optional_dir = get_optional_skills_dir(Path(project_root_str()) / "optional-skills")

@@ -73,7 +73,7 @@ def ensure_windows_bin_launchers(
     OUTSIDE the git checkout so no git operation can ever touch it. It is
     a per-machine dir shared by every profile: ``get_hermes_home()`` would
     point inside ``profiles\\<name>`` under ``hermes -p``, so the anchor
-    here is :func:`hermes_constants.get_default_hermes_root`.
+    here is :func:`hermes_agent.hermes_constants.get_default_hermes_root`.
 
     Earlier installer versions staged them at ``<checkout>\\bin`` instead —
     inside the git working tree — where ``hermes update``'s pre-update
@@ -101,7 +101,7 @@ def ensure_windows_bin_launchers(
     starts cannot tear a launcher. Never raises; returns the restored paths.
 
     *windows* and *user_path_entries* are injectable for tests, same pattern
-    as ``hermes_constants.venv_bin_dir``.
+    as ``hermes_agent.hermes_constants.venv_bin_dir``.
     """
     if windows is None:
         windows = _is_windows()
@@ -114,7 +114,7 @@ def ensure_windows_bin_launchers(
     # under ``hermes -p <name>`` that returns ``profiles\\<name>``, which
     # would fail the managed-clone gate below and silently skip the heal
     # for profile users. The launcher dir serves the whole machine.
-    from hermes_constants import get_default_hermes_root
+    from hermes_agent.hermes_constants import get_default_hermes_root
 
     try:
         home = Path(get_default_hermes_root())
@@ -132,7 +132,7 @@ def ensure_windows_bin_launchers(
         stage_launcher,
     )
 
-    from hermes_constants import project_venv_dir
+    from hermes_agent.hermes_constants import project_venv_dir
 
     venv_dir = project_venv_dir(root)
 
@@ -282,7 +282,7 @@ def migrate_windows_bin_path(
     root = Path(root)
 
     # Same per-machine anchor as ensure_windows_bin_launchers (see there).
-    from hermes_constants import get_default_hermes_root
+    from hermes_agent.hermes_constants import get_default_hermes_root
     from pm.environments import venv_bin_dir
 
     try:

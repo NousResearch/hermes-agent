@@ -47,7 +47,7 @@ _VAULT_REDACTION_LOCK = threading.Lock()
 
 
 def _vault_scope() -> str:
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     return str(get_hermes_home())
 
 
@@ -130,7 +130,7 @@ def note_config_policy(home_key: str, raw) -> None:
 
 def resolve_profile_policy(home) -> None:
     """Record ``home``'s redaction policy now (log-routing setup), so its records never wait for it."""
-    from hermes_constants import hermes_home_key, reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import hermes_home_key, reset_hermes_home_override, set_hermes_home_override
     token = set_hermes_home_override(home)
     try:
         key = hermes_home_key()
@@ -146,7 +146,7 @@ def resolve_profile_policy(home) -> None:
 def _redact_enabled() -> bool:
     """Effective redaction switch for the active profile (launch snapshot when no override). Reads
     only in-memory state: the live secret scope and the recorded per-profile policy."""
-    from hermes_constants import get_hermes_home_override, hermes_home_key
+    from hermes_agent.hermes_constants import get_hermes_home_override, hermes_home_key
     if get_hermes_home_override() is None:
         return _REDACT_ENABLED
     home_key = hermes_home_key()
@@ -1996,5 +1996,5 @@ class RedactingFormatter(logging.Formatter):
         return redact_sensitive_text(super().format(record))
 
     def formatMessage(self, record: logging.LogRecord) -> str:
-        from hermes_logging import display_record  # lazy: hermes_logging imports this module lazily
+        from hermes_agent.hermes_logging import display_record  # lazy: hermes_logging imports this module lazily
         return super().formatMessage(display_record(record))

@@ -27,7 +27,7 @@ except ImportError:  # pragma: no cover - httpx is a hermes dependency
     httpx = None  # type: ignore[assignment]
 
 from hermes_agent.gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 import contextlib
 
 logger = logging.getLogger(__name__)

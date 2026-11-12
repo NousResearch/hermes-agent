@@ -148,7 +148,7 @@ def install(items: list[dict[str, str]], *, session_id: Optional[str], tool_call
 def search(query: str, kind: Optional[str], *, installer: Any = None) -> dict[str, Any]:
     """Runs on the tool call's thread, in this chat's profile scope, so ``installed`` is this
     chat's profile's."""
-    from hermes_constants import get_hermes_home, profile_name_for_home
+    from hermes_agent.hermes_constants import get_hermes_home, profile_name_for_home
 
     rows: list[dict[str, Any]] = []
     if kind in (None, "plugin"):

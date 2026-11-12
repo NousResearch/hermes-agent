@@ -185,7 +185,7 @@ def write_profile_model(profile_dir: Path, provider: str, model: str, validate_i
     )
     from hermes_agent.agent.secret_scope import reset_multiplex_context, set_multiplex_context
     from hermes_agent.hermes_cli.env_loader import hydrate_profile_secret_sources
-    from hermes_constants import get_process_hermes_home
+    from hermes_agent.hermes_constants import get_process_hermes_home
     from hermes_agent.tui_gateway.launch_profile_policy import profile_config_scope
     validate_home = validate_in or profile_dir
     foreign = validate_home.resolve() != get_process_hermes_home().resolve()
@@ -326,7 +326,7 @@ def mirror_launch_credentials(path: Path, mirrored: dict[str, Any], *, share_aut
     named launch profile that fallback would pair its keys with the root's logins, so its auth is copied.
     Returns the providers whose single-use logins were left out of a copy (read from the root instead)."""
     from hermes_agent.hermes_cli.auth import _global_auth_file_path
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     launch_home = get_hermes_home()
     # Same test as the auth fallback that makes sharing work: share only when it reads the launch store.
     share_auth = share_auth and _global_auth_file_path() is None

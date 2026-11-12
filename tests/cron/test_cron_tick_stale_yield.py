@@ -238,7 +238,7 @@ class TestYieldedTickIsAFailedTick:
         prov = InProcessCronScheduler()
 
         def _tick(*args, **kwargs):
-            from hermes_constants import get_hermes_home
+            from hermes_agent.hermes_constants import get_hermes_home
 
             home = str(get_hermes_home())
             ticked.append(home)
@@ -249,12 +249,12 @@ class TestYieldedTickIsAFailedTick:
             return 0
 
         def _beat(success=False):
-            from hermes_constants import get_hermes_home
+            from hermes_agent.hermes_constants import get_hermes_home
 
             per_home_beats[str(get_hermes_home())].append(success)
 
         def _err(msg):
-            from hermes_constants import get_hermes_home
+            from hermes_agent.hermes_constants import get_hermes_home
 
             per_home_errors[str(get_hermes_home())].append(msg)
 
@@ -317,7 +317,7 @@ class TestGatewayLockOwnershipProbe:
         a multiplex profile-home override the probe must still resolve the
         launch home's lock, not the overridden profile's."""
         from hermes_agent.gateway import status as gateway_status
-        from hermes_constants import (
+        from hermes_agent.hermes_constants import (
             reset_hermes_home_override,
             set_hermes_home_override,
         )

@@ -43,7 +43,7 @@ async def test_secondary_profile_child_transcript_reads_its_own_store_in_its_sco
     from hermes_agent.gateway.session_authorities import owner_scope
     from hermes_agent.gateway.session_controls import AuthorityConnection
     from hermes_agent.gateway.session_local import create_local_session
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     monkeypatch.setattr(run, '_load_gateway_config', lambda *a: {
         'platform_toolsets': {'cli': [], 'tui': []},

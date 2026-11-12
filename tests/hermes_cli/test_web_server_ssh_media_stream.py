@@ -198,7 +198,7 @@ def test_ssh_stream_refuses_a_file_download_or_media_rules_refuse(client, ssh, p
 
 
 def test_an_ssh_stream_ticket_plays_ranges_and_only_its_own_profile_and_path(client, ssh):
-    from hermes_constants import mark_named_profile_deleted
+    from hermes_agent.hermes_constants import mark_named_profile_deleted
 
     profile, workspace = ssh
     query = {"path": CLIP, "profile": "remote-dev"}

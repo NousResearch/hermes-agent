@@ -9,7 +9,7 @@ import pytest
 from hermes_agent.gateway.config import GatewayConfig, PlatformConfig
 from hermes_agent.gateway.profile_routing import ProfileRoute
 from hermes_agent.gateway.run import GatewayRunner
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 from plugins.platforms.telegram.adapter import TelegramAdapter
 from tests.gateway.test_telegram_documents import _make_document, _make_message, _make_update
 

@@ -220,7 +220,7 @@ def test_persistence_commands_are_pinned_to_the_failing_profile(monkeypatch, tmp
     whose store failed — a multi-profile backend serves sessions whose state.db is not the
     process default, and a bare ``hermes`` follows the sticky active_profile (#105887). The
     corrupt/fts_index causes already did this; replaced/deleted_wal/default did not."""
-    from hermes_constants import profile_cli_selector
+    from hermes_agent.hermes_constants import profile_cli_selector
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes" / "profiles" / "research"))
     selector = profile_cli_selector()

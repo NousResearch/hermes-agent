@@ -57,7 +57,7 @@ def warm_tunnel(ws: WebSocket) -> None:
 def prepare_shell(ws: WebSocket, identity: tuple[str, str]):
     from hermes_agent.hermes_cli.gateway_connections_ssh import interactive_shell_argv
     from hermes_agent.hermes_cli.web_host_terminal import resolve_argv
-    from hermes_constants import get_process_hermes_home
+    from hermes_agent.hermes_constants import get_process_hermes_home
 
     connection, path = ws.state.ssh_terminal
     home = get_process_hermes_home().resolve()

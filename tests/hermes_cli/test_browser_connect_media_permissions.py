@@ -29,7 +29,7 @@ def _no_managed(monkeypatch, home):
     monkeypatch.delenv("HERMES_HOME_MODE", raising=False)
     monkeypatch.delenv("HERMES_UID", raising=False)
     monkeypatch.delenv("HERMES_GID", raising=False)
-    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: home)
+    monkeypatch.setattr("hermes_agent.hermes_constants.get_hermes_home", lambda: home)
 
 
 def test_chrome_debug_data_dir_created_owner_only(tmp_path, monkeypatch):
@@ -122,12 +122,12 @@ def test_computer_use_cache_files_owner_only(tmp_path, monkeypatch):
     """computer_use's capture caches (screenshots, vision temps) are created 0700 and
     the capture bytes land 0600 — a capture is as sensitive as the screen it came
     from."""
-    import hermes_constants
+    from hermes_agent import hermes_constants
 
     home = tmp_path / "hh"
     _no_managed(monkeypatch, home)
     # computer_use resolves the cache dir through the lazily-imported
-    # hermes_constants.get_hermes_dir (see _cache_file), so patch it there —
+    # hermes_agent.hermes_constants.get_hermes_dir (see _cache_file), so patch it there —
     # the module attribute the import binds to, not the consumer module.
     monkeypatch.setattr(hermes_constants, "get_hermes_dir", lambda new, old: home / new)
     path = cu._cache_file("cache/vision", "temp_vision_images", "capture.png")

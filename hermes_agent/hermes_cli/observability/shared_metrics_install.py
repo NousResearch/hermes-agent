@@ -2,7 +2,7 @@
 
 Everything here is read offline: the installed version's own commit date, the install stamp and
 per-install channel record, the update check's cached result (never a network call), and cached
-``hermes_platform.host`` facts. Only closed enums and buckets leave; the git remote, branch names,
+``hermes_agent.hermes_platform.host`` facts. Only closed enums and buckets leave; the git remote, branch names,
 paths and endpoint URLs stay local.
 """
 
@@ -101,7 +101,7 @@ def version_age_bucket(now: float | None = None) -> str:
 def behind_bucket(home: Path | None = None, now: float | None = None) -> str:
     """Commits/releases behind, from the update check's cached result for this exact revision."""
     from hermes_agent.hermes_cli.update_channel import install_id
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     root = _project_root()
     cache_file = (home or get_hermes_home()) / "source-checks" / f"{install_id(root)}.json"
@@ -125,7 +125,7 @@ def behind_bucket(home: Path | None = None, now: float | None = None) -> str:
 
 
 def ram_bucket() -> str:
-    from hermes_platform.host.facts import ram_total_bytes
+    from hermes_agent.hermes_platform.host.facts import ram_total_bytes
 
     total = ram_total_bytes()
     if not total:
@@ -134,7 +134,7 @@ def ram_bucket() -> str:
 
 
 def gpu_class() -> str:
-    from hermes_platform.host.facts import gpu_class as host_gpu_class
+    from hermes_agent.hermes_platform.host.facts import gpu_class as host_gpu_class
 
     value = host_gpu_class()
     return value if value in contract.GPU_CLASSES else "unknown"

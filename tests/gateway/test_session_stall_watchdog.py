@@ -520,7 +520,7 @@ async def test_check_session_stalls_bounds_wedged_send(monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("setting", [None, False, True])
 async def test_stall_policy_owner_latch_and_source_log_conservation(tmp_path, monkeypatch, caplog, setting):
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
     owner, launch = tmp_path / "owner", tmp_path / "launch"
     owner.mkdir(); launch.mkdir()
     (owner / "config.yaml").write_text(yaml.safe_dump({} if setting is None else {"display": {"suppress_warning_notifications": setting}}))

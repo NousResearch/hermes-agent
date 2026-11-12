@@ -12,7 +12,7 @@ import threading
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
-from utils import atomic_json_write
+from hermes_agent.utils import atomic_json_write
 
 if TYPE_CHECKING:  # pragma: no cover - annotation only
     import uvicorn

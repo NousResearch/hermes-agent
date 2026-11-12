@@ -19,7 +19,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Callable, Iterable
 
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 from hermes_agent.tools.interrupt import consume_yield, is_interrupted, is_thread_interrupted
 from hermes_agent.tools.environments.base_output import (
     ProcessHandle, _finalize_wait_result, _new_output_collector, _start_drain_thread,
@@ -29,7 +29,7 @@ from hermes_agent.tools.environments.base_session_env import (
     _wrap_command_script,
 )
 from hermes_agent.tools.environments.base_wait import _WaitTrace
-from utils import atomic_json_write, env_var_enabled, file_signature
+from hermes_agent.utils import atomic_json_write, env_var_enabled, file_signature
 
 logger = logging.getLogger(__name__)
 

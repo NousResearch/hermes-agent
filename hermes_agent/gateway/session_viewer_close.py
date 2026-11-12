@@ -184,7 +184,7 @@ def orphan_close_grace(authority, *, startup=False):
     from hermes_agent.hermes_cli.config_defaults import DEFAULT_CONFIG
     from hermes_agent.hermes_cli.config_effective import load_user_config_effective
     from hermes_agent.gateway.session_local import profile_env_scope
-    from utils import is_truthy_value
+    from hermes_agent.utils import is_truthy_value
     default = DEFAULT_CONFIG['sessions']['orphan_end_grace_s']
     home = Path(authority.db.db_path).resolve().parent
     # A dropped socket detaches outside the RPC's owner scope: expand ``${VAR}`` against this profile.

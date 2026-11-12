@@ -21,7 +21,7 @@ import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-import hermes_constants_scratch_stuck as stuck
+import hermes_agent.hermes_constants_scratch_stuck as stuck
 
 logger = logging.getLogger(__name__)
 
@@ -246,7 +246,7 @@ def _registered_live_pids(home: Path) -> set[int]:
     import psutil
 
     from hermes_agent.hermes_cli.process_identity import entry_still_running, spawner_is_dead
-    from hermes_constants import get_default_hermes_root
+    from hermes_agent.hermes_constants import get_default_hermes_root
 
     root = get_default_hermes_root(home=home)
     sources = [(root / "spawn-ledger.json", "create_time")]

@@ -124,7 +124,7 @@ def _utc_now_iso() -> str:
 def _receipt_dir() -> Path:
     """The receipts dir — a pure path computation, NO mkdir side
     effect: readers (latest()) must not create state."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     return get_hermes_home() / "logs" / "update_receipts"
 

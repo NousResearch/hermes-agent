@@ -8,7 +8,7 @@ import os
 
 import pytest
 
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 from hermes_agent.hermes_cli import plugin_catalog as pc
 
@@ -179,7 +179,7 @@ def test_live_cache_write_never_truncates_the_previous_copy(tmp_path, monkeypatc
         def json(self): return json.loads(self.content)
 
     import httpx
-    import utils
+    from hermes_agent import utils
     monkeypatch.setattr(httpx, "get", lambda *a, **k: _Resp())
     pc._live_fetch_failed_until = 0.0
 

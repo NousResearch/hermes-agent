@@ -12,7 +12,7 @@ from datetime import datetime, timezone, UTC
 from typing import Any, Iterable, Optional
 
 from hermes_agent.agent.learning_graph import memory_node_id
-from hermes_time import safe_strftime
+from hermes_agent.hermes_time import safe_strftime
 
 LEAD_IN = 0.06  # time-axis.ts LEAD_IN: the oldest node sits just off recency 0.
 # constants.ts AGE_GRADIENT — old quiet, recent bright.

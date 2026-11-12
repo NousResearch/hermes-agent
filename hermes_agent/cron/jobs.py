@@ -31,7 +31,7 @@ except ImportError:  # pragma: no cover - non-Windows
 from datetime import datetime, timedelta, UTC
 from pathlib import Path
 from hermes_agent.agent.deadline import poll_until
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 from hermes_agent.cron.constants import CLAIM_TTL_INACTIVITY_HEADROOM, FIRE_CLAIM_SKEW_SECONDS, FIRE_CLAIM_TTL_SECONDS
 from hermes_agent.cron.env_settings import cron_env_setting
 from hermes_agent.cron.jobs_invariants import _validate_job_mode_invariants, validate_schedule_knobs
@@ -43,10 +43,10 @@ from typing import Optional, Dict, List, Any, Callable, Set, Tuple, Union, Colle
 
 logger = logging.getLogger(__name__)
 
-from hermes_time import now as _hermes_now
-from hermes_time import get_timezone
+from hermes_agent.hermes_time import now as _hermes_now
+from hermes_agent.hermes_time import get_timezone
 from hermes_agent.hermes_cli.observability.shared_metrics_gateway import record_cron_missed
-from utils import atomic_replace, atomic_write_text, fsync_directory, mkstemp_beside
+from hermes_agent.utils import atomic_replace, atomic_write_text, fsync_directory, mkstemp_beside
 
 # croniter is imported lazily (slow import, only needed for cron exprs). HAS_CRONITER stays a
 # module attribute: a monkeypatched value wins because _ensure_croniter only probes while None
@@ -818,7 +818,7 @@ def parse_schedule(schedule: str) -> dict[str, Any]:
         try:
             dt = datetime.fromisoformat(schedule)
             # Naive timestamps become aware in the CONFIGURED Hermes timezone (not server-local):
-            # the due-check compares against hermes_time.now().
+            # the due-check compares against hermes_agent.hermes_time.now().
             # Make naive timestamps timezone-aware at parse time so the stored value doesn't depend on the
             # system timezone matching at check time. UTC) while now() runs in Asia/Kolkata, the stored
             # instant would land hours off from the user's wall-clock intent — far enough that one-shots
@@ -1730,7 +1730,7 @@ def _normalize_reasoning_effort(value: Any) -> Optional[str]:
     text = str(value).strip().lower()
     if not text:
         return None
-    from hermes_constants import parse_reasoning_effort
+    from hermes_agent.hermes_constants import parse_reasoning_effort
 
     if parse_reasoning_effort(text) is None:
         raise ValueError(

@@ -489,7 +489,7 @@ def _parents_first(payloads: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _rekey_voice_mode_entry(path: Path, key: str, owner: str) -> dict[str, int]:
-    from utils import atomic_json_write
+    from hermes_agent.utils import atomic_json_write
     data = json.loads(path.read_text(encoding="utf-8-sig"))
     if key not in data:
         return {}
@@ -500,7 +500,7 @@ def _rekey_voice_mode_entry(path: Path, key: str, owner: str) -> dict[str, int]:
 
 
 def _drop_sessions_json_entry(path: Path, key: str) -> dict[str, int]:
-    from utils import atomic_json_write
+    from hermes_agent.utils import atomic_json_write
     data = json.loads(path.read_text(encoding="utf-8-sig"))
     if key not in data:
         return {}

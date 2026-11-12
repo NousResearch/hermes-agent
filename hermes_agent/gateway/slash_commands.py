@@ -31,7 +31,7 @@ from hermes_agent.gateway.slash_commands_session import GatewaySessionCommandsMi
 from hermes_agent.gateway.slash_commands_login import GatewayLoginCommandsMixin
 from hermes_agent.gateway.slash_commands_status import GatewayStatusCommandsMixin, history_unreadable
 from hermes_agent.hermes_cli.config import atomic_config_write, cfg_get
-from utils import atomic_json_write, is_truthy_value
+from hermes_agent.utils import atomic_json_write, is_truthy_value
 from hermes_agent.hermes_cli._startup_fast import project_root_str
 
 logger = logging.getLogger("hermes_agent.gateway.run")
@@ -312,7 +312,7 @@ class GatewaySlashCommandsMixin(
         gateway the process-level profile is the multiplexer's own ("default" in every chat), so
         with ``multiplex_profiles`` on report ``source.profile`` and resolve home under that
         profile's runtime scope; when off the stamp is ignored, mirroring ``_run_agent``."""
-        from hermes_constants import display_hermes_home
+        from hermes_agent.hermes_constants import display_hermes_home
         source = getattr(event, "source", None)
         profile_name = display = ""
         if getattr(getattr(self, "config", None), "multiplex_profiles", False):

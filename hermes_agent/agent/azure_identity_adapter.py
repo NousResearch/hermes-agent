@@ -148,7 +148,7 @@ def _scoped_credential(ai: Any, config: EntraIdentityConfig) -> Any:
 def build_credential(config: EntraIdentityConfig) -> Any:
     """Cached Entra credential: the process-wide default chain when unscoped, the routed profile's own
     credential (built from its secret scope) under a HERMES_HOME override."""
-    from hermes_constants import get_hermes_home_override, hermes_home_key
+    from hermes_agent.hermes_constants import get_hermes_home_override, hermes_home_key
     if get_hermes_home_override() is None:
         return _default_chain_credential(config)
     key = (hermes_home_key(), config)

@@ -18,7 +18,7 @@ pytestmark = pytest.mark.platforms("windows")
 
 def test_own_session_and_elevation_are_read_from_the_real_token():
     from hermes_agent.gateway import runtime_bootstrap_windows as native
-    from hermes_dir_acl import process_elevation, process_is_elevated
+    from hermes_agent.hermes_dir_acl import process_elevation, process_is_elevated
     import os
 
     assert isinstance(native._session_of(os.getpid()), int)

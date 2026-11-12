@@ -14,7 +14,7 @@ from tests.waiting import async_wait_until
 
 def _hooks_in(home: Path) -> list:
     from hermes_agent.hermes_cli.plugins import get_plugin_manager
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
     token = set_hermes_home_override(str(home))
     try:
         return [cb for cb in get_plugin_manager()._hooks.get("pre_tool_call", [])
@@ -24,7 +24,7 @@ def _hooks_in(home: Path) -> list:
 
 
 def _approve(home: Path, command: str, approve: bool) -> None:
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
     token = set_hermes_home_override(str(home))
     try:
         shell_hooks._record_approval("pre_tool_call", command) if approve else shell_hooks.revoke(command)

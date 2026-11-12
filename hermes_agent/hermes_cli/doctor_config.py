@@ -288,7 +288,7 @@ def _validate_model_config(config_path, issues: list) -> None:
     # the router owns the model namespace, so vendor/model slugs are the correct IDs there.
     model_base_url = str(model_section.get("base_url") or "").strip()
     if policy_id == "openai-api" and model_base_url:
-        from utils import base_url_host_matches
+        from hermes_agent.utils import base_url_host_matches
         accepts_vendor_slug = accepts_vendor_slug or not base_url_host_matches(model_base_url, "api.openai.com")
     if default_model and "/" in default_model and policy_id and not accepts_vendor_slug:
         check_warn(f"model.default '{default_model}' uses a vendor/model slug but provider is '{provider_raw}'",
@@ -330,7 +330,7 @@ def _validate_auxiliary_config(config_path, issues: list) -> None:
     from hermes_agent.hermes_cli.config import read_user_config_raw
     from hermes_agent.hermes_cli.left_core_migration import provider_install_hint
     from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider
-    from utils import base_url_hostname
+    from hermes_agent.utils import base_url_hostname
     aux = read_user_config_raw(config_path).get("auxiliary")
     routed = {name: block for name, block in (aux.items() if isinstance(aux, dict) else ())
               if isinstance(block, dict) and str(block.get("provider") or "").strip().lower() not in ("", "auto")}

@@ -11,7 +11,7 @@ import json
 import pytest
 
 from hermes_agent.gateway import status
-import hermes_constants
+from hermes_agent import hermes_constants
 
 _LIVE_PID = 4242
 

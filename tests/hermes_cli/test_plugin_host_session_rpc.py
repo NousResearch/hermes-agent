@@ -4,7 +4,7 @@ on a gateway serving two profiles: the plugin belongs to the secondary one."""
 import os
 import sys
 
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 import pytest
 
 from hermes_agent.hermes_cli import plugins as plugins_mod
@@ -54,7 +54,7 @@ def register(ctx):
 def test_plugin_rpc_and_session_events_in_either_isolation_mode(tmp_path, monkeypatch, isolation):
     from hermes_agent.gateway import run_api
     from hermes_agent.hermes_cli.plugins_dispatch import resolve_plugin_command_result
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     launch, secondary = tmp_path / "launch", tmp_path / "secondary"
     plugin_dir = secondary / "plugins" / "hostrpc"
@@ -159,7 +159,7 @@ def test_hosted_session_event_is_sent_only_as_the_live_plugin_running_it(tmp_pat
     from hermes_agent.gateway.config import Platform
     from hermes_agent.gateway.session_authorities import SessionAuthorities
     from hermes_agent.hermes_cli.plugins_dispatch import resolve_plugin_command_result
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from tests.gateway.test_session_plugin_rpc import _live
     from tests.waiting import wait_until
 

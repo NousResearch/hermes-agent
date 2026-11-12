@@ -16,7 +16,7 @@ PRUNE_RPC_TIMEOUT = 600
 def live_owner():
     """The ready gateway endpoint serving this home, else None. Discovery only: never starts one."""
     from hermes_agent.hermes_cli.gateway_runtime import discover_gateway_endpoint
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     found = discover_gateway_endpoint(get_hermes_home().resolve())
     return found.endpoint if found.state == "ready" else None
 

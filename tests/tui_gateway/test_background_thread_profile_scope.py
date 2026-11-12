@@ -16,7 +16,7 @@ from hermes_agent.agent.secret_scope import (
     UnscopedSecretError, build_profile_secret_scope, get_secret, reset_secret_scope, set_multiplex_active,
     set_secret_scope,
 )
-from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+from hermes_agent.hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
 
 
 @pytest.fixture

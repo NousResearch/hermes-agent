@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 
 from hermes_agent.agent.lmstudio_reasoning import resolve_lmstudio_effort
-from hermes_constants import VALID_REASONING_EFFORTS
+from hermes_agent.hermes_constants import VALID_REASONING_EFFORTS
 
 # Rank of each value LM Studio accepts, weakest to strongest. Used to assert
 # the resolved ladder never inverts.

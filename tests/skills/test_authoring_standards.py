@@ -13,7 +13,7 @@ import re
 from pathlib import Path
 
 import pytest
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 from hermes_agent.agent.skill_utils import SKILL_PROMPT_DESC_LIMIT
 

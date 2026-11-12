@@ -58,7 +58,7 @@ def _post_setup_chromium() -> None:
     Docker image (its baked build) own their payloads, so a miss there is a hint, never a download."""
     import pm
     from hermes_agent.hermes_cli.browser_runtime import BAKED_EXECUTABLE_FILE, chromium_executable, chromium_missing_hint
-    from hermes_constants import is_termux
+    from hermes_agent.hermes_constants import is_termux
 
     _ensure_browser_use_cli()
     if chromium_executable() is None and not (is_termux() or BAKED_EXECUTABLE_FILE.exists()):

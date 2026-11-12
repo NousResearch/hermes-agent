@@ -290,7 +290,7 @@ def resolve_whatsapp_bridge_dir() -> Path:
     """Bridge directory for CLI and adapter. A read-only install tree (e.g. Docker
     /opt/hermes) is mirrored to HERMES_HOME so npm install works."""
     import shutil
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.hermes_cli._startup_fast import project_root_str
     install_bridge = Path(project_root_str()) / "scripts" / "whatsapp-bridge"
     hermes_home_bridge = get_hermes_home() / "scripts" / "whatsapp-bridge"

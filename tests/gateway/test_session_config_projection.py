@@ -16,7 +16,7 @@ def test_client_config_projection_keeps_session_policy_and_secrets_private(tmp_p
             async with websocket(home, desc) as ws:
                 sid = (await rpc(ws, 'session.create', request_id='config', source='tui',
                                  toolsets=[], reasoning='low'))['result']['session_id']
-                import hermes_yaml as yaml
+                import hermes_agent.hermes_yaml as yaml
                 config = yaml.safe_load((home / 'config.yaml').read_text())
                 config.update(voice={'record_key': 'ctrl+r', 'submit_mode': 'draft', 'api_key': 'PRIVATE_VOICE'},
                               paste_collapse_threshold=12)

@@ -17,8 +17,8 @@ from urllib.parse import urlsplit
 
 from hermes_agent.hermes_cli.colors import Colors, color
 from hermes_agent.hermes_cli.version_info import hermes_user_agent
-from hermes_constants import OPENROUTER_MODELS_URL
-from utils import base_url_host_matches, normalize_proxy_env_vars
+from hermes_agent.hermes_constants import OPENROUTER_MODELS_URL
+from hermes_agent.utils import base_url_host_matches, normalize_proxy_env_vars
 
 _APIKEY_PROVIDERS_CACHE: list | None = None
 

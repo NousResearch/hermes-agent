@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 
 class TestAtomicRoundtripYamlSave:
@@ -19,7 +19,7 @@ class TestAtomicRoundtripYamlSave:
         return tmp_path / "config.yaml"
 
     def test_creates_file_when_missing(self, config_path):
-        from utils import atomic_roundtrip_yaml_save
+        from hermes_agent.utils import atomic_roundtrip_yaml_save
 
         atomic_roundtrip_yaml_save(config_path, {"model": {"default": "test-model"}})
 
@@ -39,7 +39,7 @@ class TestAtomicRoundtripYamlSave:
             encoding="utf-8",
         )
 
-        from utils import atomic_roundtrip_yaml_save
+        from hermes_agent.utils import atomic_roundtrip_yaml_save
 
         # Pass keys in alphabetical order to make sure dict iteration order
         # in the caller doesn't accidentally rewrite the file alphabetically
@@ -75,7 +75,7 @@ class TestAtomicRoundtripYamlSave:
             encoding="utf-8",
         )
 
-        from utils import atomic_roundtrip_yaml_save
+        from hermes_agent.utils import atomic_roundtrip_yaml_save
 
         atomic_roundtrip_yaml_save(
             config_path,
@@ -104,7 +104,7 @@ class TestAtomicRoundtripYamlSave:
             encoding="utf-8",
         )
 
-        from utils import atomic_roundtrip_yaml_save
+        from hermes_agent.utils import atomic_roundtrip_yaml_save
 
         atomic_roundtrip_yaml_save(
             config_path,
@@ -128,7 +128,7 @@ class TestAtomicRoundtripYamlSave:
             encoding="utf-8",
         )
 
-        from utils import atomic_roundtrip_yaml_save
+        from hermes_agent.utils import atomic_roundtrip_yaml_save
 
         atomic_roundtrip_yaml_save(config_path, {"policy": value})
 
@@ -141,7 +141,7 @@ class TestAtomicRoundtripYamlSave:
             encoding="utf-8",
         )
 
-        from utils import atomic_roundtrip_yaml_save
+        from hermes_agent.utils import atomic_roundtrip_yaml_save
 
         atomic_roundtrip_yaml_save(
             config_path,
@@ -167,7 +167,7 @@ class TestAtomicRoundtripYamlSave:
             encoding="utf-8",
         )
 
-        from utils import atomic_roundtrip_yaml_save
+        from hermes_agent.utils import atomic_roundtrip_yaml_save
 
         atomic_roundtrip_yaml_save(
             config_path,
@@ -185,7 +185,7 @@ class TestAtomicRoundtripYamlSave:
             encoding="utf-8",
         )
 
-        from utils import atomic_roundtrip_yaml_save
+        from hermes_agent.utils import atomic_roundtrip_yaml_save
 
         atomic_roundtrip_yaml_save(
             config_path,
@@ -203,7 +203,7 @@ class TestAtomicRoundtripYamlSave:
             encoding="utf-8",
         )
 
-        from utils import atomic_roundtrip_yaml_save
+        from hermes_agent.utils import atomic_roundtrip_yaml_save
 
         atomic_roundtrip_yaml_save(config_path, {"toolsets": ["three"]})
 
@@ -223,7 +223,7 @@ class TestAtomicRoundtripYamlSave:
             encoding="utf-8",
         )
 
-        from utils import atomic_roundtrip_yaml_save
+        from hermes_agent.utils import atomic_roundtrip_yaml_save
 
         atomic_roundtrip_yaml_save(
             config_path,
@@ -259,7 +259,7 @@ class TestAtomicRoundtripYamlSave:
         original = "model:\n  default: test-model\n"
         config_path.write_text(original, encoding="utf-8")
 
-        from utils import atomic_roundtrip_yaml_save
+        from hermes_agent.utils import atomic_roundtrip_yaml_save
 
         with patch("builtins.open", side_effect=self._deny_config_reads(config_path)):
             with pytest.raises(RuntimeError, match="this change was not saved"):
@@ -277,13 +277,13 @@ class TestAtomicRoundtripYamlSave:
         config_path.write_text("model:\n  default: test-model\n", encoding="utf-8")
 
         chown_calls: list[tuple[Path, int, int]] = []
-        monkeypatch.setattr("utils._preserve_file_owner", lambda _path: (345, 678))
+        monkeypatch.setattr("hermes_agent.utils._preserve_file_owner", lambda _path: (345, 678))
         monkeypatch.setattr(
-            "utils.os.chown",
+            "hermes_agent.utils.os.chown",
             lambda path, uid, gid: chown_calls.append((Path(path), uid, gid)),
         )
 
-        from utils import atomic_roundtrip_yaml_save
+        from hermes_agent.utils import atomic_roundtrip_yaml_save
 
         atomic_roundtrip_yaml_save(config_path, {"model": {"default": "updated-model"}})
 

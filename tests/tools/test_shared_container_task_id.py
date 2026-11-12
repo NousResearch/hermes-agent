@@ -305,7 +305,7 @@ def test_shared_key_ignored_outside_persistent_docker(monkeypatch):
 def _use_home(monkeypatch, tmp_path, name):
     """Run as a real home: ``"default"`` = the Hermes root, ``None`` = a home outside the root (which
     is then its own root), anything else = ``<root>/profiles/<name>``."""
-    import hermes_constants
+    from hermes_agent import hermes_constants
 
     root = hermes_constants._get_platform_default_hermes_home()  # conftest's per-test native root, any OS
     home = root if name == "default" else tmp_path / "elsewhere" if name is None else root / "profiles" / name
@@ -472,7 +472,7 @@ def test_a_home_the_tui_stamps_custom_keys_one_container_for_every_path(monkeypa
     from hermes_agent.gateway.session_context import clear_session_vars, reset_session_vars, set_session_vars
     from hermes_agent.tools.environments.path_utils import sanitize_task_id_for_path
 
-    import hermes_constants
+    from hermes_agent import hermes_constants
 
     home = hermes_constants._get_platform_default_hermes_home().joinpath(*home_parts)
     home.mkdir(parents=True)
@@ -513,7 +513,7 @@ def test_home_profile_name_is_cached_per_home_never_across_homes(monkeypatch, tm
 
 
 def test_an_unresolvable_home_keeps_the_shared_default_key(monkeypatch):
-    import hermes_constants
+    from hermes_agent import hermes_constants
     from hermes_agent.gateway.platforms.docker_media_paths import _docker_sandbox_dir_candidates
     from hermes_agent.tools.terminal_tool_config import home_profile_name
 

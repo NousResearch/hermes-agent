@@ -23,7 +23,7 @@ from hermes_agent.hermes_cli.stale_modules import drop_stale_root_modules
 
 drop_stale_root_modules()
 
-from utils import fast_safe_load, file_cache_version, file_signature  # file_signature: bound for the bridge above
+from hermes_agent.utils import fast_safe_load, file_cache_version, file_signature  # file_signature: bound for the bridge above
 
 logger = logging.getLogger(__name__)
 

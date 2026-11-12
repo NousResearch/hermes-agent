@@ -14,7 +14,7 @@ import types
 
 import pytest
 
-from hermes_constants import emit_partial_update_hint
+from hermes_agent.hermes_constants import emit_partial_update_hint
 
 
 def _chat_args(**overrides):

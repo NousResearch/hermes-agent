@@ -552,7 +552,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         restore gate against a concurrent reconnect replay.
         """
         from hermes_agent.gateway.run import _planned_restart_notification_path
-        from utils import atomic_json_write
+        from hermes_agent.utils import atomic_json_write
 
         if self._planned_restart_notice_lock is None:
             self._planned_restart_notice_lock = asyncio.Lock()
@@ -645,7 +645,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             if not error:
                 logger.info("state.db recovered before the home-channel warning went out; not broadcasting")
                 return
-        from hermes_constants import get_default_hermes_root, profile_cli_selector
+        from hermes_agent.hermes_constants import get_default_hermes_root, profile_cli_selector
         from hermes_agent.hermes_state import _default_db_path, classify_persistence_error
         cause = classify_persistence_error(error)
         # Copy-pasteable, so name the real store and pin the profile: a bare `hermes` follows
@@ -1267,7 +1267,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         the ROOT scope, so a secondary profile's completion was looked up in the DEFAULT profile's
         state.db — classified ``terminal`` and dropped, its ledger row stranded ``pending`` forever."""
         from hermes_agent.gateway.run import _async_profile_runtime_scope
-        from hermes_constants import get_hermes_home_override
+        from hermes_agent.hermes_constants import get_hermes_home_override
         source = self._build_process_event_source(evt)
         if source is None or not getattr(source, "profile", None):
             raw_sid = _raw_process_event_session_id(evt)

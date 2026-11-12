@@ -100,7 +100,7 @@ def describe_storage_failure(exc_or_str) -> StorageFailure:
     key = "disk_full" if cause == "disk" and is_disk_full_error(exc_or_str) else cause
     code, gloss, action = _STORAGE_FAILURES.get(key, _STORAGE_FAILURES["unknown"])
     # Pin the copy-pasteable command to the failing profile — see profile_cli_selector.
-    from hermes_constants import profile_cli_selector
+    from hermes_agent.hermes_constants import profile_cli_selector
 
     return StorageFailure(
         cause=cause, code=code, gloss=gloss, action=action.replace("{profile_arg}", profile_cli_selector())

@@ -26,7 +26,7 @@ from rich import box as rich_box
 from rich.markup import escape as _escape
 from rich.panel import Panel
 
-from hermes_constants import display_hermes_home
+from hermes_agent.hermes_constants import display_hermes_home
 from hermes_agent.hermes_state_ids import new_session_id as mint_session_id
 from hermes_agent.agent.i18n import t
 from hermes_agent.agent.message_metadata import message_identity
@@ -2052,7 +2052,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
     def _handle_indicator_command(self, cmd: str):
         """Handle /indicator [status|kaomoji|emoji|unicode|ascii] — pick the TUI busy-indicator style.
         Persists to ``display.tui_status_indicator`` (the key the TUI reads) for its next render."""
-        from hermes_constants import DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES
+        from hermes_agent.hermes_constants import DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES
         current = (self.config.get("display") or {}).get("tui_status_indicator", DEFAULT_INDICATOR_STYLE)
         arg = _command_arg(cmd, lower=True)
         usage = _dim_line(_t("indicator.usage", styles="|".join(INDICATOR_STYLES)))

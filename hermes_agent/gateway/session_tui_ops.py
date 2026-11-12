@@ -39,7 +39,7 @@ def _profile_home(authority):
     home = Path(str(authority.profile_id))
     if home.is_absolute() and home.is_dir():
         return home
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     return get_hermes_home()
 
 

@@ -136,7 +136,7 @@ def _age(state, days):
 def test_retention_comes_from_the_store_owner_not_the_active_profile(tmp_path, root_days, profile_days, reclaimed):
     """Every profile of a root shares ``<root>/installs``: the root's setting decides for all of
     them, whichever profile runs the collection."""
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     root = tmp_path / ".hermes"
     named = root / "profiles" / "work"

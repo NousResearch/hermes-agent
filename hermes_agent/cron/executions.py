@@ -19,8 +19,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
-from hermes_constants import get_hermes_home
-from hermes_time import now as _hermes_now
+from hermes_agent.hermes_constants import get_hermes_home
+from hermes_agent.hermes_time import now as _hermes_now
 from hermes_agent.cron.constants import CLAIM_TTL_INACTIVITY_HEADROOM
 from hermes_agent.hermes_cli.observability.shared_metrics_gateway import record_cron_finish
 
@@ -206,7 +206,7 @@ def _live_owner_stale_after_seconds() -> Optional[float]:
 
 
 def _claim_age_seconds(claimed_at: str) -> float:
-    """Seconds since ``claimed_at`` (NOT NULL, always the aware ISO string from hermes_time.now)."""
+    """Seconds since ``claimed_at`` (NOT NULL, always the aware ISO string from hermes_agent.hermes_time.now)."""
     return (_hermes_now() - datetime.fromisoformat(claimed_at)).total_seconds()
 
 

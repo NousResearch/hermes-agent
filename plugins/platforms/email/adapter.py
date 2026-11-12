@@ -31,7 +31,7 @@ from hermes_agent.gateway.platforms.base import (
 from hermes_agent.gateway.platforms.helpers import cancel_task
 from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 from hermes_agent.gateway.config import Platform, PlatformConfig
-from utils import is_truthy_value
+from hermes_agent.utils import is_truthy_value
 from hermes_agent.gateway.platforms._shared import get_scoped_secret as _get_secret, coerce_port, decode_json_list_literal, send_error
 from hermes_agent.gateway.platforms.send_targets import StandaloneSendPolicy, regex_stripped_parser
 

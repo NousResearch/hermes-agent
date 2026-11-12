@@ -154,7 +154,7 @@ def _clean_model_option(index: int, entry: dict, stored: dict[str, dict],
                         declared: tuple[str, ...] = ()) -> dict[str, Any]:
     from hermes_agent.agent.delegation_provider import ROUTE_KEYS
     from hermes_agent.agent.fast_mode import STATIC_TIERS, parse_exact_service_tier
-    from hermes_constants import VALID_REASONING_EFFORTS, parse_reasoning_effort
+    from hermes_agent.hermes_constants import VALID_REASONING_EFFORTS, parse_reasoning_effort
 
     row: dict[str, Any] = {key: _text(entry, key) for key in _OPTION_TEXT_KEYS if _text(entry, key)}
     label = f"Route {index + 1}"

@@ -18,8 +18,8 @@ def client(monkeypatch, _isolate_hermes_home):
     from starlette.testclient import TestClient
 
     from hermes_agent import hermes_state
-    import hermes_constants
-    from hermes_constants import get_hermes_home
+    from hermes_agent import hermes_constants
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
     home = get_hermes_home()
@@ -62,7 +62,7 @@ def test_direct_platforms_opt_out_and_no_stamp_carry_no_relay_reason(client, mon
 
 
 def test_user_disabled_platform_is_not_blamed_on_the_relay(client, monkeypatch):
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     (get_hermes_home() / "config.yaml").write_text(
         "platforms:\n  telegram:\n    enabled: false\n", encoding="utf-8"

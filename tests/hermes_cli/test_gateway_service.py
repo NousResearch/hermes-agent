@@ -12,7 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-import hermes_constants
+from hermes_agent import hermes_constants
 
 pwd = pytest.importorskip("pwd")
 grp = pytest.importorskip("grp")

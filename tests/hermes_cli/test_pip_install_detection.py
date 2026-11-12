@@ -44,7 +44,7 @@ def test_container_without_stamp_is_not_docker(tmp_path):
     (tmp_path / ".git").mkdir()
     with patch("hermes_agent.hermes_cli.config.get_managed_system", return_value=None), \
          patch("hermes_agent.hermes_cli.config.get_hermes_home", return_value=tmp_path), \
-         patch("hermes_constants.is_container", return_value=True):
+         patch("hermes_agent.hermes_constants.is_container", return_value=True):
         from hermes_agent.hermes_cli.config import detect_install_method
         assert detect_install_method(project_root=tmp_path) == "git"
 

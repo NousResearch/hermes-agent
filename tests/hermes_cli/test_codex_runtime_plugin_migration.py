@@ -73,7 +73,7 @@ class TestTomlValueFormatter:
         """If rename fails partway through (out of disk, permissions,
         crash), the temp file must be cleaned up. Otherwise repeated
         failed migrations would pile up .config.toml.* files."""
-        import utils
+        from hermes_agent import utils
 
         def failing_replace(tmp, target):
             raise OSError("simulated disk full")

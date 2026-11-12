@@ -50,7 +50,7 @@ def test_timezone_honors_managed(homes, monkeypatch):
     monkeypatch.delenv("HERMES_TIMEZONE", raising=False)
     monkeypatch.delenv("TZ", raising=False)
     _seed(home, managed, user="timezone: America/New_York\n", mgd="timezone: Asia/Tokyo\n")
-    import hermes_time
+    from hermes_agent import hermes_time
 
     assert hermes_time._resolve_timezone_name() == "Asia/Tokyo"
 
@@ -77,7 +77,7 @@ def test_gateway_env_bridge_honors_managed(homes, monkeypatch):
     managed_scope.invalidate_managed_cache()
     # The bridge loads config.yaml, expands env, then applies this overlay before
     # writing HERMES_TIMEZONE = cfg["timezone"]. Prove the overlay flips the value.
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
 
     raw = yaml.safe_load((home / "config.yaml").read_text())
     bridged = managed_scope.apply_managed_overlay(raw)

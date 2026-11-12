@@ -22,7 +22,7 @@ from typing import Optional
 from hermes_agent.hermes_cli import kanban_db as kb
 from hermes_agent.hermes_cli import kanban_db_connect as kbc
 
-from utils import env_int
+from hermes_agent.utils import env_int
 
 HERMES_KANBAN_SPECIFY_MAX_TOKENS = max(1500, env_int("HERMES_KANBAN_SPECIFY_MAX_TOKENS", 6000))
 

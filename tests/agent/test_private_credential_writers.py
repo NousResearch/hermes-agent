@@ -25,7 +25,7 @@ _PRIVATE = stat.S_IRUSR | stat.S_IWUSR
 @pytest.fixture
 def opens_spy(monkeypatch):
     """Record every ``os.open`` create (path, flags, mode) issued through ``utils``."""
-    import utils
+    from hermes_agent import utils
 
     observed: list[tuple[str, int, int]] = []
     real_open = os.open
@@ -99,7 +99,7 @@ def test_every_credential_writer_creates_its_temp_file_at_0600(tmp_path, monkeyp
 
 
 def test_canonical_private_writers_round_trip_json_text_and_bytes(tmp_path):
-    from utils import atomic_json_write, atomic_write_bytes, atomic_write_text
+    from hermes_agent.utils import atomic_json_write, atomic_write_bytes, atomic_write_text
 
     target = tmp_path / "nested" / "creds.json"
     payload = {"token": "sk-\u00e9\u2603", "n": [1, 2]}

@@ -38,7 +38,7 @@ def homes(tmp_path, monkeypatch):
 
     def unwrapped_secret_read(rid, params):
         from hermes_agent.agent.secret_scope import get_secret
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         seen.append((get_hermes_home().resolve(), get_secret("HERMES_PORTAL_BASE_URL")))
         return server._ok(rid, {})
     monkeypatch.setitem(server._methods, "probe.portal", unwrapped_secret_read)

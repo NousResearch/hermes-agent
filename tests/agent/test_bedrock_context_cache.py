@@ -14,7 +14,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 from hermes_agent.agent import bedrock_adapter as ba
 from hermes_agent.agent import model_metadata as mm
@@ -224,7 +224,7 @@ def test_malformed_or_mismatched_provenance_requires_revalidation(isolated_home,
 
 
 def test_context_local_profile_memos_do_not_cross_and_expired_rows_are_pruned(isolated_home, monkeypatch):
-    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    from hermes_agent.hermes_constants import set_hermes_home_override, reset_hermes_home_override
 
     probe = Mock(side_effect=[None, None, 96_000])
     monkeypatch.setattr(ba, "probe_bedrock_context_length", probe)

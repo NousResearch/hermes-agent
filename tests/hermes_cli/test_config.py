@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 from hermes_agent.hermes_cli.config import (
     DEFAULT_CONFIG,
@@ -35,7 +35,7 @@ from hermes_agent.hermes_cli.config import (
 
 class TestGetHermesHome:
     def test_default_path(self):
-        from hermes_constants import _get_platform_default_hermes_home
+        from hermes_agent.hermes_constants import _get_platform_default_hermes_home
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("HERMES_HOME", None)
             home = get_hermes_home()
@@ -593,7 +593,7 @@ class TestSaveConfigAtomicity:
 
             # Simulate a crash mid-dump: the round-trip writer raises after the temp file is
             # created but before replace.
-            with patch("utils._roundtrip_dump", side_effect=OSError("disk full")):
+            with patch("hermes_agent.utils._roundtrip_dump", side_effect=OSError("disk full")):
                 try:
                     config["model"] = "should-not-persist"
                     save_config(config)
@@ -889,7 +889,7 @@ class TestConfigSupportFloor:
 
     def test_floor_message_uses_display_hermes_home(self):
         from hermes_agent.hermes_cli.config_migrations import support_floor_message
-        from hermes_constants import display_hermes_home
+        from hermes_agent.hermes_constants import display_hermes_home
 
         msg = support_floor_message()
         assert f"{display_hermes_home()}/config.yaml" in msg

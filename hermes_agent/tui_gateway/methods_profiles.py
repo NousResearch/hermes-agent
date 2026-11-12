@@ -81,7 +81,7 @@ def _resolve_profile(rid, params):
 def _read_profile_yaml(profile_dir) -> dict:
     """profile.yaml as a mapping; ``{}`` when missing, unreadable, unparseable, or not a mapping."""
     def load():
-        import hermes_yaml as yaml
+        import hermes_agent.hermes_yaml as yaml
         meta_path = profile_dir / "profile.yaml"
         return (yaml.safe_load(meta_path.read_text(encoding="utf-8")) or {}) if meta_path.is_file() else {}
     loaded = _try(load, {})
@@ -516,7 +516,7 @@ def _configure_ui_meta(profile_dir, params, applied) -> None:
             else:
                 existing.pop("ui_meta", None)
             existing["_ui_meta_revisions"] = revisions
-            from utils import atomic_yaml_write
+            from hermes_agent.utils import atomic_yaml_write
             atomic_yaml_write(profile_dir / "profile.yaml", existing, sort_keys=False)
             applied["ui_meta"] = True
             applied["ui_meta_revisions"] = {key: revisions[key] for key in incoming}

@@ -39,7 +39,7 @@ def _runner(root, homes):
 async def test_multiplex_builds_one_authority_per_reserved_home(tmp_path, monkeypatch):
     from hermes_agent.gateway.run_runtime import initialize_gateway_runtime
     from hermes_agent.gateway.runtime_ownership import process_ownership
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
     root, homes = _reserve_homes(tmp_path, monkeypatch)
     process_ownership.reserve([home for _, home in homes])
     try:

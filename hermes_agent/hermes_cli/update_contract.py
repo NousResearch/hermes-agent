@@ -117,7 +117,7 @@ def evaluate_update_admission(project_root: Path) -> Optional[UpdateRefusal]:
 
         steward = sealed_steward(project_root)
         if steward is None:
-            from hermes_constants import is_termux
+            from hermes_agent.hermes_constants import is_termux
 
             if is_termux():
                 from hermes_agent.hermes_cli.steward import SOURCE_ON_TERMUX_UPDATE_COMMAND, SOURCE_ON_TERMUX_UPDATE_MESSAGE

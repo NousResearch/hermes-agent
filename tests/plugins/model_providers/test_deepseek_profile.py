@@ -239,7 +239,7 @@ class TestDeepSeekFullKwargsIntegration:
     def test_cli_parse_none_full_kwargs_disable_thinking(self, deepseek_profile):
         """``--reasoning none`` / ``parse_reasoning_effort('none')`` → disabled on the wire."""
         from hermes_agent.agent.transports.chat_completions import ChatCompletionsTransport
-        from hermes_constants import parse_reasoning_effort
+        from hermes_agent.hermes_constants import parse_reasoning_effort
 
         kwargs = ChatCompletionsTransport().build_kwargs(
             model="deepseek-v4-pro",

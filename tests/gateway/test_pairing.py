@@ -620,8 +620,8 @@ class TestProfileScopedStorage:
     def test_default_store_uses_global_dir(self, tmp_path, monkeypatch):
         """PairingStore() (no profile) keeps the legacy global path so the
         ``hermes pairing`` CLI continues to work without a profile context."""
-        from hermes_constants import get_hermes_home
-        monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+        from hermes_agent.hermes_constants import get_hermes_home
+        monkeypatch.setattr("hermes_agent.hermes_constants.get_hermes_home", lambda: tmp_path)
         # Re-import PAIRING_DIR (it's a module-level constant resolved at
         # import time) so the test exercises the right path. We patch it
         # rather than re-importing so the assertion is unambiguous.
@@ -648,11 +648,11 @@ class TestProfileScopedStorage:
         first_home = tmp_path / "first"
         second_home = tmp_path / "second"
 
-        monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: first_home)
+        monkeypatch.setattr("hermes_agent.hermes_constants.get_hermes_home", lambda: first_home)
         first_store = PairingStore()
         assert first_store._dir == first_home / "platforms" / "pairing"
 
-        monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: second_home)
+        monkeypatch.setattr("hermes_agent.hermes_constants.get_hermes_home", lambda: second_home)
         second_store = PairingStore()
         assert second_store._dir == second_home / "platforms" / "pairing"
 
@@ -669,7 +669,7 @@ class TestProfileScopedStorage:
 
     def test_profile_store_matches_profile_cli_home(self, tmp_path, monkeypatch):
         """Gateway and ``hermes -p`` must resolve the same pairing store."""
-        from hermes_constants import get_hermes_dir
+        from hermes_agent.hermes_constants import get_hermes_dir
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         profile_home = tmp_path / "profiles" / "coder"
@@ -686,7 +686,7 @@ class TestProfileScopedStorage:
 
     def test_default_profile_store_is_global_store(self, tmp_path, monkeypatch):
         """Multiplexing must not invent a ``profiles/default`` store."""
-        from hermes_constants import get_hermes_dir
+        from hermes_agent.hermes_constants import get_hermes_dir
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         expected = get_hermes_dir(

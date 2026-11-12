@@ -142,7 +142,7 @@ def _home_adapter_secret_env() -> frozenset:
     or flat manifest unreadable or unparsable) keeps the names this home already had and is not
     cached, so a failed discovery never releases a known denial and recovery is seen at once."""
     from hermes_agent.hermes_cli.config import platform_manifest_secret_scan, platform_manifest_stamp
-    from hermes_constants import get_hermes_home, hermes_home_key
+    from hermes_agent.hermes_constants import get_hermes_home, hermes_home_key
     home = get_hermes_home()
     key, stamp = hermes_home_key(home), platform_manifest_stamp(home)
     cached = _HOME_ADAPTER_SECRET_CACHE.get(key)

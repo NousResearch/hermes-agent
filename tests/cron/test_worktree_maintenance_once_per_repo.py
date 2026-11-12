@@ -25,7 +25,7 @@ def test_profiles_sharing_a_repo_prune_it_once_per_interval(tmp_path, monkeypatc
     import hermes_agent.cron.scheduler as sched
     from hermes_agent.hermes_cli import worktree_ops
     from hermes_agent.hermes_cli.worktree_registry import record_worktree_repo
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     shared = _git_repo(tmp_path / "shared")
     private = _git_repo(tmp_path / "private")

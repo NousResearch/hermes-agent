@@ -125,7 +125,7 @@ def test_launch_policy_reaches_real_turn_runner(tmp_path):
 
 def test_launch_options_are_frozen_and_validated(tmp_path):
     from hermes_agent.gateway.session_policy import build_policy
-    from hermes_constants import parse_reasoning_effort
+    from hermes_agent.hermes_constants import parse_reasoning_effort
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
     cfg = {'agent': {'max_turns': 8, 'reasoning_effort': 'low'}}
     params = dict(cwd=str(tmp_path), provider='custom', base_url='http://127.0.0.1:1234/v1',

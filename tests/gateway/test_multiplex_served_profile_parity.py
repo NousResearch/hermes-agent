@@ -16,7 +16,7 @@ from hermes_agent.agent.secret_scope import set_multiplex_active
 from hermes_agent.gateway.config import Platform, PlatformConfig
 from hermes_agent.gateway.run import GatewayRunner, _profile_runtime_scope
 from hermes_agent.gateway.session import SessionSource
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 
 
 class RecordingAdapter:
@@ -52,7 +52,7 @@ def served(tmp_path, monkeypatch):
     (alpha / ".env").write_text("")
     monkeypatch.setenv("HERMES_HOME", str(root))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root)
+    monkeypatch.setattr("hermes_agent.hermes_constants.get_default_hermes_root", lambda: root)
     set_multiplex_active(True)
 
     runner = GatewayRunner.__new__(GatewayRunner)

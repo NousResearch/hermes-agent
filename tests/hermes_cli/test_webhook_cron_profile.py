@@ -6,7 +6,7 @@ from argparse import Namespace
 import pytest
 
 from hermes_agent.hermes_cli import webhook
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 
 
 @pytest.fixture

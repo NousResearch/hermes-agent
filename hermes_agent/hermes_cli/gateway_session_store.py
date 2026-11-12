@@ -85,7 +85,7 @@ class GatewaySessionStore:
         """The read-only reader, opened on first use. No state.db yet (the gateway creates it on its
         first start, after the CLI's startup maintenance probe) is retried on the next read."""
         if self._reader is None:
-            from hermes_constants import get_hermes_home
+            from hermes_agent.hermes_constants import get_hermes_home
             path = get_hermes_home() / "state.db"
             if not path.exists():
                 return None

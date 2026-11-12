@@ -30,9 +30,9 @@ from pathlib import Path
 from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Optional, Tuple
 from urllib.parse import urlparse
 
-from hermes_constants import OPENROUTER_BASE_URL, hermes_home_key, secure_parent_dir
+from hermes_agent.hermes_constants import OPENROUTER_BASE_URL, hermes_home_key, secure_parent_dir
 from hermes_agent.agent.credential_persistence import sanitize_borrowed_credential_payload
-from utils import atomic_json_write, env_float, file_cache_version, is_truthy_value
+from hermes_agent.utils import atomic_json_write, env_float, file_cache_version, is_truthy_value
 from hermes_agent.hermes_cli.auth_zai_kimi import (
     KIMI_CODE_BASE_URL, ZAI_ENDPOINTS, _normalize_lmstudio_runtime_base_url, _resolve_kimi_base_url,
     _resolve_zai_base_url, detect_zai_endpoint)
@@ -456,7 +456,7 @@ def format_auth_error(error: Exception) -> str:
         return str(error)
     if error.relogin_required:
         # Profile-aware: a bare `hermes model` from a named profile re-signs the ROOT store (#114012).
-        from hermes_constants import profile_cli_selector
+        from hermes_agent.hermes_constants import profile_cli_selector
 
         return f"{error} Run `hermes {profile_cli_selector()}model` to re-authenticate."
     if error.code in _ENTITLEMENT_ERROR_CODES:
@@ -494,7 +494,7 @@ def _global_auth_file_path() -> Optional[Path]:
 
     Read-only fallback path, so no pytest seat belt here (it lives on ``_auth_file_path()``)."""
     try:
-        from hermes_constants import get_default_hermes_root
+        from hermes_agent.hermes_constants import get_default_hermes_root
         global_root = get_default_hermes_root()
     except Exception:
         return None
@@ -774,7 +774,7 @@ def _load_auth_store(auth_file: Optional[Path] = None) -> dict[str, Any]:
 def _save_private_json(target: Path, data: Any, *, fsync_dir: bool = False, **dump_kwargs: Any) -> None:
     """0600 credential JSON under a 0700 parent (``secure_parent_dir`` refuses ``/``, top-level dirs
     and the install tree). ``atomic_json_write`` creates the temp file 0600 before any byte lands."""
-    from hermes_constants import mkdir_under_hermes_home
+    from hermes_agent.hermes_constants import mkdir_under_hermes_home
     mkdir_under_hermes_home(target.parent)
     secure_parent_dir(target)
     atomic_json_write(target, data, mode=0o600, fsync_dir=fsync_dir, **dump_kwargs)
@@ -1693,7 +1693,7 @@ def resolve_provider(
             return "bedrock"
     except ImportError:
         pass  # boto3 not installed
-    from hermes_constants import display_hermes_home
+    from hermes_agent.hermes_constants import display_hermes_home
     raise AuthError(
         "Hermes is not connected to any AI provider yet. Run `hermes model` to pick one, type `/login` in chat, "
         f"or add a key with `hermes auth add <provider>`. (Advanced: put an API key such as OPENROUTER_API_KEY in "

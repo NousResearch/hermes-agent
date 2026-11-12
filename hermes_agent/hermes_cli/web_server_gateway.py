@@ -392,7 +392,7 @@ def _profile_action_environment(
             _PROFILE_MANAGED_ENV_KEYS, _env_keys_defined_in_dotenv, get_secret_source_values,
         )
         from hermes_agent.hermes_cli.web_server_profiles import _resolve_profile_dir
-        from hermes_constants import apply_subprocess_home_env, get_default_hermes_root
+        from hermes_agent.hermes_constants import apply_subprocess_home_env, get_default_hermes_root
         from hermes_agent.tools.environments.local import build_subprocess_env, strip_launch_profile_env
 
         target_home = _resolve_profile_dir(profile)
@@ -459,7 +459,7 @@ def _action_targets_system_gateway(subcommand: list[str]) -> bool:
         return False
 
     from hermes_agent.hermes_cli.gateway import _select_systemd_scope
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     profile = _named_profile_from_action(subcommand)
     if profile is None:
@@ -573,7 +573,7 @@ def _own_profile_selector(profile: Optional[str]) -> Optional[str]:
     requested = (profile or "").strip()
     if requested:
         return requested
-    from hermes_constants import get_process_hermes_home, profile_name_for_home
+    from hermes_agent.hermes_constants import get_process_hermes_home, profile_name_for_home
     return profile_name_for_home(get_process_hermes_home()) or None
 
 

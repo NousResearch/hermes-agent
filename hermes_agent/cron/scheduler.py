@@ -40,7 +40,7 @@ if str(_checkout_root) not in sys.path:
     sys.path.append(str(_checkout_root))
 
 from hermes_agent.cron.worker_bootstrap import WORKER_MARKER, finish_worker_boot
-from hermes_constants import get_hermes_home, hermes_home_key
+from hermes_agent.hermes_constants import get_hermes_home, hermes_home_key
 from hermes_agent.hermes_cli.observability.shared_metrics_gateway import note_cron_execution, note_cron_skipped
 from hermes_agent.cron.env_settings import cron_env_setting
 from hermes_agent.hermes_cli._subprocess_compat import windows_hide_flags
@@ -48,7 +48,7 @@ from hermes_agent.hermes_cli.config import (
     load_config, load_config_readonly)
 from hermes_agent.hermes_cli.config_backend import ConfigBackendUnavailable
 from hermes_agent.hermes_cli.fallback_config import get_fallback_chain, scoped_fallback_chain
-from hermes_time import now as _hermes_now, safe_strftime
+from hermes_agent.hermes_time import now as _hermes_now, safe_strftime
 from hermes_agent.agent.interrupt_compat import request_hard_interrupt
 from hermes_agent.agent.delegation_context import (
     enter_non_dispatcher_owned_context, exit_non_dispatcher_owned_context)
@@ -504,7 +504,7 @@ def _resolve_job_reasoning_config(job: dict, cfg: dict, model: str) -> dict | No
     """Effective reasoning config for a cron run. A per-job ``reasoning_effort`` pin beats global
     and per-model config and is model-independent by design (also governs an auth-fallback swap);
     clamping stays with provider transports. An unparseable pin warns and falls back to config."""
-    from hermes_constants import parse_reasoning_effort, resolve_reasoning_config
+    from hermes_agent.hermes_constants import parse_reasoning_effort, resolve_reasoning_config
 
     pinned = job.get("reasoning_effort")
     if pinned is not None:
@@ -1652,7 +1652,7 @@ def _load_cron_job_config(job: dict, job_id: str, job_name: str) -> _CronJobConf
         )
 
     with contextlib.suppress(Exception):
-        from hermes_constants import apply_ipv4_preference
+        from hermes_agent.hermes_constants import apply_ipv4_preference
         _net_cfg = _cfg.get("network", {})
         if isinstance(_net_cfg, dict) and _net_cfg.get("force_ipv4"):
             apply_ipv4_preference(force=True)
@@ -3869,7 +3869,7 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
     )
     from hermes_agent.cron.executions import adopt_claimed_execution
     from hermes_agent.hermes_cli.env_loader import hydrate_profile_secret_sources
-    from hermes_constants import (
+    from hermes_agent.hermes_constants import (
         reset_hermes_home_override,
         set_hermes_home_override,
     )
@@ -4070,7 +4070,7 @@ def _maybe_run_worktree_maintenance() -> None:
     global _last_worktree_maintenance_at
     import contextvars
 
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     home = str(get_hermes_home())
     now = time.monotonic()
@@ -4403,7 +4403,7 @@ if __name__ == "__main__":
         # log handler every adoption/ack failure below would otherwise be
         # invisible to the persistent log.
         try:
-            from hermes_logging import setup_logging
+            from hermes_agent.hermes_logging import setup_logging
 
             setup_logging(hermes_home=_get_hermes_home(), mode="cron")
         except Exception:

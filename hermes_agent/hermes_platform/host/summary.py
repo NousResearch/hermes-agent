@@ -1,6 +1,6 @@
 """One summary of this machine and its OS account, for the desktop first-run onboarding.
 
-Hardware facts come from ``hermes_platform.host``. Account facts (full name, locale) come from OS
+Hardware facts come from ``hermes_agent.hermes_platform.host``. Account facts (full name, locale) come from OS
 user records through ``pwd`` or Win32/CoreFoundation calls, never from environment variables such
 as HOME or LANG, and never from a subprocess or the network. They describe the machine that runs
 the Hermes backend; when the desktop app drives a remote backend, that is not the user's laptop.
@@ -14,8 +14,8 @@ import platform
 import re
 import sys
 
-from hermes_platform.host import facts as host
-from hermes_platform.host import products, runtime
+from hermes_agent.hermes_platform.host import facts as host
+from hermes_agent.hermes_platform.host import products, runtime
 
 # Generic account names that are not a person's name.
 _NON_NAMES = frozenset({

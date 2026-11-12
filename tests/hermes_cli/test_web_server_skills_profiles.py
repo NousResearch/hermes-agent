@@ -8,7 +8,7 @@ These tests pin the new behavior: reads and writes land in the REQUESTED
 profile's HERMES_HOME, and the dashboard's own profile stays untouched.
 """
 import pytest
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 import hermes_agent.hermes_cli.web_server_gateway as _web_server_gateway
 import hermes_agent.hermes_cli.web_server_profiles as _web_server_profiles
 
@@ -25,7 +25,7 @@ def _write_skill(skills_dir, name, description="test skill"):
 @pytest.fixture
 def isolated_profiles(tmp_path, monkeypatch, _isolate_hermes_home):
     """Isolated default home + one named profile, each with its own skills."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.hermes_cli import profiles
 
     default_home = get_hermes_home()
@@ -51,7 +51,7 @@ def client(monkeypatch, isolated_profiles):
         pytest.skip("fastapi/starlette not installed")
 
     from hermes_agent import hermes_state
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
     monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")

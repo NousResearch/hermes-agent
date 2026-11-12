@@ -1501,7 +1501,7 @@ class TestPartialToolCallWarning:
         "partial delivery": the same request is retried (nothing to duplicate) instead of
         returning an empty length stub that makes the loop ask the model to continue from
         nowhere — which repeated the lost step (#112419)."""
-        from hermes_constants import PARTIAL_STREAM_STUB_ID
+        from hermes_agent.hermes_constants import PARTIAL_STREAM_STUB_ID
 
         agent, calls = self._zero_char_agent(mock_create, attempts_that_die=1)
         with patch.dict("os.environ", {"HERMES_STREAM_RETRIES": "1"}):

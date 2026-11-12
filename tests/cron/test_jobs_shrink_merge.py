@@ -25,7 +25,7 @@ def hermes_env(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(home))
 
     import importlib
-    import hermes_constants
+    from hermes_agent import hermes_constants
     import hermes_agent.cron.jobs
 
     importlib.reload(hermes_constants)
@@ -233,8 +233,8 @@ def test_symlinked_store_saves_by_rename_not_in_place_copy(hermes_env, tmp_path,
     def no_copy(*a, **k):
         raise AssertionError("in-place copy fallback used")
 
-    monkeypatch.setattr("utils.os.replace", replace_same_dir_only)
-    monkeypatch.setattr("utils._copy_fallback", no_copy)
+    monkeypatch.setattr("hermes_agent.utils.os.replace", replace_same_dir_only)
+    monkeypatch.setattr("hermes_agent.utils._copy_fallback", no_copy)
 
     save_jobs([{"id": "a", "prompt": "x"}], replace=True)
 

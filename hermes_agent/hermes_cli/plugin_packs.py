@@ -140,7 +140,7 @@ def validate_config_seed(plugin_id: str, seed: Any) -> dict[str, Any]:
 
 def parse_pack(text: str, *, source: str = "<pack>") -> PluginPack:
     """Parse and validate a pack YAML document."""
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
     try:
         raw = yaml.safe_load(text)
     except yaml.YAMLError as exc:
@@ -456,7 +456,7 @@ def _sanitized_entry_config(plugin_id: str) -> dict[str, Any]:
 def export_pack(*, enabled_only: bool = False, pack_name: str = "my-hermes-pack") -> tuple[str, list[str]]:
     """Build pack YAML from the current install; returns ``(yaml_text, warnings)``. Plugins with
     unknown Git provenance (no install metadata) become warnings + YAML comments, never entries."""
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
     from hermes_agent.hermes_cli.plugins_cmd import _get_enabled_set, _plugins_dir, _read_install_metadata
     metadata = _read_install_metadata()
     enabled = _get_enabled_set()

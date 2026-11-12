@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_agent.hermes_cli._subprocess_compat import noninteractive_git_env
-from hermes_time import safe_strftime
+from hermes_agent.hermes_time import safe_strftime
 
 logger = logging.getLogger(__name__)
 
@@ -544,7 +544,7 @@ def _get_session_db() -> Optional[Any]:
     healthy cold init completes and the first write isn't dropped).
     """
     try:
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
 
         home = str(get_hermes_home())
     except Exception as exc:  # pragma: no cover

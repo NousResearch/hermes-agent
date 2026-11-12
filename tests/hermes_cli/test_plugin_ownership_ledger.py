@@ -8,7 +8,7 @@ from threading import Event
 from time import monotonic, sleep
 from types import MethodType
 
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 
 def _write_plugin(hermes_home: Path) -> None:
@@ -451,7 +451,7 @@ def test_shared_entrypoint_module_uses_the_active_profile_scope(tmp_path):
     """One pip module can serve A and B without becoming process-global."""
     import pytest
 
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from hermes_agent.tools.registry import ToolRegistry
 
     registry = ToolRegistry()
@@ -551,7 +551,7 @@ def test_decorated_plugin_callable_keeps_its_defining_module_scope(tmp_path):
 
 
 def test_entrypoint_policy_uses_the_most_specific_module_prefix(tmp_path):
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from hermes_agent.tools.registry import ToolRegistry
 
     registry = ToolRegistry()
@@ -657,7 +657,7 @@ def test_provider_overlay_switches_profiles_and_reveals_fresh_global_fallback(
     """Provider consumers see A→B→A, and unload never pins a stale base."""
     from hermes_agent.agent.image_gen_provider import ImageGenProvider
     import hermes_agent.agent.image_gen_registry as image_registry
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from hermes_agent.hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
 
     class Provider(ImageGenProvider):
@@ -1113,7 +1113,7 @@ def test_unload_cancels_a_deferred_platform_before_module_load():
 def test_direct_plugin_platform_registration_infers_immutable_scope(tmp_path):
     """The documented direct registry API cannot leak into another profile."""
     from hermes_agent.gateway.platform_registry import PlatformEntry, platform_registry
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from hermes_agent.tools.registry import registry as tool_registry
 
     home_a = str((tmp_path / "direct-a").resolve())
@@ -1170,7 +1170,7 @@ def test_same_name_tool_and_platform_are_isolated_by_hermes_home(
     """Real A→B→A profile switching keeps dispatch and adapters isolated."""
     import hermes_agent.hermes_cli.plugins as plugins_mod
     from hermes_agent.gateway.platform_registry import platform_registry
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from hermes_agent.hermes_cli.plugins import PluginManager
     from hermes_agent.tools.registry import registry
 
@@ -1232,7 +1232,7 @@ def test_manager_discovery_uses_its_home_not_the_ambient_profile(
     """A retained manager cannot scan another concurrently active profile."""
     import hermes_agent.hermes_cli.plugins as plugins_mod
     from hermes_agent.gateway.platform_registry import platform_registry
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from hermes_agent.hermes_cli.plugins import PluginManager
     from hermes_agent.tools.registry import registry
 

@@ -183,23 +183,23 @@ class FileBackend:
     @staticmethod
     def version_path(path: Path) -> tuple[int, int, int, int]:
         st = path.stat()  # before the import: a missing file must not need the utils stack (PM runtime)
-        from utils import file_signature
+        from hermes_agent.utils import file_signature
         return file_signature(st)
 
     @staticmethod
     def read_path(path: Path) -> Any:
-        from utils import fast_safe_load
+        from hermes_agent.utils import fast_safe_load
         with open(path, encoding="utf-8-sig") as f:
             return fast_safe_load(f)
 
     @staticmethod
     def read_path_readonly(path: Path) -> Any:
-        from utils import load_yaml_file_readonly
+        from hermes_agent.utils import load_yaml_file_readonly
         return load_yaml_file_readonly(path)
 
     @staticmethod
     def write_path(path: Path, changes: Changes) -> None:
-        from utils import atomic_roundtrip_yaml_save, atomic_roundtrip_yaml_update
+        from hermes_agent.utils import atomic_roundtrip_yaml_save, atomic_roundtrip_yaml_update
         if changes.document is not None:
             atomic_roundtrip_yaml_save(path, changes.document, extra_content_on_create=changes.extra_content_on_create)
         for key, value in changes.set.items():
@@ -222,7 +222,7 @@ class FileBackend:
     def cache_version(self, home: Path, version: tuple[Any, ...]) -> tuple[Any, ...]:
         # utils.file_cache_version's rule. ``version`` is config_version's opaque token, so the
         # racy test takes the file's own signature.
-        from utils import racy_content_digest
+        from hermes_agent.utils import racy_content_digest
         return (*version, racy_content_digest(self.config_path(home), self.version(home)))
 
     def exists(self, home: Path) -> bool:

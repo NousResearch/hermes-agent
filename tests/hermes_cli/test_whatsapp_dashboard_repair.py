@@ -407,7 +407,7 @@ def test_repair_selected_profile_leaves_default_session_untouched(pairing, monke
     observed = []
 
     def spawn(*args):
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
 
         observed.append(get_hermes_home())
         raise OSError("stop after checking the worker profile")

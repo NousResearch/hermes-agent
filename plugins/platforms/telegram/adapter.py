@@ -211,7 +211,7 @@ from plugins.platforms.telegram.telegram_typing_gate import typing_may_fire
 from plugins.platforms.telegram.telegram_group_observe import apply_group_observe_attribution, observed_media_note, shared_sender_suffix
 from plugins.platforms.telegram.telegram_picker_labels import model_button_labels
 from plugins.platforms.telegram.telegram_topic_routing import TelegramTopicRoutingMixin
-from utils import env_float, env_int
+from hermes_agent.utils import env_float, env_int
 
 # Max seconds a send/edit may sleep inline on a flood-control RetryAfter; longer penalties fail
 # closed with ``flood_control:{wait}`` so the caller's retry machinery owns the wait.
@@ -521,7 +521,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         self._update_admission = None
         # Completed update IDs survive adapter replacement and restarts (update_admission.py).
         # Resolved now: secondary profiles construct adapters inside their own home scope.
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         self._update_receipt_dir = get_hermes_home()
         self._update_receipts_loaded: set = set()
         self._update_receipts_dirty: set = set()
@@ -2426,7 +2426,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
     def _persist_dm_topic_thread_id(self, chat_id: int, topic_name: str, thread_id: int, replace_existing: bool = False) -> None:
         """Save a newly created thread_id back into config.yaml so it survives restarts."""
         try:
-            from hermes_constants import get_hermes_home
+            from hermes_agent.hermes_constants import get_hermes_home
             from hermes_agent.hermes_cli.config import atomic_config_write, config_exists, read_user_config_raw
             config_path = get_hermes_home() / "config.yaml"
             if not config_exists(config_path):
@@ -4605,7 +4605,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         word = t("platform.telegram.prompt.affirm_word" if answer == "y" else "platform.telegram.prompt.negate_word")
         await self._edit_md_quiet(query, f"☤ {t('platform.telegram.prompt.update_answered', answer=f'*{word}*')}")
         try:
-            from hermes_constants import get_hermes_home
+            from hermes_agent.hermes_constants import get_hermes_home
             response_path = get_hermes_home() / ".update_response"
             tmp = response_path.with_suffix(".tmp")
             tmp.write_text(answer, encoding="utf-8")
@@ -4644,7 +4644,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             await answer_callback(query, _toast("platform.telegram.gmail_triage.unknown_verb", verb=verb))
             return
         script_name, extra_args, success_key, is_state_verb = entry
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         script_path = get_hermes_home() / "scripts" / "gmail-triage" / script_name
         if not script_path.exists():
             await answer_callback(query, _toast("platform.telegram.gmail_triage.script_missing", script=script_name))

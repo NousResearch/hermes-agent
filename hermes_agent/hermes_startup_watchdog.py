@@ -99,7 +99,7 @@ _handle: Optional[StartupWatchdogHandle] = None
 
 def _process_hermes_home() -> Path:
     """Use the stdlib-only process resolver before application startup."""
-    from hermes_constants import get_process_hermes_home
+    from hermes_agent.hermes_constants import get_process_hermes_home
 
     return get_process_hermes_home()
 

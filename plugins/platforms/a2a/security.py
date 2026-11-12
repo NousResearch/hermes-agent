@@ -250,7 +250,7 @@ def is_safe_callback_url(url: str, *, localhost_mode: Optional[bool] = None) -> 
 def audit(direction: str, peer: str, task_id: str, summary: str) -> None:
     """Append an audit record (direction: inbound | outbound | push). Never raises."""
     try:
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         rec = {"ts": time.time(), "direction": direction, "peer": peer, "task_id": task_id, "summary": (summary or "")[:500]}
         get_hermes_home().mkdir(parents=True, exist_ok=True)
         with (get_hermes_home() / "a2a_audit.jsonl").open("a", encoding="utf-8") as fh:

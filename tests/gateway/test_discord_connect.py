@@ -656,7 +656,7 @@ async def test_safe_sync_recreated_survives_rate_limit_between_mutations():
 @pytest.mark.asyncio
 async def test_post_connect_initialization_retries_fingerprint_after_timeout(tmp_path, monkeypatch):
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
-    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr("hermes_agent.hermes_constants.get_hermes_home", lambda: tmp_path)
 
     class _DesiredCommand:
         def to_dict(self, tree):

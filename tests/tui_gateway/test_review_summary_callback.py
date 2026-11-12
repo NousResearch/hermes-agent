@@ -19,7 +19,7 @@ import pytest
 # state.db, and a MagicMock's return value is os.fspath()-able as the RELATIVE path
 # "MagicMock/<name>/<id>", so the store landed in the cwd (the repo checkout). The real one
 # follows the test's isolated HERMES_HOME.
-from hermes_constants import get_process_hermes_home as _real_get_process_hermes_home
+from hermes_agent.hermes_constants import get_process_hermes_home as _real_get_process_hermes_home
 
 
 @pytest.fixture()
@@ -29,7 +29,7 @@ def server():
     with patch.dict(
         "sys.modules",
         {
-            "hermes_constants": MagicMock(
+            "hermes_agent.hermes_constants": MagicMock(
                 get_hermes_home=MagicMock(return_value="/tmp/hermes_test_review_summary"),
                 get_process_hermes_home=_real_get_process_hermes_home,
             ),

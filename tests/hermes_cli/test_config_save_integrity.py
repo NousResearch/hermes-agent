@@ -5,7 +5,7 @@ import os
 import shutil
 
 import pytest
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 import hermes_agent.hermes_cli.config as config_mod
 from hermes_agent.hermes_cli.config import DEFAULT_CONFIG, load_config, migrate_config, read_raw_config, save_config
@@ -38,7 +38,7 @@ class _ReadFaults:
     """Counts parses of config.yaml and fails the chosen one with a transient EMFILE (intact file)."""
 
     def __init__(self, monkeypatch, path):
-        import utils
+        from hermes_agent import utils
         self.path, self.count, self.fail_at, real = str(path), 0, 0, utils.fast_safe_load
 
         def flaky(stream):

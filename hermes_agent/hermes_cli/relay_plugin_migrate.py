@@ -238,7 +238,7 @@ def run_relay_migration_after_update() -> None:
 
 def cmd_migrate_relay(args) -> None:
     """``hermes migrate relay [--all-profiles] [--no-validate]``."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     validate = not getattr(args, "no_validate", False)
     if getattr(args, "all_profiles", False):
         results = migrate_all_profile_relay_envs(validate=validate)

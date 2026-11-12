@@ -69,7 +69,7 @@ def resolve_sidecar_dir(source_dir: Optional[Path] = None) -> Path:
     # Read-only tree with baked, current deps: run in place (the sidecar never writes there).
     if (source / "node_modules").exists() and not _lock_newer_than_install(source):
         return source
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     mirror = get_hermes_home() / "photon" / "sidecar"
     try:
         mirror.mkdir(parents=True, exist_ok=True)

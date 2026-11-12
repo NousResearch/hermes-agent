@@ -12,7 +12,7 @@ from unittest.mock import patch
 import pytest
 
 from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 from hermes_agent.tools import approval, mcp_tool, mcp_tool_costs
 from hermes_agent.tools import mcp_tool_handlers as handlers
 from hermes_agent.tools import mcp_tool_registration as registration

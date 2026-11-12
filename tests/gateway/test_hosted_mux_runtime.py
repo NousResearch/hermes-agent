@@ -180,7 +180,7 @@ def test_room_coordinator_submits_once_to_destination_authority(mux, monkeypatch
     from hermes_agent.gateway.session_authorities import owner_scope
     from hermes_agent.gateway.session_authority import SessionAuthority
     from hermes_agent.gateway.session_hosted_service import ensure_hosted_service
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.hermes_state_runtime import list_session_admissions
 
     runner, homes, _, call = mux

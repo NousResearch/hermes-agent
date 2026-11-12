@@ -3,7 +3,7 @@
 import io
 from pathlib import Path
 
-from hermes_constants import (
+from hermes_agent.hermes_constants import (
     hermes_home_key,
     reset_hermes_home_override,
     set_hermes_home_override,

@@ -181,7 +181,7 @@ async def test_start_gateway_replace_reaps_old_gateway_children_posix(
         def __init__(self, config):
             from hermes_agent.gateway.session import SessionStore
             from hermes_agent.hermes_state import SessionDB
-            from hermes_constants import get_hermes_home
+            from hermes_agent.hermes_constants import get_hermes_home
             self.session_store = SessionStore(get_hermes_home() / 'sessions', config)
             self._session_db = SessionDB(get_hermes_home() / 'state.db')
             self.session_store._db = self._session_db
@@ -251,10 +251,10 @@ async def test_start_gateway_replace_reaps_old_gateway_children_posix(
     monkeypatch.setattr("time.sleep", lambda _: None)
     monkeypatch.setattr("hermes_agent.tools.skills_sync.sync_skills", lambda quiet=True: None)
     monkeypatch.setattr(
-        "hermes_logging.setup_logging", lambda hermes_home, mode: tmp_path
+        "hermes_agent.hermes_logging.setup_logging", lambda hermes_home, mode: tmp_path
     )
     monkeypatch.setattr(
-        "hermes_logging._add_rotating_handler", lambda *args, **kwargs: None
+        "hermes_agent.hermes_logging._add_rotating_handler", lambda *args, **kwargs: None
     )
     monkeypatch.setattr("hermes_agent.gateway.run.GatewayRunner", _CleanExitRunner)
 

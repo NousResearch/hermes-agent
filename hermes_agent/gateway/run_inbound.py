@@ -134,7 +134,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
     async def _hm_report_ignored_dm(self, source: SessionSource) -> None:
         """Unauthorized DM under behaviour ``ignore``: nothing goes to the sender. The owner gets the
         sender's ID and the allowlist fix in the WARNING log and, once per sender, in the home channel."""
-        from hermes_constants import display_hermes_home
+        from hermes_agent.hermes_constants import display_hermes_home
         platform_name = source.platform.value if source.platform else "unknown"
         hint = unauthorized_owner_hint(
             platform_name, source.user_id, source.user_name or "", hermes_home=display_hermes_home(),

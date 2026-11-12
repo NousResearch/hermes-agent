@@ -26,10 +26,10 @@ from hermes_agent.gateway.session import (
 from hermes_agent.gateway.session_transcript import TranscriptReadError
 from hermes_agent.gateway.turn_context import TurnContext
 from hermes_agent.gateway.turn_lease import DEFAULT_LEASE_WAIT, TurnLeaseTimeoutError
-from hermes_constants import get_hermes_home_override
+from hermes_agent.hermes_constants import get_hermes_home_override
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
-from utils import base_url_hostname
+from hermes_agent.utils import base_url_hostname
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
     from hermes_agent.gateway.run import GatewayRunner
@@ -704,7 +704,7 @@ class GatewayTurnPrepareMixin:
         persist_user_message = None
         persist_user_timestamp = None
         try:
-            from hermes_time import get_timezone as _get_evt_tz
+            from hermes_agent.hermes_time import get_timezone as _get_evt_tz
             from hermes_agent.gateway.message_timestamps import (
                 coerce_message_timestamp as _coerce_msg_ts,
                 render_user_content_with_timestamp as _render_msg_ts,

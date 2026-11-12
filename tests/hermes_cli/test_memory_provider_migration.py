@@ -61,7 +61,7 @@ def test_provider_unknown_to_catalog_is_reported_not_installed(home, monkeypatch
 
 def test_startup_recovery_attempts_each_profile_home(tmp_path, monkeypatch):
     """One multiplexed process can start agents for two homes missing the same provider."""
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from pm import install as pm_install
 
     homes = [tmp_path / "a", tmp_path / "b"]
@@ -166,7 +166,7 @@ def test_update_asks_once_and_names_each_profile(tmp_path, monkeypatch):
         profile_home.mkdir(parents=True, exist_ok=True)
         (profile_home / "config.yaml").write_text("memory:\n  provider: twin\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(root))
-    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root)
+    monkeypatch.setattr("hermes_agent.hermes_constants.get_default_hermes_root", lambda: root)
     monkeypatch.setattr("pm.plugins_state.dependency_homes", lambda: homes)
     monkeypatch.setattr(mig, "provider_present", lambda name, home: (home / "plugins" / name).is_dir())
     monkeypatch.setattr(mig, "catalog_source", lambda name: name)
@@ -209,7 +209,7 @@ def _profile_homes(tmp_path, monkeypatch, *names):
         profile_home.mkdir(parents=True, exist_ok=True)
         (profile_home / "config.yaml").write_text("memory:\n  provider: twin\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(root))
-    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root)
+    monkeypatch.setattr("hermes_agent.hermes_constants.get_default_hermes_root", lambda: root)
     monkeypatch.setattr(mig, "provider_present", lambda name, home: (home / "plugins" / name).is_dir())
     monkeypatch.setattr(mig, "catalog_source", lambda name: name)
     monkeypatch.setattr(mig, "_LEFT_CORE", frozenset({"twin"}))  # stands in for a formerly bundled provider
@@ -222,7 +222,7 @@ def test_unattended_update_refusal_in_one_profile_does_not_skip_the_others(tmp_p
     import io
 
     from hermes_agent.hermes_cli import plugins_cmd
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from pm import install as pm_install
 
     default, work = _profile_homes(tmp_path, monkeypatch, "work")

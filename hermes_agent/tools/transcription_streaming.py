@@ -34,7 +34,7 @@ from typing import Any, Callable, Dict, Optional
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
 from hermes_agent.agent.memory_provider import spawn_context_thread
-from utils import is_truthy_value
+from hermes_agent.utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 

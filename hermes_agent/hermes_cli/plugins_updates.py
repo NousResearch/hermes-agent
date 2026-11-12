@@ -68,7 +68,7 @@ class CheckResult:
 
 def _read_manifest_field(plugin_dir: Path, key: str) -> Optional[str]:
     """One field from the installed plugin.yaml (claims, not provenance)."""
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
 
     manifest = plugin_dir / "plugin.yaml"
     if not manifest.is_file():
@@ -249,7 +249,7 @@ def check_provenanced(
 def parse_feed_yml(text: str) -> dict:
     """The electron-updater-derived feed shape: version, released,
     min_hermes, artifacts{git,bundle,bundle_sha256}, notes_url."""
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
 
     try:
         data = yaml.safe_load(text)

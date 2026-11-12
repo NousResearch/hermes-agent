@@ -574,7 +574,7 @@ def validate_plugin_dir(
         )
         return report
 
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
 
     try:
         manifest = yaml.safe_load(
@@ -688,7 +688,7 @@ def _validate_portable_plugin(report: ValidationReport, plugin_dir: Path) -> Val
     """
     try:
         from hermes_agent.hermes_cli.agent_plugins import load_agent_plugin
-        from hermes_platform.resolver.availability import availability
+        from hermes_agent.hermes_platform.resolver.availability import availability
 
         with tempfile.TemporaryDirectory() as data_root:
             package = load_agent_plugin(plugin_dir, Path(data_root))

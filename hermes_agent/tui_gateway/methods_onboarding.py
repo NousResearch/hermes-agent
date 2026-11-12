@@ -59,7 +59,7 @@ def _due_stamp() -> tuple:
     first chat), the shared Nous store (another profile's sign-in or connector guest) and the managed
     layer's ``config.yaml`` and ``.env`` (an admin's onboarding or provider policy)."""
     from hermes_agent.hermes_cli import managed_scope
-    from hermes_constants import get_default_hermes_root
+    from hermes_agent.hermes_constants import get_default_hermes_root
     home = Path(_profile_home("default") or get_default_hermes_root())
     managed = managed_scope.get_managed_dir()
     paths = (get_default_hermes_root() / "config.yaml", home / "config.yaml", home / ".env", home / "auth.json",
@@ -77,7 +77,7 @@ def _shared_nous_store() -> tuple[Path, ...]:
 
 
 def _version(path):
-    from utils import file_cache_version
+    from hermes_agent.utils import file_cache_version
     try:
         return file_cache_version(path, always_digest=True)  # stamp stored, compared later
     except OSError:

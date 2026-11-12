@@ -26,7 +26,7 @@ import pytest
 
 from hermes_agent.hermes_cli import main as cli_main
 from hermes_agent.hermes_cli import main_desktop
-from hermes_platform.host import facts
+from hermes_agent.hermes_platform.host import facts
 
 PE_AMD64 = 0x8664
 PE_ARM64 = 0xAA64

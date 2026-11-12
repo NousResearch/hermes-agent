@@ -78,7 +78,7 @@ _PRE_SANDBOX_KANBAN_OVERRIDE = os.environ.get("HERMES_KANBAN_HOME", "").strip()
 _PRE_SANDBOX_HERMES_HOME = os.environ.get("HERMES_HOME", "")
 
 # Capture before any test fixture can override Path.home()/LOCALAPPDATA.
-from hermes_constants import _get_platform_default_hermes_home
+from hermes_agent.hermes_constants import _get_platform_default_hermes_home
 
 _NATIVE_HERMES_PARENT = _get_platform_default_hermes_home().parent
 
@@ -115,7 +115,7 @@ def _hermes_home_points_at_production(value: str) -> bool:
     return resolved.parent.name == "profiles" and resolved.parent.parent == real_root
 
 
-# ``import hermes_bootstrap`` (transitively: any entry-point module) runs
+# ``from hermes_agent import hermes_bootstrap`` (transitively: any entry-point module) runs
 # ``export_scratch_tmp_env()``, which points TMPDIR/TMP/TEMP at
 # ``<HERMES_HOME>/cache/scratch`` unless a temp var is already set — and a
 # Hermes-launched shell (agent terminal, ``hermes`` child) arrives with that
@@ -127,8 +127,8 @@ def _hermes_home_points_at_production(value: str) -> bool:
 # relocate even user-set temp directories inside a guarded home. Pin the
 # system default so the import-time hook stays a no-op. The parallel runner
 # exports its own disk-backed TMPDIR anyway.
-from hermes_constants import SCRATCH_DIR_MARKER_ENV, SCRATCH_TMP_ENV_VARS
-import hermes_constants
+from hermes_agent.hermes_constants import SCRATCH_DIR_MARKER_ENV, SCRATCH_TMP_ENV_VARS
+from hermes_agent import hermes_constants
 
 # The hourly scratch prune runs in a detached child process. An import-time boot hook during
 # collection must not start one: mark this process's once-per-process prune done. Tests that
@@ -298,7 +298,7 @@ def _hermetic_environment(tmp_path, tmp_path_factory, monkeypatch):
     #    too, to distinguish standard profiles from custom deployments.
     #    Patch only the Hermes default, not HOME/Path.home(). Subprocesses need
     #    a stable HOME. Hardcoded real-home I/O must still trip the guard.
-    import hermes_constants
+    from hermes_agent import hermes_constants
 
     platform_default = hermes_constants._get_platform_default_hermes_home
 
@@ -318,10 +318,10 @@ def _hermetic_environment(tmp_path, tmp_path_factory, monkeypatch):
     (fake_hermes_home / "memories").mkdir()
     (fake_hermes_home / "skills").mkdir()
     monkeypatch.setenv("HERMES_HOME", str(fake_hermes_home))
-    # A test that pins the process home (hermes_constants.pin_process_hermes_home) must not
+    # A test that pins the process home (hermes_agent.hermes_constants.pin_process_hermes_home) must not
     # leak that module-global into the next test's routed-profile decisions.
     try:
-        import hermes_constants as _hc
+        import hermes_agent.hermes_constants as _hc
         monkeypatch.setattr(_hc, "_PINNED_PROCESS_HERMES_HOME", None, raising=False)
     except Exception:
         pass
@@ -653,7 +653,7 @@ def _capture_real_kanban_root() -> Path:
         # the env still holds the tempdir and the resolver would be wrong) —
         # honor it via the normal resolver (it may be a profile dir whose
         # root matters).
-        from hermes_constants import get_default_hermes_root
+        from hermes_agent.hermes_constants import get_default_hermes_root
         return get_default_hermes_root().resolve()
     # No pre-existing HERMES_HOME: the real root is the platform default,
     # NOT the sandbox tempdir now sitting in the env.
@@ -723,7 +723,7 @@ def scratch_prune_spawns(monkeypatch):
     """No test starts a real detached scratch prune (one would outlive the test, and get any
     Popen mock the test installed): ``spawn_prune`` only records the scratch dir it was given.
     A test that needs the real child runs a launcher in a subprocess."""
-    import hermes_constants_scratch_detach
+    from hermes_agent import hermes_constants_scratch_detach
 
     spawned: list = []
     monkeypatch.setattr(hermes_constants_scratch_detach, "spawn_prune", spawned.append)
@@ -881,7 +881,7 @@ def _reset_tui_gateway_server_state():
     # to a stale per-test tmpdir. Force the main-thread ContextVar back
     # to its default.
     try:
-        from hermes_constants import get_hermes_home_override, set_hermes_home_override
+        from hermes_agent.hermes_constants import get_hermes_home_override, set_hermes_home_override
 
         if get_hermes_home_override() is not None:
             set_hermes_home_override(None)
@@ -1060,7 +1060,7 @@ def _relocate_basetemp_outside_operator_home(config) -> None:
     Windows) turns the sandbox back into the live install and ``get_profile_dir("default")``
     writes fixtures over the operator's config.yaml / .env / MEMORY.md (#111101).
     """
-    from hermes_constants import _get_platform_default_hermes_home
+    from hermes_agent.hermes_constants import _get_platform_default_hermes_home
 
     native = _get_platform_default_hermes_home().resolve()
     factory = config._tmp_path_factory
@@ -1092,7 +1092,7 @@ def _pytest_disk_temp_root(native: Path) -> Path:
     one (``scripts/run_tests_parallel.py::_runner_scratch_root``), else a plain (not
     dot-prefixed — hidden-dir search tests would see every fixture as hidden) sibling of
     the native home. Entries idle for a day are swept on the way in."""
-    from hermes_constants_scratch import prune_idle_entries
+    from hermes_agent.hermes_constants_scratch import prune_idle_entries
 
     if os.name != "nt" and os.path.isdir("/var/tmp"):  # no-tmp: ok — disk-backed FHS root
         root = Path("/var/tmp/hermes-pytest")  # no-tmp: ok — /var/tmp is disk-backed by FHS, never tmpfs

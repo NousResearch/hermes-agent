@@ -16,7 +16,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Any
-from utils import atomic_json_write
+from hermes_agent.utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 

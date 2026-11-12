@@ -1,5 +1,5 @@
 """Plugin module-level caches must not hand profile A's state to profile B under a multiplexed
-HERMES_HOME override (``hermes_constants.set_hermes_home_override``).
+HERMES_HOME override (``hermes_agent.hermes_constants.set_hermes_home_override``).
 
 One invariant per mechanism: home-keyed slot with the unscoped module slot intact (router), credential-fingerprinted catalog keys (openrouter), per-home registries (memory
 provider skills), lru_cache keyed by the home (disk-cleanup).
@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 
 from hermes_agent.agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
 REPO = Path(__file__).resolve().parents[2]
 

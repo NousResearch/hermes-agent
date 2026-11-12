@@ -1569,7 +1569,7 @@ def _rebind_session_context(session_id: str) -> None:
     except Exception:
         os.environ["HERMES_SESSION_ID"] = session_id
     with contextlib.suppress(Exception):
-        from hermes_logging import set_session_context
+        from hermes_agent.hermes_logging import set_session_context
         set_session_context(session_id)
 
 

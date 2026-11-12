@@ -6,7 +6,7 @@ import logging
 import shlex
 from pathlib import Path
 
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 
 logger = logging.getLogger("hermes_agent.tools.transcription_tools")
 

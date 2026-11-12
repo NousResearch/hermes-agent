@@ -465,7 +465,7 @@ def mkdir_under_hermes_home(path: str | Path) -> Path:
     # Lazy so this module still imports alone; hermes_dir_acl (stdlib only) ships beside it in every
     # closure that creates home dirs, and a missing copy fails loudly instead of silently skipping the
     # elevated grant (tests/pm/test_bootstrap_import_closure.py).
-    from hermes_dir_acl import make_user_dir
+    from hermes_agent.hermes_dir_acl import make_user_dir
     make_user_dir(target, parents=True, exist_ok=True)
     return target
 
@@ -995,7 +995,7 @@ def prune_scratch_dir(scratch: Path | None = None, max_idle_hours: float = SCRAT
     first (``hermes_constants_scratch``); return the count removed. Each removal, each
     kill and each entry rescued mid-prune is recorded in ``<home>/logs/scratch-prune.log``
     (*scratch* is ``<home>/cache/scratch``)."""
-    from hermes_constants_scratch import prune_idle_entries
+    from hermes_agent.hermes_constants_scratch import prune_idle_entries
 
     root = scratch if scratch is not None else get_scratch_dir(prune=False)
     log_file = root.parent.parent / "logs" / "scratch-prune.log"
@@ -1016,7 +1016,7 @@ def _prune_scratch_dir_once(scratch: Path) -> None:
         pass
     with contextlib.suppress(Exception):
         stamp.touch()
-        from hermes_constants_scratch_detach import spawn_prune
+        from hermes_agent.hermes_constants_scratch_detach import spawn_prune
 
         spawn_prune(scratch)
 
@@ -1213,28 +1213,28 @@ def resolve_reasoning_config(cfg: dict | None, model: str = "") -> dict | None:
 
 def is_termux() -> bool:
     """Delegate Termux detection without making the bootstrap constants module depend on the full package."""
-    from hermes_platform.host.runtime import is_termux as detect
+    from hermes_agent.hermes_platform.host.runtime import is_termux as detect
 
     return detect()
 
 
 def is_wsl() -> bool:
     """Delegate WSL detection without making the bootstrap constants module depend on the full package."""
-    from hermes_platform.host.runtime import is_wsl as detect
+    from hermes_agent.hermes_platform.host.runtime import is_wsl as detect
 
     return detect()
 
 
 def is_container() -> bool:
     """Delegate container detection without making the bootstrap constants module depend on the full package."""
-    from hermes_platform.host.runtime import is_container as detect
+    from hermes_agent.hermes_platform.host.runtime import is_container as detect
 
     return detect()
 
 
 def _detect_container() -> bool:
     """Keep the historical test seam while delegating canonical detection."""
-    from hermes_platform.host.runtime import _detect_container as detect
+    from hermes_agent.hermes_platform.host.runtime import _detect_container as detect
 
     return detect()
 

@@ -121,7 +121,7 @@ def test_save_writes_the_gateway_owners_export_on_this_machine(tmp_path, monkeyp
     """CLI-19: ``/save`` asks the owner (``session.export``) for its canonical export, never writes the
     in-memory fallback (no title, no metadata, no archived rows) that ``import_sessions`` can't restore.
     The CLI writes the content itself, so a remote owner's disk is never taken for this one."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     conn = _Conn({"session.export": {"format": "md", "filename": "hermes_session_s.md", "content": "# owner export"}})
     cli = _save_cli(conn, tmp_path, monkeypatch)
     work = tmp_path / "work"

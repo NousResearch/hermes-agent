@@ -13,7 +13,7 @@ import sys
 _PROBE = (
     "import sys\n"
     "import hermes_agent.hermes_cli.local_runtime.processes\n"
-    "loaded = sorted(m for m in sys.modules if m.startswith(('hermes_platform', 'hermes_agent.hermes_cli.local_runtime.')))\n"
+    "loaded = sorted(m for m in sys.modules if m.startswith(('hermes_agent.hermes_platform', 'hermes_agent.hermes_cli.local_runtime.')))\n"
     "print('\\n'.join(loaded))\n"
 )
 

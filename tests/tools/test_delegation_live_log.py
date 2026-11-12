@@ -263,7 +263,7 @@ def test_explicit_home_pins_transcripts_across_raw_thread_boundary(tmp_path, mon
     """Ambient resolve falls through to process HERMES_HOME when the session's
     ContextVar override is dropped by a raw threading.Thread boundary; an
     explicit home keeps transcripts + manifest under the originating profile."""
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     process_home = tmp_path / "process-default"
     session_home = tmp_path / "session-profile"

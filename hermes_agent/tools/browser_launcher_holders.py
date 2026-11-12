@@ -151,7 +151,7 @@ def process_alive(pid, start_time) -> bool:
 def write_lease(record: Path, browser) -> None:
     """This process holds ``browser`` (caller holds :func:`records_lock`)."""
     from hermes_agent.tools import browser_launcher as launcher
-    from utils import atomic_json_write
+    from hermes_agent.utils import atomic_json_write
     me = os.getpid()
     atomic_json_write(_lease_path(record, me), {
         "holder_pid": me, "holder_start_time": launcher._start_time(me), "pid": browser.pid,
@@ -204,7 +204,7 @@ def successor(holders: list[dict]) -> Optional[dict]:
 def hand_over(record: Path, data: dict, holder: dict) -> None:
     """Make ``holder`` the record's owner: every reaper now sees a live owner, and the holder stops the
     browser when it is the last one out."""
-    from utils import atomic_json_write
+    from hermes_agent.utils import atomic_json_write
     atomic_json_write(record, {**data, "owner_pid": holder["holder_pid"],
                                "owner_start_time": holder.get("holder_start_time")}, indent=None)
     logger.info("browser: Chromium pid %s is still used by Hermes pid %s; handed it over instead of stopping it",

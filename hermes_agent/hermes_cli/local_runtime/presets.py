@@ -379,7 +379,7 @@ def generate_presets(models_dir: Path, budget: HardwareBudget, preset_path: Path
 
 
 def write_presets(entries: list[PresetEntry], preset_path: Path) -> None:
-    from utils import atomic_write_text
+    from hermes_agent.utils import atomic_write_text
 
     atomic_write_text(preset_path, render_presets(entries), tmp_prefix=f".{preset_path.name}_", mode=0o600)
     logger.info("wrote %d preset sections to %s", sum(e.keys is not None for e in entries), preset_path)

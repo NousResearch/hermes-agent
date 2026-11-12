@@ -176,7 +176,7 @@ def test_external_process_plugin_relogin_hint_never_names_a_failing_auth_add(ins
         'auth_type="oauth_external"', 'auth_type="external_process", process_command="vendor-cli"'),
         encoding="utf-8")
     _rediscover()
-    monkeypatch.setattr("hermes_constants.profile_cli_selector", lambda: "")
+    monkeypatch.setattr("hermes_agent.hermes_constants.profile_cli_selector", lambda: "")
 
     from hermes_agent.agent.turn_failure_copy import oauth_relogin_command, relogin_command_hint
     from hermes_agent.hermes_cli.auth_commands import auth_command

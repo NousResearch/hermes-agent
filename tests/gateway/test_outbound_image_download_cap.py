@@ -57,7 +57,7 @@ class _ChunkedImage(BaseHTTPRequestHandler):
 
 @pytest.fixture
 def image_host():
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.tools import url_safety
 
     (get_hermes_home() / "config.yaml").write_text(

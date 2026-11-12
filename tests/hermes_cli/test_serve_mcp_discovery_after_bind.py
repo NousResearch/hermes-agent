@@ -86,7 +86,7 @@ def _stub_dashboard_runtime(monkeypatch):
     monkeypatch.setattr(main_mod, "_sync_bundled_skills_quietly", lambda: None)
     monkeypatch.setitem(sys.modules, "fastapi", types.SimpleNamespace())
     monkeypatch.setitem(sys.modules, "uvicorn", types.SimpleNamespace())
-    monkeypatch.setitem(sys.modules, "hermes_logging", types.SimpleNamespace(setup_logging=lambda **_k: None))
+    monkeypatch.setitem(sys.modules, "hermes_agent.hermes_logging", types.SimpleNamespace(setup_logging=lambda **_k: None))
     monkeypatch.setitem(sys.modules, "hermes_agent.hermes_cli.plugins", types.SimpleNamespace(discover_plugins=lambda: None))
     return main_mod
 

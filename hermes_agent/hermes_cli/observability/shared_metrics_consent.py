@@ -112,7 +112,7 @@ def save_consent(enabled: bool, send: bool, config: dict | None = None) -> None:
     # Unconditional: a send key already false may still have an open consent window.
     _record_send_consent_change(enabled=send)
     if not enabled:
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
 
         from .shared_metrics_process import purge_pending_receipts
 

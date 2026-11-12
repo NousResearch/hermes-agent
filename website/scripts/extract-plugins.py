@@ -37,7 +37,7 @@ from urllib.parse import urlsplit
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 DEFAULT_CATALOG_DIR = REPO_ROOT / "plugin-catalog"
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "website" / "static" / "api"

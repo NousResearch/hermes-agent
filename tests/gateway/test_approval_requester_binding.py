@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
 from hermes_agent.gateway.platforms.event import MessageEvent
@@ -43,7 +43,7 @@ def _event(text, user_id, user_name):
 
 def write_approvers(approvers):
     """Write the profile's config.yaml as a user would (``DEFAULT`` leaves the key out)."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     approvals = {"mode": "manual", **({} if approvers == DEFAULT else {"approvers": approvers})}
     (get_hermes_home() / "config.yaml").write_text(yaml.safe_dump({"approvals": approvals}), encoding="utf-8")

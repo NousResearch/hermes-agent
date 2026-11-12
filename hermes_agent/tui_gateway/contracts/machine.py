@@ -1,4 +1,4 @@
-"""This machine (``methods_machine.py``): host facts from ``hermes_platform.host.summary``.
+"""This machine (``methods_machine.py``): host facts from ``hermes_agent.hermes_platform.host.summary``.
 
 Host-level by design: there is no ``profile`` param because the answer is the same for every
 profile one backend serves.
@@ -6,7 +6,7 @@ profile one backend serves.
 
 from __future__ import annotations
 
-from hermes_platform.host.products import NvidiaPlatform
+from hermes_agent.hermes_platform.host.products import NvidiaPlatform
 
 from .base import Params, Result
 from .registry import method

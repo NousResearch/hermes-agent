@@ -39,7 +39,7 @@ def plugin_update_lock(target: Path) -> Iterator[None]:
     A busy lock raises ``PluginOperationError`` after a short wait, so every caller reports it like
     any other refusal (nothing changed); reentrant per thread."""
     from hermes_agent.hermes_cli.auth import _file_lock
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     lock = get_hermes_home() / "cache" / "plugin-update-locks" / f"{target.name}.lock"
     stack = ExitStack()
@@ -117,7 +117,7 @@ def set_auto_update(enabled: bool) -> dict[str, Any]:
     waiting out the rest of the interval."""
     from hermes_agent.hermes_cli.config import get_config_path, is_managed
     from hermes_agent.hermes_cli.config_backend import write_config_key
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     if is_managed():
         raise _pc().PluginOperationError(

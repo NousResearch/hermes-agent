@@ -19,7 +19,7 @@ def _client():
     except ImportError:
         pytest.skip("fastapi/starlette not installed")
     from hermes_agent import hermes_state
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
     client = TestClient(app)
@@ -52,7 +52,7 @@ class TestMcpEndpoints:
     def test_http_bearer_auth_separates_secret_from_config(
         self, _isolate_hermes_home
     ):
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
 
         secret = "dashboard-secret-value"
         response = self.client.post(
@@ -213,7 +213,7 @@ class TestMemoryEndpoints:
     @pytest.fixture(autouse=True)
     def _setup(self, _isolate_hermes_home):
         self.client, _ = _client()
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
 
         (get_hermes_home() / "memories").mkdir(parents=True, exist_ok=True)
 
@@ -230,7 +230,7 @@ class TestMemoryEndpoints:
         assert r.status_code == 400
 
     def test_reset_targets(self):
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
 
         mem = get_hermes_home() / "memories"
         (mem / "MEMORY.md").write_text("notes")
@@ -271,7 +271,7 @@ class ScopedProvMemoryProvider(MemoryProvider):
         ``is_available`` reads the launch profile's credential must still resolve it from the
         launch home's ``.env`` instead of rendering "unavailable" with no visible error
         (``probe_availability`` swallows the ``UnscopedSecretError``)."""
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         from hermes_agent.hermes_cli.web_server_dashboard import _invalidate_plugins_hub_cache
         from hermes_agent.tui_gateway.launch_profile_policy import activate_multi_profile_hosting
 
@@ -324,7 +324,7 @@ class TestPairingEndpoints:
         as approved.
         """
         from hermes_agent.gateway.pairing import PairingStore
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
 
         (get_hermes_home() / "profiles" / "work").mkdir(parents=True, exist_ok=True)
         (get_hermes_home() / "profiles" / "work" / "config.yaml").write_text("{}\n")  # identity marker
@@ -883,7 +883,7 @@ class TestDebugShareEndpoint:
     @pytest.fixture(autouse=True)
     def _setup(self, _isolate_hermes_home):
         self.client, self.header = _client()
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
 
         logs = get_hermes_home() / "logs"
         logs.mkdir(parents=True, exist_ok=True)

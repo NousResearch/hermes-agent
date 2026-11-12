@@ -123,7 +123,7 @@ def _read_prefill(authority, policy):
     from hermes_agent.hermes_cli.cli_config_load import _load_prefill_messages, _resolve_prefill_messages_file
     home = Path(str(authority.profile_id))
     if not home.is_absolute():
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         home = get_hermes_home()
     with policy.client_env_scope():  # HERMES_PREFILL_MESSAGES_FILE: a local session's client's
         path = _resolve_prefill_messages_file(policy.config(authority, secrets=False))

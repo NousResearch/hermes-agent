@@ -111,7 +111,7 @@ class TestSchedulerJobReasoningPrecedence:
         assert result == {"enabled": False}
 
     def test_absent_field_byte_identical_to_config_resolution(self):
-        from hermes_constants import resolve_reasoning_config
+        from hermes_agent.hermes_constants import resolve_reasoning_config
         from hermes_agent.cron.scheduler import _resolve_job_reasoning_config
 
         for model in ("anthropic/claude-opus-4.5", "gpt-5", ""):
@@ -124,7 +124,7 @@ class TestSchedulerJobReasoningPrecedence:
         tick: warn, then resolve from config exactly as if unset."""
         import logging
 
-        from hermes_constants import resolve_reasoning_config
+        from hermes_agent.hermes_constants import resolve_reasoning_config
         from hermes_agent.cron.scheduler import _resolve_job_reasoning_config
 
         job = {"id": "abc123", "reasoning_effort": "turbo"}

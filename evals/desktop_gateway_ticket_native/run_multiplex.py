@@ -44,7 +44,7 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     python = os.path.abspath(args.python)
-    from hermes_constants import find_node_executable
+    from hermes_agent.hermes_constants import find_node_executable
     node = find_node_executable('node')
     if not node:
         parser.error('node is required')

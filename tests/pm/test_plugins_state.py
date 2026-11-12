@@ -18,7 +18,7 @@ def homes(tmp_path, monkeypatch):
     default_home.mkdir(parents=True)
     profile_home.mkdir(parents=True)
 
-    import hermes_constants
+    from hermes_agent import hermes_constants
 
     monkeypatch.setattr(
         hermes_constants, "get_default_hermes_root", lambda: default_home
@@ -28,7 +28,7 @@ def homes(tmp_path, monkeypatch):
 
 
 def _write_config(home: Path, enabled: list) -> None:
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
 
     config = {"plugins": {"enabled": enabled}} if enabled else {"plugins": {}}
     with (home / "config.yaml").open("w", encoding="utf-8") as f:
@@ -46,7 +46,7 @@ def test_enabled_plugins_ordered_reads_all_homes(homes):
 
 
 def test_only_live_profiles_join_the_dependency_union(homes):
-    from hermes_constants import mark_named_profile_deleted
+    from hermes_agent.hermes_constants import mark_named_profile_deleted
 
     default_home, profile_home = homes
     profiles = profile_home.parent
@@ -113,7 +113,7 @@ def test_missing_config_parser_is_not_an_empty_plugin_selection(homes, monkeypat
     default_home, _ = homes
     _write_config(default_home, ["keep-plug"])
     before = (default_home / "config.yaml").read_bytes()
-    monkeypatch.setitem(sys.modules, "utils", None)
+    monkeypatch.setitem(sys.modules, "hermes_agent.utils", None)
     with pytest.raises(ImportError):
         pstate.enabled_plugins_ordered()
     assert (default_home / "config.yaml").read_bytes() == before
@@ -162,7 +162,7 @@ def test_empty_config_is_an_explicit_empty_selection(homes, content):
     ([], "ghost", False, []),
 ])
 def test_memory_provider_joins_ordered_selection(homes, enabled, provider, exists, expected):
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
     home, sibling = homes
     if exists:
         (home / "plugins" / provider).mkdir(parents=True)
@@ -201,7 +201,7 @@ def test_read_parses_config_once_per_home(homes, monkeypatch):
     _write_config(default_home, ["a-plug"])
     _write_config(profile_home, ["c-plug"])
 
-    import utils
+    from hermes_agent import utils
 
     calls: list = []
     real = utils.fast_safe_load

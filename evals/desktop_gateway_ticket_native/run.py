@@ -69,7 +69,7 @@ def main():
     args = parser.parse_args()
     # Keep the venv launcher path; resolving symlinks would discard the venv.
     python = os.path.abspath(args.python)
-    from hermes_constants import find_node_executable
+    from hermes_agent.hermes_constants import find_node_executable
     node = find_node_executable('node')
     if not node:
         parser.error('node is required')

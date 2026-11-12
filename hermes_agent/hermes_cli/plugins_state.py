@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, Mapping
 
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 from hermes_agent.hermes_cli.plugins_manifest import _portable_data_namespace
 
 _PLUGIN_SETTING_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
@@ -191,5 +191,5 @@ class PluginState:
                     f"Plugin state quota exceeded: {len(encoded)} bytes is greater "
                     f"than the {self.quota_bytes}-byte per-plugin quota"
                 )
-            from utils import atomic_json_write
+            from hermes_agent.utils import atomic_json_write
             atomic_json_write(self.path, data, mode=0o600)

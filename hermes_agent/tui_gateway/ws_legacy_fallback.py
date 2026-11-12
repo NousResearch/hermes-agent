@@ -105,7 +105,7 @@ def _ticket_profile_request(server: Any, req: dict, home: str) -> tuple[dict, st
     launch home. A method whose contract declares ``profile`` and got none is handed the ticket's
     own profile name (refused when that name does not resolve to the ticket's home). Returns the
     request plus the home to scope ("" = launch), or an error frame and None."""
-    from hermes_constants import profile_name_for_home
+    from hermes_agent.hermes_constants import profile_name_for_home
     from hermes_agent.tui_gateway.contracts.registry import METHODS
     params = req.get("params") if isinstance(req.get("params"), dict) else {}
     refused = _unavailable(req)
@@ -128,7 +128,7 @@ def _own_profile_read(server: Any, req: dict, home: str) -> dict:
     """A store-wide session read for a ticket bound to the non-launch *home*. Those handlers default
     to the LAUNCH profile's store and ``session.active_list`` lists every profile's live sessions, so
     the ticket's own profile is named (or the read refused), never the launch profile's served."""
-    from hermes_constants import profile_name_for_home
+    from hermes_agent.hermes_constants import profile_name_for_home
     params = req.get("params") if isinstance(req.get("params"), dict) else {}
     name = params.get("profile") or profile_name_for_home(home)
     try:

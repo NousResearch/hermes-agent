@@ -442,8 +442,8 @@ class WebhookAdapter(BasePlatformAdapter):
         atomic rename, which also gives the file a new inode, so a restored mtime cannot hide a change;
         ``file_cache_version`` also catches a same-tick same-size edit made in place (a hand edit).
         """
-        from hermes_constants import get_hermes_home
-        from utils import file_cache_version
+        from hermes_agent.hermes_constants import get_hermes_home
+        from hermes_agent.utils import file_cache_version
         subs_path = get_hermes_home() / _DYNAMIC_ROUTES_FILENAME
         try:
             stat_key = file_cache_version(subs_path)

@@ -118,7 +118,7 @@ def _is_opencode_responses_backend(params: dict[str, Any]) -> bool:
     except Exception:
         pass
     try:
-        from utils import base_url_hostname
+        from hermes_agent.utils import base_url_hostname
 
         return base_url_hostname(str(params.get("base_url") or "")).lower() == "opencode.ai"
     except Exception:
@@ -128,7 +128,7 @@ def _is_opencode_responses_backend(params: dict[str, Any]) -> bool:
 def _is_perplexity_responses_backend(params: dict[str, Any]) -> bool:
     """True for Perplexity's Responses-compatible Agent API endpoint."""
     try:
-        from utils import base_url_hostname
+        from hermes_agent.utils import base_url_hostname
 
         return base_url_hostname(str(params.get("base_url") or "")).lower() == "api.perplexity.ai"
     except Exception:
@@ -192,7 +192,7 @@ def _reserves_tool_search(params: dict[str, Any], is_xai_responses: bool) -> boo
     if is_xai_responses or params.get("is_codex_backend") is True:
         return True
     try:
-        from utils import base_url_hostname
+        from hermes_agent.utils import base_url_hostname
 
         return base_url_hostname(str(params.get("base_url") or "")).lower() in _OPENAI_RESPONSES_HOSTS
     except Exception:
@@ -356,7 +356,7 @@ _EXTENDED_PROMPT_CACHE_MODEL_RE = re.compile(
 
 def _default_prompt_cache_retention_for_request(model: str, base_url: Any) -> Optional[str]:
     """Return ``24h`` for supported hosts/models (Bedrock Mantle, Meta)."""
-    from utils import base_url_hostname
+    from hermes_agent.utils import base_url_hostname
 
     hostname = base_url_hostname(str(base_url or "")).lower()
     # Meta Model API: caching is opt-in via prompt_cache_retention (0% hits without).
@@ -377,7 +377,7 @@ def _default_prompt_cache_retention_for_request(model: str, base_url: Any) -> Op
 
 def _is_openai_api_origin(base_url: Any) -> bool:
     """Exact host, so a Responses-compatible proxy or a lookalike subdomain keeps the generic contract."""
-    from utils import base_url_hostname
+    from hermes_agent.utils import base_url_hostname
 
     return base_url_hostname(str(base_url or "")).lower() == "api.openai.com"
 
@@ -481,7 +481,7 @@ def _profile_declared_efforts(provider: Any, model: Optional[str], base_url: Any
 
 def _is_azure_foundry_responses(params: dict[str, Any]) -> bool:
     """True for Microsoft Foundry's Responses API (provider id, else host match — not substring)."""
-    from utils import base_url_host_matches
+    from hermes_agent.utils import base_url_host_matches
 
     if str(params.get("provider") or "").strip().lower() == "azure-foundry":
         return True
@@ -534,7 +534,7 @@ def _is_post_tool_replay(messages: Optional[list[dict[str, Any]]]) -> bool:
 def _is_azure_responses(params: dict[str, Any]) -> bool:
     """True for any Azure-hosted Responses endpoint: the ``azure-foundry`` provider, a resource-level
     ``*.openai.azure.com`` host, or the project-scoped ``*.services.ai.azure.com`` gateway."""
-    from utils import base_url_host_matches
+    from hermes_agent.utils import base_url_host_matches
 
     if str(params.get("provider") or "").strip().lower() == "azure-foundry":
         return True

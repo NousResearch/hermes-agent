@@ -109,7 +109,7 @@ def _named_profile(home: Path) -> str:
 
 def _ledgered_profiles(home: Path | None) -> list[tuple[str, Path]]:
     from hermes_agent.hermes_cli.backup import _sibling_profile_homes
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     home = Path(home or get_hermes_home())
     profiles = [(_named_profile(home), home), *_sibling_profile_homes(home)]

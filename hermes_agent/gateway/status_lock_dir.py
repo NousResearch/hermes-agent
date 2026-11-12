@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from hermes_dir_acl import unusable_dir_remedy
+from hermes_agent.hermes_dir_acl import unusable_dir_remedy
 
 log = logging.getLogger("hermes_agent.gateway.status")
 

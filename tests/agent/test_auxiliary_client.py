@@ -247,7 +247,7 @@ class TestMoaAggregatorSharedResolution:
 
     @staticmethod
     def _write_moa_config(tmp_path, monkeypatch, default_preset="opus-gpt"):
-        import hermes_yaml as yaml
+        import hermes_agent.hermes_yaml as yaml
 
         home = tmp_path / ".hermes"
         home.mkdir(exist_ok=True)
@@ -288,7 +288,7 @@ class TestMoaAggregatorSharedResolution:
     def test_real_config_explicit_task_provider_moa(self, tmp_path, monkeypatch):
         """auxiliary.<task>.provider: moa in a REAL config.yaml resolves to the
         aggregator through the genuine load_config()/resolve_moa_preset() path."""
-        import hermes_yaml as yaml
+        import hermes_agent.hermes_yaml as yaml
 
         home = self._write_moa_config(tmp_path, monkeypatch)
         cfg = yaml.safe_load((home / "config.yaml").read_text())
@@ -4711,7 +4711,7 @@ class TestCustomEndpointApiKeyInheritance:
         runtime (a /model switch to a keyless local server, a key_cmd) is the anchor, and
         config.yaml's key belongs to config.yaml's base_url, never to the live endpoint.
         Real config.yaml under a temp HERMES_HOME, resolved through the task route."""
-        import hermes_yaml as yaml
+        import hermes_agent.hermes_yaml as yaml
         from hermes_agent.agent.auxiliary_client import reset_runtime_main, set_runtime_main
 
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -4800,7 +4800,7 @@ class TestNoProgressTimeoutTaskConfigGating:
         CodexAuxiliaryClient path (both the first-output and between-output deadlines derive from
         ``guard.no_progress_timeout``); other tasks keep the 60s default; a non-positive value
         is rejected with a warning and falls back to the default."""
-        import hermes_yaml as yaml
+        import hermes_agent.hermes_yaml as yaml
         from hermes_agent.agent import auxiliary_client as aux
 
         home = tmp_path / ".hermes"
@@ -5289,7 +5289,7 @@ class TestFastModelTier:
         after the fix the named provider is preserved and the inline
         ``api_key`` from the providers: entry reaches the client.
         """
-        import hermes_yaml as yaml
+        import hermes_agent.hermes_yaml as yaml
 
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

@@ -117,7 +117,7 @@ def test_full_uninstall_sweeps_macos_caches_and_dashboard_launchd(monkeypatch, t
 
 def _args(hermes_home, project_root, *, full, yes):
     from types import SimpleNamespace
-    import hermes_constants
+    from hermes_agent import hermes_constants
     monkey = {"HERMES_HOME": str(hermes_home)}
     real_get = hermes_constants.get_hermes_home
     hermes_constants.get_hermes_home = (lambda: Path(monkey["HERMES_HOME"]))

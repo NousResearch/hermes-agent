@@ -11,7 +11,7 @@ import threading
 import time
 
 from hermes_agent.hermes_cli import mcp_startup
-from hermes_constants import hermes_home_key
+from hermes_agent.hermes_constants import hermes_home_key
 from hermes_agent.tui_gateway import entry
 
 

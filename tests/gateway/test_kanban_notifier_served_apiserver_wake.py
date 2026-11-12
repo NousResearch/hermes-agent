@@ -27,7 +27,7 @@ from hermes_agent.gateway.run import GatewayRunner, _profile_runtime_scope
 from hermes_agent.hermes_cli import kanban_db as kb
 from hermes_agent.hermes_cli import kanban_db_connect as kbc
 from hermes_agent.hermes_cli import kanban_db_notify as kbn
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 from hermes_agent.hermes_state import SessionDB
 
 SESSION = "20260918_033413_0665eb"      # the originating (Relay/web-UI) session id
@@ -108,7 +108,7 @@ def served(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(root))
     monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "board.db"))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root)
+    monkeypatch.setattr("hermes_agent.hermes_constants.get_default_hermes_root", lambda: root)
     return SimpleNamespace(root=root, builder=root / "profiles" / "builder", atlas=root / "profiles" / "atlas")
 
 

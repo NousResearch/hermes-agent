@@ -88,7 +88,7 @@ def test_unlocked_model_switch_is_one_patch_and_keeps_siblings(plane):
 
 def test_file_backend_model_switch_still_writes_every_key(tmp_path, monkeypatch):
     """Control: the file backend keeps its key-by-key round-trip (comments, siblings intact)."""
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
     from hermes_agent.hermes_cli.model_switch import persist_model_selection
     monkeypatch.delenv("HERMES_CONFIG_BACKEND", raising=False)
     remote_pkg._reset_for_tests()

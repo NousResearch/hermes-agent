@@ -9,7 +9,7 @@ import sys
 from rich.markup import escape as _escape
 
 from hermes_agent.agent.i18n import t
-from utils import base_url_host_matches
+from hermes_agent.utils import base_url_host_matches
 
 
 def _single_query_clarify_callback(questions: list) -> dict:
@@ -782,7 +782,7 @@ class CLIAgentSetupMixin:
             console = ChatConsole()
             from hermes_agent.hermes_cli.cli_chat_error_copy import agent_init_failure_message
             console.print(f"[bold red]{_escape(agent_init_failure_message(e))}[/]")
-            from hermes_constants import partial_update_hint
+            from hermes_agent.hermes_constants import partial_update_hint
             for line in partial_update_hint(e):
                 console.print(line)
             return False

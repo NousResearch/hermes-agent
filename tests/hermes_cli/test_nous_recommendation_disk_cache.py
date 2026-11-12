@@ -111,7 +111,7 @@ def test_disk_cache_is_scoped_to_home_and_portal(tmp_path, portal):
 
     # The same process can switch profiles under the multiplex gateway too.
     from hermes_agent.hermes_cli.models import fetch_nous_recommended_models, _nous_recommended_cache
-    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    from hermes_agent.hermes_constants import set_hermes_home_override, reset_hermes_home_override
     _nous_recommended_cache.clear()
     for home, expected in [(a, first), (b, {"paidRecommendedModels": [{"modelName": "model-2"}]}), (a, first)]:
         token = set_hermes_home_override(home)

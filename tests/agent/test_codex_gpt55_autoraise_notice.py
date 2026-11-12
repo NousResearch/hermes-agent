@@ -20,7 +20,7 @@ import contextlib
 import io
 from pathlib import Path
 
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.run_agent import AIAgent
 

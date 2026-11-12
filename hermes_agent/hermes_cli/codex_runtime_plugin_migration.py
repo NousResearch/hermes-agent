@@ -417,7 +417,7 @@ def _build_hermes_tools_mcp_entry() -> dict:
 
 def _write_atomic(target: Path, text: str) -> None:
     """Atomic rewrite so a crash mid-write never leaves a half-written config.toml codex refuses to load."""
-    from utils import atomic_write_text
+    from hermes_agent.utils import atomic_write_text
     atomic_write_text(target, text, tmp_prefix=".config.toml.", preserve_mode=True)
 
 

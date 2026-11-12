@@ -38,7 +38,7 @@ class DiscordAuthorizationMixin:
         # The entry-time ContextVar contains a secret snapshot. Reload the same
         # transport home after SDK I/O so an intervening .env edit is visible too.
         from hermes_agent.gateway.run import _profile_runtime_scope
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         with _profile_runtime_scope(get_hermes_home()):
             current_policy = policy()
         if self._client is not client or current_policy != (roles, guild_id):

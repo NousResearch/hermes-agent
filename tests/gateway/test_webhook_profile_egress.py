@@ -134,7 +134,7 @@ async def test_retained_destination_keeps_profile_and_freezes_its_home(profile_h
     delivery = snapshot_destination(adapter, {"deliver": "slack", "deliver_extra": {}, "profile": "sec"})
     assert delivery == {"deliver": "slack", "deliver_extra": {"chat_id": "SEC-HOME"}, "profile": "sec"}
     adapter._delivery_info["retained"] = delivery
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     (get_hermes_home() / "profiles" / "sec" / "config.yaml").write_text("platforms: {}\n")
     result = await adapter.send("retained", "answer")
     assert result.success
@@ -146,7 +146,7 @@ async def test_retained_destination_keeps_profile_and_freezes_its_home(profile_h
 
 
 def test_destination_missing_profile_home_does_not_borrow_default(profile_homes):
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
     from hermes_agent.gateway.platforms.webhook_delivery import snapshot_destination, validate_destination
 

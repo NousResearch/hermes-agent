@@ -31,7 +31,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from hermes_platform.host.facts import os_family
+from hermes_agent.hermes_platform.host.facts import os_family
 
 # Unit-name patterns for installed-but-not-running units. Running backends are found by argv, so a
 # unit with any other name is still reported while it runs.
@@ -291,7 +291,7 @@ def collect_backends() -> list[BackendItem]:
     """Every serve/dashboard backend on this machine (running, or installed and enabled). Read-only."""
     from hermes_agent.hermes_cli.dashboard_procs import _exclude_pids_from_env, _lock_owned_serve_pids
     from hermes_agent.hermes_cli.main_dashboard import _loaded_launchd_backend_jobs
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     own_home = str(get_hermes_home())
     launchd_jobs = _loaded_launchd_backend_jobs()  # empty off macOS
     # ``_launchd_plist_dirs`` returns its dirs on every OS, so only scan them, and only look

@@ -97,8 +97,8 @@ from hermes_agent.gateway.platforms.helpers import send_chunks
 from plugins.platforms.feishu.adapter_choice_cards import FeishuChoiceCardsMixin
 from hermes_agent.gateway.status import acquire_scoped_lock
 from hermes_agent.gateway.status_scoped_locks import release_scoped_lock
-from hermes_constants import get_hermes_home
-from utils import atomic_json_write, env_float, env_int
+from hermes_agent.hermes_constants import get_hermes_home
+from hermes_agent.utils import atomic_json_write, env_float, env_int
 
 from hermes_agent.gateway.platforms._shared import (
     apply_yaml_bridge as _apply_yaml_bridge, extra_or_secret as _shared_extra_or_secret,
@@ -3618,7 +3618,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
 
     def _persist_seen_message_ids(self) -> None:
         try:
-            from hermes_constants import mkdir_under_hermes_home
+            from hermes_agent.hermes_constants import mkdir_under_hermes_home
             mkdir_under_hermes_home(self._dedup_state_path.parent)
             with self._dedup_lock:
                 recent = self._seen_message_order[-self._dedup_cache_size:]

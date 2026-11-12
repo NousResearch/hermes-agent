@@ -108,7 +108,7 @@ def legacy_launch_params(row):
     if isinstance(reasoning, dict):
         reasoning = 'none' if reasoning.get('enabled') is False else reasoning.get('effort')
     if isinstance(reasoning, str):
-        from hermes_constants import parse_reasoning_effort
+        from hermes_agent.hermes_constants import parse_reasoning_effort
         if parse_reasoning_effort(reasoning) is not None:
             params['reasoning'] = reasoning
     tier = saved.get('service_tier')

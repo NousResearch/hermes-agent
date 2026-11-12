@@ -8,7 +8,7 @@ profile has no such provider) and keeps billing until the provider's own timeout
 
 import pytest
 
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 from hermes_agent.tools import browser_launcher as launcher
 from hermes_agent.tools import browser_session as bs
 from hermes_agent.tools import browser_session_cloud

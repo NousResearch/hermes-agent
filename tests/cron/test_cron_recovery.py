@@ -162,7 +162,7 @@ def test_owner_refused_fire_is_booked_failed_and_retires_its_journal(tmp_path, m
 def test_admission_journal_survives_power_loss(tmp_path, monkeypatch):
     """The journal is the only evidence that a lost reply may have been admitted, so its rename
     is made durable (directory fsync), not left in the page cache until the next flush."""
-    import utils
+    from hermes_agent import utils
     from hermes_agent.cron import scheduler_authority
     synced = []
     real = utils.fsync_directory

@@ -56,7 +56,7 @@ print(json.dumps({{"prefix": sys.prefix, "yaml": importlib.util.find_spec("ruame
 
 def test_cold_worker_bootstrap_reuses_the_requests_cache(tmp_path, monkeypatch):
     import pm
-    from hermes_constants import get_default_hermes_root
+    from hermes_agent.hermes_constants import get_default_hermes_root
     from pm import client, runtime
     from pm.runtime_stage import stage_runtime
 

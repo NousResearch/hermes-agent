@@ -229,7 +229,7 @@ def _read_manifest(plugin_dir: Path) -> dict[str, Any]:
         path = plugin_dir / name
         if path.is_file():
             try:
-                import hermes_yaml as yaml
+                import hermes_agent.hermes_yaml as yaml
                 data = yaml.safe_load(path.read_text(encoding="utf-8-sig"))
                 return data if isinstance(data, dict) else {}
             except Exception:

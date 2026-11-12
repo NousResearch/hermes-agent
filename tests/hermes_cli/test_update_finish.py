@@ -437,7 +437,7 @@ def _pnpm_graph(source):
 def test_selected_child_builds_and_finalizes_under_parent_lock(completion):
     from hermes_agent.hermes_cli.config_defaults import DEFAULT_CONFIG
     from hermes_agent.hermes_cli.update_lock import UpdateLock
-    import hermes_yaml
+    from hermes_agent import hermes_yaml
 
     source, home, request, context, result, run = completion
     node = _pnpm_graph(source)
@@ -485,7 +485,7 @@ def test_real_compiler_failure_is_owed_build_and_completion_continues(completion
     and the fleet restart still run, the exit is 0, and the tail stays pending until it builds."""
     from hermes_agent.hermes_cli.config_defaults import DEFAULT_CONFIG
     from hermes_agent.hermes_cli.venv_sync import completion_pending_path
-    import hermes_yaml
+    from hermes_agent import hermes_yaml
 
     source, home, request, context, result, run = completion
     _pnpm_graph(source)

@@ -200,7 +200,7 @@ def _agent_path_scope(profile_home: Path | None = None) -> Iterator[None]:
     agree about the backend.
     """
     from hermes_agent.hermes_cli.config import get_hermes_home
-    from hermes_constants import (
+    from hermes_agent.hermes_constants import (
         get_hermes_home_override, get_process_hermes_home, reset_hermes_home_override,
         set_hermes_home_override,
     )
@@ -376,7 +376,7 @@ def _default_hermes_root_is_opt_data() -> bool:
     if not raw:
         return False
     try:
-        from hermes_constants import get_default_hermes_root
+        from hermes_agent.hermes_constants import get_default_hermes_root
 
         root = get_default_hermes_root().expanduser().resolve(strict=False)
     except (OSError, RuntimeError):
@@ -397,7 +397,7 @@ def _dashboard_local_update_managed_externally() -> bool:
     if _default_hermes_root_is_opt_data():
         return True
     try:
-        from hermes_constants import is_container
+        from hermes_agent.hermes_constants import is_container
 
         if not is_container():
             return False

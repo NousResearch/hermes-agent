@@ -19,7 +19,7 @@ import threading
 from pathlib import Path
 
 from hermes_agent.hermes_cli.process_identity import release_process_group_once_empty, spawn_owned
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 
 from .method_ctx import bind_module
 from hermes_agent.hermes_cli._startup_fast import project_root_str

@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 import hermes_agent.hermes_cli.left_core_migration as lcm
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 from hermes_agent.hermes_cli.config_defaults import DEFAULT_CONFIG
 
 _CATALOG_ENTRY = """\
@@ -232,7 +232,7 @@ def test_homes_are_islands_a_b_c_a(tmp_path):
 
 def _migrate_config(home: Path) -> None:
     from hermes_agent.hermes_cli.config import migrate_config
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
     token = set_hermes_home_override(home)
     try:
         migrate_config(interactive=False, quiet=True)
@@ -310,7 +310,7 @@ def test_a_plain_save_stamping_an_unversioned_camofox_home_keeps_its_conversion(
     """Any config write before the first left-core pass (`hermes config set`, a model switch) stamps an
     unstamped config.yaml at the current version without running the v52 step; the home still converts."""
     from hermes_agent.hermes_cli.config import load_config, save_config
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "launch"))
     home = _home(tmp_path, env=_SPLIT_ENV, config={"platform_toolsets": _SPLIT_TOOLSETS})
     token = set_hermes_home_override(home)

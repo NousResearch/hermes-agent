@@ -16,7 +16,7 @@ These tests pin the typed path:
 from types import SimpleNamespace
 
 import pytest
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 from hermes_agent.gateway.config import Platform
 from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
@@ -83,7 +83,7 @@ def _setup_isolated_home(tmp_path, monkeypatch, *, warn):
         "hermes_agent.hermes_cli.model_switch.switch_model",
         lambda **kw: _fake_switch_result(),
     )
-    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: hermes_home)
+    monkeypatch.setattr("hermes_agent.hermes_constants.get_hermes_home", lambda: hermes_home)
     monkeypatch.setattr("hermes_agent.hermes_cli.config.get_hermes_home", lambda: hermes_home)
     monkeypatch.setattr(
         "hermes_agent.hermes_cli.model_cost_guard.expensive_model_warning",

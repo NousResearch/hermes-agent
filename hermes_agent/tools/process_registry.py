@@ -1799,7 +1799,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         if self._completions_restored:
             return 0
         self._completions_restored = True
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
         token = set_hermes_home_override(None)
         try:
             from hermes_agent.tools.async_delegation import restore_undelivered_completions

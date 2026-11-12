@@ -42,8 +42,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlparse
 
-from hermes_constants import secure_parent_dir
-from utils import atomic_json_write
+from hermes_agent.hermes_constants import secure_parent_dir
+from hermes_agent.utils import atomic_json_write
 from hermes_agent.tools.mcp_dashboard_oauth import contextvar_set as _contextvar_set, get_dashboard_oauth_flow
 
 if TYPE_CHECKING:  # annotations only; the SDK is imported lazily at runtime
@@ -109,7 +109,7 @@ async def acquire_refresh_fence(path: Path, *, timeout: float = _REFRESH_FENCE_T
     """
     lock_path = _refresh_lock_path(path)
     try:
-        from hermes_constants import mkdir_under_hermes_home
+        from hermes_agent.hermes_constants import mkdir_under_hermes_home
 
         mkdir_under_hermes_home(lock_path.parent)
         secure_parent_dir(lock_path)
@@ -228,7 +228,7 @@ _USER_SKIPPED_SENTINEL = "__hermes_user_skipped__"
 
 def _get_token_dir(hermes_home: str | Path | None = None) -> Path:
     """``HERMES_HOME/mcp-tokens/`` — per-profile token directory."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     return Path(hermes_home if hermes_home is not None else get_hermes_home()) / "mcp-tokens"
 
@@ -397,7 +397,7 @@ def _read_json(path: Path) -> dict | None:
 def _write_json(path: Path, data: dict) -> None:
     """OAuth tokens/client info at 0600 from creation, parent tightened to 0700 (``secure_parent_dir``
     refuses ``/``, top-level dirs and the install tree — #25821, #93050)."""
-    from hermes_constants import mkdir_under_hermes_home
+    from hermes_agent.hermes_constants import mkdir_under_hermes_home
 
     mkdir_under_hermes_home(path.parent)
     secure_parent_dir(path)
@@ -574,7 +574,7 @@ class HermesTokenStorage:
         the refused client_id. Cleared by ``remove()`` so a fixed document gets a retry."""
         path = self._cimd_rejected_path()
         try:
-            from hermes_constants import mkdir_under_hermes_home
+            from hermes_agent.hermes_constants import mkdir_under_hermes_home
 
             mkdir_under_hermes_home(path.parent)
             path.touch()
@@ -613,7 +613,7 @@ class HermesTokenStorage:
         if not snapshot:
             return
         token_dir = _get_token_dir(self._hermes_home)
-        from hermes_constants import mkdir_under_hermes_home
+        from hermes_agent.hermes_constants import mkdir_under_hermes_home
 
         mkdir_under_hermes_home(token_dir)
         for fname, data in snapshot.items():
@@ -1106,7 +1106,7 @@ _FIGMA_DEFAULT_SCOPE = "mcp:connect"
 
 def _is_figma_remote_mcp(server_name: str | None = None, server_url: str | None = None) -> bool:
     """True when this MCP server is Figma's hosted remote endpoint."""
-    from utils import base_url_host_matches, base_url_hostname
+    from hermes_agent.utils import base_url_host_matches, base_url_hostname
     url = (server_url or "").lower()
     if base_url_host_matches(url, "mcp.figma.com") or (base_url_host_matches(url, "figma.com") and "/mcp" in url):
         return True

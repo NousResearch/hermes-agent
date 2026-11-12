@@ -7,7 +7,7 @@ import sqlite3
 
 
 def test_search_does_not_create_current_storage_for_empty_or_foreign_reads(tmp_path, monkeypatch):
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from hermes_agent.hermes_state import SessionDB
     import hermes_agent.tools.session_search_tool
     from hermes_agent.tools.registry import registry
@@ -43,7 +43,7 @@ def test_search_does_not_create_current_storage_for_empty_or_foreign_reads(tmp_p
 
 
 def test_search_reads_live_storage_without_a_write_commit(tmp_path, monkeypatch):
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from hermes_agent.hermes_state import SessionDB
     import hermes_agent.tools.session_search_tool
     from hermes_agent.tools.registry import registry

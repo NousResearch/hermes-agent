@@ -15,12 +15,12 @@ import threading
 from pathlib import Path
 from typing import Any, NoReturn, Optional
 
-from hermes_constants import get_hermes_home, hermes_home_key
+from hermes_agent.hermes_constants import get_hermes_home, hermes_home_key
 from hermes_agent.hermes_cli.config import cfg_get
 from hermes_agent.hermes_cli.plugin_capabilities import _child_dict
 # Tests patch these two on the facade; the install/remove siblings read them through it.
 from hermes_agent.hermes_cli.secret_prompt import masked_secret_prompt
-from utils import rmtree_readonly
+from hermes_agent.utils import rmtree_readonly
 
 # Topical siblings. The facade re-exports what other modules, tests and the old updater import from
 # ``hermes_agent.hermes_cli.plugins_cmd``; sibling bodies read those names back through the facade at call time.

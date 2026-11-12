@@ -21,7 +21,7 @@ from hermes_agent.hermes_cli.runtime_provider import resolve_requested_provider
 from hermes_agent.hermes_cli.vercel_auth import describe_vercel_auth
 from hermes_agent.hermes_cli.status_auth import (  # renderers wired into _SECTIONS below
     _render_api_keys, _render_apikey_providers, _render_auth_providers, _render_nous_gateway)
-from hermes_constants import OPENROUTER_MODELS_URL
+from hermes_agent.hermes_constants import OPENROUTER_MODELS_URL
 
 
 def check_mark(ok: bool) -> str:

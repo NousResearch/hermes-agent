@@ -16,7 +16,7 @@ import pytest
 
 import httpx
 
-from utils import normalize_proxy_env_vars, sanitize_no_proxy_entries
+from hermes_agent.utils import normalize_proxy_env_vars, sanitize_no_proxy_entries
 
 
 @pytest.fixture

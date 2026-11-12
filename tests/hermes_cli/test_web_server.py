@@ -13,7 +13,7 @@ from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 import pytest
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 from hermes_agent.hermes_cli.config import (
     reload_env,
@@ -71,7 +71,7 @@ def _install_example_plugin(_isolate_hermes_home):
     all). User plugins are first in the discovery search order, so
     laying down the fixture here is enough.
     """
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.hermes_cli import web_server
 
     user_plugins_dir = get_hermes_home() / "plugins"
@@ -225,7 +225,7 @@ class TestRedactKey:
 @pytest.fixture
 def mutation_owner(monkeypatch, _isolate_hermes_home):
     from hermes_agent.gateway.session_authority import SessionAuthority
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.hermes_cli.web_server import app
     from hermes_agent.hermes_state import SessionDB
     from hermes_agent.hermes_state_runtime import begin_runtime_epoch
@@ -253,7 +253,7 @@ class TestWebServerEndpoints:
             pytest.skip("fastapi/starlette not installed")
 
         from hermes_agent import hermes_state
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         from hermes_agent.hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
         monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
@@ -266,7 +266,7 @@ class TestWebServerEndpoints:
         """Repeated GET-only polls must not checkpoint another writer's WAL."""
         import sqlite3
 
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         from hermes_agent.hermes_state import SessionDB
 
         _web_server_sessions._last_auto_archive_check.clear()
@@ -345,7 +345,7 @@ class TestWebServerEndpoints:
     def test_get_sessions_leaves_auto_archive_to_owner(self):
         from hermes_agent.hermes_cli import web_server
         from hermes_agent.hermes_cli.config import load_config, save_config
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         from hermes_agent.hermes_state import SessionDB
 
         db_path = get_hermes_home() / "state.db"
@@ -393,7 +393,7 @@ class TestWebServerEndpoints:
             verify.close()
 
     def test_get_sessions_missing_store_is_unavailable_without_creation(self):
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
 
         before = set(get_hermes_home().glob("state.db*"))
         response = self.client.get("/api/sessions?limit=50&offset=0")
@@ -410,7 +410,7 @@ class TestWebServerEndpoints:
         two-writer corruption vector. Only the stale-schema heal may write.
         """
         from hermes_agent import hermes_state
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         from hermes_agent.hermes_state import SessionDB
 
         SessionDB(db_path=get_hermes_home() / "state.db").close()
@@ -444,7 +444,7 @@ class TestWebServerEndpoints:
 
     def test_failed_schema_probes_never_escalate_reads(self, monkeypatch):
         from fastapi import HTTPException
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         from hermes_agent.hermes_state import SessionDB
 
         db_path = get_hermes_home() / "state.db"
@@ -503,7 +503,7 @@ class TestWebServerEndpoints:
         assert opens == [True]
 
     def test_get_sessions_zero_byte_store_is_not_quarantined(self):
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
 
         db_path = get_hermes_home() / "state.db"
         db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -641,7 +641,7 @@ CONFIG_SCHEMA = ProviderConfigSchema(
 """
 
     def _install_flatprov(self):
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
 
         plugin_dir = get_hermes_home() / "plugins" / "flatprov"
         plugin_dir.mkdir(parents=True, exist_ok=True)
@@ -650,7 +650,7 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         return plugin_dir
 
     def test_declared_surface_put_writes_config_and_secret(self):
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         from hermes_agent.hermes_cli.config import load_env
 
         self._install_flatprov()
@@ -714,7 +714,7 @@ CONFIG_SCHEMA = ProviderConfigSchema(
 
 
     def test_put_memory_provider_config_writes_config_and_secret(self):
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         from hermes_agent.hermes_cli.config import load_config, load_env
 
         self._install_flatprov()
@@ -1591,7 +1591,7 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         """
         from hermes_agent.hermes_cli import profiles as profiles_mod
         from hermes_agent.hermes_cli.config import custom_endpoint_key_env
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
 
         default_home = get_hermes_home()
         worker_home = profiles_mod.get_profile_dir("worker")
@@ -1826,7 +1826,7 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         secret by the time Save sees it. Migrating it would duplicate the
         user's secret into a second env var they never asked for.
         """
-        import hermes_yaml as yaml
+        import hermes_agent.hermes_yaml as yaml
 
         from hermes_agent.hermes_cli.config import custom_endpoint_key_env, get_config_path, get_env_value
 
@@ -2667,7 +2667,7 @@ class TestNewEndpoints:
             pytest.skip("fastapi/starlette not installed")
 
         from hermes_agent import hermes_state
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         from hermes_agent.hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
         monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
@@ -2685,7 +2685,7 @@ class TestNewEndpoints:
     def test_profiles_create_builder_mcp_auth_is_profile_scoped(
         self, monkeypatch
     ):
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         import hermes_agent.hermes_cli.profiles as profiles_mod
 
         monkeypatch.setattr(profiles_mod, "create_wrapper_script", lambda name: None)
@@ -3473,7 +3473,7 @@ class TestDenormalizeProviderSwitch:
         ``PUT /api/config`` — not fall back to the flat string, which the deep-merge would
         write OVER the on-disk ``model:`` dict (provider/base_url/api_mode/slots destroyed)."""
         from starlette.testclient import TestClient
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         from hermes_agent.hermes_cli.model_switch import ModelSwitchResult
         from hermes_agent.hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
@@ -3638,7 +3638,7 @@ class TestStatusInstallId:
         self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
 
     def test_status_reports_persistent_install_id(self, monkeypatch):
-        from hermes_constants import get_default_hermes_root
+        from hermes_agent.hermes_constants import get_default_hermes_root
 
         monkeypatch.setattr(_gw_status, "get_running_pid_cached", lambda: None)
         monkeypatch.setattr(_gw_status, "read_runtime_status", lambda: None)
@@ -3948,7 +3948,7 @@ class TestDiscoverUserThemes:
         other = tmp_path / "other-profile"
         other.mkdir()
 
-        from hermes_constants import (
+        from hermes_agent.hermes_constants import (
             reset_hermes_home_override,
             set_hermes_home_override,
         )
@@ -4082,7 +4082,7 @@ class TestDeleteSessionEndpoint:
             pytest.skip("fastapi/starlette not installed")
 
         from hermes_agent import hermes_state
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         from hermes_agent.hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
         monkeypatch.setattr(
@@ -4137,7 +4137,7 @@ class TestDeleteSessionEndpoint:
     def test_delete_existing_session_scrubs_row_and_disk(self, mutation_owner):
         # The canonical delete retires rows; the endpoint must also remove the secret-bearing
         # session_<id>.json snapshots and request dumps the CLI delete path removes (#60207).
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
 
         self._seed(["disk-scrub"])
         sessions_dir = get_hermes_home() / "sessions"
@@ -4238,7 +4238,7 @@ class TestBulkDeleteSessionsEndpoint:
             pytest.skip("fastapi/starlette not installed")
 
         from hermes_agent import hermes_state
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         from hermes_agent.hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
         monkeypatch.setattr(
@@ -4305,7 +4305,7 @@ class TestDeleteEmptySessionsEndpoint:
             pytest.skip("fastapi/starlette not installed")
 
         from hermes_agent import hermes_state
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         from hermes_agent.hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
         # Pin the SessionDB to the isolated HERMES_HOME so each test
@@ -4386,7 +4386,7 @@ class TestDeleteEmptySessionsEndpoint:
     def test_delete_removes_on_disk_files_of_deleted_sessions_only(self):
         """Deleting an empty session also removes its files in ``sessions/``.
         A kept session's files stay."""
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
 
         self._seed()
         sessions_dir = get_hermes_home() / "sessions"
@@ -4421,7 +4421,7 @@ class TestPluginAPIAuth:
             pytest.skip("fastapi/starlette not installed")
 
         from hermes_agent import hermes_state
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         from hermes_agent.hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
         monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
@@ -4515,7 +4515,7 @@ class TestDashboardPluginManifestExtensions:
         """Regression: user dashboard extensions are a dashboard-owned asset
         (like theme YAML), so they must stay visible after a context-local
         HERMES_HOME override scopes a request to another profile."""
-        from hermes_constants import (
+        from hermes_agent.hermes_constants import (
             reset_hermes_home_override,
             set_hermes_home_override,
         )
@@ -5312,7 +5312,7 @@ class TestDashboardComponentHealth:
             pytest.skip("fastapi/starlette not installed")
 
         from hermes_agent import hermes_state
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         import hermes_agent.hermes_cli.web_server as ws
 
         monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
@@ -5379,7 +5379,7 @@ class TestSessionPatchUnread:
             pytest.skip("fastapi/starlette not installed")
 
         from hermes_agent import hermes_state
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         from hermes_agent.hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
         monkeypatch.setattr(

@@ -108,7 +108,7 @@ def _container_no_volume_mount(hermes_home: Optional[Path]) -> Optional[str]:
     if not _in_container():
         return None
     if hermes_home is None:
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
 
         hermes_home = get_hermes_home()
     if _path_is_mounted(hermes_home):  # any error propagates to run_security_audit (= no finding)

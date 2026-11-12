@@ -62,7 +62,7 @@ def _store_full_text(url: str, content: str) -> Optional[str]:
     read_file can page the complete text on any backend."""
     try:
         import hashlib
-        from hermes_constants import get_hermes_dir
+        from hermes_agent.hermes_constants import get_hermes_dir
         from hermes_agent.tools.web_result_cache import _host_slug
         cache_dir = get_hermes_dir("cache/web", "web_cache")
         cache_dir.mkdir(parents=True, exist_ok=True)

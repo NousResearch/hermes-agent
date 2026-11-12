@@ -3,9 +3,9 @@
 What is virtual and what stays real:
 
 * ``VirtualClock`` is ONE epoch value in a file shared by every process of a scenario. It is
-  installed at the single wall-clock seam — ``hermes_time.datetime`` (every ``_hermes_now``
+  installed at the single wall-clock seam — ``hermes_agent.hermes_time.datetime`` (every ``_hermes_now``
   binding in hermes_agent/cron/jobs.py, scheduler.py, executions.py, occurrences via jobs, ... resolves
-  ``hermes_time.now()`` -> ``datetime.now(tz)`` at call time) — plus the ``time.time()`` reads of
+  ``hermes_agent.hermes_time.now()`` -> ``datetime.now(tz)`` at call time) — plus the ``time.time()`` reads of
   hermes_agent.cron.jobs / hermes_agent.cron.scheduler / hermes_agent.cron.executions (in-flight ages, ledger handoff grace, ticker
   heartbeat marker). ``time.monotonic`` stays real on purpose: it only paces REAL waits (lock
   deadlines, heartbeat thread cadence, reap/GC throttles).
@@ -244,7 +244,7 @@ def install(clock: VirtualClock, control: Control, setattr_fn=setattr) -> None:
     from hermes_agent.cron import executions
     from hermes_agent.cron import jobs
     from hermes_agent.cron import scheduler
-    import hermes_time
+    from hermes_agent import hermes_time
     from hermes_agent.tools import send_message_tool
 
     setattr_fn(hermes_time, "datetime", _virtual_datetime_class(clock))

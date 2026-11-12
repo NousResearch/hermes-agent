@@ -88,7 +88,7 @@ def test_a_plugin_cannot_set_core_or_credential_names(plugin, monkeypatch):
 @pytest.mark.platforms("windows")
 def test_a_lowercase_name_replaces_or_unsets_the_inherited_windows_variable(monkeypatch):
     """Windows names are case-insensitive: ``pane`` acts on the inherited ``PANE``, with no second alias."""
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
     from hermes_agent.tools.environments.local import build_subprocess_env
 
     monkeypatch.setattr(plugins_session_env, "_REGISTRATIONS", {})
@@ -104,7 +104,7 @@ def test_a_lowercase_name_replaces_or_unsets_the_inherited_windows_variable(monk
 def test_an_unloaded_plugins_names_stay_out_of_the_shell_snapshot(monkeypatch):
     """A snapshot taken while a value was injected may hold it: after the plugin unloads, its names
     stay excluded, so no later command restores another session's value."""
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
 
     monkeypatch.setattr(plugins_session_env, "_REGISTRATIONS", {})
     monkeypatch.setattr(plugins_session_env, "_DECLARED", {})
@@ -203,7 +203,7 @@ def test_one_plugin_declaring_a_name_twice_keeps_the_later_value(tmp_path, monke
 def test_a_profiles_names_never_reach_another_profiles_shells(tmp_path, monkeypatch):
     """A multiplexed gateway serves two homes: A's plugin declaring PANE leaves B's own PANE export alone
     (it still carries to B's next command), and B may declare the same name for its own sessions."""
-    from hermes_constants import hermes_home_key, reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import hermes_home_key, reset_hermes_home_override, set_hermes_home_override
     from hermes_agent.tools.environments.local import LocalEnvironment
 
     monkeypatch.setattr(plugins_session_env, "_REGISTRATIONS", {})

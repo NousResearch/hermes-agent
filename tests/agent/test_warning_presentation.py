@@ -16,7 +16,7 @@ class Emitter(StatusOutputMixin):
 
 @pytest.mark.parametrize("setting", [None, False, True, "typo", [], {}])
 def test_warning_policy_at_real_presentation_boundary(tmp_path, monkeypatch, setting):
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     config = {} if setting is None else {"display": {"suppress_warning_notifications": setting}}
     (tmp_path / "config.yaml").write_text(yaml.safe_dump(config))
@@ -84,7 +84,7 @@ def test_direct_print_diagnostics_preserve_content_and_muted_turn_has_no_prints(
 def test_operator_callbacks_keep_diagnostics_and_logs(tmp_path, monkeypatch, caplog, suppress):
     import logging
     from types import SimpleNamespace
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text(yaml.safe_dump(
         {} if suppress is None else {"display": {"suppress_warning_notifications": suppress}}))
@@ -116,7 +116,7 @@ def test_operator_callbacks_keep_diagnostics_and_logs(tmp_path, monkeypatch, cap
 
 @pytest.mark.parametrize("suppress", [None, False, True])
 def test_entitlement_guidance_is_classified_at_direct_print(tmp_path, monkeypatch, suppress):
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
     from hermes_agent.agent import conversation_loop
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text(yaml.safe_dump(
@@ -132,7 +132,7 @@ def test_entitlement_guidance_is_classified_at_direct_print(tmp_path, monkeypatc
 @pytest.mark.parametrize("suppress", [None, False, True])
 def test_missing_key_banner_is_classified_without_hiding_initialization(tmp_path, monkeypatch, capsys, suppress):
     from hermes_agent.agent import agent_init
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text(yaml.safe_dump(
         {} if suppress is None else {"display": {"suppress_warning_notifications": suppress}}))

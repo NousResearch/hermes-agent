@@ -26,8 +26,8 @@ import uuid
 from typing import Any, Callable, Optional
 
 from hermes_agent.hermes_cli.config import DEFAULT_CONFIG
-from hermes_constants import hermes_home_key
-from utils import env_int
+from hermes_agent.hermes_constants import hermes_home_key
+from hermes_agent.utils import env_int
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +71,7 @@ def build_browser_env() -> dict:
     NO_PROXY (a macOS system proxy would capture the local CDP dial, #110565), and a short TMPDIR
     (Chrome's SingletonSocket overflows the AF_UNIX path cap under a deep scratch dir)."""
     from hermes_agent.agent.proxy_bypass import add_loopback_no_proxy
-    from hermes_constants import socket_safe_tmpdir
+    from hermes_agent.hermes_constants import socket_safe_tmpdir
     from hermes_agent.tools.bot_desktop.runtime import desktop_env
     from hermes_agent.tools.environments.local import served_profile_child_env
     env = add_loopback_no_proxy(desktop_env(served_profile_child_env(inherit_credentials=False)))

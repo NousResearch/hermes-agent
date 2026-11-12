@@ -68,7 +68,7 @@ def test_secondary_native_ticket_implicit_selectors_touch_only_the_secondary_hom
                     updated = client.put('/api/config', json={**body, 'config': {'display': {'skin': 'ares'}}},
                                          headers={'X-Hermes-Gateway-Ticket': ticket()})
                     assert updated.status_code == 200, (body, updated.text)
-            import hermes_yaml as yaml
+            import hermes_agent.hermes_yaml as yaml
             assert yaml.safe_load((beta / 'config.yaml').read_text())['display']['skin'] == 'ares'
             assert (home / 'config.yaml').read_bytes() == launch_before
         finally:

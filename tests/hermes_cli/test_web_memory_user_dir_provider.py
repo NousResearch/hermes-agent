@@ -48,7 +48,7 @@ def user_dir_honcho(monkeypatch, tmp_path, _isolate_hermes_home):
     """A user-dir ``honcho`` with the bundled copy gone: empty bundled root and the bundled
     module path blocked, the way a post-removal core + a catalog install look."""
     import plugins.memory as memory_pkg
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     plugin_dir = get_hermes_home() / "plugins" / "honcho"
     plugin_dir.mkdir(parents=True)

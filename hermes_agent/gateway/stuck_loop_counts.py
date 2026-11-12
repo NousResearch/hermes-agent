@@ -27,7 +27,7 @@ def _read_counts(path: Path) -> dict:
 
 def increment_restart_failure_counts(path: Path, active_session_keys: set) -> None:
     """Increment the counters of sessions active at shutdown; drop the rest (their loop is broken)."""
-    from utils import atomic_json_write
+    from hermes_agent.utils import atomic_json_write
     with _COUNTS_LOCK:
         counts = _read_counts(path)
         try:
@@ -41,7 +41,7 @@ def clear_restart_failure_count(path: Path, session_key: str) -> None:
 
     Blocking (``atomic_json_write`` fsyncs): callers on the event loop run it via ``asyncio.to_thread``.
     """
-    from utils import atomic_json_write
+    from hermes_agent.utils import atomic_json_write
     with _COUNTS_LOCK:
         counts = _read_counts(path)
         if session_key not in counts:

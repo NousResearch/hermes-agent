@@ -11,7 +11,7 @@ import threading
 from pathlib import Path, PurePath
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
-from hermes_constants import (
+from hermes_agent.hermes_constants import (
     get_config_path,
     get_skills_dir,
     get_subprocess_home,
@@ -63,7 +63,7 @@ def yaml_load(content: str):
     """Parse YAML with the shared safe loader, imported lazily."""
     global _yaml_load_fn
     if _yaml_load_fn is None:
-        from hermes_yaml import safe_load
+        from hermes_agent.hermes_yaml import safe_load
         _yaml_load_fn = safe_load
     return _yaml_load_fn(content)
 
@@ -139,7 +139,7 @@ def _detect_kanban() -> bool:
 
 def _detect_docker() -> bool:
     try:
-        from hermes_constants import is_container
+        from hermes_agent.hermes_constants import is_container
         return is_container()
     except Exception:
         return False
@@ -177,15 +177,15 @@ def skill_matches_environment(frontmatter: dict[str, Any]) -> bool:
 def skill_matches_apps(frontmatter: dict[str, Any]) -> bool:
     """True when every app named in ``requires_apps:`` has a registered declaration this host satisfies.
 
-    Names resolve through ``hermes_platform.declaration`` (registered by whoever owns the server,
+    Names resolve through ``hermes_agent.hermes_platform.declaration`` (registered by whoever owns the server,
     e.g. the plugin loader); the check is the same ``availability()`` the MCP check_fn uses. An
     unknown name hides the skill (fail closed). Offer-time filter, like ``environments:``.
     """
     names = frontmatter.get("requires_apps")
     if not names:
         return True
-    from hermes_platform import declaration
-    from hermes_platform.resolver.availability import availability
+    from hermes_agent.hermes_platform import declaration
+    from hermes_agent.hermes_platform.resolver.availability import availability
 
     for name in names if isinstance(names, list) else [names]:
         decl = declaration.lookup(str(name).strip())
@@ -269,7 +269,7 @@ def _expand_path(entry: str) -> Path:
 
 def _home_relative(p: Path) -> Path:
     """Anchor a relative config path at HERMES_HOME; absolute paths pass through."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     return p if p.is_absolute() else get_hermes_home() / p
 
 
@@ -390,7 +390,7 @@ def get_skill_create_dir() -> Optional[Path]:
 def display_skill_create_dir() -> str:
     """User-facing path where new skills are created (``~/`` shorthand when
     possible); tool schema descriptions and prompts follow ``skills.create_dir``."""
-    from hermes_constants import display_hermes_home
+    from hermes_agent.hermes_constants import display_hermes_home
     create_dir = get_skill_create_dir()
     if create_dir is None:
         return f"{display_hermes_home()}/skills/"
@@ -645,7 +645,7 @@ def is_quarantined_project_skill(skill_md) -> bool:
         return _PROJECT_QUARANTINE_CACHE[key]
     try:
         from hermes_agent.tools.skills_guard import scan_skill_cached
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         cache_dir = get_hermes_home() / "cache" / "project_skill_scans"
         result, _prov = scan_skill_cached(skill_dir, source=_PROJECT_SCAN_SOURCE, cache_dir=cache_dir)
         quarantined = result.verdict == "dangerous"

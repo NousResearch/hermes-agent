@@ -8,7 +8,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-import hermes_yaml
+from hermes_agent import hermes_yaml
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]

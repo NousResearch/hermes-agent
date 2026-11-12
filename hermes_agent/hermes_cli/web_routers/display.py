@@ -114,7 +114,7 @@ async def _open_rfb(profile_home: Path):
     """``(reader, writer, relay)`` for THIS profile's Xvnc. Gateway-hosted screen: its unix socket. Screen inside
     the terminal backend: a ``docker exec`` / ``ssh`` relay whose stdio IS the RFB stream (``relay`` is that
     Popen; None for a socket). Raises OSError when nothing is running."""
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from hermes_agent.tools.bot_desktop import runtime as _bd_runtime
     token = set_hermes_home_override(profile_home)
     try:
@@ -141,7 +141,7 @@ async def _open_rfb(profile_home: Path):
 async def _bridge(ws: WebSocket, info: dict) -> None:
     """Pump RFB bytes between the viewer socket (already accepted) and THIS profile's Xvnc, gated by
     the lease."""
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
     from hermes_agent.tools.bot_desktop import lease as _lease
     from hermes_agent.tools.bot_desktop.rfb_filter import RfbClientFilter
 

@@ -45,7 +45,7 @@ def _room_stores(profile: Optional[str]) -> list[Path]:
     """Where a room can live: the hosting profile's session store (rooms its gateway owns), then the
     install's shared room store (rooms the dashboard backend owns)."""
     from hermes_agent.gateway.hosted_rooms import default_db_path
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     if profile:
         from hermes_agent.hermes_cli.profiles import get_profile_dir
         home = get_profile_dir(profile)

@@ -15,7 +15,7 @@ Covers the three seams added for remote Desktop backends:
 
 import pytest
 
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 from hermes_agent.tools.connectors import mcp_oauth
 from hermes_agent.tools.connectors.mcp_oauth import _validate_client_redirect_uri
 from hermes_agent.tools.mcp_dashboard_oauth import DashboardOAuthFlow

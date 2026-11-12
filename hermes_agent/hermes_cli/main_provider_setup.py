@@ -190,7 +190,7 @@ def _prompt_aux_reasoning_effort(task: str, current: str) -> Optional[str]:
     """Effort step for an aux task: a level, "none", "" (provider default / inherit parent), or None to
     keep current. The empty-value row is "Inherit parent" for delegation (a child inherits the parent's
     effort; wording from #105431 by @fangliquanflq) and "Provider default" for aux tasks."""
-    from hermes_constants import VALID_REASONING_EFFORTS
+    from hermes_agent.hermes_constants import VALID_REASONING_EFFORTS
     label = "Inherit parent" if task == _DELEGATION_TASK_KEY else "Provider default"
     return _prompt_reasoning_effort_selection(
         list(VALID_REASONING_EFFORTS), current_effort=current, default_label=label)
@@ -682,7 +682,7 @@ def _prompt_main_reasoning_effort(model: str, provider: str) -> None:
 
 def _main_model_reasoning_efforts(model: str, provider: str) -> Optional[list[str]]:
     """Levels to offer for *model* on *provider*: None when the route has no reasoning control."""
-    from hermes_constants import VALID_REASONING_EFFORTS
+    from hermes_agent.hermes_constants import VALID_REASONING_EFFORTS
     slug = (provider or "").strip().lower()
     from hermes_agent.providers import get_provider_profile
     profile = get_provider_profile(slug) if slug else None
@@ -784,7 +784,7 @@ def _run_anthropic_oauth_flow(save_env_value):
         if creds and (is_claude_code_token_valid(creds) or bool(creds.get("refreshToken"))):
             use_anthropic_claude_code_credentials(save_fn=save_env_value)
             print("  ✓ Claude Code credentials linked.")
-            from hermes_constants import display_hermes_home as _dhh_fn
+            from hermes_agent.hermes_constants import display_hermes_home as _dhh_fn
             print(f"    Hermes will use Claude's credential store directly instead of copying a setup-token into {_dhh_fn()}/.env.")
             return True
         return False

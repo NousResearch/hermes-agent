@@ -76,7 +76,7 @@ async def test_discord_admin_alert_uses_owner_and_logical_destination(tmp_path, 
     from pathlib import Path
     from hermes_agent.gateway.config import Platform
     from plugins.platforms.discord.adapter import DiscordAdapter
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     root = tmp_path / ".hermes"
     root.mkdir()

@@ -50,7 +50,7 @@ def maybe_post_auto_prune_prompt(runner, loop) -> None:
         return
     from hermes_agent.agent.async_utils import safe_schedule_threadsafe
     from hermes_agent.hermes_cli import prune_advisor
-    from hermes_constants import get_routing_process_hermes_home
+    from hermes_agent.hermes_constants import get_routing_process_hermes_home
 
     reachable = {profile for profile, *_rest in runner._served_home_channel_transports()}
     homes: dict = {None: get_routing_process_hermes_home()}

@@ -36,7 +36,7 @@ def served_root(tmp_path, monkeypatch):
     # tests/conftest.py hook in #118097 once that lands).
     (tmp_path / "locks").mkdir()
     monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
-    import hermes_constants
+    from hermes_agent import hermes_constants
     from hermes_agent.gateway import status
     monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None)
     # Liveness is a VERIFIED identity: this pytest process stands in for the default gateway only

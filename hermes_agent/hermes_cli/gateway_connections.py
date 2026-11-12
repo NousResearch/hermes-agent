@@ -49,7 +49,7 @@ from hermes_agent.hermes_cli.gateway_connections_normalize import (
     set_primary_connection,
     upsert_connection,
 )
-from utils import atomic_json_write
+from hermes_agent.utils import atomic_json_write
 
 __all__ = [
     "STORE_NAME",

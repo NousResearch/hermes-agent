@@ -32,7 +32,7 @@ def _make_store(tmp_path, monkeypatch, **config_kwargs) -> SessionStore:
     # The routing index is pinned to HERMES_HOME's store (#66887 recovery
     # fix); point it at the test tmp so the ambient and routing stores are
     # the same file, matching the store this harness inspects.
-    import hermes_constants
+    from hermes_agent import hermes_constants
 
     monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: str(tmp_path))
     return SessionStore(

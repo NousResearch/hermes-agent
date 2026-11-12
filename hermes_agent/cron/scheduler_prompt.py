@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from hermes_time import now as _hermes_now
+from hermes_agent.hermes_time import now as _hermes_now
 from typing import Optional
 
 # Log-record parity with the origin module.
@@ -294,7 +294,7 @@ def _run_time_line() -> str:
     """This fire's wall-clock time in the configured zone. The system prompt is date-only (byte-stable
     for caching), so without it a 07:00 brief can't tell itself from a 19:00 retry. Kept outside
     ``_CRON_HINT`` and after it: the hint stays byte-stable, and cron sessions are fresh per fire."""
-    from hermes_time import safe_strftime
+    from hermes_agent.hermes_time import safe_strftime
     now = _hermes_now()
     offset = now.strftime("%z")
     zone = f" (UTC{offset[:3]}:{offset[3:]})" if offset else ""

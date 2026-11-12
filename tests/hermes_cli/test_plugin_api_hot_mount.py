@@ -40,7 +40,7 @@ def _install_late_plugin(home, *, enabled: bool) -> None:
 
 
 def test_plugin_enabled_after_startup_serves_without_restart(client):
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     assert client.get("/api/plugins/late-probe/ping").status_code == 404
     _install_late_plugin(get_hermes_home(), enabled=True)
@@ -57,7 +57,7 @@ def test_plugin_enabled_after_startup_serves_without_restart(client):
 
 
 def test_installed_but_not_enabled_plugin_is_never_imported(client):
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     _install_late_plugin(get_hermes_home(), enabled=False)
     (get_hermes_home() / "plugins" / "late-probe" / "dashboard" / "plugin_api.py").write_text(

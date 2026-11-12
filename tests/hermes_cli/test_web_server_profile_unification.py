@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 
 import pytest
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 import hermes_agent.gateway.status as _gw_status
 import hermes_agent.hermes_cli.config as _cfg_mod
 import hermes_agent.hermes_cli.web_server_chat as _web_server_chat
@@ -21,7 +21,7 @@ import hermes_agent.hermes_cli.web_server_messaging as _web_server_messaging
 @pytest.fixture
 def isolated_profiles(tmp_path, monkeypatch, _isolate_hermes_home):
     """Isolated default home + one named profile, each with config + .env."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.hermes_cli import profiles
 
     default_home = get_hermes_home()
@@ -45,7 +45,7 @@ def client(monkeypatch, isolated_profiles):
         pytest.skip("fastapi/starlette not installed")
 
     from hermes_agent import hermes_state
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
     monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
@@ -308,7 +308,7 @@ class TestProfileScopedModel:
         create silently returned model_set: false. Validation must see the dashboard home's
         config; the write must still land in the new profile only."""
         import hermes_agent.hermes_cli.profiles as profiles_mod
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
 
         monkeypatch.setattr(profiles_mod, "create_wrapper_script", lambda name: None)
         (isolated_profiles["default"] / "config.yaml").write_text(
@@ -383,7 +383,7 @@ class TestProfileScopedGateway:
         self, client, isolated_profiles, monkeypatch
     ):
         from hermes_agent.hermes_cli import web_server
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
 
         seen_homes = []
 
@@ -772,7 +772,7 @@ class TestProfileScopedAudio:
         seen = {}
 
         def _fake_transcribe(path):
-            from hermes_constants import get_hermes_home
+            from hermes_agent.hermes_constants import get_hermes_home
 
             seen["home"] = str(get_hermes_home())
             return {"success": True, "transcript": "hi", "provider": "fake"}

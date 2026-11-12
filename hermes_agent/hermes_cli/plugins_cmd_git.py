@@ -17,8 +17,8 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from hermes_agent.hermes_cli._subprocess_compat import noninteractive_git_env
-from hermes_constants import get_hermes_home
-from utils import atomic_write_text
+from hermes_agent.hermes_constants import get_hermes_home
+from hermes_agent.utils import atomic_write_text
 
 
 def _pc():

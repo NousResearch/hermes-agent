@@ -92,7 +92,7 @@ async def send_cron_store_notice(runner, event: str, record) -> None:
     from hermes_agent.gateway.run import _async_profile_runtime_scope
     from hermes_agent.gateway.warning_notifications import present_notification
     from hermes_agent.cron.store_health import store_key
-    from hermes_constants import get_routing_process_hermes_home
+    from hermes_agent.hermes_constants import get_routing_process_hermes_home
 
     fields = record.notice_fields()
     key = "gateway.cron_store.unwritable" if event == "unwritable" else "gateway.cron_store.recovered"

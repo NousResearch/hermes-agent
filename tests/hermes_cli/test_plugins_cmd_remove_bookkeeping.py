@@ -7,7 +7,7 @@ Real removal core against a temp HERMES_HOME; the RPC path goes through ``hermes
 from __future__ import annotations
 
 import pytest
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 from hermes_agent.hermes_cli import plugins_cmd
 from hermes_agent.tui_gateway import server

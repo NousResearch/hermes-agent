@@ -2,7 +2,7 @@
 
 from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
 from hermes_agent.gateway.platform_env import EnvCred, env_extras, getenv, home_step
-from utils import is_truthy_value
+from hermes_agent.utils import is_truthy_value
 
 
 def _e2ee(config: GatewayConfig, matrix_config: PlatformConfig) -> None:

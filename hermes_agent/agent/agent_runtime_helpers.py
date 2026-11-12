@@ -37,7 +37,7 @@ from hermes_agent.agent.message_metadata import MERGED_TURN_PREFIX
 from hermes_agent.agent.turn_context import drop_stale_api_content
 from hermes_agent.agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
 from hermes_agent.agent.primary_runtime_snapshot import _build_primary_runtime_snapshot
-from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
+from hermes_agent.utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
 logger = logging.getLogger(__name__)
 
 _TOOL_CALL_TAG_NAMES = ("tool_call", "tool_calls", "tool_result", "function_call", "function_calls")
@@ -2425,7 +2425,7 @@ def switch_model(
     # Re-read the per-model reasoning_effort override so it applies immediately (per-model > global;
     # YAML False = disabled).
     try:
-        from hermes_constants import resolve_reasoning_config
+        from hermes_agent.hermes_constants import resolve_reasoning_config
         from hermes_agent.hermes_cli.config import load_config as _sm_load_config
         agent.reasoning_config = resolve_reasoning_config(_sm_load_config() or {}, agent.model)
         logger.info(
@@ -2662,7 +2662,7 @@ def fill_empty_non_final_wire_payload(msg: dict[str, Any], *, is_final: bool) ->
 
 def _session_id_for_heal_log() -> str:
     try:
-        from hermes_logging import _session_context
+        from hermes_agent.hermes_logging import _session_context
         return str(getattr(_session_context, "session_id", None) or "")
     except Exception:
         return ""

@@ -14,7 +14,7 @@ import time
 
 import hermes_agent.hermes_cli.providers as providers_mod
 import pytest
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 from hermes_agent.hermes_cli.model_switch import list_authenticated_providers, switch_model
 from hermes_agent.hermes_cli.model_switch_providers import (
     _fetch_picker_live_models,

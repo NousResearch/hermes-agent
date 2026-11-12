@@ -15,7 +15,7 @@ import pytest
 
 @pytest.fixture(params=[2, None], ids=["uac-full-token", "type-unreadable"])
 def elevated(request, monkeypatch):
-    import hermes_dir_acl
+    from hermes_agent import hermes_dir_acl
     from hermes_agent.hermes_cli import gateway_runtime_start as start
 
     monkeypatch.setattr(hermes_dir_acl, "process_is_elevated", lambda: True)
@@ -60,7 +60,7 @@ def test_an_elevated_client_still_starts_the_registered_task(tmp_path, monkeypat
 
 
 def test_an_elevated_client_without_a_split_token_still_starts(tmp_path, monkeypatch):
-    import hermes_dir_acl
+    from hermes_agent import hermes_dir_acl
     from hermes_agent.hermes_cli import gateway_runtime_start as start
 
     monkeypatch.setattr(hermes_dir_acl, "process_is_elevated", lambda: True)
@@ -76,7 +76,7 @@ def test_an_elevated_client_without_a_split_token_still_starts(tmp_path, monkeyp
 def test_the_gate_reads_this_hosts_real_token(tmp_path, monkeypatch):
     """No pin: the real TokenElevation and TokenElevationType reads. The gate refuses exactly the
     UAC-elevated box (Full); whichever box this runner's token is in, the two reads agree."""
-    import hermes_dir_acl
+    from hermes_agent import hermes_dir_acl
     from hermes_agent.hermes_cli import gateway_runtime_start as start
     from hermes_agent.hermes_cli.gateway_runtime_service import RuntimeStartError
 

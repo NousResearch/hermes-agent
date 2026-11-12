@@ -121,7 +121,7 @@ def seed_scratch_home(home: Path, *, isolation: str, heartbeat_secs: int, respaw
         "memory": {"enabled": False},
     }
     # config.yaml is the canonical config; write it directly.
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
 
     (home / "config.yaml").write_text(yaml.safe_dump(cfg, sort_keys=True), encoding="utf-8")
     # A stub .env so credential resolution doesn't spelunk the real home.

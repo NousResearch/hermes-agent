@@ -26,7 +26,7 @@ STEP_PLAN_LIVE_IDS = ["step-3.5-flash", "step-3.5-flash-2603"]
 @pytest.fixture()
 def hermetic_home(tmp_path, monkeypatch):
     """Isolated HERMES_HOME so the picker cannot read a real disk cache row."""
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     home = tmp_path / "stepfun-home"
     home.mkdir()

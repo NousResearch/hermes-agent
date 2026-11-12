@@ -18,7 +18,7 @@ from hermes_agent.tools.session_search_tool import session_search
 @pytest.fixture
 def home(tmp_path, monkeypatch):
     """The worker's profile home: ``get_hermes_home()`` resolves to it, so its state.db is the DB."""
-    import hermes_constants
+    from hermes_agent import hermes_constants
 
     monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)
     return tmp_path

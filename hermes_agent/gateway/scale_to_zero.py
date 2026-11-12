@@ -95,7 +95,7 @@ def dashboard_client_heartbeat_path(hermes_home: Optional[os.PathLike | str] = N
     One marker per process, never per profile scope: the gateway's idle watcher reads it with no
     override, so a socket served in a secondary profile's scope must stamp the same file."""
     if hermes_home is None:
-        from hermes_constants import get_process_hermes_home
+        from hermes_agent.hermes_constants import get_process_hermes_home
         hermes_home = get_process_hermes_home()
     return Path(hermes_home) / DASHBOARD_CLIENT_HEARTBEAT_REL
 

@@ -16,7 +16,7 @@ import sys
 
 
 import pytest
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 from tests.pm._fixtures import _wheel, isolated_python as isolated_python  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
 

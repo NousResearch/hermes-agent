@@ -41,7 +41,7 @@ async def test_a_platform_installed_by_this_start_is_in_the_runners_config(tmp_p
     monkeypatch.setattr("hermes_agent.gateway.status.write_pid_file", lambda: None)
     monkeypatch.setattr("hermes_agent.gateway.status.remove_pid_file", lambda: None)
     monkeypatch.setattr("hermes_agent.gateway.status.release_gateway_runtime_lock", lambda: None)
-    monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: None)
+    monkeypatch.setattr("hermes_agent.hermes_logging.setup_logging", lambda hermes_home, mode: None)
     monkeypatch.setattr("hermes_agent.gateway.run.GatewayRunner", Runner)
 
     with pytest.raises(SystemExit):
@@ -64,7 +64,7 @@ async def test_a_named_launch_stays_standalone_across_the_reload(tmp_path, monke
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("HERMES_HOME", str(root / "profiles" / "foo"))
     monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
-    import hermes_constants
+    from hermes_agent import hermes_constants
     monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None)
     seen = {}
     decisions = []
@@ -97,7 +97,7 @@ async def test_a_named_launch_stays_standalone_across_the_reload(tmp_path, monke
     monkeypatch.setattr("hermes_agent.gateway.status.remove_pid_file", lambda: None)
     monkeypatch.setattr("hermes_agent.gateway.status.release_gateway_runtime_lock", lambda: None)
     monkeypatch.setattr("hermes_agent.gateway.run._write_runtime_status_quiet", lambda **kw: None)
-    monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: None)
+    monkeypatch.setattr("hermes_agent.hermes_logging.setup_logging", lambda hermes_home, mode: None)
     monkeypatch.setattr("hermes_agent.gateway.run.GatewayRunner", Runner)
 
     try:
@@ -122,7 +122,7 @@ async def test_a_default_launch_keeps_its_reserved_homes_across_the_reload(tmp_p
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("HERMES_HOME", str(root))
     monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
-    import hermes_constants
+    from hermes_agent import hermes_constants
     monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None)
     seen = {}
 
@@ -144,7 +144,7 @@ async def test_a_default_launch_keeps_its_reserved_homes_across_the_reload(tmp_p
     monkeypatch.setattr("hermes_agent.gateway.status.remove_pid_file", lambda: None)
     monkeypatch.setattr("hermes_agent.gateway.status.release_gateway_runtime_lock", lambda: None)
     monkeypatch.setattr("hermes_agent.gateway.run._write_runtime_status_quiet", lambda **kw: None)
-    monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: None)
+    monkeypatch.setattr("hermes_agent.hermes_logging.setup_logging", lambda hermes_home, mode: None)
     monkeypatch.setattr("hermes_agent.gateway.run.GatewayRunner", Runner)
 
     try:
@@ -170,7 +170,7 @@ def test_the_launch_homes_migration_reads_its_own_secrets_on_a_multiplexing_star
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("HERMES_HOME", str(root))
     monkeypatch.delenv("YUANBAO_APP_ID", raising=False)
-    import hermes_constants
+    from hermes_agent import hermes_constants
     monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None)
     from hermes_agent.agent.secret_scope import get_secret, is_multiplex_active, set_multiplex_active
     read = []

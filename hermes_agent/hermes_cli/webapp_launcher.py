@@ -58,7 +58,7 @@ def _deleted_profile_refusal(home: Path) -> str | None:
     None. ``HERMES_HOME`` set to such a home skips that check, and its gateway would be the default
     one, so the command refuses it the same way rather than act on the default profile."""
     from hermes_agent.hermes_cli.profiles import _missing_profile_error
-    from hermes_constants import named_profile_home, named_profile_is_live
+    from hermes_agent.hermes_constants import named_profile_home, named_profile_is_live
     profile = named_profile_home(home)
     if profile is None or named_profile_is_live(profile):
         return None
@@ -120,7 +120,7 @@ def _open_privately(target: Path, url: str) -> bool:
     URL to ``osascript`` on stdin, never in argv, so the page mainly protects the BSDs and illumos, where
     ``xdg-open`` or ``firefox`` gets the URL in argv."""
     from hermes_agent.gateway.webapp_listener import TOKEN_PATH, _close_to_other_users, _readable_by_other_users
-    from hermes_constants import is_wsl
+    from hermes_agent.hermes_constants import is_wsl
     if os.name == "nt" or is_wsl():
         return False
     folder = Path(target).absolute() / TOKEN_PATH.parent  # HERMES_HOME may be relative; a file: URI is not
@@ -146,7 +146,7 @@ def _open_privately(target: Path, url: str) -> bool:
 def _profile_choice(home: Path, target: Path) -> dict:
     """``{"profile": name}`` when the gateway serves *home* as one of its named profiles, so the
     Webapp opens on the profile this command ran for."""
-    from hermes_constants import profile_name_for_home
+    from hermes_agent.hermes_constants import profile_name_for_home
     if Path(home).resolve() == Path(target).resolve():
         return {}
     name = profile_name_for_home(home)
@@ -353,7 +353,7 @@ def _explain_refused_launch(target: Path, response: dict) -> int:
 def cmd_webapp(args) -> int:
     from hermes_agent.gateway.webapp_listener import webapp_settings
     from hermes_agent.hermes_cli.webapp import WebappBuildError, packaged_webapp_dist
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     home = get_hermes_home()
     if (refusal := _deleted_profile_refusal(home)) is not None:

@@ -667,7 +667,7 @@ class CLIStatusBarMixin:
         try:
             from hermes_agent.agent.pet import constants, store
             from hermes_agent.hermes_cli.config import load_config
-            from utils import is_truthy_value
+            from hermes_agent.utils import is_truthy_value
 
             cfg = load_config()
             display = cfg.get("display", {}) if isinstance(cfg.get("display"), dict) else {}

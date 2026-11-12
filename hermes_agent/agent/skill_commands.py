@@ -8,7 +8,7 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
-from hermes_constants import display_hermes_home
+from hermes_agent.hermes_constants import display_hermes_home
 from hermes_agent.agent.prompt_cache_boundary import register_stable_prefix
 from hermes_agent.agent.skill_preprocessing import load_skills_config as _load_skills_config, preprocess_skill_content
 from hermes_agent.agent.skill_utils import AMBIGUOUS_SKILL_PREFIX
@@ -237,7 +237,7 @@ def _resolve_skill_commands_home() -> str:
     profile's skill list cached, so ``get_skill_commands()`` reported a cache miss for skills that only
     exist under the new profile (#88023).
     """
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     return str(get_hermes_home())
 
 
@@ -594,7 +594,7 @@ def published_scopes_signature() -> tuple:
     Only command maps/catalogs refetch; a conversation's stored system prompt is never rebuilt.
     """
     from hermes_agent.agent.runtime_cwd import reset_session_cwd, set_session_cwd
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
     with _publish_lock:
         keys = list(_skill_commands_by_key)
     scopes = sorted({(home, project) for _platform, home, project in keys if home})[:_MAX_WATCHED_SCOPES]
@@ -682,7 +682,7 @@ def get_plugin_skill_commands() -> dict[str, dict[str, Any]]:
     from hermes_agent.hermes_cli.plugins import discover_plugins, get_plugin_manager
     from hermes_agent.hermes_cli.plugins_content import plugin_skill_owners
     from hermes_agent.hermes_cli.plugins_discovery import _get_disabled_plugins
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     discover_plugins()  # no-op once this home is discovered
     manager = get_plugin_manager()
@@ -1008,7 +1008,7 @@ def build_auto_load_prompt(
     the disabled list and the ``<home>/skills`` lookup all resolve under that home, so a gateway build thread
     that lost the HERMES_HOME ContextVar cannot pin the launch profile's skills into another profile's prompt.
     """
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
     home_token = set_hermes_home_override(str(home_override)) if home_override is not None else None
     try:
         auto_skills = resolve_auto_load_skills(user_config)

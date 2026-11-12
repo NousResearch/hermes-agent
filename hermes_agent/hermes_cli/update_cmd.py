@@ -367,7 +367,7 @@ def _gateway_prompt(prompt_text: str, default: str = "", timeout: float = 300.0)
     """
     import json as _json
     import uuid as _uuid
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     if _posix_pause.gateways_paused():  # the gateway that would relay it is stopped for the update
         print(f"  → {prompt_text} → {default or '(empty)'} (gateways are paused for the update)")
@@ -546,7 +546,7 @@ def _log_only_write(text: str) -> None:
     log_file = getattr(stream, "_log", None)
     with suppress(Exception):
         if log_file is None:
-            from hermes_constants import get_default_hermes_root
+            from hermes_agent.hermes_constants import get_default_hermes_root
 
             log_path = get_default_hermes_root() / "logs" / "update.log"  # the root home's tee
             log_path.parent.mkdir(parents=True, exist_ok=True)

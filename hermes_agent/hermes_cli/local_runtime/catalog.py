@@ -21,7 +21,7 @@ from hermes_agent.hermes_cli.local_runtime.context_policy import (
 from hermes_agent.hermes_cli.local_runtime.estimator import (
     HardwareBudget, LayerKind, ModelProfile, PhysicsRefusal, as_loaded)
 from hermes_agent.hermes_cli.local_runtime.gguf import model_id_from_stem
-from hermes_platform.host.products import is_nvidia_n1x_pci_id
+from hermes_agent.hermes_platform.host.products import is_nvidia_n1x_pci_id
 
 logger = logging.getLogger(__name__)
 

@@ -24,7 +24,7 @@ _PENDING_DELETE_DIR = "plugin-pending-delete"
 
 def _pending_delete_root() -> Path:
     """``<HERMES_HOME>/cache/plugin-pending-delete``: trees a running process still held at removal."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     return get_hermes_home() / "cache" / _PENDING_DELETE_DIR
 
 

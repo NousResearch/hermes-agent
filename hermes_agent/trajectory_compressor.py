@@ -17,7 +17,7 @@ import random
 import shutil
 import tempfile
 import time
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 import logging
 import asyncio
 from pathlib import Path
@@ -25,11 +25,11 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 
-from utils import base_url_host_matches, base_url_hostname
+from hermes_agent.utils import base_url_host_matches, base_url_hostname
 import fire
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeElapsedColumn, TimeRemainingColumn
 from rich.console import Console
-from hermes_constants import OPENROUTER_BASE_URL, get_hermes_home
+from hermes_agent.hermes_constants import OPENROUTER_BASE_URL, get_hermes_home
 from hermes_agent.agent.compression_marker import elide_middle
 from hermes_agent.agent.retry_utils import jittered_backoff
 from hermes_agent.hermes_cli.env_loader import load_hermes_dotenv

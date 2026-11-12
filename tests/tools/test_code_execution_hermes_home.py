@@ -11,7 +11,7 @@ import sys
 
 import pytest
 
-from hermes_constants import (
+from hermes_agent.hermes_constants import (
     get_hermes_home_override,
     reset_hermes_home_override,
     set_hermes_home_override,

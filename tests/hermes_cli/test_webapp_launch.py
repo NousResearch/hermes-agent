@@ -247,7 +247,7 @@ def test_under_wsl_the_launch_link_is_printed_and_the_windows_browser_spends_it(
     peer check instead of being refused every time."""
     from hermes_agent.hermes_cli.web_routers import webapp
 
-    monkeypatch.setattr("hermes_constants.is_wsl", lambda: True)
+    monkeypatch.setattr("hermes_agent.hermes_constants.is_wsl", lambda: True)
     monkeypatch.setattr(webapp, "_loopback_peer_uid", lambda client, server: 0)  # WSL's localhost relay
     client, link = _launch_link(tmp_path, monkeypatch)
     assert link["private"] is True
@@ -263,7 +263,7 @@ def test_native_linux_keeps_the_peer_check_on_the_launch_link(tmp_path, monkeypa
 
     from hermes_agent.hermes_cli.web_routers import webapp
 
-    monkeypatch.setattr("hermes_constants.is_wsl", lambda: False)
+    monkeypatch.setattr("hermes_agent.hermes_constants.is_wsl", lambda: False)
     monkeypatch.setattr(webapp, "_loopback_peer_uid", lambda client, server: os.getuid() + 1)  # windows-footgun: ok — platforms("linux") test
     client, link = _launch_link(tmp_path, monkeypatch)
     assert link["private"] is False

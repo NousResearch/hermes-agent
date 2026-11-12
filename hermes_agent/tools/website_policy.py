@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 from hermes_agent.tools.url_safety import _normalize_hostname as _normalize_host
 
 logger = logging.getLogger(__name__)
@@ -82,7 +82,7 @@ def _load_policy_config(config_path: Path) -> dict[str, Any]:
     if not config_exists(config_path):
         return dict(_DEFAULT_WEBSITE_BLOCKLIST)
     try:
-        import hermes_yaml as yaml
+        import hermes_agent.hermes_yaml as yaml
     except ImportError:
         logger.debug("ruamel.yaml not installed — website blocklist disabled")
         return dict(_DEFAULT_WEBSITE_BLOCKLIST)

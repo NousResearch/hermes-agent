@@ -15,7 +15,7 @@ from types import SimpleNamespace
 from hermes_agent.hermes_cli import update_cmd
 from hermes_agent.hermes_cli import update_cmd_fleet
 import hermes_agent.hermes_cli.update_cmd_fleet_verify as fleet_verify
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 
 
 class _FakeClock:

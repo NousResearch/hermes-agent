@@ -15,7 +15,7 @@ from types import SimpleNamespace
 import pytest
 
 from hermes_agent.hermes_cli import gateway_runtime
-import hermes_constants
+from hermes_agent import hermes_constants
 
 
 _SCRIPT = Path(__file__).resolve().parents[2] / "ui-tui" / "scripts" / "gateway_bootstrap.py"

@@ -20,7 +20,7 @@ def _validate_voice(config: dict[str, Any], issues: list[ConfigIssue]) -> None:
 def _validate_timezone(config: dict[str, Any], issues: list[ConfigIssue]) -> None:
     """``timezone`` must be an IANA name the runtime can load.
 
-    ``hermes_time._get_zoneinfo()`` swallows an invalid name behind a single WARNING in the
+    ``hermes_agent.hermes_time._get_zoneinfo()`` swallows an invalid name behind a single WARNING in the
     gateway log, then runs the agent clock AND every cron schedule on server-local time.
     Surface it here, where doctor and the startup check both look. Silent when the
     interpreter has no tz database at all (bare Windows without ``tzdata``) — nothing can be
@@ -101,7 +101,7 @@ def _validate_quoted_containers(config: dict[str, Any], issues: list[ConfigIssue
     exclusions silently lapse (#83308, #105706). Finding only — the file is never rewritten."""
     import shlex
 
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
     from hermes_agent.hermes_cli.config import _SCALAR_AS_ONE_ITEM_LIST_KEYS, _looks_structured_value, cfg_get
     for key, kind in _container_slots().items():
         # ``parse_config_string_list`` readers accept the quoted form; nothing is ignored there.

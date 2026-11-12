@@ -27,7 +27,7 @@ _RETRY_AFTER_S = 120.0
 
 
 def _profile_key() -> str:
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
     return hermes_home_key()
 
 

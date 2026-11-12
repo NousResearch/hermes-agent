@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, Dict, FrozenSet, Optional
 
 from hermes_agent.hermes_cli.process_identity import release_process_group_once_empty, spawn_owned
-from utils import is_truthy_value
+from hermes_agent.utils import is_truthy_value
 
 
 def shell_quote_context(command_template: str, position: int) -> Optional[str]:

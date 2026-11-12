@@ -6,7 +6,7 @@ stamped (boot used to skip it as below the support floor) or first stamped by an
 never reaches that step, so the move happens at its first stamp instead, exactly once.
 """
 
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 import pytest
 
 from hermes_agent.hermes_cli.config_defaults import DEFAULT_CONFIG

@@ -172,7 +172,7 @@ def _patch_aborted_startup(monkeypatch, runner_cls):
     monkeypatch.setattr("hermes_agent.gateway.status.remove_pid_file", lambda: None)
     monkeypatch.setattr("hermes_agent.gateway.status.release_gateway_runtime_lock", lambda: None)
     monkeypatch.setattr("hermes_agent.tools.skills_sync.sync_skills", lambda quiet=True: None)
-    monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: None)
+    monkeypatch.setattr("hermes_agent.hermes_logging.setup_logging", lambda hermes_home, mode: None)
     monkeypatch.setattr("hermes_agent.gateway.run.GatewayRunner", runner_cls)
 
 
@@ -191,7 +191,7 @@ async def test_start_gateway_does_not_start_cron_after_aborted_startup(tmp_path,
         def __init__(self, config):
             from hermes_agent.gateway.session import SessionStore
             from hermes_agent.hermes_state import SessionDB
-            from hermes_constants import get_hermes_home
+            from hermes_agent.hermes_constants import get_hermes_home
             self.session_store = SessionStore(get_hermes_home() / 'sessions', config)
             self._session_db = SessionDB(get_hermes_home() / 'state.db')
             self.session_store._db = self._session_db
@@ -243,7 +243,7 @@ async def test_start_gateway_preserves_service_restart_fallback_after_aborted_st
         def __init__(self, config):
             from hermes_agent.gateway.session import SessionStore
             from hermes_agent.hermes_state import SessionDB
-            from hermes_constants import get_hermes_home
+            from hermes_agent.hermes_constants import get_hermes_home
             self.session_store = SessionStore(get_hermes_home() / 'sessions', config)
             self._session_db = SessionDB(get_hermes_home() / 'state.db')
             self.session_store._db = self._session_db
@@ -303,7 +303,7 @@ async def test_start_gateway_classifies_startup_signal_exit(
         def __init__(self, config):
             from hermes_agent.gateway.session import SessionStore
             from hermes_agent.hermes_state import SessionDB
-            from hermes_constants import get_hermes_home
+            from hermes_agent.hermes_constants import get_hermes_home
             self.session_store = SessionStore(get_hermes_home() / 'sessions', config)
             self._session_db = SessionDB(get_hermes_home() / 'state.db')
             self.session_store._db = self._session_db

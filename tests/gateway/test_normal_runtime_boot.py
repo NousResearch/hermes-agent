@@ -191,7 +191,7 @@ async def test_api_bind_failure_unwinds_control_db_and_reservation(tmp_path, mon
     from hermes_agent.gateway.config import GatewayConfig
     from hermes_agent.gateway.runtime_ownership import process_ownership
     from hermes_agent.hermes_cli import web_server as web
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     home = get_hermes_home()
     with socket.socket() as blocker:

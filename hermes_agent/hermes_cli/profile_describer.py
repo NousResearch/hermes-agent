@@ -120,7 +120,7 @@ def describe_profile(profile_name: str, *, overwrite: bool = False, timeout: Opt
         return DescribeOutcome(canon, False, "profile not found")
     try:
         if canon == "default":
-            from hermes_constants import get_hermes_home  # type: ignore
+            from hermes_agent.hermes_constants import get_hermes_home  # type: ignore
             profile_dir = Path(get_hermes_home())
         else:
             profile_dir = profiles_mod.get_profile_dir(canon)

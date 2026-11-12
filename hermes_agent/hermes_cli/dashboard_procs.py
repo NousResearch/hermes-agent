@@ -338,7 +338,7 @@ def _filter_dashboard_respawn_candidates(
     """
     if own_home is None:
         try:
-            from hermes_constants import get_hermes_home
+            from hermes_agent.hermes_constants import get_hermes_home
             own_home = str(get_hermes_home())
         except Exception:
             own_home = ""
@@ -860,7 +860,7 @@ _HEX32 = set("0123456789abcdef")
 def _hermes_home_dir() -> Path:
     """The process's Hermes home: remote-backend locks are a process-level asset, so a request scoped
     to another profile must still see the same lock dir."""
-    from hermes_constants import get_process_hermes_home
+    from hermes_agent.hermes_constants import get_process_hermes_home
     return get_process_hermes_home()
 
 
@@ -899,7 +899,7 @@ def _remote_lock_roots(base_dir: Path | None) -> list[Path]:
     backend on every profile switch (#89811)."""
     if base_dir is not None:
         return [base_dir]
-    from hermes_constants import get_default_hermes_root
+    from hermes_agent.hermes_constants import get_default_hermes_root
     roots: list[Path] = []
     for home in (_hermes_home_dir(), get_default_hermes_root()):
         root = home / _REMOTE_LOCK_SUBDIR

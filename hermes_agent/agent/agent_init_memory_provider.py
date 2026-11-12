@@ -8,7 +8,7 @@ from contextlib import suppress
 from typing import Any
 
 from hermes_agent.agent.agent_init_params import _GATEWAY_IDENTITY_PARAMS
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 
 logger = logging.getLogger("hermes_agent.run_agent")
 
@@ -21,7 +21,7 @@ def _unavailable_warning_key(name: str, kind: str = "unavailable") -> tuple[str,
     """Once per profile home, provider and kind of trouble: one multiplexed gateway/Desktop backend
     serves several profiles, each one running without its memory must be told, and a provider the
     user turns back on that is then unavailable is news even after the "turned off" notice."""
-    from hermes_constants import get_hermes_home, hermes_home_key
+    from hermes_agent.hermes_constants import get_hermes_home, hermes_home_key
     return hermes_home_key(get_hermes_home()), name, kind
 
 

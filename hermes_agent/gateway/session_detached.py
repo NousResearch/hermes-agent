@@ -133,7 +133,7 @@ def session_env_source(runner, source):
 def _route_authority(runner, store, route):
     """The authority owning *route*: its key names the profile, whatever scope the writer runs in."""
     from hermes_agent.gateway.session_authorities import authority_for_home
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
     registry = getattr(runner, 'session_authorities', None)
     if store._named_profile_for_key(route) is None:  # the launch profile's own key
         if registry is None:

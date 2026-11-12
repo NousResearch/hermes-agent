@@ -150,7 +150,7 @@ class TestDetectAudioEnvironment:
         monkeypatch.delenv("SSH_CLIENT", raising=False)
         monkeypatch.delenv("SSH_TTY", raising=False)
         monkeypatch.delenv("SSH_CONNECTION", raising=False)
-        monkeypatch.setattr("hermes_constants.is_container", lambda: False)
+        monkeypatch.setattr("hermes_agent.hermes_constants.is_container", lambda: False)
         monkeypatch.setattr("hermes_agent.tools.voice_mode._import_audio",
                             lambda: (MagicMock(), MagicMock()))
         monkeypatch.setattr("hermes_agent.tools.voice_mode.is_wsl", lambda: False)
@@ -216,7 +216,7 @@ class TestDetectAudioEnvironment:
         monkeypatch.delenv("SSH_CONNECTION", raising=False)
         monkeypatch.delenv("PULSE_SERVER", raising=False)
         monkeypatch.setenv("PIPEWIRE_REMOTE", "/run/user/1000/pipewire-0")
-        monkeypatch.setattr("hermes_constants.is_container", lambda: True)
+        monkeypatch.setattr("hermes_agent.hermes_constants.is_container", lambda: True)
 
         sd = MagicMock()
         sd.query_devices.return_value = []
@@ -237,7 +237,7 @@ class TestDetectAudioEnvironment:
         monkeypatch.delenv("PULSE_SERVER", raising=False)
         monkeypatch.delenv("PIPEWIRE_REMOTE", raising=False)
         monkeypatch.setattr("hermes_agent.tools.voice_mode._pulse_socket_reachable", lambda: False)
-        monkeypatch.setattr("hermes_constants.is_container", lambda: True)
+        monkeypatch.setattr("hermes_agent.hermes_constants.is_container", lambda: True)
         monkeypatch.setattr("hermes_agent.tools.voice_mode._import_audio",
                             lambda: (MagicMock(), MagicMock()))
 
@@ -1540,7 +1540,7 @@ class TestWSLAudioEnvironmentGate:
         with patch("hermes_agent.tools.voice_mode.is_wsl", return_value=True), \
              patch("hermes_agent.tools.voice_mode._wsl_powershell_tts_available", return_value=True), \
              patch("hermes_agent.tools.voice_mode._pulse_socket_reachable", return_value=False), \
-             patch("hermes_constants.is_container", return_value=False):
+             patch("hermes_agent.hermes_constants.is_container", return_value=False):
             result = vm.detect_audio_environment()
 
         assert result["available"] is True, (
@@ -1567,7 +1567,7 @@ class TestWSLAudioEnvironmentGate:
         with patch("hermes_agent.tools.voice_mode.is_wsl", return_value=True), \
              patch("hermes_agent.tools.voice_mode._wsl_powershell_tts_available", return_value=False), \
              patch("hermes_agent.tools.voice_mode._pulse_socket_reachable", return_value=False), \
-             patch("hermes_constants.is_container", return_value=False):
+             patch("hermes_agent.hermes_constants.is_container", return_value=False):
             result = vm.detect_audio_environment()
 
         assert result["available"] is False, (
@@ -1586,7 +1586,7 @@ class TestWSLAudioEnvironmentGate:
         monkeypatch.setattr("hermes_agent.tools.voice_mode._import_audio",
                             lambda: (MagicMock(), MagicMock()))
         with patch("hermes_agent.tools.voice_mode.is_wsl", return_value=True), \
-             patch("hermes_constants.is_container", return_value=False):
+             patch("hermes_agent.hermes_constants.is_container", return_value=False):
             result = vm.detect_audio_environment()
 
         assert result["available"] is True

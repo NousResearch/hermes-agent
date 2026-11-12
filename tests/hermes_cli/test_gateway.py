@@ -235,7 +235,7 @@ def test_s6_runtime_snapshot_reports_supervised_service(monkeypatch, tmp_path):
             return True
 
     monkeypatch.setattr(gateway, "is_linux", lambda: True)
-    monkeypatch.setattr("hermes_constants.is_container", lambda: True)
+    monkeypatch.setattr("hermes_agent.hermes_constants.is_container", lambda: True)
     monkeypatch.setattr("hermes_agent.hermes_cli.service_manager.detect_service_manager", lambda: "s6")
     monkeypatch.setattr("hermes_agent.hermes_cli.service_manager.get_service_manager", lambda: FakeS6Manager())
     monkeypatch.setattr(gateway, "find_gateway_pids", lambda: [123])

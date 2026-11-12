@@ -255,7 +255,7 @@ async def test_mcp_server(name: str, profile: Optional[str] = None):
 async def auth_mcp_server(name: str, request: Request, profile: Optional[str] = None):
     """Start MCP OAuth and hand the authorization URL to the dashboard browser."""
     from hermes_agent.hermes_cli.mcp_config import _get_mcp_servers
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.tools.mcp_dashboard_oauth import DashboardOAuthFlow, exception_message
 
     _require_token(request)

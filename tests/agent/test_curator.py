@@ -1128,7 +1128,7 @@ def test_threaded_llm_pass_keeps_callers_profile_scope(curator_env, tmp_path, mo
     """#125032: the daemon ``curator-review`` thread must inherit the caller's contextvars (home
     override + secret scope), else on a multiplexed gateway it runs unscoped against the ROOT home."""
     from hermes_agent.agent import secret_scope as ss
-    from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
 
     c, root = curator_env["curator"], curator_env["home"]
     profile = tmp_path / "profiles" / "served"

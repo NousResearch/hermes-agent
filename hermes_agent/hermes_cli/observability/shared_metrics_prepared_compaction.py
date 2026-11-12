@@ -38,7 +38,7 @@ PREPARED_COMPACTION_SNAPSHOT_DIMENSIONS = {"compression_prepare_ahead": frozense
 
 def prepare_ahead_state(config: Any) -> str:
     """``on`` when the profile config turns ``compression.prepare_ahead`` on, read as the agent reads it."""
-    from utils import is_truthy_value
+    from hermes_agent.utils import is_truthy_value
 
     compression = config.get("compression") if isinstance(config, dict) else None
     value = compression.get("prepare_ahead") if isinstance(compression, dict) else None

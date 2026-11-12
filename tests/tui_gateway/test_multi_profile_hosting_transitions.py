@@ -118,7 +118,7 @@ def test_launch_body_survives_first_secondary_activation_on_the_dashboard(two_ho
 
 def test_release_resets_every_scope_when_one_reset_fails(two_homes, monkeypatch):
     from hermes_agent.agent.secret_scope import current_secret_scope
-    from hermes_constants import get_hermes_home_override
+    from hermes_agent.hermes_constants import get_hermes_home_override
     from hermes_agent.tools import terminal_scope
 
     root, b = two_homes

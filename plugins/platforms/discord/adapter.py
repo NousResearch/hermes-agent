@@ -306,7 +306,7 @@ from hermes_agent.gateway.platforms.helpers import (
     numbered_clarify_choices,
 )
 from hermes_agent.gateway.platforms.helpers import cancel_task
-from utils import atomic_json_write, env_float
+from hermes_agent.utils import atomic_json_write, env_float
 from hermes_agent.gateway.platforms.base import (
     BasePlatformAdapter, ExecApprovalPrompt, SendResult, unauthorized_action_notice,
     cache_image_from_url, cache_image_from_bytes_async, cache_audio_from_url, cache_audio_from_bytes_async,
@@ -451,7 +451,7 @@ class _DiscordNonConversationalMessageTracker:
         self._persist_lock = asyncio.Lock()
 
     def _state_path(self) -> _Path:
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         return (
             get_hermes_home()
             / _DISCORD_COMMAND_SYNC_STATE_SUBDIR
@@ -1283,7 +1283,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         # connection, which is not silence.
         self._last_dispatched_event_monotonic: Optional[float] = None
         self._missed_message_backfill_task: Optional[asyncio.Task] = None
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         from plugins.platforms.discord.recovery import DiscordRecoveryStore
         self._discord_recovery_store = DiscordRecoveryStore(get_hermes_home())
         # Dedup cache: Discord RESUME replays events after reconnects.
@@ -2144,7 +2144,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         logger.info("[%s] Disconnected", self.name)
 
     def _command_sync_state_path(self) -> _Path:
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         directory = get_hermes_home() / _DISCORD_COMMAND_SYNC_STATE_SUBDIR
         try:
             directory.mkdir(parents=True, exist_ok=True)
@@ -6483,7 +6483,7 @@ def _define_discord_view_classes() -> None:
                 interaction, color,
                 t("platform.discord.approval.by_user", label=t(label_key), user=interaction.user.display_name))
             try:
-                from hermes_constants import get_hermes_home
+                from hermes_agent.hermes_constants import get_hermes_home
                 response_path = get_hermes_home() / ".update_response"
                 tmp = response_path.with_suffix(".tmp")
                 tmp.write_text(answer, encoding="utf-8")

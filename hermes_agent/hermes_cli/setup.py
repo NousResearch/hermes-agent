@@ -66,7 +66,7 @@ def _current_reasoning_effort(config: dict) -> str:
         return ""
     effort = agent_cfg.get("reasoning_effort")
     if isinstance(effort, dict):  # {enabled, effort} form: the tier name, never str(dict)
-        from hermes_constants import parse_reasoning_effort
+        from hermes_agent.hermes_constants import parse_reasoning_effort
         parsed = parse_reasoning_effort(effort) or {}
         effort = "none" if parsed.get("enabled") is False else parsed.get("effort")
     return str(effort or "").strip().lower()

@@ -12,7 +12,7 @@ from tests.hermes_cli.plugin_worker_support import (
     isolated_python as isolated_python,  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
     plugin_world as plugin_world,  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
 )
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 from hermes_agent.hermes_cli.subcommands.plugins import build_plugins_parser
 
@@ -480,7 +480,7 @@ def test_metadata_write_failure_rolls_back_removal(monkeypatch, tmp_path):
 
 def test_reinstall_after_manual_directory_removal_retains_pin(monkeypatch, tmp_path):
     from hermes_agent.hermes_cli.plugins_cmd import _install_plugin_core
-    from utils import rmtree_readonly
+    from hermes_agent.utils import rmtree_readonly
 
     repo, old_sha, _new_sha = _plugin_repo(tmp_path)
     home = tmp_path / "home"

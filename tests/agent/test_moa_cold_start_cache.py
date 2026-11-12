@@ -14,7 +14,7 @@ import types
 
 import pytest
 
-from hermes_constants import hermes_home_key
+from hermes_agent.hermes_constants import hermes_home_key
 
 
 def _make_preset_config() -> dict:
@@ -232,7 +232,7 @@ def test_slot_runtime_cache_is_scoped_per_profile_home(monkeypatch, tmp_path):
     """Under a multiplex gateway two profiles can share (provider, model) with different
     accounts; a cached api_key/base_url must never cross the per-turn HERMES_HOME override."""
     import hermes_agent.agent.moa_loop as moa
-    import hermes_constants
+    from hermes_agent import hermes_constants
 
     moa._runtime_cache.clear()
     a, b = tmp_path / "a", tmp_path / "b"

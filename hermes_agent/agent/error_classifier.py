@@ -1197,7 +1197,7 @@ def _account_gates_model(msg: str) -> bool:
 def _off_route_host(c: _Ctx) -> str:
     """The contacted host when ``base_url`` is set and is not the provider's own endpoint; ``""`` otherwise."""
     from hermes_agent.hermes_cli.route_identity import provider_owns_route
-    from utils import base_url_hostname
+    from hermes_agent.utils import base_url_hostname
     host = base_url_hostname(c.base_url)
     if not host or provider_owns_route(c.provider_slug, c.base_url) is True:
         return ""
@@ -1290,7 +1290,7 @@ def _is_nous_route(c: _Ctx) -> bool:
     """The usage-window 402 code is Nous's: any other upstream sending it keeps main's text rules."""
     if (c.provider or "").strip().lower() == "nous":
         return True
-    from utils import base_url_host_matches
+    from hermes_agent.utils import base_url_host_matches
     return bool(c.base_url) and base_url_host_matches(c.base_url, "nousresearch.com")
 
 

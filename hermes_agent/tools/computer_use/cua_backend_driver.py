@@ -64,7 +64,7 @@ def _wsl_windows_path_to_posix(path: str) -> str:
     if not re.match(r"^[A-Za-z]:[\\/]", path):
         return path
     try:
-        from hermes_constants import is_wsl
+        from hermes_agent.hermes_constants import is_wsl
         wsl = is_wsl()
     except Exception:
         wsl = False

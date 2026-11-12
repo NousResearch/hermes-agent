@@ -15,7 +15,7 @@ async def test_secondary_store_opens_run_off_the_loop_in_their_own_scope(tmp_pat
     from hermes_agent import hermes_state_registry
     from hermes_agent.gateway.run_runtime import initialize_gateway_runtime
     from hermes_agent.gateway.runtime_ownership import process_ownership
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     root, homes = _reserve_homes(tmp_path, monkeypatch)
     process_ownership.reserve([home for _, home in homes])

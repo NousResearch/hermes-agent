@@ -75,7 +75,7 @@ async def _relay(runner, platforms=('telegram',), port=0):
 
 def _stub_turns(runner, monkeypatch):
     """Record each executed turn's (text, runtime home, session key) instead of calling a model."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     turns = []
 
     async def turn(event, *_args, **_kwargs):
@@ -108,7 +108,7 @@ def _requests(authority):
 @pytest.mark.asyncio
 async def test_single_profile_gateway_serves_a_connector_stamped_profile(tmp_path, monkeypatch):
     from hermes_agent.gateway.session_authority import initialize_session_authority
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     launch = Path(get_hermes_home()).resolve()
     # A profile of the stamped name exists on disk: the single-profile gateway must still not use it.
     (launch / 'profiles' / 'work').mkdir(parents=True, exist_ok=True)
@@ -275,7 +275,7 @@ def _discord_modal(profile):
 @pytest.mark.asyncio
 async def test_single_profile_gateway_serves_stamped_commands_and_discord_interactions(tmp_path, monkeypatch):
     from hermes_agent.gateway.session_authority import initialize_session_authority
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     launch = Path(get_hermes_home()).resolve()
     (launch / 'profiles' / 'work').mkdir(parents=True, exist_ok=True)
     runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / 'sessions'))

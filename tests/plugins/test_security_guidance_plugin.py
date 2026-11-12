@@ -250,7 +250,7 @@ class TestPreToolCallHook:
 class TestPluginDiscovery:
     def test_manifest_declares_registered_hooks(self):
         """Manifest metadata must use the field consumed by plugin discovery."""
-        import hermes_yaml as yaml
+        import hermes_agent.hermes_yaml as yaml
 
         plugin_dir = _repo_root() / "plugins" / "security-guidance"
         manifest = yaml.safe_load(

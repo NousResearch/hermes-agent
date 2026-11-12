@@ -144,7 +144,7 @@ _VAR = re.compile(r"\$\{(\w+)\}|\$(\w+)")
 
 
 def _shell_env(assigned: dict[str, str] | None = None) -> dict[str, str]:
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     return {**os.environ, "HOME": os.path.expanduser("~"), "HERMES_HOME": str(get_hermes_home()),
             **(assigned or {})}
 
@@ -383,7 +383,7 @@ def _argv_refusal(argv: list[str], cwd: str, locked, record, depth: int,
 def _code_refusal(code: str, locked, record, cwd: str = "") -> str | None:
     """Inline interpreter code that looks like it writes AND names a locked skill (or the record),
     or runs with its working directory inside one (relative paths)."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     if not _WRITEISH_CODE.search(code):
         return None
     if cwd and (reason := _hit(cwd, locked, record)):

@@ -7,7 +7,7 @@ import os
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
-from hermes_constants import WEBAPP_ATTACHMENT_MAX_BYTES
+from hermes_agent.hermes_constants import WEBAPP_ATTACHMENT_MAX_BYTES
 from hermes_agent.hermes_cli.staged_uploads import (
     publish_staged_upload,
     resolve_upload_home,

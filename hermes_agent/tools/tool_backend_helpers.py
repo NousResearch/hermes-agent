@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from utils import is_truthy_value
+from hermes_agent.utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 _DEFAULT_BROWSER_PROVIDER = "local"

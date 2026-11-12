@@ -1,7 +1,7 @@
 """/model and /footer report the chat's channel_overrides model, the one its next turn runs."""
 
 import pytest
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 from hermes_agent.gateway.config import ChannelOverride, GatewayConfig, Platform, PlatformConfig
 from hermes_agent.gateway.platforms.event import MessageEvent, MessageType

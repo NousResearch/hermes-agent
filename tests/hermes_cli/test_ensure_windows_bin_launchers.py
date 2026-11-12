@@ -18,7 +18,7 @@ venv trampolines (detected by their embedded interpreter path) are replaced.
 ``migrate_windows_bin_path`` moves an existing install's PATH to the
 canonical layout from the ``hermes update`` tail. Platform verdict, PATH
 values, and registry I/O are injected parameters (same pattern as
-``hermes_constants.venv_bin_dir``), so these tests are host-independent
+``hermes_agent.hermes_constants.venv_bin_dir``), so these tests are host-independent
 input→output checks, not host fakes.
 """
 

@@ -262,7 +262,7 @@ def test_unrestarted_unit_dashboard_keeps_a_receipt_backed_reminder(monkeypatch,
 def test_unit_reminder_that_cannot_be_saved_stays_in_the_receipt_with_its_command(monkeypatch, capsys):
     from hermes_agent.hermes_cli import process_identity
     from hermes_agent.hermes_cli.update_serve_obligations import retain_receipt_manual_serves, warn_pending_manual_serves
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     monkeypatch.setattr(process_identity, "_pid_alive_matches", lambda *a: True)
     (get_hermes_home() / "serve_restart_pending").write_text("not a directory")

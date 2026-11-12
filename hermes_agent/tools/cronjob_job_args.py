@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional, Union
 
 from hermes_agent.cron.jobs import effective_job_state
 
-import hermes_time
+from hermes_agent import hermes_time
 
 # Logger parity with the origin module.
 logger = logging.getLogger("hermes_agent.tools.cronjob_tools")
@@ -289,7 +289,7 @@ def _resolve_cron_context_deliver(deliver: Optional[str]) -> Optional[str]:
     from HERMES_CRON_AUTO_DELIVER_*, or ``local`` when it has no concrete target; other
     elements pass through. Otherwise the scheduler would guess a home channel."""
     from hermes_agent.gateway.session_context import get_session_env
-    from utils import is_truthy_value
+    from hermes_agent.utils import is_truthy_value
     if not is_truthy_value(get_session_env("HERMES_CRON_SESSION", "")):
         return deliver
 
@@ -312,7 +312,7 @@ def _same_origin(base_url: str, configured: str) -> bool:
     """Origin (scheme, host, effective port) equality, as for any bearer secret moved to a
     new URL: a host-only or subdomain match would let a job send the stored key over plain
     HTTP, to another port, or to a host the operator never configured."""
-    from utils import base_url_origin
+    from hermes_agent.utils import base_url_origin
     try:
         want, got = base_url_origin(configured), base_url_origin(base_url)
     except ValueError:  # malformed URL (e.g. unclosed IPv6 bracket) cannot match
@@ -333,8 +333,8 @@ def _custom_stored_key_error(bu: str) -> Optional[str]:
     from hermes_agent.agent.secret_scope import get_secret_str
     from hermes_agent.hermes_cli import runtime_provider as rp
     from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY
-    from hermes_constants import OPENROUTER_BASE_URL
-    from utils import base_url_origin
+    from hermes_agent.hermes_constants import OPENROUTER_BASE_URL
+    from hermes_agent.utils import base_url_origin
 
     custom_why = (
         "A stored API key matches its hostname, and a stored credential may only be sent to a "
@@ -419,7 +419,7 @@ def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
     if not script or not script.strip():
         return None
 
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     raw = script.strip()
     scripts_dir = get_hermes_home() / "scripts"
     if raw.startswith(("/", "~")) or (len(raw) >= 2 and raw[1] == ":"):

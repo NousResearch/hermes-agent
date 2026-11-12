@@ -2,7 +2,7 @@
 
 import sys
 
-from hermes_platform import declaration
+from hermes_agent.hermes_platform import declaration
 
 
 def test_application_gate_rechecks_snapshot_without_losing_description(tmp_path, monkeypatch):

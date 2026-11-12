@@ -337,7 +337,7 @@ def _fs_backend(profile: Optional[str] = None):
 def _chat_image_dir(home: Path) -> Path:
     """Where browser image pastes land: the profile's canonical image staging dir on this host
     (``gateway.platforms.base.get_image_cache_dir``), the only one attachment admission accepts."""
-    from hermes_constants import get_hermes_dir
+    from hermes_agent.hermes_constants import get_hermes_dir
 
     return get_hermes_dir("cache/images", "image_cache", home=home)
 
@@ -580,7 +580,7 @@ async def upload_chat_image(payload: ChatImageUpload, profile: Optional[str] = N
     def _run():
         data, mime_type, ext = _decode_chat_image_upload(payload)
         home = resolve_upload_home(profile)
-        from hermes_constants import apply_secure_dir_policy, assert_named_profile_home_live
+        from hermes_agent.hermes_constants import apply_secure_dir_policy, assert_named_profile_home_live
 
         img_dir = ensure_profile_subdir(
             home,
@@ -770,7 +770,7 @@ def _pin_ticket_file(authority: file_tickets.FileAuthority, checked):
 async def issue_file_ticket(payload: FileTicketRequest, request: Request):
     """Ticket a browser download/media URL instead of putting the session token in it."""
     from hermes_agent.hermes_cli.web_routers.sessions import _history_profile_home
-    from hermes_constants import named_profile_home
+    from hermes_agent.hermes_constants import named_profile_home
 
     def owner_home():
         return Path(_history_profile_home(payload.profile))
@@ -1311,7 +1311,7 @@ async def _fs_download_authority(
 ) -> file_tickets.FileAuthority:
     """The file ``/api/fs/download`` serves for this query, captured for a download ticket: on the
     profile's SSH workspace when it has one, else on this host under the same read rules."""
-    from hermes_constants import named_profile_home
+    from hermes_agent.hermes_constants import named_profile_home
 
     remote = await _remote_file_authority(path, profile, owner, _remote_download_target)
     if remote is not None:

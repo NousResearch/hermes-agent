@@ -79,7 +79,7 @@ def _generate_neutts(text: str, output_path: str, tts_config: dict[str, Any]) ->
 # --- Piper (local neural VITS, 44 languages) ---
 def _get_piper_voices_dir() -> Path:
     """``<HERMES_HOME>/cache/piper-voices/`` so voice downloads follow profile boundaries."""
-    from hermes_constants import get_hermes_dir
+    from hermes_agent.hermes_constants import get_hermes_dir
     root = Path(get_hermes_dir("cache/piper-voices", "piper_voices_cache"))
     root.mkdir(parents=True, exist_ok=True)
     return root

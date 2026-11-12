@@ -11,7 +11,7 @@ import uuid
 from hermes_agent.gateway.config import Platform
 from hermes_agent.gateway.session_contract import CANONICAL_GATEWAY_PROTOCOL, SessionActor, SessionRef, Submission
 from hermes_agent.gateway.session_llm_oneshot import DeferredReply
-from hermes_constants import profile_name_for_home
+from hermes_agent.hermes_constants import profile_name_for_home
 from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 logger = logging.getLogger(__name__)

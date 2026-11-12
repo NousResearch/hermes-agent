@@ -41,7 +41,7 @@ def home(tmp_path, monkeypatch):
     hermes_home = tmp_path / "home"
     hermes_home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    import hermes_constants
+    from hermes_agent import hermes_constants
     hermes_constants._default_hermes_root_memo = None
     return hermes_home
 

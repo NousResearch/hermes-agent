@@ -3,7 +3,7 @@
 
 # Must be the very first import (UTF-8 stdio on Windows). Missing only mid-``hermes update``.
 try:
-    import hermes_bootstrap
+    import hermes_agent.hermes_bootstrap as hermes_bootstrap  # noqa: PLR0402
 except ModuleNotFoundError as exc:
     if exc.name != "hermes_bootstrap" and not "hermes_bootstrap".startswith(f"{exc.name}."):
         raise  # the bootstrap exists but cannot load: skipping it would skip PM activation
@@ -333,7 +333,7 @@ _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧
 
 
 # ~/.hermes/.env first, project .env as dev fallback; user env files override stale shell exports.
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 from hermes_agent.hermes_cli.env_loader import load_hermes_dotenv
 from hermes_agent.agent.i18n import t as _t
 
@@ -778,7 +778,7 @@ def save_config_value(key_path: str, value: any) -> bool:
     config_path = get_hermes_home() / 'config.yaml'
 
     try:
-        from hermes_constants import mkdir_under_hermes_home
+        from hermes_agent.hermes_constants import mkdir_under_hermes_home
         mkdir_under_hermes_home(config_path.parent)
         from hermes_agent.hermes_cli.config_backend import write_config_key
         write_config_key(config_path, key_path, value)
@@ -1556,7 +1556,7 @@ def _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url
         )
     except ImportError as e:
         # Direct `python cli.py` bypasses cmd_chat's partial-update ImportError handler.
-        from hermes_constants import emit_partial_update_hint
+        from hermes_agent.hermes_constants import emit_partial_update_hint
 
         if emit_partial_update_hint(e):
             sys.exit(1)

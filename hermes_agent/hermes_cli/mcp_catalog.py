@@ -14,14 +14,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
-from hermes_constants import get_hermes_home, get_optional_mcps_dir
+from hermes_agent.hermes_constants import get_hermes_home, get_optional_mcps_dir
 from hermes_agent.hermes_cli._subprocess_compat import noninteractive_git_env
 from hermes_agent.hermes_cli.colors import Colors, color
 from hermes_agent.hermes_cli.config import load_config, save_config, get_env_value, save_env_value
 from hermes_agent.hermes_cli.cli_output import prompt as _prompt_input
-from utils import rmtree_readonly
+from hermes_agent.utils import rmtree_readonly
 from hermes_agent.hermes_cli._startup_fast import project_root_str
 
 _MANIFEST_VERSION = 1

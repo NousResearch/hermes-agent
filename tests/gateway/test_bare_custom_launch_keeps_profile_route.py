@@ -148,7 +148,7 @@ async def test_a_session_create_with_a_bare_custom_pick_stays_on_the_profiles_en
     """The real ``session.create`` (``stage_local_session``) and the turn's runtime resolver."""
     import json
     from hermes_agent.gateway import run
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from tests.gateway.test_session_follow_profile_config import _owner, _route
     home = get_hermes_home()
     home.mkdir(parents=True, exist_ok=True)
@@ -173,7 +173,7 @@ async def test_adopting_a_legacy_custom_row_recovers_the_entry_serving_its_model
     import json
     from hermes_agent.gateway import run
     from hermes_agent.gateway.session_local_migration import resolve_local_target
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from tests.gateway.test_session_follow_profile_config import _owner, _route
     home = get_hermes_home()
     home.mkdir(parents=True, exist_ok=True)

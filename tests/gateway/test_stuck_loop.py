@@ -72,7 +72,7 @@ class TestStuckLoopDetection:
         """Two sessions completing at once each clear their counter; neither may rewrite the other's
         stale snapshot (race audit lostupdate-6: a resurrected counter can later auto-suspend a healthy session)."""
         import hermes_agent.gateway.stuck_loop_counts as counts_module
-        import utils
+        from hermes_agent import utils
         runner, home = runner_with_home
         path = home / runner._STUCK_LOOP_FILE
         counts_lock = ContentionObservedLock()

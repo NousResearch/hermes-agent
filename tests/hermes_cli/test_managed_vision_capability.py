@@ -18,7 +18,7 @@ def hermes_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(home))
     import importlib
 
-    import hermes_constants
+    from hermes_agent import hermes_constants
 
     importlib.reload(hermes_constants)
     yield home

@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 
 import pytest
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 from tests.e2e.core.parity._helpers import hermes_argv, kill_tagged, tagged_pids, wait_until
 from tests.fakes.fake_llm_provider import FakeLLMServer, Text, ToolCall, write_hermes_home

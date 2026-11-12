@@ -68,7 +68,7 @@ def _web_access_statuses(client: TestClient) -> list[int]:
 @pytest.mark.parametrize("serves_spa", [True, False], ids=["hermes-dashboard", "hermes-serve"])
 def test_the_standalone_dashboard_and_serve_have_neither_web_access_nor_browser_file_routes(
         monkeypatch, serves_spa):
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     monkeypatch.setattr(web_server.app.state, "serves_spa", serves_spa, raising=False)
     client = _owner_client()
@@ -81,7 +81,7 @@ def test_the_standalone_dashboard_and_serve_have_neither_web_access_nor_browser_
 def test_the_gateways_own_listener_serves_web_access_but_not_the_browser_file_routes(monkeypatch):
     """With the Webapp off, native Desktop's Web Access pane works on the gateway's listener; the
     browser's file routes, which only the Webapp calls, are not there."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     native = native_desktop_client(monkeypatch)
 

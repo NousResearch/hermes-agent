@@ -19,12 +19,12 @@ from pathlib import Path
 
 import pytest
 
-from hermes_constants import (
+from hermes_agent.hermes_constants import (
     mark_named_profile_deleted,
     named_profile_home,
     set_hermes_home_override,
 )
-from utils import atomic_json_write, atomic_write_text
+from hermes_agent.utils import atomic_json_write, atomic_write_text
 
 
 def _tombstoned_profile(tmp_path: Path) -> Path:
@@ -66,7 +66,7 @@ class TestAtomicWritersRefuseDeletedProfileHome:
                     separators=(",", ":"),
                 )
         finally:
-            from hermes_constants import reset_hermes_home_override
+            from hermes_agent.hermes_constants import reset_hermes_home_override
 
             reset_hermes_home_override(token)
         assert not profile.exists()
@@ -100,13 +100,13 @@ class TestAtomicWritersRefuseDeletedProfileHome:
             ):
                 store.add("memory", "entry")
         finally:
-            from hermes_constants import reset_hermes_home_override
+            from hermes_agent.hermes_constants import reset_hermes_home_override
 
             reset_hermes_home_override(token)
         assert not profile.exists()
 
     def test_roundtrip_yaml_update_does_not_recreate_home(self, tmp_path):
-        from utils import atomic_roundtrip_yaml_update
+        from hermes_agent.utils import atomic_roundtrip_yaml_update
 
         profile = _tombstoned_profile(tmp_path)
         with pytest.raises(

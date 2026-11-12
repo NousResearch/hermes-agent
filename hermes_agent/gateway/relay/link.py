@@ -74,7 +74,7 @@ def relay_channel_view() -> tuple[frozenset[str], bool]:
     ``GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS`` makes the relay exclusive. Reads this process's env, which
     on a hosted instance is the container stamp every process shares."""
     from hermes_agent.gateway.relay import relay_fronted_platforms, relay_url
-    from utils import is_truthy_value
+    from hermes_agent.utils import is_truthy_value
 
     if not relay_url():
         return frozenset(), False

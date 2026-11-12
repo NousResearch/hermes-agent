@@ -216,7 +216,7 @@ def _stub_rebuild_env(monkeypatch, server, launch) -> list[str]:
     homes_seen: list[str] = []
 
     def fake_make_agent(_sid, _key, *, session_db=None, **_kw):
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
 
         homes_seen.append(str(get_hermes_home()))
         return SimpleNamespace(_session_db=session_db, _owns_session_db=False)

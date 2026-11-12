@@ -28,7 +28,7 @@ from hermes_agent.gateway.session import SessionSource
 from hermes_agent.gateway.session_state import SERVICE_TIER_UNSET as _SERVICE_TIER_UNSET
 from hermes_agent.hermes_cli.config import cfg_get, resolve_ephemeral_system_prompt_from_config
 from hermes_agent.hermes_cli.fallback_config import get_fallback_chain
-from utils import is_truthy_value
+from hermes_agent.utils import is_truthy_value
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
     from hermes_agent.gateway.run import GatewayRunner
@@ -192,7 +192,7 @@ class GatewayConfigLoadersMixin:
 
     @staticmethod
     def _load_reasoning_config(model: str = "") -> dict | None:
-        """Reasoning effort from config.yaml via :func:`hermes_constants.resolve_reasoning_config`.
+        """Reasoning effort from config.yaml via :func:`hermes_agent.hermes_constants.resolve_reasoning_config`.
 
         Per-model override > global ``agent.reasoning_effort``; YAML False = disabled. Empty
         ``model`` uses ``model.default``.
@@ -200,7 +200,7 @@ class GatewayConfigLoadersMixin:
         Closes #21256.
         """
         from hermes_agent.gateway.run import _load_gateway_config
-        from hermes_constants import resolve_reasoning_config
+        from hermes_agent.hermes_constants import resolve_reasoning_config
         return resolve_reasoning_config(_load_gateway_config(), model)
 
     @staticmethod
@@ -598,7 +598,7 @@ class GatewayConfigLoadersMixin:
         """
         from hermes_agent.hermes_cli.config_backend import config_exists
         from hermes_agent.gateway.run import _gateway_config_home
-        from hermes_constants import hermes_home_key
+        from hermes_agent.hermes_constants import hermes_home_key
         home = _gateway_config_home()
         by_home = getattr(self, "_fallback_model_by_home", None)
         if by_home is None:

@@ -381,7 +381,7 @@ def test_deleting_the_onboarding_chat_ends_its_run_and_closes_the_flag(root):
 
 
 def test_the_onboarding_facts_are_read_in_the_default_profile(root, client, monkeypatch):
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     work = root / "profiles" / "work"
     (work / "skills").mkdir(parents=True)
     (work / "config.yaml").write_text("model: {}\n", encoding="utf-8")

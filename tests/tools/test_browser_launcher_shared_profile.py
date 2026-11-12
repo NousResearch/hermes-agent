@@ -87,7 +87,7 @@ def test_two_homes_pinning_one_profile_share_its_browser_until_the_last_one_leav
 
 
 def test_shared_profile_state_lives_in_a_private_per_user_dir_outside_every_home(tmp_path):
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     script = write_fake_chromium(tmp_path / "chromium")
     udd = tmp_path / "pinned-profile"
     browser, err = launcher.launch_chromium(f"profile:{udd}", executable=str(script), user_data_dir=str(udd),

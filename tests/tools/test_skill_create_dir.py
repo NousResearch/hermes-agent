@@ -19,7 +19,7 @@ def isolated_home(tmp_path, monkeypatch):
     (home / "skills").mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(home))
 
-    import hermes_constants
+    from hermes_agent import hermes_constants
     monkeypatch.setattr(hermes_constants, "_hermes_home_cache", None, raising=False)
 
     from hermes_agent.agent import skill_utils as su

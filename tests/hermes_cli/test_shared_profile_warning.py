@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from hermes_agent.hermes_cli import process_identity
-from hermes_constants import hermes_home_key
+from hermes_agent.hermes_constants import hermes_home_key
 
 
 @pytest.fixture

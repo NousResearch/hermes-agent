@@ -40,7 +40,7 @@ from plugins.platforms.signal.signal_rate_limit import (
     SignalRateLimitError, _extract_retry_after_seconds, _format_wait, _is_signal_rate_limit_error,
     _signal_send_timeout, get_scheduler)
 from hermes_agent.gateway.platforms._shared import get_scoped_secret as _sig_secret
-from utils import TRUTHY_STRINGS
+from hermes_agent.utils import TRUTHY_STRINGS
 
 logger = logging.getLogger(__name__)
 

@@ -4,7 +4,7 @@ per-TUI sidecar ``config.set`` — never refused, never inference."""
 import asyncio
 import json
 
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 import pytest
 
 from tests.gateway.test_session_busy_controls import owner, admissions, settled

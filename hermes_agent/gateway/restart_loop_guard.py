@@ -17,7 +17,7 @@ import logging
 import time
 from typing import List, Optional
 
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 
 logger = logging.getLogger("hermes_agent.gateway.run")
 

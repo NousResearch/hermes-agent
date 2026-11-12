@@ -13,7 +13,7 @@ from collections import deque
 from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Mapping
 
-from utils import safe_json_loads
+from hermes_agent.utils import safe_json_loads
 from hermes_agent.agent.tool_result_classification import (
     shape_failure_error, file_mutation_result_landed, has_failure_marker, is_guardrail_refusal, is_rate_limited)
 

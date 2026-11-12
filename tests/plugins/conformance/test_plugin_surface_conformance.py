@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 _FIXTURE = Path(__file__).parent / "fixtures" / "conformance_surface"
 _ROOT = Path(__file__).resolve().parents[3]

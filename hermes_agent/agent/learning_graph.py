@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from hermes_agent.agent.skill_utils import EXCLUDED_SKILL_DIRS
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 
 _USAGE_TS_KEYS = ("last_activity_at", "last_used_at", "last_viewed_at", "last_patched_at", "created_at")
 

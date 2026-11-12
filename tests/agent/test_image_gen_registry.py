@@ -58,7 +58,7 @@ class TestGetActiveProvider:
 
 
     def test_explicit_config_wins(self, tmp_path, monkeypatch):
-        import hermes_yaml as yaml
+        import hermes_agent.hermes_yaml as yaml
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         (tmp_path / "config.yaml").write_text(

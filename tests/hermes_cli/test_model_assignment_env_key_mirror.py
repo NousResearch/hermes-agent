@@ -13,7 +13,7 @@ import importlib
 import os
 
 import pytest
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 import hermes_agent.hermes_cli.web_server_config as _web_server_config
 
 

@@ -28,8 +28,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Sequence
 
-from hermes_constants import display_hermes_home, get_default_hermes_root, get_hermes_home
-from hermes_logging import canonical_logger_name
+from hermes_agent.hermes_constants import display_hermes_home, get_default_hermes_root, get_hermes_home
+from hermes_agent.hermes_logging import canonical_logger_name
 
 # Known log files (name → filename)
 LOG_FILES = {
@@ -209,7 +209,7 @@ def tail_log(
 
     component_prefixes = None
     if component:
-        from hermes_logging import COMPONENT_PREFIXES
+        from hermes_agent.hermes_logging import COMPONENT_PREFIXES
         component_lower = component.lower()
         if component_lower not in COMPONENT_PREFIXES:
             available = ", ".join(sorted(COMPONENT_PREFIXES))

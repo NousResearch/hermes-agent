@@ -33,7 +33,7 @@ UA = "python-httpx/0.27"  # CF blocks default urllib UA on many providers
 def _hermes_home():
     # Prefer Hermes' own resolver (profile-safe); fall back to env then ~/.hermes.
     try:
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         return str(get_hermes_home())
     except Exception:
         return os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes")

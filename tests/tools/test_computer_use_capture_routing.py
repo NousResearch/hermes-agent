@@ -13,7 +13,7 @@ deterministic stubs for:
 * ``_native_tool_result_images`` (the shared policy decision)
 * ``_run_async`` (sync->async bridge)
 * ``vision_analyze_tool`` (the aux LLM call)
-* ``hermes_constants.get_hermes_dir`` (cache path)
+* ``hermes_agent.hermes_constants.get_hermes_dir`` (cache path)
 
 …so the full code path is covered without a live cua-driver, a real
 auxiliary client, or network access.
@@ -54,7 +54,7 @@ def tmp_cache_dir(tmp_path):
     def _fake_get(*_args, **_kw):
         return cache_dir
 
-    with patch("hermes_constants.get_hermes_dir", _fake_get):
+    with patch("hermes_agent.hermes_constants.get_hermes_dir", _fake_get):
         yield cache_dir
 
 

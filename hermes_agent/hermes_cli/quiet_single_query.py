@@ -60,7 +60,7 @@ def write_turn_report(path: str | None, *, exit_code: int, error: str = "", repl
     is what the run will print — a spawner booking a lingering child from its report relays it."""
     if not path:
         return
-    from utils import atomic_json_write
+    from hermes_agent.utils import atomic_json_write
 
     record = {"pid": os.getpid(), "exit_code": int(exit_code), "error": str(error or ""), "reply": str(reply or "")}
     # 0600 from creation: the record now carries the turn's answer, like the 0600 query file beside it.

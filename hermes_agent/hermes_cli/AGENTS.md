@@ -162,7 +162,7 @@ and TUI all go through it). Clones are built in `profiles/.<name>.staging-<pid>`
 symlinked `.env`/`config.yaml` are materialized first so a clone never writes through to its source. Multiplex
 (`gateway.multiplex_profiles`) secret-scope rules: `hermes_agent/gateway/AGENTS.md`. The served set is
 `profiles.py::profiles_to_serve(multiplex=True)` = default + every live dir under `profiles/` — live =
-carries an identity marker (`hermes_constants.named_profile_has_identity`: `config.yaml`/`.env`/`SOUL.md`/
+carries an identity marker (`hermes_agent.hermes_constants.named_profile_has_identity`: `config.yaml`/`.env`/`SOUL.md`/
 `profile.yaml`/`auth.json`/`state.db`) and is not tombstoned. A marker-less dir (cron/log side-effect
 shell, stray infrastructure dir) is never listed, served, ticked, `.env`-backfilled or resolvable via `-p`
 (#95188, #99392); `profile create` replaces it only when it is also tombstoned (a live marker-less dir may hold user
@@ -172,7 +172,7 @@ predicate. There is no allowlist (`gateway.multiplex_profile_allowlist` was reti
 Enumeration is a pure read: never `mkdir` a profile home from a served path (`SessionDB`, logging,
 cron all go through `mkdir_under_hermes_home` / `_ensure_cron_dir`, which refuse a deleted or
 missing named profile, #94590). Process-global per-profile slots (MCP discovery in `mcp_startup.py`,
-tool registry overlays) key on `hermes_constants.hermes_home_key()`, never a single flag.
+tool registry overlays) key on `hermes_agent.hermes_constants.hermes_home_key()`, never a single flag.
 `gateway.multiplex_profiles` defaults to **on**, but `GatewayConfig` keeps an unset flag `None` and
 `gateway_multiplex_mode.resolve_multiplex_mode` settles it once per boot (called from
 `load_gateway_config_for_runner`): default profile, >= 2 profiles, no standalone secondary gateway,

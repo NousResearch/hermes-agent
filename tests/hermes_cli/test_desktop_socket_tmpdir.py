@@ -46,7 +46,7 @@ def test_long_scratch_tmpdir_hosts_the_singleton_socket_and_is_kept_for_children
 
 @pytest.mark.platforms("linux")
 def test_tmpdir_that_fits_the_socket_budget_is_passed_through(monkeypatch, tmp_path):
-    from hermes_constants import socket_safe_tmpdir
+    from hermes_agent.hermes_constants import socket_safe_tmpdir
 
     with tempfile.TemporaryDirectory(prefix="dt-", dir=socket_safe_tmpdir()) as root:
         # Longest TMPDIR whose scoped_dirXXXXXX/SingletonSocket still fits sun_path.

@@ -5,7 +5,7 @@ the host with the new profile's home, and a host started only for that hook does
 import json
 import os
 
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 import pytest
 
 from hermes_agent.hermes_cli import plugins as plugins_mod
@@ -138,7 +138,7 @@ def test_a_profile_hook_runs_in_the_host_and_its_host_is_stopped(hosted_home):
     # Everything the hook-only load registered proxied into the stopped host: hook, tool,
     # middleware, session env and RPC method are all gone from the new profile's manager.
     from hermes_agent.hermes_cli.plugins_session_env import _REGISTRATIONS
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from hermes_agent.tools.registry import registry
     assert (work / "registered.json").exists()
     token = set_hermes_home_override(str(work))
@@ -160,7 +160,7 @@ def test_a_host_already_running_for_that_profile_is_left_alone(hosted_home):
     from unittest.mock import patch
 
     from hermes_agent.hermes_cli.profiles import create_profile, rename_profile
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     create_profile("work", clone_config=True, no_alias=True)
 

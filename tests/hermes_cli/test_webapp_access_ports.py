@@ -173,7 +173,7 @@ def _start_in_a_process_of_its_own(home: str, first: bool, first_holds, second_s
     import traceback
 
     from hermes_agent.hermes_cli import auth
-    from hermes_constants import set_hermes_home_override
+    from hermes_agent.hermes_constants import set_hermes_home_override
 
     os.environ["HERMES_HOME"] = home
     set_hermes_home_override(Path(home))

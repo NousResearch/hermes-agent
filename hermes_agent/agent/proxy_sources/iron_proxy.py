@@ -28,7 +28,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from utils import atomic_json_write, atomic_write_text
+from hermes_agent.utils import atomic_json_write, atomic_write_text
 
 logger = logging.getLogger(__name__)
 
@@ -147,7 +147,7 @@ class TokenMapping:
 
 
 def _proxy_state_dir_ro() -> Path:  # without creating it (status probes, pidfile reads)
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     return get_hermes_home() / "proxy"
 
 
@@ -321,7 +321,7 @@ def _yaml():
     """Shared YAML helpers or None (not a hard requirement for proxy discovery)."""
 
     try:
-        import hermes_yaml as yaml
+        import hermes_agent.hermes_yaml as yaml
         return yaml
     except ImportError:
         return None

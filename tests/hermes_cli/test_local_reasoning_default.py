@@ -31,7 +31,7 @@ def _stage_header(path):
 def test_qwen_medium_default_reaches_only_its_model_preset(tmp_path, monkeypatch):
     # Both profile config and machine-scoped model/runtime assets are disposable.
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: tmp_path)
+    monkeypatch.setattr("hermes_agent.hermes_constants.get_default_hermes_root", lambda: tmp_path)
     config_path = tmp_path / "config.yaml"
     config = b"agent:\n  reasoning_effort: off\n"
     config_path.write_bytes(config)
@@ -65,11 +65,11 @@ def test_qwen_medium_default_reaches_only_its_model_preset(tmp_path, monkeypatch
 def test_explicit_reasoning_choices_survive_shared_resolution_and_wire(tmp_path, monkeypatch):
     from hermes_agent.agent.transports.chat_completions import ChatCompletionsTransport
     from hermes_agent.hermes_cli.config_effective import load_user_config_effective
-    from hermes_constants import resolve_reasoning_config
+    from hermes_agent.hermes_constants import resolve_reasoning_config
     from hermes_agent.providers import get_provider_profile
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: tmp_path)
+    monkeypatch.setattr("hermes_agent.hermes_constants.get_default_hermes_root", lambda: tmp_path)
     model_id = catalog.catalog_by_id()["qwen3.8-27b"].variants[0].model_id
     config_path = tmp_path / "config.yaml"
     transport = ChatCompletionsTransport()

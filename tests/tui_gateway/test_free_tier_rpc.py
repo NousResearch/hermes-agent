@@ -31,7 +31,7 @@ def guest(nas, monkeypatch):
 
 
 def _set_guest_off():
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     (get_hermes_home() / "config.yaml").write_text("nous:\n  guest: false\n", encoding="utf-8")
 
 
@@ -69,7 +69,7 @@ def test_status_carries_the_pending_browser_challenge_and_drops_it_once_cleared(
 
 def test_window_outcomes_are_scoped_and_do_not_grant_auth(guest, tmp_path):
     from hermes_agent.hermes_cli import anon_challenge
-    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    from hermes_agent.hermes_constants import set_hermes_home_override, reset_hermes_home_override
     a = anon_challenge.BrowserChallenge("https://portal.example.test/challenge?code=a", True, 600, 2, "check")
     b = anon_challenge.BrowserChallenge("https://portal.example.test/challenge?code=b", False, 600, 2, "check")
     anon_challenge._record(a, new_attempt=False)

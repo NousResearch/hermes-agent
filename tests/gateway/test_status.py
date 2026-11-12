@@ -145,7 +145,7 @@ class TestGatewayPidState:
         for a named profile), gateway identity files should still be written to
         the process-level HERMES_HOME, not the profile's directory.  See #56986.
         """
-        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+        from hermes_agent.hermes_constants import set_hermes_home_override, reset_hermes_home_override
 
         process_home = tmp_path / "default"
         process_home.mkdir()

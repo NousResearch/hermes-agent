@@ -25,7 +25,7 @@ import threading
 import pytest
 
 import hermes_agent.hermes_cli.mcp_startup as startup
-from hermes_constants import hermes_home_key
+from hermes_agent.hermes_constants import hermes_home_key
 from hermes_agent.tui_gateway import entry
 
 

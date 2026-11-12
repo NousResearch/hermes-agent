@@ -21,7 +21,7 @@ from contextlib import redirect_stdout
 
 import pytest
 
-import hermes_constants
+from hermes_agent import hermes_constants
 from hermes_agent.hermes_cli.gateway_enroll import _warn_if_secondary_multiplex_profile
 
 

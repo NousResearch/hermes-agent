@@ -39,7 +39,7 @@ def admit_cli_turn(params):
             committed['api_text'] = api_text
     override = params.get('model_override')
     if override is not None:
-        from hermes_constants import parse_reasoning_effort
+        from hermes_agent.hermes_constants import parse_reasoning_effort
         if (not isinstance(override, dict) or set(override) - {'model', 'provider', 'reasoning'}
                 or not isinstance(override.get('model'), str) or not override['model'].strip()
                 or not isinstance(override.get('provider', ''), str)
@@ -204,7 +204,7 @@ def one_turn_reasoning(turn, reasoning_config):
     override = cli_turn(turn._ctx.inbound_message_id).get('model_override') or {}
     if 'reasoning' not in override:
         return reasoning_config
-    from hermes_constants import parse_reasoning_effort
+    from hermes_agent.hermes_constants import parse_reasoning_effort
     return parse_reasoning_effort(override['reasoning']) or reasoning_config
 
 

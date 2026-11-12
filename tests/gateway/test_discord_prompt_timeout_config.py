@@ -89,7 +89,7 @@ def test_hour_long_timeout_and_safe_upper_bound(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_all_prompt_types_use_owning_profile_discord_timeout(tmp_path):
-    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    from hermes_agent.hermes_constants import set_hermes_home_override, reset_hermes_home_override
     from plugins.platforms.discord.adapter import (
         ExecApprovalView, SlashConfirmView, UpdatePromptView, ClarifyChoiceView,
     )

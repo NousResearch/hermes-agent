@@ -15,7 +15,7 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from hermes_constants import (
+from hermes_agent.hermes_constants import (
     get_hermes_home, get_scratch_dir, get_skills_dir, is_wsl, reset_hermes_home_override, set_hermes_home_override,
 )
 
@@ -29,7 +29,7 @@ from hermes_agent.agent.skill_utils import (
     skill_matches_platform, skill_matches_platform_list,
 )
 from hermes_agent.tools.threat_patterns import scan_for_threats as _scan_for_threats
-from utils import atomic_json_write, file_cache_version
+from hermes_agent.utils import atomic_json_write, file_cache_version
 
 logger = logging.getLogger(__name__)
 
@@ -880,7 +880,7 @@ def _format_backend_probe(output: str) -> str:
 
 def _probe_remote_backend(env_type: str) -> str | None:
     """Describe the active non-local backend via a live probe; None if it failed (cached, failures included)."""
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
     cache_key = (hermes_home_key(), env_type, _tenv_read("TERMINAL_CWD", ""))
     formatted = _BACKEND_PROBE_CACHE.get(cache_key)
     if formatted is None:

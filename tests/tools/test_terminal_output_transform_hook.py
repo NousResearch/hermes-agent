@@ -172,7 +172,7 @@ def test_terminal_output_transform_does_not_change_approval_or_exit_code_meaning
 
 
 def test_terminal_output_transform_integration_with_real_plugin(monkeypatch, tmp_path):
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
 
     hermes_home = Path(os.environ["HERMES_HOME"])
     plugins_dir = hermes_home / "plugins"

@@ -32,7 +32,7 @@ def _quit_clean_session_with_history(tmp_path, monkeypatch):
     """``hermes --tui -w``, one user + assistant exchange, ``/quit`` (row ended ``tui_shutdown``)."""
     from hermes_agent.hermes_cli import main_tui_launch
     from hermes_agent.hermes_cli.worktree_ops import _setup_worktree
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.hermes_state import SessionDB
 
     repo = _repo(tmp_path)
@@ -105,7 +105,7 @@ def test_resume_recreates_the_removed_tui_worktree_so_turns_run(tmp_path, monkey
 def test_resume_reuses_the_surviving_branch(tmp_path, monkeypatch):
     """A tree removed while its branch survived comes back on that branch, at its commit."""
     from hermes_agent.hermes_cli.worktree_ops import _setup_worktree
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.hermes_state import SessionDB
 
     repo = _repo(tmp_path)
@@ -131,7 +131,7 @@ def test_resume_reuses_the_surviving_branch(tmp_path, monkeypatch):
 
 
 def test_resume_never_creates_a_missing_dir_the_launcher_did_not_make(tmp_path, monkeypatch):
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.hermes_state import SessionDB
 
     repo = _repo(tmp_path)
@@ -156,7 +156,7 @@ def test_a_store_error_reading_the_policy_falls_back_to_the_row_cwd(tmp_path, mo
 
     from hermes_agent import hermes_state_local
     from hermes_agent.hermes_cli.worktree_ops import _setup_worktree
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.hermes_state import SessionDB
 
     repo = _repo(tmp_path)

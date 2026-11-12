@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 from hermes_agent.hermes_cli.plugin_validate import validate_plugin_dir
 
 _GUIDE = Path(__file__).resolve().parents[2] / "website/docs/developer-guide/browser-vault-plugin.md"

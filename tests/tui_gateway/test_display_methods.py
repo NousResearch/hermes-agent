@@ -12,7 +12,7 @@ from hermes_agent.hermes_cli.dashboard_auth import ws_tickets
 
 
 def test_install_worker_keeps_the_requested_profile_scope(tmp_path, monkeypatch):
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.tools.bot_desktop import install, runtime
     from hermes_agent.tui_gateway import server
 

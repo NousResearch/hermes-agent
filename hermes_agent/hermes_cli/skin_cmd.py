@@ -12,7 +12,7 @@ import re
 import sys
 from pathlib import Path
 
-from hermes_constants import display_hermes_home, get_hermes_home
+from hermes_agent.hermes_constants import display_hermes_home, get_hermes_home
 
 _HEX_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 
@@ -34,7 +34,7 @@ def _use(name: str) -> None:
 
 
 def _skin_set(key: str, value: str, skin: str | None) -> int:
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
     if not _HEX_RE.match(value):
         print(f"✗ {value!r} is not a #rrggbb hex color", file=sys.stderr)
         return 1
@@ -62,7 +62,7 @@ def _skin_set(key: str, value: str, skin: str | None) -> int:
     # Atomic write: write_text truncates with no fsync; safe_load("") → None → {} would
     # permanently lose the palette on the next set.
     # See #51356.
-    from utils import atomic_yaml_write
+    from hermes_agent.utils import atomic_yaml_write
     atomic_yaml_write(path, data, sort_keys=False)
     if target != name:
         _use(target)

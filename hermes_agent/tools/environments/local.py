@@ -17,7 +17,7 @@ import time
 from collections.abc import Mapping
 from pathlib import Path
 
-from hermes_constants import get_process_hermes_home
+from hermes_agent.hermes_constants import get_process_hermes_home
 from hermes_agent.tools.environments.base import BaseEnvironment
 from hermes_agent.tools.environments.base_output import _pipe_stdin
 from hermes_agent.hermes_cli._subprocess_compat import windows_hide_flags
@@ -54,7 +54,7 @@ _BG_GROUP_RE = re.compile(r"^(hermes_bg_[A-Za-z0-9_-]+)\.(log|pid|exit)$")
 def _default_terminal_temp_dir() -> Path | None:
     """Return HERMES_HOME/cache/terminal, or None if unresolvable."""
     try:
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         return get_hermes_home() / "cache" / "terminal"
     except Exception:
         return None
@@ -65,7 +65,7 @@ def cleanup_terminal_temp_cache(max_age_hours: float = TERMINAL_TEMP_MAX_IDLE_HO
     directory's subtree; the kwarg name is the ``cleanup_*_cache`` signature the gateway
     housekeeping loop calls every entry with); return count.
     Only the managed default dir is pruned — never a user-pointed ``terminal.temp_dir``."""
-    from hermes_constants_scratch import subtree_touched_since
+    from hermes_agent.hermes_constants_scratch import subtree_touched_since
 
     root = _default_terminal_temp_dir()
     if root is None:
@@ -234,7 +234,7 @@ def _resolve_safe_cwd(cwd: str) -> str:
 # --- Child-process environment construction ---
 def _apply_profile_home(env: dict) -> None:
     """Bridge the context-local HERMES_HOME override, then the subprocess HOME contract."""
-    from hermes_constants import apply_subprocess_home_env, get_hermes_home_override
+    from hermes_agent.hermes_constants import apply_subprocess_home_env, get_hermes_home_override
     try:
         if value := get_hermes_home_override():
             env["HERMES_HOME"] = value
@@ -449,7 +449,7 @@ def served_profile_child_env(
     ``hermes_subprocess_env`` snapshot."""
     from hermes_agent.agent.secret_scope import (
         UnscopedSecretError, build_profile_secret_scope, current_secret_scope, is_multiplex_active)
-    from hermes_constants import apply_scratch_tmp_env, get_hermes_home_override
+    from hermes_agent.hermes_constants import apply_scratch_tmp_env, get_hermes_home_override
     env = dict(base) if base is not None else hermes_subprocess_env(inherit_credentials=inherit_credentials)
     target = str(target_home or get_hermes_home_override() or "")
     if target:
@@ -481,7 +481,7 @@ def host_gateway_child_env(
     (desktop, fleet restart, detached watcher) must not donate its dotenv to the
     multiplexer that owns the primary adapter map.
     """
-    from hermes_constants import get_default_hermes_root
+    from hermes_agent.hermes_constants import get_default_hermes_root
     return served_profile_child_env(
         base=base, target_home=get_default_hermes_root(), inherit_credentials=True,
     )
@@ -493,7 +493,7 @@ def _is_routed_home(target_home: str | Path) -> bool:
     Same launch-home identity as ``hermes_agent.agent.secret_scope.serves_routed_profile()``: under a host that
     mirrors the served profile into ``HERMES_HOME``, the live env var names the served home and the
     launch residue would never be stripped from that profile's child env."""
-    from hermes_constants import get_routing_process_hermes_home
+    from hermes_agent.hermes_constants import get_routing_process_hermes_home
     try:
         return Path(target_home).resolve() != get_routing_process_hermes_home().resolve()
     except OSError:
@@ -511,7 +511,7 @@ def strip_launch_profile_env(env: dict, target_home: str | Path | None = None) -
     gateway-wide multiplex flag on": the Desktop/dashboard backend serves ``?profile=B`` by
     installing a HERMES_HOME override without that flag."""
     from hermes_agent.agent.secret_scope import _is_global_env, load_env_file
-    from hermes_constants import get_hermes_home_override, get_routing_process_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home_override, get_routing_process_hermes_home
     target = target_home or get_hermes_home_override()
     if not target or not _is_routed_home(target):
         return env
@@ -721,7 +721,7 @@ def _managed_runtime_path_entries() -> list[str]:
     """
     try:
         import pm
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
 
         env = pm.env_for("npm", base_env={"PATH": ""})
         managed = [Path(d) for d in env.get("PATH", "").split(os.pathsep) if d]

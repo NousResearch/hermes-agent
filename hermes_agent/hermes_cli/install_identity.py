@@ -10,8 +10,8 @@ import threading
 from typing import Optional
 import uuid
 
-from hermes_constants import get_default_hermes_root
-from utils import atomic_write_text
+from hermes_agent.hermes_constants import get_default_hermes_root
+from hermes_agent.utils import atomic_write_text
 
 _INSTALL_ID_FILENAME = "install_id"
 _INSTALL_ID_RE = re.compile(r"^[0-9a-f]{32}$")
@@ -72,7 +72,7 @@ def read_or_create_install_id(root: Path | None = None) -> Optional[str]:
         if existing is not None:
             return existing  # Existing identities remain readable on read-only roots.
         try:
-            from hermes_constants import mkdir_under_hermes_home
+            from hermes_agent.hermes_constants import mkdir_under_hermes_home
             mkdir_under_hermes_home(root)
             with _install_id_file_lock(root):
                 existing, mint = _read_existing(path)

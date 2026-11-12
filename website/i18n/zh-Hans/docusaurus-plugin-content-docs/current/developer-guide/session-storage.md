@@ -415,6 +415,6 @@ db.delete_session("sess_abc123")
 
 默认路径：`~/.hermes/state.db`
 
-该路径由 `hermes_constants.get_hermes_home()` 推导，默认解析为 `~/.hermes/`，或 `HERMES_HOME` 环境变量的值。
+该路径由 `hermes_agent.hermes_constants.get_hermes_home()` 推导，默认解析为 `~/.hermes/`，或 `HERMES_HOME` 环境变量的值。
 
 数据库文件、WAL 文件（`state.db-wal`）和共享内存文件（`state.db-shm`）均创建于同一目录。

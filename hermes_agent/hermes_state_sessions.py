@@ -344,7 +344,7 @@ class SessionSessionsMixin:
         ``<root>/profiles/<name>/state.db`` → name): a gateway serving a NON-launch profile opens that
         profile's store. None outside the profile tree — NULL beats a fabricated owner."""
         try:
-            from hermes_constants import get_default_hermes_root
+            from hermes_agent.hermes_constants import get_default_hermes_root
             root = get_default_hermes_root().resolve()
             parent = Path(self.db_path).resolve().parent
             if parent == root:

@@ -101,7 +101,7 @@ async def test_tui_context_with_a_live_agent_renders_the_category_table(owner, m
 @pytest.mark.asyncio
 async def test_tui_cron_is_the_classic_overview_with_the_profile_jobs(owner):
     from hermes_agent.cron.jobs import create_job
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
     token = set_hermes_home_override(str(owner.home))
     try:
         create_job('Summarize the news', '0 9 * * *', name='daily-digest')
@@ -150,7 +150,7 @@ async def test_cron_writes_stay_refused_on_a_viewer_connection_and_reads_list_al
     created the session, a classic CLI session included. Its reads still list, ``-a`` included (main's TUI
     alias)."""
     from hermes_agent.cron.jobs import create_job, pause_job
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
     token = set_hermes_home_override(str(owner.home))
     try:
         pause_job(create_job('ping', 'every 2h', name='parked')['id'])

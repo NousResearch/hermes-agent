@@ -277,7 +277,7 @@ class TestMemoryManager:
         from hermes_agent.agent.secret_scope import (
             is_multiplex_active, reset_secret_scope, set_multiplex_active, set_secret_scope,
         )
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
         from hermes_agent.hermes_cli.config import atomic_config_write
 
         a, b = tmp_path / "a", tmp_path / "b"
@@ -502,7 +502,7 @@ class TestMemoryManager:
         is keyed per Hermes home: another profile's same-named provider still recalls.
         """
         import hermes_agent.agent.memory_manager as mm
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
         monkeypatch.setattr(mm, "_PROBE_INTERVAL_S", 1e9)
         stuck = mm._MAX_STUCK_CALLS

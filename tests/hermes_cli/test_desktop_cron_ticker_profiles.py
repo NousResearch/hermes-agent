@@ -79,7 +79,7 @@ def test_multi_profile_homes_passed_to_builtin(monkeypatch, _providers, tmp_path
 def test_single_profile_ticks_only_without_gateway(monkeypatch, tmp_path, gateway_running):
     """Exercise Desktop startup through the real built-in scheduler loop."""
     from hermes_agent.cron.scheduler_provider import InProcessCronScheduler
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     import hermes_agent.hermes_cli.profiles as profiles_mod
 
     home = tmp_path / "root"
@@ -114,7 +114,7 @@ def test_enumeration_failure_fails_open(monkeypatch, _providers):
 
     ws._start_desktop_cron_ticker(threading.Event(), interval=11)
 
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     # This backend's own store only, behind the per-tick gateway gate (see the stand-down tests).
     assert set(builtin.start_kwargs) == {"interval", "profile_homes", "profile_gate"}
@@ -150,7 +150,7 @@ def test_desktop_ticker_serves_every_profile_and_yields_to_owning_gateway(monkey
     of its own, so the per-home liveness check alone lets both tickers race for its fires
     (#107485, #108428)."""
     import hermes_agent.hermes_cli.profiles as profiles_mod
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
 
     _sp, builtin = _providers
     root = tmp_path / ".hermes"
@@ -158,7 +158,7 @@ def test_desktop_ticker_serves_every_profile_and_yields_to_owning_gateway(monkey
         (root / "profiles" / name).mkdir(parents=True)
         (root / "profiles" / name / "config.yaml").write_text("{}\n")  # identity marker: served
     (root / "config.yaml").write_text(yaml.safe_dump({"gateway": {"multiplex_profiles": True}}))
-    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root)
+    monkeypatch.setattr("hermes_agent.hermes_constants.get_default_hermes_root", lambda: root)
     monkeypatch.setattr(profiles_mod, "_get_default_hermes_home", lambda: root)
     monkeypatch.setattr(profiles_mod, "_get_profiles_root", lambda: root / "profiles")
     monkeypatch.setattr(

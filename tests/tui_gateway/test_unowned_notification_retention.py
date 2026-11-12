@@ -204,7 +204,7 @@ def test_the_orphan_sweep_counts_a_parked_delegation_as_live_until_the_park_lets
     """The park is out of the ledger sweep's sight: without the held-copy mark, a live delegation parked past a
     claim lease reads as lost, so the sweep warns and queues a duplicate every lease. While parked it is never
     re-offered; once the park lets go of it (TTL) the sweep re-offers the still-pending row."""
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from tests.waiting import wait_until
     from hermes_agent.tools import async_delegation as ad
     from hermes_agent.tools.process_registry_awaiting import release, take_ready

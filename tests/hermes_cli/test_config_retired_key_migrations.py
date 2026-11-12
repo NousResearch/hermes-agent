@@ -1,6 +1,6 @@
 """Config migrations that retire or rewrite obsolete keys (v43 / v44 / v51, stamp-independent steps)."""
 
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 
 class TestRetiredMultiplexAllowlist:

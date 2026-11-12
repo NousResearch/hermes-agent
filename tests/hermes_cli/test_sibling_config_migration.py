@@ -10,7 +10,7 @@ These tests use REAL config files on disk and the REAL migration pipeline —
 only the profile-root location is pointed at tmp_path.
 """
 
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 from pathlib import Path
 
 from hermes_agent.hermes_cli import update_cmd
@@ -45,7 +45,7 @@ def _setup(monkeypatch, tmp_path, active_home: Path, *, default_home: Path | Non
         "_get_default_hermes_home",
         lambda: default_home if default_home is not None else missing,
     )
-    import hermes_constants
+    from hermes_agent import hermes_constants
 
     monkeypatch.setattr(
         hermes_constants, "get_process_hermes_home", lambda: active_home
@@ -119,7 +119,7 @@ def test_one_broken_profile_does_not_block_others(monkeypatch, tmp_path):
 
 def test_override_is_reset_after_run(monkeypatch, tmp_path):
     """The ContextVar override must not leak past the sweep."""
-    from hermes_constants import get_hermes_home_override
+    from hermes_agent.hermes_constants import get_hermes_home_override
 
     active = _write_profile(tmp_path / "profiles", "active", _latest_version())
     _write_profile(tmp_path / "profiles", "research", 12)

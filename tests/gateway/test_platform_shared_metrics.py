@@ -14,7 +14,7 @@ from hermes_agent.gateway.stream_consumer import GatewayStreamConsumer, StreamCo
 from hermes_agent.hermes_cli.observability import relay_shared_metrics as rsm
 from hermes_agent.hermes_cli.observability import shared_metrics_contract as contract
 from hermes_agent.hermes_cli.observability import shared_metrics_gateway as smg
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 
 
 @pytest.fixture
@@ -156,7 +156,7 @@ def test_a_relay_delivered_turn_stops_the_clock_its_inbound_started(rows):
 
 def test_a_delivery_sent_after_the_routed_scope_resets_lands_in_the_owning_profile(rows, tmp_path):
     # Multiplexed gateway: the turn starts in profile B's scope, the final send runs after it is reset.
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     home_b = tmp_path / "profiles" / "b"
     token = set_hermes_home_override(str(home_b))

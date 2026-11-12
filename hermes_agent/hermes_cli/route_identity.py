@@ -55,7 +55,7 @@ def provider_owns_route(provider: Any, base_url: Any, config: Any = None) -> Opt
     never fetches the models.dev catalog.
     """
     from hermes_agent.hermes_cli.providers import get_provider, normalize_provider, resolve_custom_provider, resolve_user_provider
-    from utils import base_url_hostname
+    from hermes_agent.utils import base_url_hostname
 
     host = base_url_hostname(str(base_url or ""))
     if not host:

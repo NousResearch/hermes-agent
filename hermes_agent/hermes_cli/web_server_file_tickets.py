@@ -14,7 +14,7 @@ Range requests for one source, so a stream ticket is reusable until it expires.
 Each ticket captures the resolved file (on the profile's SSH workspace
 when it has one, as for native Desktop's download) and the named profile homes it
 belongs to; the resource opener refuses it once one of those homes is missing or
-deleted (``hermes_constants.assert_named_profile_home_live``). A ticket minted for
+deleted (``hermes_agent.hermes_constants.assert_named_profile_home_live``). A ticket minted for
 a request that presented the browser session token records that credential's
 generation (``hermes_agent.hermes_cli.browser_credential``) and redeems only while it is
 current, like a socket ticket, so signing out ends it even when the sign-out lands
@@ -64,7 +64,7 @@ class FileAuthority:
 
     def check_live(self) -> None:
         """``FileNotFoundError`` once a named profile home this file belongs to is missing or deleted."""
-        from hermes_constants import assert_named_profile_home_live
+        from hermes_agent.hermes_constants import assert_named_profile_home_live
 
         for home in self.homes:
             assert_named_profile_home_live(home)

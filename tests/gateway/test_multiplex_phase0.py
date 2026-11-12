@@ -11,9 +11,9 @@ Covers the three Phase 0 deliverables:
 import pytest
 from datetime import datetime
 from unittest.mock import patch
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from hermes_agent.gateway.config import GatewayConfig, Platform
 from hermes_agent.gateway.session import SessionSource, SessionStore, build_session_key
 

@@ -43,7 +43,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 import pytest
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 from tests.e2e.core.upgrade._helpers import WORKTREE, isolated_env
 
@@ -396,7 +396,7 @@ class ReadFaults:
         self.path = os.path.abspath(str(config_path))
         self.count = 0
         self.fail_at: set[int] = set()
-        import utils
+        from hermes_agent import utils
         real = utils.fast_safe_load
 
         def wrapped(stream):

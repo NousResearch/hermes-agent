@@ -16,7 +16,7 @@ from hermes_agent.hermes_state_ids import new_session_id
 from pathlib import Path
 from rich.console import Console
 from typing import Any, Dict, List, Optional
-from utils import base_url_host_matches, base_url_hostname, is_truthy_value
+from hermes_agent.utils import base_url_host_matches, base_url_hostname, is_truthy_value
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("hermes_agent.cli")
@@ -354,7 +354,7 @@ class CLIInitMixin:
         # Per-model override > global reasoning_effort.
         # Reasoning config (OpenRouter reasoning effort level) Per-model override > global reasoning_effort
         # — resolved through the shared chokepoint in hermes_constants (Closes #21256).
-        from hermes_constants import resolve_reasoning_config
+        from hermes_agent.hermes_constants import resolve_reasoning_config
         self.reasoning_config = resolve_reasoning_config(CLI_CONFIG, self.model)
         self._explicit_reasoning_config = None
         self._explicit_reasoning = None

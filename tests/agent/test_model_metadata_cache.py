@@ -57,7 +57,7 @@ def test_invalidation_evicts_in_process_probe_caches_when_the_lock_is_unavailabl
     import contextlib
 
     import hermes_agent.hermes_cli.auth as auth_module
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
 
     base_url = "https://a.example/v1"
     mm._LOCAL_CTX_PROBE_CACHE[("model-a", base_url)] = (200_000, 0.0)

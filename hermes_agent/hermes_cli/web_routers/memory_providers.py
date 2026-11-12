@@ -82,7 +82,7 @@ def _coerce_field_value(field: ProviderField, raw: str) -> Any:
             raise ValueError(f"Invalid value for '{field.key}'")
         return value
     if kind == "bool":
-        from utils import is_truthy_value
+        from hermes_agent.utils import is_truthy_value
         return is_truthy_value(value)
     if not value:
         return _UNSET
@@ -162,8 +162,8 @@ def _apply_field_values(provider: ProviderConfigSchema, values: dict[str, str], 
 
 
 def _write_json_0600(path: Path, data: dict[str, Any]) -> None:
-    from utils import atomic_json_write
-    from hermes_constants import mkdir_under_hermes_home
+    from hermes_agent.utils import atomic_json_write
+    from hermes_agent.hermes_constants import mkdir_under_hermes_home
     mkdir_under_hermes_home(path.parent)
     atomic_json_write(path, data, mode=0o600)
 
@@ -200,7 +200,7 @@ def _serialize_field_value(field: ProviderField, value: Any) -> str:
     if value is None:
         return field.default
     if field.kind == "bool":
-        from utils import is_truthy_value
+        from hermes_agent.utils import is_truthy_value
         return "true" if is_truthy_value(value) else "false"
     if field.kind == "json" and isinstance(value, (dict, list)):
         return json.dumps(value)

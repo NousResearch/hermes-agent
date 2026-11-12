@@ -16,14 +16,14 @@ from tests.waiting import wait_until
 import psutil
 import pytest
 
-from hermes_constants import apply_scratch_tmp_env, get_scratch_dir, prune_scratch_dir
+from hermes_agent.hermes_constants import apply_scratch_tmp_env, get_scratch_dir, prune_scratch_dir
 
 
 def test_boot_hook_and_prompt_hand_the_prune_to_one_child(scratch_prune_spawns, tmp_path, monkeypatch):
     """The boot hook returns with TMPDIR pointing at a scratch dir that already exists and
     starts exactly one prune process, for that dir; the prompt build starts no other. A routed
     caller's process prunes the routed home's dir, never the launch home's."""
-    import hermes_constants as constants
+    import hermes_agent.hermes_constants as constants
     from hermes_agent.agent.prompt_builder import _local_host_hints
 
     monkeypatch.setattr(constants, "_scratch_pruned_once", False)
@@ -68,7 +68,7 @@ def test_a_short_lived_process_still_completes_its_due_prune(tmp_path):
     doomed = _idle_entry(get_scratch_dir(routed, prune=False), "routed-lane")
     shell_entry = _idle_entry(get_scratch_dir(routed, prune=False), "shell-lane")
     repo = Path(__file__).resolve().parents[1]
-    launcher = ("import sys; sys.path.insert(0, sys.argv[1]); from pathlib import Path; import hermes_constants as h; "
+    launcher = ("import sys; sys.path.insert(0, sys.argv[1]); from pathlib import Path; import hermes_agent.hermes_constants as h; "
                 "h.set_hermes_home_override(Path(sys.argv[2])); h.get_scratch_dir()")
     # shell (cwd in an idle entry, stays) -> wrapper (exits once the launcher does) -> launcher
     run = "import subprocess, sys; subprocess.run(sys.argv[1:], cwd={!r}, stdin=subprocess.DEVNULL, check=True)"
@@ -98,7 +98,7 @@ def test_launcher_ancestry_stamp_is_boot_relative_even_for_a_non_utf8_name(tmp_p
     wall-clock birth that a clock step moves: a process whose name was cut mid-UTF-8 (comm is
     15 bytes) still gets its tick, and is recognised as itself. A wall-clock fallback there
     disowned the user's shell after a clock step and the pass killed it."""
-    import hermes_constants_scratch as rules
+    import hermes_agent.hermes_constants_scratch as rules
 
     ready = tmp_path / "ready"
     child = subprocess.Popen([sys.executable, "-c", (
@@ -137,10 +137,10 @@ def test_scratch_env_follows_home_and_respects_user_tmpdir(tmp_path):
 
 
 def test_bootstrap_import_exports_scratch_to_process_and_children(tmp_path):
-    """``import hermes_bootstrap`` alone makes ``tempfile`` (this process AND a child) land in scratch."""
+    """``from hermes_agent import hermes_bootstrap`` alone makes ``tempfile`` (this process AND a child) land in scratch."""
     env = {k: v for k, v in os.environ.items() if k not in ("TMPDIR", "TMP", "TEMP", "HERMES_SCRATCH_DIR")}
     env["HERMES_HOME"] = str(tmp_path)
-    code = ("import tempfile, os, subprocess, sys; import hermes_bootstrap; "
+    code = ("import tempfile, os, subprocess, sys; from hermes_agent import hermes_bootstrap; "
             "print(tempfile.gettempdir()); "
             "print(subprocess.run([sys.executable, '-c', 'import tempfile;print(tempfile.gettempdir())'],"
             " capture_output=True, text=True).stdout.strip())")
@@ -291,7 +291,7 @@ class TestScratchDirPermissionPolicy:
         # Podman/containerd/K8s runtimes often don't export HERMES_CONTAINER; the canonical
         # _detect_container breadth (not the narrower legacy signal set) must skip the chmod.
         self._isolate_env(monkeypatch, tmp_path)
-        monkeypatch.setattr("hermes_constants._detect_container", lambda: True)
+        monkeypatch.setattr("hermes_agent.hermes_constants._detect_container", lambda: True)
         pre = tmp_path / "cache" / "scratch"
         pre.mkdir(parents=True)
         os.chmod(pre, 0o750)
@@ -340,7 +340,7 @@ def test_secure_file_skips_chmod_on_canonical_container_signal(tmp_path, monkeyp
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
     for var in ("HERMES_MANAGED", "HERMES_CONTAINER", "HERMES_SKIP_CHMOD"):
         monkeypatch.delenv(var, raising=False)
-    monkeypatch.setattr("hermes_constants._detect_container", lambda: True)
+    monkeypatch.setattr("hermes_agent.hermes_constants._detect_container", lambda: True)
     f = tmp_path / "config.yaml"
     f.write_text("", encoding="utf-8")
     os.chmod(f, 0o640)
@@ -401,7 +401,7 @@ def test_prune_records_removals_and_kills_in_scratch_prune_log(tmp_path: Path) -
             real_rmtree(path, *args, **kwargs)
 
     try:
-        with patch("hermes_constants_scratch.shutil.rmtree", rmtree):
+        with patch("hermes_agent.hermes_constants_scratch.shutil.rmtree", rmtree):
             assert prune_scratch_dir(scratch) == 1
         assert worker.wait(timeout=10) is not None
     finally:
@@ -450,7 +450,7 @@ def test_prune_log_keeps_record_when_another_prune_rotated_first(
     """Two prunes of one home can both reach rollover: the other one renames
     ``scratch-prune.log`` between this one's existence check and its rename. The rotation is
     already done, so the record goes to the new file instead of being dropped."""
-    import hermes_constants_scratch
+    from hermes_agent import hermes_constants_scratch
 
     scratch = get_scratch_dir(tmp_path, prune=False)
     entry = scratch / "idle-lane"
@@ -520,7 +520,7 @@ def test_write_during_size_walk_is_rescued(tmp_path: Path) -> None:
     A writer overwrites an old file while the prune is sizing the doomed entry; the
     re-check must still see it. Red when the size walk runs after the re-check: the
     entry is destroyed with the fresh write inside."""
-    import hermes_constants_scratch as scratch_mod
+    import hermes_agent.hermes_constants_scratch as scratch_mod
 
     scratch = get_scratch_dir(tmp_path, prune=False)
     entry = scratch / "sized-lane"
@@ -536,7 +536,7 @@ def test_write_during_size_walk_is_rescued(tmp_path: Path) -> None:
         payload.write_text("FRESH", encoding="utf-8")
         return real_tree_bytes(path)
 
-    with patch("hermes_constants_scratch._tree_bytes", write_during_size_walk):
+    with patch("hermes_agent.hermes_constants_scratch._tree_bytes", write_during_size_walk):
         assert prune_scratch_dir(scratch) == 0
     assert payload.read_text(encoding="utf-8-sig") == "FRESH", "write during size walk was destroyed"
     log = (tmp_path / "logs" / "scratch-prune.log").read_text(encoding="utf-8-sig")
@@ -564,7 +564,7 @@ def test_midprune_resumed_write_is_rescued(tmp_path: Path) -> None:
         fresh.write_text("FRESH RESUMED WORK\n", encoding="utf-8")
         return 0
 
-    with patch("hermes_constants_scratch.reap_processes_rooted_in", write_during_reap):
+    with patch("hermes_agent.hermes_constants_scratch.reap_processes_rooted_in", write_during_reap):
         assert prune_scratch_dir(scratch) == 0  # rescued — not counted as removed
     assert fresh.exists(), "fresh mid-prune write was destroyed"
     assert entry.exists()
@@ -598,7 +598,7 @@ def test_midprune_nested_overwrite_is_rescued_by_descending_recheck(tmp_path: Pa
         payload.write_text("FRESH OVERWRITE, DEEP\n", encoding="utf-8")
         return 0
 
-    with patch("hermes_constants_scratch.reap_processes_rooted_in", overwrite_during_reap):
+    with patch("hermes_agent.hermes_constants_scratch.reap_processes_rooted_in", overwrite_during_reap):
         assert prune_scratch_dir(scratch) == 0  # rescued — not counted as removed
     assert payload.read_text(encoding="utf-8-sig") == "FRESH OVERWRITE, DEEP\n", (
         "deep mid-prune overwrite was destroyed"
@@ -627,7 +627,7 @@ def test_midprune_vanished_entry_is_recorded_not_counted(tmp_path: Path) -> None
         shutil.rmtree(entry)
         return 0
 
-    with patch("hermes_constants_scratch.reap_processes_rooted_in", remove_during_reap):
+    with patch("hermes_agent.hermes_constants_scratch.reap_processes_rooted_in", remove_during_reap):
         assert prune_scratch_dir(scratch) == 0  # gone, but not by our hand
     assert not entry.exists()
     log = (tmp_path / "logs" / "scratch-prune.log").read_text(encoding="utf-8-sig")
@@ -668,9 +668,9 @@ def test_postremoval_unreadable_entry_is_not_counted_as_removed(tmp_path: Path) 
             raise PermissionError("post-rmtree visibility denied")
         return real_lstat(path, *args, **kwargs)
 
-    with patch("hermes_constants_scratch.reap_processes_rooted_in", lambda *a, **k: 0), \
-         patch("hermes_constants_scratch.shutil.rmtree", rmtree_leaves_residue), \
-         patch("hermes_constants_scratch.os.lstat", lstat):
+    with patch("hermes_agent.hermes_constants_scratch.reap_processes_rooted_in", lambda *a, **k: 0), \
+         patch("hermes_agent.hermes_constants_scratch.shutil.rmtree", rmtree_leaves_residue), \
+         patch("hermes_agent.hermes_constants_scratch.os.lstat", lstat):
         assert prune_scratch_dir(scratch) == 0  # unknown, not removed
     assert entry.exists() and payload.read_text(encoding="utf-8-sig") == "still here"
     log = log_file.read_text(encoding="utf-8-sig")

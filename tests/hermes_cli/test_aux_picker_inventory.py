@@ -22,7 +22,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 CONFIG = {
     "model": {"provider": "openrouter", "default": "anthropic/claude-opus-4.6"},

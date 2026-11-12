@@ -106,7 +106,7 @@ def main(context: Path, result: Path) -> int:
         # selected store Python. Bootstrap must run before any app imports;
         # its ordinary currency check is now a no-op, not another update.
         sys.argv = list(request["argv"]) if restarting else [str(root / "hermes"), "update"]
-        import hermes_bootstrap
+        from hermes_agent import hermes_bootstrap
         # Import failures are update failures too: keep the original receipt
         # open before importing the application graph from the new checkout.
         from hermes_agent.hermes_cli import main as cli
@@ -170,7 +170,7 @@ def main(context: Path, result: Path) -> int:
         if code and request.get("gateway_mode"):
             # Even an application import failure must wake the gateway watcher. A run that already
             # closed as a success (an interrupt after verification) stays 0 (review regression 3).
-            from hermes_constants import get_hermes_home
+            from hermes_agent.hermes_constants import get_hermes_home
             from hermes_agent.hermes_cli.runtime_state import _atomic_bytes
 
             _atomic_bytes(get_hermes_home() / ".update_exit_code",

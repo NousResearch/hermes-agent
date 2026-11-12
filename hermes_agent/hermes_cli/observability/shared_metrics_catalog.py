@@ -45,7 +45,7 @@ def slash_command_names() -> frozenset[str]:
 
 @functools.cache
 def bundled_skill_names() -> frozenset[str]:
-    from hermes_constants import get_bundled_skills_dir, get_optional_skills_dir
+    from hermes_agent.hermes_constants import get_bundled_skills_dir, get_optional_skills_dir
 
     return _skill_dir_names(get_bundled_skills_dir(_REPO_ROOT / "skills")) | _skill_dir_names(
         get_optional_skills_dir(_REPO_ROOT / "optional-skills")
@@ -54,7 +54,7 @@ def bundled_skill_names() -> frozenset[str]:
 
 @functools.cache
 def mcp_catalog_names() -> frozenset[str]:
-    from hermes_constants import get_optional_mcps_dir
+    from hermes_agent.hermes_constants import get_optional_mcps_dir
 
     root = get_optional_mcps_dir(_REPO_ROOT / "optional-mcps")
     try:
@@ -159,7 +159,7 @@ def platform_metric_name(raw: object, core: frozenset[str]) -> str:
         return name
     if not name:
         return "plugin"
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     return _catalog_platform_owner(str(get_hermes_home()), name) or "plugin"
 

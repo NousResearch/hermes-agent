@@ -4,7 +4,7 @@ manifest loaded through the real discovery path — no loader mocks."""
 
 from __future__ import annotations
 
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 import pytest
 
 from hermes_agent.agent import i18n, i18n_layers
@@ -94,7 +94,7 @@ def test_overlay_only_language_is_supported_and_falls_back_to_english(home):
 
 def test_overlay_is_profile_scoped_across_two_homes(tmp_path, monkeypatch, clean_layers):
     """Home A overlays de; home B does not. A → B → A must never serve A's overlay to B or B's miss to A."""
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     home_a, home_b = tmp_path / "a", tmp_path / "b"
     (home_a / "locales").mkdir(parents=True)

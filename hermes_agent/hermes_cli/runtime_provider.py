@@ -33,9 +33,9 @@ from hermes_agent.hermes_cli.auth import (  # resolve_external_process_provider_
 )
 from hermes_agent.hermes_cli import config as _config_mod
 from hermes_agent.hermes_cli import models as _models  # attribute access keeps ``hermes_agent.hermes_cli.models.<name>`` patches effective
-from hermes_constants import OPENROUTER_BASE_URL
+from hermes_agent.hermes_constants import OPENROUTER_BASE_URL
 from hermes_agent.hermes_cli.providers import determine_api_mode, get_provider, is_actual_route, is_official_openai_host, nous_api_mode
-from utils import base_url_host_matches, base_url_hostname, base_url_path, env_int
+from hermes_agent.utils import base_url_host_matches, base_url_hostname, base_url_path, env_int
 
 
 # A frozen session route's config (``frozen_runtime_config``); None = the live profile config.

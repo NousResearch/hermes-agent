@@ -96,7 +96,7 @@ class TestInactivityJanitorMultiplex:
 
     def test_janitor_tears_down_under_owner_profile_scope(self, tmp_path, monkeypatch):
         from hermes_agent.agent import secret_scope
-        from hermes_constants import (
+        from hermes_agent.hermes_constants import (
             get_hermes_home, reset_hermes_home_override, set_hermes_home_override,
         )
 
@@ -473,7 +473,7 @@ def fake_containers(monkeypatch, isolated_sessions):
 
 
 def _in_home(home, fn):
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
     token = set_hermes_home_override(str(home))
     try:
         return fn()

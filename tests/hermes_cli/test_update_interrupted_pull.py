@@ -34,7 +34,7 @@ _MULTI = "top = 1\nx = 0\ny = 0\nz = 0\nend = 1\n"
 # before any code in the entry can), then stops.
 _ENTRY_SPY = """
 import importlib, json, os, sys
-import hermes_bootstrap
+from hermes_agent import hermes_bootstrap
 from hermes_agent.hermes_cli import _early_recovery as er
 
 venv, entry = os.path.realpath(sys.prefix), sys.argv[1]

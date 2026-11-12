@@ -117,7 +117,7 @@ and its default cap applies only inside `hermes_agent.agent.delegation_context.i
 Put new embed-cost rules there, never a second counter in a tool.
 
 **Every spawn goes through one env builder.** `environments/local.py::build_subprocess_env` (+
-`hermes_constants.apply_subprocess_home_env`, `env_passthrough.py::resolve_passthrough_value`) is
+`hermes_agent.hermes_constants.apply_subprocess_home_env`, `env_passthrough.py::resolve_passthrough_value`) is
 how a terminal, `execute_code`, background process, delegation child, ACP or MCP stdio child gets
 its environment; a child that acts FOR the served profile (`hermes -p X` workers, `key_cmd`
 helpers, browser drivers, Bot Chat relay turns) uses `environments/local.py::

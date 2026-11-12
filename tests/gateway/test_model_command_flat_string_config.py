@@ -11,7 +11,7 @@ before mutation, so ``--global`` succeeds and the config is rewritten in
 the proper ``model: {default: ..., provider: ...}`` form.
 """
 
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 import pytest
 
 from hermes_agent.gateway.config import Platform
@@ -73,7 +73,7 @@ def _setup_isolated_home(tmp_path, monkeypatch, model_yaml_value):
         lambda **kw: _fake_switch_result(),
     )
     # save_config writes to ``get_hermes_home() / config.yaml`` — point it here.
-    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: hermes_home)
+    monkeypatch.setattr("hermes_agent.hermes_constants.get_hermes_home", lambda: hermes_home)
     monkeypatch.setattr("hermes_agent.hermes_cli.config.get_hermes_home", lambda: hermes_home)
     return cfg_path
 
@@ -124,7 +124,7 @@ async def test_model_global_persists_when_config_has_missing_model(tmp_path, mon
         "hermes_agent.hermes_cli.model_switch.switch_model",
         lambda **kw: _fake_switch_result(),
     )
-    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: hermes_home)
+    monkeypatch.setattr("hermes_agent.hermes_constants.get_hermes_home", lambda: hermes_home)
     monkeypatch.setattr("hermes_agent.hermes_cli.config.get_hermes_home", lambda: hermes_home)
 
     result = await _make_runner()._handle_model_command(

@@ -879,7 +879,7 @@ def _estimate_tool_tokens() -> dict[str, int]:
     """tiktoken (cl100k_base) tokens per tool name from the serialised OpenAI schema; cached per process and
     registry generation, {} if tiktoken/registry unavailable."""
     global _tool_token_cache
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
 
     scope = hermes_home_key()
     _tool_token_cache = _tool_token_cache or {}
@@ -1191,7 +1191,7 @@ def tools_command(args=None, first_install: bool = False, config: dict | None = 
         print()
 
     print()
-    from hermes_constants import display_hermes_home
+    from hermes_agent.hermes_constants import display_hermes_home
     print(color(f"  Tool configuration saved to {display_hermes_home()}/config.yaml", Colors.DIM))
     print(color("  Changes take effect on next 'hermes' or gateway restart.", Colors.DIM))
     print()

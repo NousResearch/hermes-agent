@@ -10,7 +10,7 @@ edit appeared to succeed while having no effect.
 from pathlib import Path
 
 import pytest
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 
 def _write_config(hermes_home: Path, data: dict) -> Path:

@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import hermes_constants
+from hermes_agent import hermes_constants
 from tests import conftest as suite_conftest
 
 

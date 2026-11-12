@@ -326,7 +326,7 @@ async def connect_gateway(endpoint=None, subject=None, *, max_size=8 * 1024 * 10
     ``draining`` (``restart_wait``) instead of attached, and the ticket carries that policy so the
     owner also refuses the socket when the wait opens between discovery and the dial."""
     from websockets.asyncio.client import connect
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.hermes_cli.gateway_runtime import attachable, ensure_gateway_runtime, gateway_profile_home
     from hermes_agent.hermes_cli.gateway_runtime_discovery import DiscoveryError
     from urllib.parse import urlsplit

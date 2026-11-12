@@ -6490,7 +6490,7 @@ def _load_slack_bot_tokens(raw_token: str, *, quiet: bool) -> list[str]:
     order). ``quiet`` (standalone): no permission warning / per-token INFO; failures swallowed."""
     tokens = [t.strip() for t in raw_token.split(",") if t.strip()]
     try:
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         tokens_file = get_hermes_home() / "slack_tokens.json"
         present = tokens_file.exists()
     except Exception:
@@ -6502,7 +6502,7 @@ def _load_slack_bot_tokens(raw_token: str, *, quiet: bool) -> list[str]:
     try:
         if not quiet:
             # File holds plaintext bot tokens; warn if group/world-readable.
-            from utils import warn_if_credential_file_broadly_readable
+            from hermes_agent.utils import warn_if_credential_file_broadly_readable
             warn_if_credential_file_broadly_readable(tokens_file, label="[Slack]", log=logger)
         saved = json.loads(tokens_file.read_text(encoding="utf-8-sig"))
         for team_id, entry in saved.items():
@@ -6782,7 +6782,7 @@ def _write_slack_manifest_and_instruct() -> None:
     from hermes_agent.hermes_cli.cli_output import print_info, print_success, print_warning
     try:
         from hermes_agent.hermes_cli.slack_cli import _build_full_manifest
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         manifest = _build_full_manifest(
             bot_name="Hermes", bot_description="Your Hermes agent on Slack")
         target = _Path(get_hermes_home()) / "slack-manifest.json"

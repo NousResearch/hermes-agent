@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from hermes_agent.hermes_cli.process_identity import install_id, ledger_entries
-from hermes_constants import hermes_home_key
+from hermes_agent.hermes_constants import hermes_home_key
 
 
 def shared_profile_warning(*, home: Path | None = None, project_root: Path | None = None) -> str:

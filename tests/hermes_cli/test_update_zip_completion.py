@@ -14,7 +14,7 @@ from hermes_agent.hermes_cli import main, update_cmd, update_cmd_fleet as fleet,
 from hermes_agent.hermes_cli import update_cmd_fleet_verify as fleet_verify, update_cmd_zip, update_receipt
 from hermes_agent.hermes_cli.config_defaults import DEFAULT_CONFIG
 from hermes_agent.hermes_cli.update_inventory import RuntimeRecord, UpdatePlan
-import hermes_yaml
+from hermes_agent import hermes_yaml
 
 
 def _swap_leftovers(root):
@@ -431,7 +431,7 @@ def test_installed_app_without_a_checkout_build_is_still_rebuilt(zip_update, mon
     # The checkout under the default Hermes home is the one an installed app runs.
     (tmp_path / "default-home").mkdir()
     (tmp_path / "default-home" / "hermes-agent").symlink_to(zip_update.root)
-    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda **kw: tmp_path / "default-home")
+    monkeypatch.setattr("hermes_agent.hermes_constants.get_default_hermes_root", lambda **kw: tmp_path / "default-home")
     built = []
     monkeypatch.setattr("hermes_agent.hermes_cli.source_build.build_update_products",
                         lambda selected, *, desktop, after_dependencies=None: built.append(desktop))

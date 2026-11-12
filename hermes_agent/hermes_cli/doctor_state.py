@@ -241,7 +241,7 @@ def unpruned_cache_hogs(hermes_home: Path, min_bytes: int = _UNPRUNED_CACHE_WARN
 
     Finished campaign trees parked at the cache root sat for weeks (95 GB on one host)
     because only ``scratch/`` and ``terminal/`` are reaped; doctor is where that shows."""
-    from hermes_constants import scratch_dir_usage_bytes
+    from hermes_agent.hermes_constants import scratch_dir_usage_bytes
 
     cache = hermes_home / "cache"
     hogs: list[tuple[str, int]] = []
@@ -258,12 +258,12 @@ def unpruned_cache_hogs(hermes_home: Path, min_bytes: int = _UNPRUNED_CACHE_WARN
 
 def _check_scratch_dir(hermes_home: Path, _DHH: str) -> None:
     """Report the scratch dir (TMPDIR target) and its size; a user-set TMPDIR elsewhere is shown, not judged."""
-    from hermes_constants import (
+    from hermes_agent.hermes_constants import (
         SCRATCH_DIR_MARKER_ENV, SCRATCH_MAX_IDLE_HOURS, get_scratch_dir, scratch_dir_usage_bytes)
     scratch = get_scratch_dir(hermes_home, prune=False)
     size = _human_bytes(scratch_dir_usage_bytes(scratch))
     check_ok(f"{_DHH}/cache/scratch/ is the scratch dir (TMPDIR; {size}, entries pruned after {SCRATCH_MAX_IDLE_HOURS}h idle)")
-    from hermes_constants_scratch_stuck import removal_hint, stuck_entries
+    from hermes_agent.hermes_constants_scratch_stuck import removal_hint, stuck_entries
     for entry in stuck_entries(scratch):
         check_warn(f"{_DHH}/cache/scratch/{entry.name}/ holds files you may not delete, so the prune skips it — {removal_hint(entry)}")
     for name, nbytes in unpruned_cache_hogs(hermes_home):
@@ -343,7 +343,7 @@ _STATE_DB_STRUCTURAL_ISSUE = (
 def _repair_state_db(f: Finding, should_fix: bool, state_db_path: Path, kind: str) -> None:
     """Shared --fix path for both state.db corruption classes (FTS write health, malformed schema)."""
     if kind == "structural":
-        from hermes_constants import profile_cli_selector
+        from hermes_agent.hermes_constants import profile_cli_selector
         return f.manual_issues.append(_STATE_DB_STRUCTURAL_ISSUE.format(
             profile_arg=profile_cli_selector(), db_path=state_db_path))
     ok_label, not_fixed_label, failed_issue, fix_hint = _STATE_DB_REPAIRS[kind]
@@ -466,7 +466,7 @@ def _retired_wal_holders(f: Finding, state_db_path: Path, _DHH: str) -> bool:
     """Name the processes holding a retired -wal/-shm generation (#110054). Every SessionDB open is
     refused while they live, and the current inode has no holders, so the plain holder count says
     "0 holding the DB open" beside a green state.db line — the opposite of the truth."""
-    from hermes_constants import profile_cli_selector
+    from hermes_agent.hermes_constants import profile_cli_selector
     from hermes_agent.hermes_state_dbfile import iter_deleted_sqlite_sidecar_holders
     from hermes_agent.hermes_state_holders import describe_holder_pid
     pids = list(dict.fromkeys(pid for pid, _ in iter_deleted_sqlite_sidecar_holders(state_db_path)))
@@ -552,7 +552,7 @@ def _plugin_provenance_rows(plugins_dir) -> list:
 @doctor_check("")
 def _check_update_provenance(should_fix: bool, f: Finding) -> None:
     """Inspect local plugin update provenance without network or writes."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     printers = {"warn": check_warn, "ok": check_ok, "info": lambda text, detail: check_info(f"{text} {detail}".rstrip())}
     for kind, text, detail in _plugin_provenance_rows(get_hermes_home() / "plugins"):
@@ -683,7 +683,7 @@ def _check_plugins_in_both_lists(should_fix: bool, f: Finding) -> None:
 
 @doctor_check("")  # best-effort: profile enumeration must never break doctor
 def _check_profiles(should_fix: bool, f: Finding) -> None:
-    from hermes_constants import PROFILE_ID_RE
+    from hermes_agent.hermes_constants import PROFILE_ID_RE
     from hermes_agent.hermes_cli.config_backend import config_exists
     from hermes_agent.hermes_cli.profiles import _wrapper_path, list_profiles, _get_wrapper_dir, profile_exists
     import re as _re

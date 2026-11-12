@@ -23,7 +23,7 @@ def backup_env(monkeypatch, tmp_path):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
     # Reload so get_hermes_home picks up the env var fresh.
-    import hermes_constants
+    from hermes_agent import hermes_constants
     importlib.reload(hermes_constants)
     from hermes_agent.agent import curator_backup
     importlib.reload(curator_backup)
@@ -246,7 +246,7 @@ def _write_cron_jobs(home: Path, jobs: list) -> Path:
 
 def _reload_cron_jobs(home: Path):
     """Reload hermes_agent.cron.jobs so its module-level HERMES_DIR picks up the tmp HOME."""
-    import hermes_constants
+    from hermes_agent import hermes_constants
     importlib.reload(hermes_constants)
     if "hermes_agent.cron.jobs" in sys.modules:
         import hermes_agent.cron.jobs as _cj

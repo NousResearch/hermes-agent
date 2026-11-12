@@ -17,7 +17,7 @@ def _migrate_profile_config_if_outdated(profile_dir: Path) -> None:
     # Creation must not fail over an unmigratable old config; `hermes doctor --fix` surfaces
     # the detailed error in the target profile.
     with contextlib.suppress(Exception):
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
         from hermes_agent.hermes_cli.config import check_config_version, migrate_config
         token = set_hermes_home_override(str(profile_dir))
         try:

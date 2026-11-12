@@ -4,7 +4,7 @@ import socket
 import httpcore
 import pytest
 
-import hermes_bootstrap
+from hermes_agent import hermes_bootstrap
 from hermes_agent.agent import process_bootstrap
 
 

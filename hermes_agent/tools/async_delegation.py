@@ -21,7 +21,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Dict, List, Optional
 
-from hermes_constants import get_hermes_home, hermes_home_key
+from hermes_agent.hermes_constants import get_hermes_home, hermes_home_key
 from hermes_agent.tools.daemon_pool import DaemonThreadPoolExecutor
 from hermes_agent.tools.thread_context import propagate_context_to_thread
 from hermes_agent.tools.async_delegation_worker import worker_ledger, require_ledger_owner
@@ -125,7 +125,7 @@ def _connect() -> sqlite3.Connection:
     # Same state.db as hermes_agent.hermes_state.SessionDB -- reuse its owner-only (0600)
     # hardening so this writer doesn't create/leave the file (and its WAL
     # sidecars) at the process umask. See hermes_agent.hermes_state._secure_state_db_files.
-    from hermes_constants import mkdir_under_hermes_home
+    from hermes_agent.hermes_constants import mkdir_under_hermes_home
     from hermes_agent.hermes_state import _secure_state_db_files
 
     path = _db_path()

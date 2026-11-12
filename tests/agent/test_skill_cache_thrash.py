@@ -71,7 +71,7 @@ def test_cache_creates_multiple_slots_for_distinct_platform_or_home(tmp_path):
     """
     import os
     import hermes_agent.agent.skill_commands as sc_mod
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     profile_a = tmp_path / "profile_a"
     profile_b = tmp_path / "profile_b"
@@ -143,7 +143,7 @@ def test_cache_keys_project_as_third_dimension(tmp_path):
     """
     import hermes_agent.agent.skill_commands as sc_mod
     from hermes_agent.agent import skill_utils
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     repo_a = tmp_path / "repo-a"
     repo_b = tmp_path / "repo-b"
@@ -208,7 +208,7 @@ def test_reload_invalidates_every_identity_slot(tmp_path):
     any (platform, home, project) identity, so every cached view must rescan."""
     import os
     import hermes_agent.agent.skill_commands as sc_mod
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from hermes_agent.agent.skill_commands import reload_skills
 
     profile_a = tmp_path / "profile_a"

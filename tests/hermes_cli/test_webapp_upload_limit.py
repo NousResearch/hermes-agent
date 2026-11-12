@@ -17,7 +17,7 @@ from starlette import formparsers
 from hermes_agent.hermes_cli import web_server
 from hermes_agent.hermes_cli.dashboard_auth import clear_providers, register_provider
 from hermes_agent.hermes_cli.dashboard_auth.cookies import SESSION_AT_COOKIE
-from hermes_constants import WEBAPP_ATTACHMENT_MAX_BYTES
+from hermes_agent.hermes_constants import WEBAPP_ATTACHMENT_MAX_BYTES
 from hermes_agent.hermes_cli.web_upload_limit import CHAT_FILE_BODY_MAX_BYTES
 from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
 

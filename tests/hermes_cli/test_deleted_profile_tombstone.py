@@ -26,12 +26,12 @@ from hermes_agent.hermes_cli.profiles import (
     resolve_profile_env,
     set_active_profile,
 )
-from hermes_constants import (
+from hermes_agent.hermes_constants import (
     named_profile_home,
     reset_hermes_home_override,
     set_hermes_home_override,
 )
-from hermes_logging import setup_logging
+from hermes_agent.hermes_logging import setup_logging
 
 
 @pytest.fixture()
@@ -293,7 +293,7 @@ class TestNamedProfileHome:
         assert named_profile_home(custom_home / "logs") is None
 
     def test_unrelated_profiles_dir_still_mkdirs(self, tmp_path):
-        from hermes_constants import mkdir_under_hermes_home
+        from hermes_agent.hermes_constants import mkdir_under_hermes_home
 
         custom_home = tmp_path / "srv" / "profiles" / "buildcache"
         log_dir = mkdir_under_hermes_home(custom_home / "logs")

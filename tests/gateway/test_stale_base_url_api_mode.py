@@ -25,7 +25,7 @@ resolved result.
 
 import types
 
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 import pytest
 
 from hermes_agent.gateway.config import Platform
@@ -101,7 +101,7 @@ def _setup_isolated_home(tmp_path, monkeypatch, model_yaml_value, *, base_url=""
         "hermes_agent.hermes_cli.model_switch.resolve_display_context_length",
         lambda *a, **k: 8192,
     )
-    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: hermes_home)
+    monkeypatch.setattr("hermes_agent.hermes_constants.get_hermes_home", lambda: hermes_home)
     monkeypatch.setattr("hermes_agent.hermes_cli.config.get_hermes_home", lambda: hermes_home)
     return cfg_path
 

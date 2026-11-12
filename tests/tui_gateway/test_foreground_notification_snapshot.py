@@ -3,7 +3,7 @@ import threading
 from types import SimpleNamespace
 
 import pytest
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 from hermes_agent.agent.status_output import StatusOutputMixin
 from hermes_agent.hermes_cli.cli_stream_mixin import CLIStreamMixin
 from hermes_agent.tui_gateway import server

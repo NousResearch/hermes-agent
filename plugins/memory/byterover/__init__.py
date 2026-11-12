@@ -53,7 +53,7 @@ def _load_plugin_config() -> dict[str, Any]:
 
 def _get_brv_cwd() -> Path:
     """Profile-scoped working directory for the brv context tree."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     return get_hermes_home() / "byterover"
 
 
@@ -83,7 +83,7 @@ def _brv_child_env(brv_path: str) -> dict[str, str]:
     another profile's — and the launch profile's ``.env`` residue is stripped. Outside multiplex
     the process env IS this profile's own and is passed through unchanged."""
     from hermes_agent.agent.secret_scope import UnscopedSecretError, get_secret, is_multiplex_active
-    from hermes_constants import get_hermes_home_override
+    from hermes_agent.hermes_constants import get_hermes_home_override
     from hermes_agent.tools.environments.local import build_subprocess_env, strip_launch_profile_env
 
     env = build_subprocess_env(scrub_secrets=False)

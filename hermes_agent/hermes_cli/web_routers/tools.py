@@ -229,7 +229,7 @@ async def get_toolsets(profile: Optional[str] = None):
         gui_toolset_label)
     from hermes_agent.hermes_cli.platforms import platform_label
     from hermes_agent.toolsets import resolve_toolset
-    from utils import is_truthy_value
+    from hermes_agent.utils import is_truthy_value
 
     def _read():
         with _profile_scope(profile):

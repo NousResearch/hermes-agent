@@ -20,14 +20,14 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 # Ensure the repo root is importable when running via `pytest tests/...`.
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from utils import (
+from hermes_agent.utils import (
     atomic_json_write,
     atomic_replace,
     atomic_roundtrip_yaml_save,
@@ -136,10 +136,10 @@ def test_mkstemp_beside_symlink_into_other_fs(
         copies.append(dst)
         return real_copy(src, dst)
 
-    import utils
+    from hermes_agent import utils
     real_copy = utils._copy_fallback
-    monkeypatch.setattr("utils.os.replace", replace_same_dir_only)
-    monkeypatch.setattr("utils._copy_fallback", record_copy)
+    monkeypatch.setattr("hermes_agent.utils.os.replace", replace_same_dir_only)
+    monkeypatch.setattr("hermes_agent.utils._copy_fallback", record_copy)
     if not target_dir_writable:
         if os.geteuid() == 0:
             pytest.skip("root ignores directory write permissions")
@@ -205,9 +205,9 @@ def test_atomic_yaml_write_restores_owner_on_real_symlink_target(
     link.symlink_to(real)
 
     chown_calls: list[tuple[Path, int, int]] = []
-    monkeypatch.setattr("utils._preserve_file_owner", lambda _path: (123, 456))
+    monkeypatch.setattr("hermes_agent.utils._preserve_file_owner", lambda _path: (123, 456))
     monkeypatch.setattr(
-        "utils.os.chown",
+        "hermes_agent.utils.os.chown",
         lambda path, uid, gid: chown_calls.append((Path(path), uid, gid)),
     )
 
@@ -230,9 +230,9 @@ def test_atomic_roundtrip_yaml_save_restores_owner(
     target.write_text("model:\n  provider: openrouter\n", encoding="utf-8")
 
     chown_calls: list[tuple[Path, int, int]] = []
-    monkeypatch.setattr("utils._preserve_file_owner", lambda _path: (345, 678))
+    monkeypatch.setattr("hermes_agent.utils._preserve_file_owner", lambda _path: (345, 678))
     monkeypatch.setattr(
-        "utils.os.chown",
+        "hermes_agent.utils.os.chown",
         lambda path, uid, gid: chown_calls.append((Path(path), uid, gid)),
     )
 
@@ -283,7 +283,7 @@ def test_atomic_replace_copy_fallback_preserves_symlink(
     def fail_replace(src: str, dst: str) -> None:
         raise OSError(errno.EXDEV, os.strerror(errno.EXDEV), src, None, dst)
 
-    monkeypatch.setattr("utils.os.replace", fail_replace)
+    monkeypatch.setattr("hermes_agent.utils.os.replace", fail_replace)
 
     assert Path(atomic_replace(tmp, link)) == real
     assert link.is_symlink()
@@ -352,8 +352,8 @@ def _sharing_error(winerror: int = 5) -> PermissionError:
 @pytest.fixture()
 def fast_replace_retries(monkeypatch: pytest.MonkeyPatch) -> None:
     """Collapse the jittered backoff so retry tests don't sleep for ~1.2s."""
-    monkeypatch.setattr("utils._REPLACE_RETRY_BASE_DELAY_S", 0.001)
-    monkeypatch.setattr("utils._REPLACE_RETRY_MAX_DELAY_S", 0.001)
+    monkeypatch.setattr("hermes_agent.utils._REPLACE_RETRY_BASE_DELAY_S", 0.001)
+    monkeypatch.setattr("hermes_agent.utils._REPLACE_RETRY_MAX_DELAY_S", 0.001)
 
 
 # ── cross-platform: the retry/fallback state machine ──────────────────────
@@ -373,7 +373,7 @@ def test_contended_rename_retries_then_rewrites_in_place(
     winerror 5 is the code the reported bug actually produces; 32 and 33 are
     the sibling contention codes.  All three must recover.
     """
-    import utils as utils_mod
+    import hermes_agent.utils as utils_mod
 
     target = tmp_path / "gateway_state.json"
     target.write_text("old", encoding="utf-8")
@@ -385,7 +385,7 @@ def test_contended_rename_retries_then_rewrites_in_place(
         attempts.append(src)
         raise _sharing_error(winerror)
 
-    monkeypatch.setattr("utils.os.replace", always_contended)
+    monkeypatch.setattr("hermes_agent.utils.os.replace", always_contended)
 
     assert Path(atomic_replace(tmp, target)) == target
     assert len(attempts) == 1 + utils_mod._REPLACE_RETRY_ATTEMPTS
@@ -415,9 +415,9 @@ def test_contended_rename_retry_wins_keeps_write_atomic(
     def forbid(*_args: object, **_kw: object) -> None:
         raise AssertionError("no fallback may run when a retry succeeds")
 
-    monkeypatch.setattr("utils.os.replace", contended_twice)
-    monkeypatch.setattr("utils._rewrite_in_place", forbid)
-    monkeypatch.setattr("utils.shutil.copyfile", forbid)
+    monkeypatch.setattr("hermes_agent.utils.os.replace", contended_twice)
+    monkeypatch.setattr("hermes_agent.utils._rewrite_in_place", forbid)
+    monkeypatch.setattr("hermes_agent.utils.shutil.copyfile", forbid)
 
     assert Path(atomic_replace(tmp, target)) == target
     assert calls["n"] == 3
@@ -437,7 +437,7 @@ def test_genuine_denial_propagates_after_budget(
     tmp = _write_tmp(tmp_path, "new")
 
     monkeypatch.setattr(
-        "utils.os.replace", MagicMock(side_effect=_sharing_error(5))
+        "hermes_agent.utils.os.replace", MagicMock(side_effect=_sharing_error(5))
     )
 
     denial = PermissionError(errno.EACCES, "access is denied")
@@ -445,7 +445,7 @@ def test_genuine_denial_propagates_after_budget(
     def cannot_open(*_args: object, **_kw: object) -> None:
         raise denial
 
-    monkeypatch.setattr("utils.os.open", cannot_open)
+    monkeypatch.setattr("hermes_agent.utils.os.open", cannot_open)
 
     with pytest.raises(PermissionError) as caught:
         atomic_replace(tmp, target)
@@ -468,12 +468,12 @@ def test_contended_retry_switching_to_exdev_uses_copy_fallback(
     replace = MagicMock(
         side_effect=[_sharing_error(5), OSError(errno.EXDEV, "cross-device")]
     )
-    monkeypatch.setattr("utils.os.replace", replace)
+    monkeypatch.setattr("hermes_agent.utils.os.replace", replace)
 
     def forbid_rewrite(*_a: object, **_k: object) -> None:
         raise AssertionError("EXDEV must use the copy fallback, not a rewrite")
 
-    monkeypatch.setattr("utils._rewrite_in_place", forbid_rewrite)
+    monkeypatch.setattr("hermes_agent.utils._rewrite_in_place", forbid_rewrite)
 
     assert Path(atomic_replace(tmp, target)) == target
     assert replace.call_count == 2
@@ -491,7 +491,7 @@ def test_non_contended_oserror_propagates_without_retry(
     tmp = _write_tmp(tmp_path, "new")
 
     replace = MagicMock(side_effect=OSError(errno.ENOSPC, "no space"))
-    monkeypatch.setattr("utils.os.replace", replace)
+    monkeypatch.setattr("hermes_agent.utils.os.replace", replace)
 
     with pytest.raises(OSError) as excinfo:
         atomic_replace(tmp, target)
@@ -514,8 +514,8 @@ def test_posix_eacces_propagates_without_retry(
     replace = MagicMock(
         side_effect=PermissionError(errno.EACCES, os.strerror(errno.EACCES))
     )
-    monkeypatch.setattr("utils.os.replace", replace)
-    monkeypatch.setattr("utils._IS_WINDOWS", False)
+    monkeypatch.setattr("hermes_agent.utils.os.replace", replace)
+    monkeypatch.setattr("hermes_agent.utils._IS_WINDOWS", False)
 
     with pytest.raises(PermissionError):
         atomic_replace(tmp, target)
@@ -533,7 +533,7 @@ def test_in_place_rewrite_never_exposes_a_truncated_file(
     means an empty credential store.  Shrinking writes must also not leave
     trailing bytes from the previous, longer content.
     """
-    import utils as utils_mod
+    import hermes_agent.utils as utils_mod
 
     target = tmp_path / "auth.json"
     observed: list[int] = []
@@ -566,7 +566,7 @@ def test_symlinked_target_survives_a_contended_rename(
     tmp = _write_tmp(tmp_path, "new\n")
 
     monkeypatch.setattr(
-        "utils.os.replace", MagicMock(side_effect=_sharing_error(5))
+        "hermes_agent.utils.os.replace", MagicMock(side_effect=_sharing_error(5))
     )
 
     assert Path(atomic_replace(tmp, link)) == real
@@ -607,7 +607,7 @@ def test_windows_real_held_handle_reports_access_denied(tmp_path: Path) -> None:
             os.replace(str(tmp), str(target))
 
     assert caught.value.winerror in (5, 32, 33)
-    import utils as utils_mod
+    import hermes_agent.utils as utils_mod
 
     assert utils_mod._is_contended_windows_replace_error(caught.value)
 

@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Protocol, runtime_checkable
 
-from hermes_platform.resolver.core import LookupContext, Observation, Resolution
+from hermes_agent.hermes_platform.resolver.core import LookupContext, Observation, Resolution
 
 
 class Effort(Enum):

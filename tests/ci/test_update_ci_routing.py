@@ -33,7 +33,7 @@ from typing import Any
 import pytest
 
 from hermes_agent.compat.paths import current_module, current_path, original_path
-from hermes_platform.host.facts import native_arch
+from hermes_agent.hermes_platform.host.facts import native_arch
 from tests.ci import _gha_expr as gha
 from tests.ci import workflow_steps
 
@@ -88,7 +88,7 @@ def _real_classifier(paths: list[str]) -> dict[str, bool]:
 
 @cache
 def _yaml(rel: str) -> dict:
-    yaml = pytest.importorskip("hermes_yaml")
+    yaml = pytest.importorskip("hermes_agent.hermes_yaml")
     return yaml.safe_load((_REPO / rel).read_text(encoding="utf-8-sig"))
 
 

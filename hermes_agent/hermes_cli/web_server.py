@@ -37,7 +37,7 @@ PROJECT_ROOT = Path(project_root_str())
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from hermes_constants import WEBAPP_ATTACHMENT_MAX_BYTES
+from hermes_agent.hermes_constants import WEBAPP_ATTACHMENT_MAX_BYTES
 from hermes_agent.hermes_cli.config import load_config
 from hermes_agent.hermes_cli.version_info import get_version_info
 
@@ -110,7 +110,7 @@ def _start_desktop_cron_ticker(stop_event: threading.Event, interval: int = 60) 
     ("tasks on the sleeping profile could be idle" — community report, Aug 2026).
     """
     from hermes_agent.cron.scheduler_provider import InProcessCronScheduler, resolve_cron_scheduler
-    from hermes_constants import get_hermes_home, profile_name_for_home
+    from hermes_agent.hermes_constants import get_hermes_home, profile_name_for_home
 
     provider = resolve_cron_scheduler()
     own_home = Path(get_hermes_home())
@@ -136,7 +136,7 @@ def _start_desktop_cron_ticker(stop_event: threading.Event, interval: int = 60) 
                 # Desktop races its dedicated gateway for the same cron store.
                 start_kwargs["profile_homes"] = profile_homes
                 start_kwargs["profile_gate"] = profile_gate
-                from hermes_logging import enable_profile_log_routing
+                from hermes_agent.hermes_logging import enable_profile_log_routing
 
                 enable_profile_log_routing(initial_profile_homes)
                 _log.info(

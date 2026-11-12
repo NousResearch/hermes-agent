@@ -6,7 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 
 from hermes_agent.hermes_cli._startup_fast import project_root_str
 from hermes_agent.hermes_cli.colors import Colors, color
@@ -152,7 +152,7 @@ def remove_path_from_shell_configs():
                 new_content = new_content.replace('\n\n\n', '\n\n')
             
             if new_content != original_content:
-                from utils import atomic_write_text
+                from hermes_agent.utils import atomic_write_text
                 # The user's own rc, never backed up: a bare write_text() truncates before the new
                 # content lands and a crash mid-write would leave an empty ~/.zshrc. Atomic replace
                 # also follows a symlinked rc; preserve_mode keeps its bits/owner (sudo-run uninstalls).
@@ -554,7 +554,7 @@ def remove_windows_bin_launchers(*, windows: bool | None = None) -> list[Path]:
     if not windows:
         return []
     try:
-        from hermes_constants import get_default_hermes_root
+        from hermes_agent.hermes_constants import get_default_hermes_root
         bin_dir = get_default_hermes_root() / "bin"
     except Exception as e:
         log_warn(f"Could not locate the managed binary dir: {e}")
@@ -590,7 +590,7 @@ def _is_windows() -> bool:
 def _is_default_hermes_home(hermes_home: Path) -> bool:
     """Return True when ``hermes_home`` points at the default (non-profile) root."""
     try:
-        from hermes_constants import get_default_hermes_root
+        from hermes_agent.hermes_constants import get_default_hermes_root
         return hermes_home.resolve() == get_default_hermes_root().resolve()
     except Exception:
         return False

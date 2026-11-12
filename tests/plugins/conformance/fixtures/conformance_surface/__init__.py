@@ -20,7 +20,7 @@ from hermes_agent.agent.transcription_provider import TranscriptionProvider
 from hermes_agent.agent.tts_provider import TTSProvider
 from hermes_agent.agent.video_gen_provider import VideoGenProvider
 from hermes_agent.agent.web_search_provider import WebSearchProvider
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 
 PROVIDER_NAME = "conformance"
 

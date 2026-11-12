@@ -60,7 +60,7 @@ def test_cron_manage_profile_reads_that_profiles_store(tmp_path, monkeypatch):
 
     # The override must not leak: an unscoped call after this one resolves the
     # launch profile again, which does not contain botA's job.
-    from hermes_constants import get_hermes_home_override
+    from hermes_agent.hermes_constants import get_hermes_home_override
 
     assert get_hermes_home_override() is None
 

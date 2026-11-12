@@ -298,7 +298,7 @@ def test_client_reads_a_real_gateway_pipes_owner_dacl_and_session(tmp_path):
     import _winapi
     import hermes_agent.gateway.runtime_bootstrap_windows as rbw
     from hermes_agent.gateway.control_socket import windows_pipe_name
-    from hermes_dir_acl import process_is_elevated
+    from hermes_agent.hermes_dir_acl import process_is_elevated
     server = rbw.NativeControlServer(tmp_path, lambda raw, subject: b'{}\n')
     server.start()
     try:

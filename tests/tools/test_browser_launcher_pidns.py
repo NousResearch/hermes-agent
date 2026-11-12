@@ -36,7 +36,7 @@ def _dead_pid() -> int:
 
 
 def _home_state() -> tuple[Path, Path]:
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     browser = Path(get_hermes_home()) / "cache" / "browser"
     records, throwaway = browser / "chromium-records", browser / "chromium"
     for path in (records, throwaway):

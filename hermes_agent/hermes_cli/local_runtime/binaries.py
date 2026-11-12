@@ -39,7 +39,7 @@ class Engine:
 
 def runtimes_root() -> Path:
     """Machine-scoped presets and server state. Binaries belong to PM's store."""
-    from hermes_constants import get_default_hermes_root
+    from hermes_agent.hermes_constants import get_default_hermes_root
 
     return get_default_hermes_root() / "runtimes" / "llamacpp"
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 from hermes_agent.compat.paths import current_module
 from hermes_agent.hermes_cli.plugin_validate import validate_plugin_dir
@@ -232,7 +232,7 @@ def test_public_api_docs_page_is_generated_from_the_data_file():
 
 def test_a_published_module_moved_under_hermes_agent_is_public_in_every_spelling(tmp_path, monkeypatch):
     """Once ``hermes_constants`` moves, ``from hermes_agent import hermes_constants`` names the same
-    published module as ``import hermes_constants`` and must not warn."""
+    published module as ``from hermes_agent import hermes_constants`` and must not warn."""
     from hermes_agent.compat.paths import PathMoves
     from hermes_agent.hermes_cli import plugin_validate_private_imports as private_imports
 

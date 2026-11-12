@@ -38,14 +38,14 @@ def test_retired_code_identity_is_unknown(refresh, no_external_work, monkeypatch
 
 
 def test_retired_constants_reload_handoffs_old_gateway_recovery(fresh_child, monkeypatch):
-    import hermes_constants
+    from hermes_agent import hermes_constants
 
     # Shipped get_python_path uses this fallback when its constants module is stale.
     monkeypatch.delattr(hermes_constants, "venv_python_path")
     before = dict(vars(hermes_constants))
     with fresh_child.exits():
         try:
-            from hermes_constants import venv_python_path
+            from hermes_agent.hermes_constants import venv_python_path
         except ImportError:
             from hermes_agent.hermes_cli.managed_uv import _reload_hermes_constants
             venv_python_path = _reload_hermes_constants().venv_python_path

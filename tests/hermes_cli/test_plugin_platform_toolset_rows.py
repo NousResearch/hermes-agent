@@ -38,7 +38,7 @@ def _fresh_warning_latch():
 
 def test_seeded_plugin_platform_rows_log_nothing_on_schema_build(caplog):
     """The kanban gate runs on every schema build and skills scan and resolves every saved row."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.tools.kanban_tools import _profile_has_kanban_toolset
 
     _write_config(get_hermes_home(), _SEEDED_ROWS)
@@ -49,7 +49,7 @@ def test_seeded_plugin_platform_rows_log_nothing_on_schema_build(caplog):
 
 
 def test_invalid_plugin_platform_row_still_warns(caplog):
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.tools.kanban_tools import _profile_has_kanban_toolset
 
     _write_config(get_hermes_home(), {"cli": ["hermes-cli"], "teams": ["hermes-tems"]})
@@ -64,7 +64,7 @@ def test_seeded_config_rows_need_no_plugin():
     """A config.yaml seeded the way the installers seed it names only toolsets that resolve without any
     plugin loaded: a plugin platform falls back to ``hermes-<platform>`` on its own."""
     from hermes_agent.hermes_cli.config import read_raw_config, seed_config_file
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.toolsets import validate_toolset
 
     assert seed_config_file(get_hermes_home() / "config.yaml") is True

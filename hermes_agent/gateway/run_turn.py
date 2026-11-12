@@ -40,10 +40,10 @@ from hermes_agent.gateway.session_transcript import TranscriptReadError
 from hermes_agent.gateway.run_turn_bubble_cleanup import register_bubble_cleanup, settle_turn_senders
 from hermes_agent.gateway.turn_context import TurnContext
 from hermes_agent.gateway.turn_lease import DEFAULT_LEASE_WAIT, TurnLeaseTimeoutError
-from hermes_constants import get_hermes_home_override
+from hermes_agent.hermes_constants import get_hermes_home_override
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
-from utils import base_url_hostname
+from hermes_agent.utils import base_url_hostname
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
     from hermes_agent.gateway.run import GatewayRunner

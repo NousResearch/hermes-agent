@@ -282,7 +282,7 @@ class CLILoopsMixin:
             self._reload_skills()
 
     def _cmd_plugins(self, cmd_original: str):
-        from hermes_constants import display_hermes_home
+        from hermes_agent.hermes_constants import display_hermes_home
         parts = cmd_original.split()[1:]
         if parts and parts[0] in ("update", "auto-update"):
             from hermes_agent.hermes_cli.plugins_auto_update import plugins_slash_action

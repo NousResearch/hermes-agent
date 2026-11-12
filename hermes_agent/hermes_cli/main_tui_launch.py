@@ -453,7 +453,7 @@ def _require_bypass_model(env: dict, model: Optional[str], resume_session_id: Op
     """A --safe-mode / --ignore-user-config session reads no profile default model, so the owner
     refuses its session.create without one (bare invalid_params). Say so before the TUI starts,
     as classic chat does; a resume reuses the frozen route and needs none."""
-    from utils import is_truthy_value
+    from hermes_agent.utils import is_truthy_value
     bypass = any(is_truthy_value(env.get(name)) for name in ("HERMES_SAFE_MODE", "HERMES_IGNORE_USER_CONFIG"))
     if bypass and not resume_session_id and not (model or env.get("HERMES_MODEL", "").strip()):
         print("Error: --safe-mode / --ignore-user-config (or HERMES_IGNORE_USER_CONFIG=1) read no profile "
@@ -576,7 +576,7 @@ def _launch_tui(
     if native_mode is None:
         try:
             from hermes_agent.hermes_cli.config import load_config
-            from utils import is_truthy_value
+            from hermes_agent.utils import is_truthy_value
             display = load_config().get("display", {})
             native_mode = is_truthy_value(display.get("tui_native", False)) if isinstance(display, dict) else False
         except Exception:

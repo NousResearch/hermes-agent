@@ -36,7 +36,7 @@ from hermes_agent.gateway.config import GatewayConfig
 from hermes_agent.gateway.platforms.base import Platform, SessionSource
 from hermes_agent.gateway.platforms.event import MessageEvent
 from hermes_agent.gateway.session import SessionEntry, SessionStore
-from hermes_constants import (
+from hermes_agent.hermes_constants import (
     get_hermes_home,
     reset_hermes_home_override,
     set_hermes_home_override,
@@ -889,7 +889,7 @@ def test_a_conversation_its_chat_moved_past_keeps_its_profile_history(multiplex_
     that profile's store, so its turn loads its history and writes its transcript there."""
     from hermes_agent.gateway.session_detached import detached_key
     from hermes_agent.gateway.session_identity import replace_source
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
     root, profile = multiplex_homes
     store = _multiplex_store(root)
     token = set_hermes_home_override(str(profile))

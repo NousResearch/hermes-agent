@@ -110,7 +110,7 @@ class HostGateway:
 def record_home(record) -> Path:
     """Home the owner was launched from. Records written before the field existed fall back to the
     default root — the home every pre-record multiplexer ran under."""
-    from hermes_constants import get_default_hermes_root
+    from hermes_agent.hermes_constants import get_default_hermes_root
 
     return Path(record.home) if getattr(record, "home", "") else Path(get_default_hermes_root())
 
@@ -126,7 +126,7 @@ def launched_by_other_tenant(owner_home: Path | str, our_home: Path | str) -> bo
     if not str(owner_home or ""):
         return False
     from hermes_agent.gateway.status import _same_hermes_home
-    from hermes_constants import get_default_hermes_root
+    from hermes_agent.hermes_constants import get_default_hermes_root
 
     return not _same_hermes_home(get_default_hermes_root(home=owner_home),
                                  get_default_hermes_root(home=our_home))

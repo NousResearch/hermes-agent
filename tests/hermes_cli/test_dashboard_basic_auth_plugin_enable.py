@@ -10,7 +10,7 @@ from __future__ import annotations
 from unittest.mock import patch
 
 import pytest
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 from hermes_agent.hermes_cli.dashboard_auth import clear_providers, list_providers
 from hermes_agent.hermes_cli.plugins import PluginManager, discover_plugins

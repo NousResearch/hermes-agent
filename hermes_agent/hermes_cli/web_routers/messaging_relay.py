@@ -20,7 +20,7 @@ _NOT_READY = frozenset({"relay_not_provisioned", "connector_unreachable", "conne
 def _ask_gateway(params: dict[str, Any]) -> dict[str, Any]:
     from hermes_agent.gateway.control_socket import query_gateway_control
     from hermes_agent.gateway.relay.link import CONTROL_TIMEOUT_S
-    from hermes_constants import get_process_hermes_home
+    from hermes_agent.hermes_constants import get_process_hermes_home
 
     answer = query_gateway_control(get_process_hermes_home(), "relay-link", params=params,
                                    timeout=CONTROL_TIMEOUT_S)

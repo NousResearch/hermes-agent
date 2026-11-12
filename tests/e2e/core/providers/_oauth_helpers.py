@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 from tests.fakes.providers.anthropic_messages import ApiError, AnthropicMessagesServer, Reply, Response, Text, ToolUse
 

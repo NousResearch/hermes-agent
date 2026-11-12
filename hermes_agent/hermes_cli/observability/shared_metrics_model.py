@@ -202,7 +202,7 @@ def record_model_friction(
     token = None
     try:
         if hermes_home:
-            from hermes_constants import set_hermes_home_override
+            from hermes_agent.hermes_constants import set_hermes_home_override
 
             token = set_hermes_home_override(str(hermes_home))
         from .relay_shared_metrics import enabled, record_session_friction
@@ -217,6 +217,6 @@ def record_model_friction(
         logger.debug("Shared-metrics %s friction not recorded", signal, exc_info=True)
     finally:
         if token is not None:
-            from hermes_constants import reset_hermes_home_override
+            from hermes_agent.hermes_constants import reset_hermes_home_override
 
             reset_hermes_home_override(token)

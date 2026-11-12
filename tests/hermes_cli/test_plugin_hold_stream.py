@@ -6,7 +6,7 @@ registration keeps streaming. The hold lives as long as the registration and nev
 another profile's plugin manager.
 """
 
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 import pytest
 
 from hermes_agent.hermes_cli.plugins import PluginContext, PluginManager, PluginManifest

@@ -48,7 +48,7 @@ def get_service() -> Optional[LSPService]:
     process group) kills whatever is left then.
     """
     global _service
-    from hermes_constants import get_hermes_home_override, hermes_home_key
+    from hermes_agent.hermes_constants import get_hermes_home_override, hermes_home_key
     if get_hermes_home_override() is not None:
         home_key = hermes_home_key()
         with _service_lock:

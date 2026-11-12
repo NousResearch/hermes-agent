@@ -672,7 +672,7 @@ def _write_custom_endpoint(cfg: dict[str, Any], body: CustomEndpointUpdate) -> t
     alias = details.get(model)
     canonical = (alias.canonical_model or "").strip() if alias is not None else ""
     if canonical and canonical != model:
-        from hermes_constants import parse_reasoning_effort
+        from hermes_agent.hermes_constants import parse_reasoning_effort
         effort = (alias.reasoning_effort or "").strip().lower()
         if parse_reasoning_effort(effort) is not None:
             agent_cfg = cfg.get("agent") if isinstance(cfg.get("agent"), dict) else {}
@@ -765,7 +765,7 @@ def upsert_custom_endpoint(body: CustomEndpointUpdate, profile: Optional[str] = 
             with refusing_locked_omissions(*_ROUTE_SECTIONS) if body.make_default else contextlib.nullcontext():
                 save_config(cfg)
             response = _custom_endpoint_response(cfg)
-            from hermes_constants import get_hermes_home
+            from hermes_agent.hermes_constants import get_hermes_home
             home = get_hermes_home()
         if created:  # editing an endpoint that exists sets nothing new up
             _record_custom_endpoint_setup(home)

@@ -402,7 +402,7 @@ def test_list_authenticated_providers_dedup_honors_base_url_env_override(monkeyp
 
 def test_switch_model_resolves_user_provider_credentials(monkeypatch, tmp_path):
     """/model switch should resolve credentials for providers: dict providers."""
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
     
     config = {
         "providers": {

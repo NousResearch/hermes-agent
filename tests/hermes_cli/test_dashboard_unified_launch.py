@@ -81,7 +81,7 @@ class TestUnifiedDashboardRouting:
         # HERMES_HOME.  For a standard install (HERMES_HOME unset) that root is
         # the platform-native default (~/.hermes), NOT dropped — see the Docker
         # test below for why we resolve explicitly instead of popping.
-        from hermes_constants import get_default_hermes_root
+        from hermes_agent.hermes_constants import get_default_hermes_root
         assert env.get("HERMES_HOME") == str(get_default_hermes_root())
 
 

@@ -17,10 +17,10 @@ import uuid
 from typing import Dict, List, Optional, Sequence
 
 
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 from hermes_agent.hermes_state_legacy_refusal import LEGACY_REFUSAL_REPAIR_DONE, advance_legacy_refusal_repair
 from hermes_agent.hermes_startup_watchdog import report_startup_progress
-from utils import safe_json_loads
+from hermes_agent.utils import safe_json_loads
 from hermes_agent.hermes_state_common import (
     DEFERRED_INDEX_SQL, FTS_REBUILD_DEFERRAL_KEY, FTS_STALE_KEY, FTS_SQL,
     FTS_STORAGE_VERSION, FTS_TOOL_CONTENT_PREFIX_CHARS, FTS_TRIGRAM_SQL, LEGACY_FTS_SQL,
@@ -688,8 +688,8 @@ class SessionSchemaMixin:
         cache_path = None
         schema_hash = hashlib.sha256(schema_sql.encode("utf-8")).hexdigest()
         with contextlib.suppress(Exception):  # missing/corrupt cache → recompute below
-            # Late import: resolves a test-patched hermes_constants.get_hermes_home.
-            from hermes_constants import get_hermes_home as _home
+            # Late import: resolves a test-patched hermes_agent.hermes_constants.get_hermes_home.
+            from hermes_agent.hermes_constants import get_hermes_home as _home
             cache_path = _home() / "cache" / "schema_columns.json"
             blob = json.loads(cache_path.read_text(encoding="utf-8"))
             tables = blob.get("tables") if isinstance(blob, dict) and blob.get("schema_hash") == schema_hash else None

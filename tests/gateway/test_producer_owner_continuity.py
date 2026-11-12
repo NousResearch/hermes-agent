@@ -18,7 +18,7 @@ async def test_automation_after_compression_and_released_media_uses_logical_owne
     from hermes_agent.gateway.session_ingress_context import native_callback
     from hermes_agent.gateway.session_ingress_media import release_admission_media
     from hermes_agent.gateway.session_automation import check_automation_route
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.hermes_state_runtime import claim_session_input, settle_session_input, list_session_admissions
     from plugins.platforms.discord.adapter import DiscordAdapter
     monkeypatch.setattr(SessionAuthority, '_schedule', lambda self, ref: None)
@@ -63,7 +63,7 @@ async def test_automation_for_an_unserved_scope_never_dereferences_a_missing_aut
     from hermes_agent.gateway.session_authority import initialize_session_authority, SessionAuthority
     from hermes_agent.gateway.session_ingress_context import native_callback
     from hermes_agent.gateway.session_automation import check_automation_route
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.hermes_state_runtime import (RuntimeStoreError, claim_session_input, list_session_admissions,
                                       settle_session_input)
     from plugins.platforms.discord.adapter import DiscordAdapter

@@ -262,7 +262,7 @@ def test_a_browser_download_reads_the_ssh_workspace_file_it_listed(client, monke
     never a file at the same path on the gateway's own disk. The ticket allows a few retries of
     that exact URL, then dies with its profile."""
     from hermes_agent.hermes_cli import web_server_file_tickets as file_tickets
-    from hermes_constants import mark_named_profile_deleted
+    from hermes_agent.hermes_constants import mark_named_profile_deleted
 
     # The Webapp: the browser's file routes (download tickets) exist only there.
     monkeypatch.setattr(web_server.app.state, "ui_surface", "webapp", raising=False)
@@ -380,7 +380,7 @@ def test_fs_media_shell_paths_deliver_files_and_preserve_access_checks(client, t
         assert response.status_code == expected, response.text
         assert "must-not-be-delivered" not in response.text
 
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.hermes_state import SessionDB
     SessionDB(db_path=get_hermes_home() / "state.db").close()  # read-only lookups need an initialized store
     invalid_session = client.get(endpoint, params={
@@ -1342,7 +1342,7 @@ def test_native_home_override_translates_with_that_profiles_volumes(monkeypatch,
     """A native ticket binds the profile's home before the route runs; translation must
     install that profile's terminal policy, not read the launch env's volumes."""
     from hermes_agent.hermes_cli import web_server_files
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     _default, work_home = _two_profile_homes(
         monkeypatch, tmp_path, active_backend="docker", work_backend="docker")

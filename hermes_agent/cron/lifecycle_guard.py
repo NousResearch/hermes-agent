@@ -840,7 +840,7 @@ def _resolved_or_nothing(candidate: str, cwd: Optional[str]) -> Iterator[Path]:
 def _resolve_script_path(script_path: str) -> Optional[Path]:
     """Resolve a cron ``script`` value the way ``hermes_agent.cron.scheduler`` does (relative paths live under
     ``<HERMES_HOME>/scripts/``) so the guard scans the file that will actually run."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     raw = _expand_candidate_path(script_path)
     if raw is None:

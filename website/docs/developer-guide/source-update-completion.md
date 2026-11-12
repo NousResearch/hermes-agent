@@ -76,7 +76,7 @@ The receipt is durable while the run is open: `begin_update_receipt` writes it a
 boundary refreshes it, so a killed update leaves its own record. The next update marks a
 `running` record whose processes are gone `interrupted` (naming its last stage) and reports
 it. Receipts and the `update.log` tee resolve to the root home
-(`hermes_constants.get_default_hermes_root()`), never a sticky profile's; so do their readers
+(`hermes_agent.hermes_constants.get_default_hermes_root()`), never a sticky profile's; so do their readers
 (`hermes logs update`, the debug bundle, the dashboard's update status, pm's sync receipts).
 
 The completion bootstrap's dependency preparation (`ensure_tools_for_sync`, `pm.sync_venv`) also
@@ -123,7 +123,7 @@ writing without exclusion. An updater that already imported healthy code can
 still hold and write the checkout even when its on-disk modules are damaged.
 Wait for any running update to finish.
 
-The repair code lives in the tree a killed move tears (`hermes_bootstrap.py`,
+The repair code lives in the tree a killed move tears (`hermes_agent/hermes_bootstrap.py`,
 `hermes_agent/hermes_cli/__init__.py`, `_early_recovery.py`, `update_lock.py`,
 `update_custody.py`). Before git writes, every tree move publishes those
 recovery/lock/custody modules, as committed at the move's starting commit, to
@@ -219,7 +219,7 @@ inside its checkout by a filter with `index.lock` present, HEAD read from the re
 | Cell | Kill point | Test | Fixing lane |
 |---|---|---|---|
 | Windows `mid_fetch` | `taskkill /T /F` while the update's `git fetch` child runs | `tests/e2e/core/windows_update/test_crash_cells.py::test_update_killed_mid_fetch_leaves_a_runnable_install` | green |
-| Windows `mid_git` | `taskkill /T /F` inside the fast-forward's checkout: a smudge filter the harness sets in the install's `.git/config` + `.git/info/attributes` holds `git merge` while it writes `hermes_constants.py` (index.lock held, two files already at the target, that one unlinked) | `tests/e2e/core/windows_update/test_crash_cells.py::test_update_killed_mid_git_leaves_a_runnable_install` | #132361 (stale `.git/index.lock`; launch-time interrupted-pull repair ran a bare `git` a machine with only the installer's Git does not have).; the launcher imported `hermes_constants` before `hermes_bootstrap` ran the repair, so the unlinked module killed every launch first: launchers now reach the repair before any other checkout module. Runs last in the journey |
+| Windows `mid_git` | `taskkill /T /F` inside the fast-forward's checkout: a smudge filter the harness sets in the install's `.git/config` + `.git/info/attributes` holds `git merge` while it writes `hermes_agent/hermes_constants.py` (index.lock held, two files already at the target, that one unlinked) | `tests/e2e/core/windows_update/test_crash_cells.py::test_update_killed_mid_git_leaves_a_runnable_install` | #132361 (stale `.git/index.lock`; launch-time interrupted-pull repair ran a bare `git` a machine with only the installer's Git does not have).; the launcher imported `hermes_constants` before `hermes_bootstrap` ran the repair, so the unlinked module killed every launch first: launchers now reach the repair before any other checkout module. Runs last in the journey |
 | Windows `tree_moved` | right after the checkout reached the target, before the update finished | `tests/e2e/core/windows_update/test_crash_cells.py::test_update_killed_after_the_tree_moved_leaves_a_runnable_install` | green on main |
 | Windows `desktop_handoff` | `scripts/desktop-update/windows.ps1` and its whole tree while its `hermes update` child runs | `tests/e2e/core/windows_update/test_crash_cells.py::test_desktop_handoff_killed_mid_run_leaves_a_runnable_install` | green on main |
 | Windows `orphaned_update` | only `windows.ps1` (no `/T`); its `hermes update` keeps running and must finish with the marker LIVE until it exits, then gone | `tests/e2e/core/windows_update/test_crash_cells.py::test_desktop_handoff_script_killed_alone_keeps_the_marker_live_until_its_update_ends` | #132354 + #132365 (line-4 delegate) |

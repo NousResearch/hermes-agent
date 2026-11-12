@@ -38,7 +38,7 @@ MUSL_TARGETS = frozenset({"linux-x64-musl", "linux-arm64-musl"})
 def _native_machine() -> str:
     """Native host arch; PM also runs alone before the app is importable."""
     try:
-        from hermes_platform.host.facts import native_arch
+        from hermes_agent.hermes_platform.host.facts import native_arch
     except ModuleNotFoundError as exc:
         if exc.name != "hermes_platform" and not "hermes_platform".startswith(f"{exc.name}."):
             raise

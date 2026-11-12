@@ -171,7 +171,7 @@ class TestStreamHelperStashesFirstChunkAt:
 
         response = agent._interruptible_streaming_api_call({})
 
-        from hermes_constants import PARTIAL_STREAM_STUB_ID
+        from hermes_agent.hermes_constants import PARTIAL_STREAM_STUB_ID
 
         assert response.id == PARTIAL_STREAM_STUB_ID
         assert agent._last_api_first_chunk_at is None

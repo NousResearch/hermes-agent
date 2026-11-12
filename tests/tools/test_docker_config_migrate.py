@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 import pytest
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 from hermes_agent.hermes_cli.config import DEFAULT_CONFIG
 

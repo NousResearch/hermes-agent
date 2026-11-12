@@ -49,7 +49,7 @@ _slack_mod.SLACK_AVAILABLE = True
 
 from hermes_agent.gateway.config import Platform, load_gateway_config
 from hermes_agent.gateway.pairing import PairingStore
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 from plugins.platforms.slack.adapter import SlackAdapter
 
 STRONG_HEADER = "Messages prefixed with [unverified]"

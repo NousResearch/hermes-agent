@@ -83,7 +83,7 @@ def test_tool_search_without_an_identity_sends_nothing(nas, monkeypatch):
 
 
 def test_guest_opt_out_keeps_connectors_closed(nas):
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.tools.connectors.gateway.config import connectors_available, ensure_guest_identity
 
     (get_hermes_home() / "config.yaml").write_text("nous:\n  guest: false\n", encoding="utf-8")

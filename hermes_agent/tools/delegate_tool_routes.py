@@ -121,7 +121,7 @@ def delegated_profile_scope(home: Any) -> Iterator[None]:
     multiplex semantics when it is not this process's own profile, and its terminal policy - the
     binding a multiplexed gateway applies to a routed turn (hermes_agent/gateway/AGENTS.md § Profile scope).
     A no-op for anything but a path (``None``: no profile route) and for the home already in effect."""
-    from hermes_constants import get_hermes_home, get_routing_process_hermes_home, hermes_home_key
+    from hermes_agent.hermes_constants import get_hermes_home, get_routing_process_hermes_home, hermes_home_key
     if not isinstance(home, (str, Path)) or hermes_home_key(home) == hermes_home_key(get_hermes_home()):
         yield
         return
@@ -129,7 +129,7 @@ def delegated_profile_scope(home: Any) -> Iterator[None]:
         reset_multiplex_context, reset_secret_scope, set_multiplex_context, set_secret_scope,
     )
     from hermes_agent.hermes_cli.env_loader import hydrate_profile_secret_sources
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from hermes_agent.tools.terminal_scope import install_profile_terminal_scope, reset_terminal_scope
     from hermes_agent.tui_gateway.launch_profile_policy import owner_secret_scope
 
@@ -180,7 +180,7 @@ def _refuse_under_worker_snapshot(home: Path) -> None:
     every config reader returns that snapshot and the process never opens profile files, so another profile's
     config.yaml is unreachable here. Refuse rather than pair the launch profile's model with the target's keys."""
     from hermes_agent.agent.safe_worker_policy import worker_config_snapshot
-    from hermes_constants import get_hermes_home, hermes_home_key
+    from hermes_agent.hermes_constants import get_hermes_home, hermes_home_key
     if worker_config_snapshot() is not None and hermes_home_key(home) != hermes_home_key(get_hermes_home()):
         raise DelegationRouteError(
             f"Profile routes are unavailable in a managed worker session (its config is frozen at creation): "
@@ -192,7 +192,7 @@ def _profile_route(home: Path) -> TaskRoute:
     child never borrows the launching profile's key, pool, fallback chain or reasoning level."""
     from hermes_agent.hermes_cli.config import load_config_readonly
     from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider
-    from hermes_constants import resolve_reasoning_config
+    from hermes_agent.hermes_constants import resolve_reasoning_config
     from hermes_agent.tools.delegate_tool_config import ResolvedReasoning, _credential_bundle, _require_pinned_command
     _refuse_under_worker_snapshot(home)
     with delegated_profile_scope(home):
@@ -258,7 +258,7 @@ def _check_backend_effort(index: int, route: Mapping[str, Any], config: Mapping[
     effort = route.get("reasoning_effort")
     if route.get("profile") or effort in (None, "") or effort == config.get("reasoning_effort"):
         return
-    from hermes_constants import VALID_REASONING_EFFORTS, parse_reasoning_effort
+    from hermes_agent.hermes_constants import VALID_REASONING_EFFORTS, parse_reasoning_effort
     if parse_reasoning_effort(effort) is None:
         raise DelegationRouteError(
             f"Task {index}: unknown reasoning_effort {effort!r} on this route. "

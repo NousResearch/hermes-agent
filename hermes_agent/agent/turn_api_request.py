@@ -14,7 +14,7 @@ from typing import Any
 
 from hermes_agent.agent.message_sanitization import sanitize_outbound_kwargs, strip_images_for_rejecting_model
 from hermes_agent.hermes_cli.observability.shared_metrics_efficiency import observe_request_tools
-from utils import env_var_enabled
+from hermes_agent.utils import env_var_enabled
 
 logger = logging.getLogger("hermes_agent.agent.conversation_loop")
 

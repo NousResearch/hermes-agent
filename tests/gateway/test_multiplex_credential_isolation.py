@@ -100,7 +100,7 @@ def test_turn_scoped_dotenv_reload_does_not_pollute_process_env(tmp_path, monkey
     from hermes_agent.agent.secret_scope import get_secret
     from hermes_agent.gateway.run import _profile_runtime_scope
     from hermes_agent.hermes_cli.env_loader import load_hermes_dotenv
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     profile_a = tmp_path / "profiles" / "a"
     profile_b = tmp_path / "profiles" / "b"
@@ -146,7 +146,7 @@ def test_launch_home_dotenv_still_loads_under_multiplex(tmp_path, monkeypatch):
     import os
 
     from hermes_agent.hermes_cli.env_loader import load_hermes_dotenv
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     launch = tmp_path / "launch"
     routed = tmp_path / "profiles" / "routed"
@@ -180,7 +180,7 @@ def test_launch_home_load_inside_foreign_turn_keeps_routed_cwd_out_of_process_en
     import os
 
     from hermes_agent.hermes_cli.env_loader import load_hermes_dotenv
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     launch = tmp_path / "launch"
     routed = tmp_path / "profiles" / "routed"

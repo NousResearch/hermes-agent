@@ -310,7 +310,7 @@ def _is_hermes_owned_cwd(cwd: str, profile_home) -> bool:
     subprocess home in the Docker image, which also holds every named profile) or the install tree
     (``/opt/hermes``). A ``~`` path is the remote's home, never this host's."""
     from hermes_agent.agent.runtime_cwd import _is_install_tree
-    from hermes_constants import get_default_hermes_root
+    from hermes_agent.hermes_constants import get_default_hermes_root
 
     if not os.path.isabs(cwd):
         return False
@@ -329,7 +329,7 @@ def _is_launch_dir(cwd: str, profile_home) -> bool:
     home, the install tree, the OS user's home or ``/`` (the desktop's launch dirs). Folders below them are not: a
     user may keep a workspace there."""
     from hermes_agent.agent.runtime_cwd import _is_install_tree
-    from hermes_constants import get_default_hermes_root, get_real_home
+    from hermes_agent.hermes_constants import get_default_hermes_root, get_real_home
 
     if not os.path.isabs(cwd):
         return False
@@ -352,7 +352,7 @@ def _is_other_profiles_cwd(cwd: str, profile_home) -> bool:
     if profile_home is None or _cwd_is_remote(profile_home) or not os.path.isabs(cwd):
         return False
     from hermes_agent.agent.runtime_cwd import _is_install_tree
-    from hermes_constants import get_default_hermes_root
+    from hermes_agent.hermes_constants import get_default_hermes_root
 
     try:
         path, own = Path(cwd).resolve(), Path(profile_home).expanduser().resolve()
@@ -517,7 +517,7 @@ def _register_session_cwd(session: dict | None) -> None:
         # @method, so bind the session's own profile home here or the record lands under the raw key
         # and the scoped turn (`profile:<p>:<key>`) misses it until the first `cd`. Callers already
         # inside the session's scope (the turn) bind nothing: the routed home is theirs already.
-        import hermes_constants as hc
+        import hermes_agent.hermes_constants as hc
         from hermes_agent.tools.terminal_scope import TerminalPolicyUnavailable, install_and_reset_profile_terminal_scope
 
         with contextlib.ExitStack() as stack:
@@ -961,7 +961,7 @@ def _persist_session_cwd_and_schedule_git_meta(session: dict, cwd: str, *, db=No
 
 
 def _set_session_cwd(session: dict, cwd: str) -> str:
-    from hermes_constants import translate_cwd_for_wsl_backend
+    from hermes_agent.hermes_constants import translate_cwd_for_wsl_backend
     cwd = translate_cwd_for_wsl_backend(str(cwd))
     resolved = _workspace_cwd(session.get("profile_home"), cwd)
     # An explicit user choice: persisted as the workspace (not the launch-dir fallback), superseding a settle-adopted

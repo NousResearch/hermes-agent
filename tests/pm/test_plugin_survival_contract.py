@@ -19,7 +19,7 @@ resolves offline local path-source fixtures):
    The retry path — re-admitting only the resolvable candidate —
    commits through the same public function.
 3. Active-home propagation. The active CONTEXT home
-   (hermes_constants.set_hermes_home_override) is what wrapper/sidecar
+   (hermes_agent.hermes_constants.set_hermes_home_override) is what wrapper/sidecar
    subprocess launches must inherit through build_subprocess_env.
 """
 
@@ -33,7 +33,7 @@ import sys
 from pathlib import Path
 
 import pytest
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 import pm.workspace as ws
 from pm.plugin_inputs import Members
@@ -731,7 +731,7 @@ def test_update_sync_retries_a_fetch_failure_once_before_disabling(admission_env
 
 
 def test_active_context_home_exported_to_wrapper_subprocess(monkeypatch, tmp_path):
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from hermes_agent.tools.environments.local import build_subprocess_env
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "ambient"))

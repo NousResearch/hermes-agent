@@ -13,7 +13,7 @@ async def test_runtime_preserves_browser_ticket_gate(tmp_path):
     from hermes_agent.gateway.run_runtime import (initialize_gateway_runtime, start_gateway_runtime_api,
                                      publish_gateway_runtime_ready)
     from hermes_agent.gateway.runtime_ownership import process_ownership
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.hermes_cli.dashboard_auth import register_provider, clear_providers
     from hermes_agent.hermes_cli.dashboard_auth.ws_tickets import mint_ticket
     from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
@@ -57,7 +57,7 @@ async def test_drain_withdraws_native_admission_before_listener_close(tmp_path):
     from hermes_agent.gateway.run_runtime import initialize_gateway_runtime, drain_gateway_runtime
     from hermes_agent.gateway.runtime_ownership import process_ownership
     from hermes_agent.gateway.session import SessionSource
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     class LocalAdapter(BasePlatformAdapter):
         async def connect(self, *, is_reconnect=False):
@@ -112,7 +112,7 @@ async def test_drain_stops_adapter_inbound_before_withdrawing_handlers(tmp_path)
     from hermes_agent.gateway.run import GatewayRunner
     from hermes_agent.gateway.run_runtime import initialize_gateway_runtime, drain_gateway_runtime
     from hermes_agent.gateway.runtime_ownership import process_ownership
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     class SequencedAdapter(BasePlatformAdapter):
         def __init__(self, *args, **kwargs):

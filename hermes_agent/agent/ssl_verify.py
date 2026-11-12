@@ -272,8 +272,8 @@ def _platform_store_bundle() -> Optional[str]:
     certs = ctx.get_ca_certs(binary_form=True)
     if not certs:
         return None
-    from hermes_constants import get_hermes_home
-    from utils import atomic_write_text
+    from hermes_agent.hermes_constants import get_hermes_home
+    from hermes_agent.utils import atomic_write_text
 
     path = get_hermes_home() / "cache" / "platform-ca-bundle.pem"
     try:

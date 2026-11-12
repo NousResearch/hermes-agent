@@ -2,8 +2,8 @@
 
 import pytest
 
-import hermes_yaml as yaml
-from utils import atomic_roundtrip_yaml_update, atomic_yaml_write
+import hermes_agent.hermes_yaml as yaml
+from hermes_agent.utils import atomic_roundtrip_yaml_update, atomic_yaml_write
 
 
 def test_atomic_write_then_key_update_keeps_layout_and_values(tmp_path):

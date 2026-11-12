@@ -134,7 +134,7 @@ def _claim_short_dir(key: str, budget: Optional[int]) -> Optional[str]:
     """A private ``hbh-<12 hex>`` dir (keyed by uid and ``key``) that fits ``budget``: under the
     user's private ``$XDG_RUNTIME_DIR`` first, else the short socket temp root; None when no
     candidate fits or can be claimed safely."""
-    from hermes_constants import socket_safe_tmpdir
+    from hermes_agent.hermes_constants import socket_safe_tmpdir
     getuid = getattr(os, "getuid", lambda: 0)
     digest = hashlib.sha256(f"{getuid()}\0{key}".encode()).hexdigest()[:12]
     # socket_safe_tmpdir() caps the root at 50 bytes for Chrome's longer socket names; ours needs a

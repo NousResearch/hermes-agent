@@ -10,7 +10,7 @@ class CronExecutionUnknown(RuntimeError):
 
 
 def journal_path(job_id, request_id):
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     key = hashlib.sha256(json.dumps([job_id, request_id]).encode()).hexdigest()
     return get_hermes_home() / 'cron' / 'admissions' / (key + '.json')
 
@@ -30,7 +30,7 @@ def pause_for_unknown(job_id, execution_id, reason):
     """The firer pauses the job for this fire's unverified admission and records that exact pause
     on the fire's journal, so the receipt that later proves the run terminal can lift it."""
     from hermes_agent.cron.jobs import pause_job
-    from utils import atomic_json_write
+    from hermes_agent.utils import atomic_json_write
     paused = pause_job(job_id, reason=reason)
     journal = journal_path(job_id, execution_id)
     if paused and journal.exists():
@@ -55,8 +55,8 @@ def _lift_pause(job_id, pause):
 def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id=None):
     from hermes_agent.gateway.session_cron import owner_for_home, operation
     from hermes_agent.hermes_cli.gateway_client import connect_gateway
-    from hermes_constants import get_hermes_home
-    from utils import atomic_json_write
+    from hermes_agent.hermes_constants import get_hermes_home
+    from hermes_agent.utils import atomic_json_write
 
     request_id = execution_id or job.get('execution_id')
     if not request_id:
@@ -153,14 +153,14 @@ def reconcile_pending(*, allow_connect=True):
     live owner instead of ensuring or spawning a gateway.
     """
     from hermes_agent.gateway.session_cron import owner_for_home, operation
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.hermes_cli.gateway_client import connect_gateway
     from hermes_agent.cron.executions import FIRER_FINISHED_STATES, execution_owner_live, get_execution
     from hermes_agent.cron.jobs import get_job, pause_job
     from hermes_agent.cron.scheduler import (_RunDelivery, _FireOwnership, _apply_agent_failure_marker,
                                 _save_compose_deliver)
     from hermes_agent.cron.scheduler_bookkeeping import fail_empty_response, finish_completed_run
-    from utils import atomic_json_write
+    from hermes_agent.utils import atomic_json_write
     import logging
 
     root = get_hermes_home() / 'cron' / 'admissions'

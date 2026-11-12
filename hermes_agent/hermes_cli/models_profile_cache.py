@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from hermes_constants import get_hermes_home_override, hermes_home_key
+from hermes_agent.hermes_constants import get_hermes_home_override, hermes_home_key
 
 _SLOTS_BY_HOME: dict[tuple[str, str], Any] = {}
 

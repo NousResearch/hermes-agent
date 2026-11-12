@@ -131,7 +131,7 @@ def test_pull_rolls_back_broken_critical_file_and_accepts_corrected_retry(tmp_pa
 
 
 def _python_bump_repo(tmp_path, broken_source: str):
-    """Commits: ``newer`` (requires-python >=3.99, ``hermes_constants.py`` = broken_source) and ``same``
+    """Commits: ``newer`` (requires-python >=3.99, ``hermes_agent/hermes_constants.py`` = broken_source) and ``same``
     (the same file, a requires-python this interpreter satisfies)."""
     def git(*args):
         return subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True, text=True, encoding="utf-8").stdout.strip()
@@ -195,7 +195,7 @@ def test_a_python_bump_is_judged_by_an_interpreter_the_target_admits(tmp_path, m
 
 
 def test_the_critical_inventory_covers_every_module_the_entry_paths_import_first():
-    """``hermes_bootstrap.py`` was absent from the inventory, so a target that broke only the
+    """``hermes_agent/hermes_bootstrap.py`` was absent from the inventory, so a target that broke only the
     bootstrap passed preflight and the post-pull guard and failed at the first import (review G3).
     Derived from the real launcher text, ``hermes_bootstrap``'s imports and the recovery closure."""
     import ast

@@ -13,7 +13,7 @@ from scripts.releases.desktop_targets import MANIFEST_TARGETS
 
 def _leg_sha512(root: Path, files: dict, arch: str) -> dict[str, str]:
     """sha512 per artifact from the receipt-bound per-arch electron feed (``<arch>-*-mac.yml``)."""
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
 
     leg = single(name for name in files if name.startswith(f"{arch}-") and name.endswith("-mac.yml"))
     if not (root / leg).is_file():

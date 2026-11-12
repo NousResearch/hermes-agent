@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from hermes_platform.host.gpu_adapters import windows_gpu_adapters
+from hermes_agent.hermes_platform.host.gpu_adapters import windows_gpu_adapters
 
 
 @pytest.mark.platforms("windows")

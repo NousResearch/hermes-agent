@@ -94,7 +94,7 @@ def _is_windows() -> bool:
 def _venv_scripts_dir() -> Path | None:
     """Return the venv Scripts directory if we're running inside the project venv."""
     from hermes_agent.hermes_cli.main import PROJECT_ROOT
-    from hermes_constants import project_venv_dir
+    from hermes_agent.hermes_constants import project_venv_dir
     from pm.environments import venv_bin_dir
     venv_dir = project_venv_dir(PROJECT_ROOT)
     if venv_dir is None:
@@ -343,7 +343,7 @@ def _resolve_node_runtime_npm() -> str | None:
 
     Never re-scans the user's PATH for another npm: Hermes runs only its PM-managed toolchain.
     """
-    from hermes_constants import find_node_executable
+    from hermes_agent.hermes_constants import find_node_executable
     npm = find_node_executable("npm")
     if _is_windows() or not npm:
         return npm

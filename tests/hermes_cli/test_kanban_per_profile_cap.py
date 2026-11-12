@@ -24,7 +24,7 @@ def isolated_kanban_home_with_profiles(monkeypatch):
             fh.write("{}\n")  # identity marker: a bare dir is not a profile
     monkeypatch.setenv("HERMES_HOME", test_home)
     for mod in list(sys.modules.keys()):
-        if mod.startswith("hermes_agent.hermes_cli") or mod.startswith("hermes_agent.hermes_state") or mod == "hermes_constants":
+        if mod.startswith("hermes_agent.hermes_cli") or mod.startswith("hermes_agent.hermes_state") or mod == "hermes_agent.hermes_constants":
             del sys.modules[mod]
     from hermes_agent.hermes_cli import kanban_db
     from hermes_agent.hermes_cli import kanban_db_dispatch

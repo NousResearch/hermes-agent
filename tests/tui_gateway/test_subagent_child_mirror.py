@@ -22,7 +22,7 @@ def server():
     with patch.dict(
         "sys.modules",
         {
-            "hermes_constants": MagicMock(
+            "hermes_agent.hermes_constants": MagicMock(
                 get_hermes_home=MagicMock(return_value="/tmp/hermes_test_child_mirror")
             ),
             "hermes_agent.hermes_cli.env_loader": MagicMock(),

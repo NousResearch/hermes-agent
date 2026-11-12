@@ -382,7 +382,7 @@ def test_stalled_marker_write_coalesces_later_touches(hermes_home, monkeypatch):
 def test_marker_write_lands_in_the_launch_home_under_a_profile_override(hermes_home, monkeypatch):
     """The gateway's idle watcher reads the launch home's marker, so a socket running in another
     profile's HERMES_HOME override must still stamp the launch home."""
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from hermes_agent.tui_gateway import ws as ws_mod
 
     monkeypatch.setattr(ws_mod, "_dashboard_client_touched_at", 0.0)

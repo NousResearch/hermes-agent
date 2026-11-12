@@ -16,7 +16,7 @@ def store(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
-    import hermes_constants
+    from hermes_agent import hermes_constants
     importlib.reload(hermes_constants)
     import hermes_agent.cron.suggestions as s
     importlib.reload(s)
@@ -33,7 +33,7 @@ def _add(store, key="k1", title="Test", source="catalog", schedule="0 9 * * *"):
 
 class TestStore:
     def test_explicit_file_override_wins_over_profile_home(self, tmp_path, monkeypatch):
-        from hermes_constants import (
+        from hermes_agent.hermes_constants import (
             reset_hermes_home_override,
             set_hermes_home_override,
         )
@@ -53,7 +53,7 @@ class TestStore:
         assert not (profile_home / "cron" / "suggestions.json").exists()
 
     def test_profile_override_routes_writes_to_current_home(self, tmp_path):
-        from hermes_constants import (
+        from hermes_agent.hermes_constants import (
             reset_hermes_home_override,
             set_hermes_home_override,
         )

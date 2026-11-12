@@ -316,7 +316,7 @@ async def post_agent_plugin_activate(request: Request):
     except Exception:
         body = {}
     name = _validate_plugin_name(str((body or {}).get("name") or ""))
-    from hermes_constants import get_hermes_home, hermes_home_key, profile_name_for_home
+    from hermes_agent.hermes_constants import get_hermes_home, hermes_home_key, profile_name_for_home
     home = Path(str((body or {}).get("home") or "")).expanduser()
     profile = profile_name_for_home(home) if str(home) not in ("", ".") else None
     if profile is None:

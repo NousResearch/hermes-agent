@@ -28,7 +28,7 @@ from hermes_agent.hermes_cli import (
     status_auth,
 )
 from hermes_agent.hermes_cli.auth import _load_auth_store
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 from tests.hermes_cli.anon_portal import as_local_desktop_backend, off_local_desktop
 
 WELCOME = "https://welcome-api.nousresearch.com/v1"

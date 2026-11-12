@@ -10,7 +10,7 @@ room's frozen recipient roster.
 from __future__ import annotations
 
 from hermes_agent.gateway.hosted_rooms import EventAttachmentConflictError
-from hermes_dir_acl import make_user_dir
+from hermes_agent.hermes_dir_acl import make_user_dir
 
 import base64
 import binascii
@@ -448,7 +448,7 @@ class HostedRoomAttachmentStore:
         return self.blob_root / blob_id
 
     def _write_blob(self, target: Path, data: bytes) -> None:
-        from utils import atomic_write_bytes
+        from hermes_agent.utils import atomic_write_bytes
         # ``.tmp-`` staging names are what the orphan sweep reclaims after a crash.
         atomic_write_bytes(target, data, tmp_prefix=".tmp-", mode=0o600, fsync_dir=True)
 

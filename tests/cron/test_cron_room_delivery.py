@@ -9,7 +9,7 @@ import pytest
 
 from hermes_agent.cron import scheduler_delivery as delivery
 from hermes_agent.gateway import hosted_rooms
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 
 ROOM_ID = "room-cron"
 MEMBERS = [{"member_id": f"m-{p}", "profile": p, "handle": p} for p in ("alpha", "beta")]

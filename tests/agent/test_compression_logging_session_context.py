@@ -3,7 +3,7 @@
 When ``compress_context`` rotates ``agent.session_id`` it updates the
 gateway/tools session context (``hermes_agent.gateway.session_context.set_current_session_id``,
 which moves ``HERMES_SESSION_ID`` env + ContextVar). The ``[session_id]`` tag on
-log lines comes from a SEPARATE mechanism — ``hermes_logging._session_context``
+log lines comes from a SEPARATE mechanism — ``hermes_agent.hermes_logging._session_context``
 (a threading.local read by the global LogRecord factory), set once per turn in
 ``conversation_loop.py``. Before the fix, the rotation block never updated it, so
 log lines emitted after a mid-turn compaction carried the STALE old id while the
@@ -17,7 +17,7 @@ import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import hermes_logging
+from hermes_agent import hermes_logging
 from hermes_agent.hermes_state import SessionDB
 
 

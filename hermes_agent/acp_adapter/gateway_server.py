@@ -15,7 +15,7 @@ from acp.schema import (
 )
 
 from hermes_agent.hermes_cli.gateway_client import GatewayClientError, connect_gateway
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 from hermes_agent.acp_adapter.gateway_reply import GatewayReplyMixin, _text
 from hermes_agent.acp_adapter.session import _translate_acp_cwd, _normalize_cwd_for_compare
 
@@ -873,7 +873,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         The editor's own ``/discard <id>`` (``hermes_agent.acp_adapter.gateway_commands._discard_unknown``, the
         same fenced ``prompt.resolve_unknown`` the classic chat uses) acknowledges the exact lost
         admission without replaying it, and the queue then continues."""
-        from hermes_constants import profile_name_for_home
+        from hermes_agent.hermes_constants import profile_name_for_home
         lost = [row["admission_id"] for row in self._snapshots.get(session_id, {}).get("pending", [])
                 if row.get("status") == "unknown"] or [admission_id]
         profile = profile_name_for_home(self._home)

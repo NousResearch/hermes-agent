@@ -149,7 +149,7 @@ def test_scope_is_reset_when_resolution_fails(launch_home, monkeypatch):
 
 def test_home_and_scope_are_restored_when_the_scope_build_fails(launch_home, monkeypatch):
     from hermes_agent.agent.secret_scope import current_secret_scope_home
-    from hermes_constants import get_hermes_home_override, reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import get_hermes_home_override, reset_hermes_home_override, set_hermes_home_override
     from hermes_agent.tui_gateway import launch_profile_policy
 
     secondary = _profile(launch_home / "profiles" / "work", OTHER)

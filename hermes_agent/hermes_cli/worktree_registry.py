@@ -24,7 +24,7 @@ _holder = threading.local()
 
 
 def registry_path() -> Path:
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     return get_hermes_home() / _REGISTRY_NAME
 
 
@@ -33,7 +33,7 @@ def _repo_exists(repo: str) -> bool:
 
 
 def _read(path: Path) -> list[str]:
-    from utils import read_json_or_empty
+    from hermes_agent.utils import read_json_or_empty
     repos = read_json_or_empty(path).get("repos")
     return [r for r in repos if isinstance(r, str) and r] if isinstance(repos, list) else []
 
@@ -53,7 +53,7 @@ def record_worktree_repo(repo_root) -> None:
         return
     try:
         from hermes_agent.hermes_cli.auth import _file_lock
-        from utils import atomic_json_write
+        from hermes_agent.utils import atomic_json_write
 
         repo = os.path.realpath(str(repo_root))
         path = registry_path()

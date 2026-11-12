@@ -60,7 +60,7 @@ _RECOVERY_ENV = "HERMES_UPDATE_RESTART_RECOVERY"
 _GATEWAY_MARKERS = ("_HERMES_GATEWAY", "HERMES_GATEWAY", "HERMES_GATEWAY_MODE")
 _PROFILE_RESTART_TIMEOUT = 90
 _VERIFY_TIMEOUT = 15
-from hermes_constants import PROFILE_ID_RE as _PROFILE_ID_RE
+from hermes_agent.hermes_constants import PROFILE_ID_RE as _PROFILE_ID_RE
 
 _SUPERVISOR_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 _UNIT_RE = re.compile(r"^hermes-(serve|dashboard)(-[a-z0-9][a-z0-9_-]{0,63})?\.service$")

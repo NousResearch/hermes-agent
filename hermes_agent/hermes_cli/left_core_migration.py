@@ -295,7 +295,7 @@ def singularity_in_use(home: Path, *, process_env: bool = False) -> bool:
         from hermes_agent.hermes_cli.env_loader import resolve_home_dotenv
         configured = resolve_home_dotenv(home).get("TERMINAL_ENV", "").strip()
     if not configured and process_env:
-        from hermes_constants import get_routing_process_hermes_home, hermes_home_key
+        from hermes_agent.hermes_constants import get_routing_process_hermes_home, hermes_home_key
         if hermes_home_key(home) == hermes_home_key(get_routing_process_hermes_home()):
             configured = os.environ.get("TERMINAL_ENV", "").strip()
     return configured.lower() == "singularity"
@@ -315,7 +315,7 @@ def _home_env(home: Path, name: str, *, process_env: bool) -> str:
     else, with *process_env* and for the launch home only, the process environment."""
     from hermes_agent.agent.secret_scope import current_secret_scope, current_secret_scope_home
     from hermes_agent.hermes_cli.env_loader import resolve_home_dotenv
-    from hermes_constants import get_routing_process_hermes_home, hermes_home_key
+    from hermes_agent.hermes_constants import get_routing_process_hermes_home, hermes_home_key
     value = resolve_home_dotenv(home).get(name, "").strip()
     scope_home = current_secret_scope_home()
     if not value and scope_home and hermes_home_key(scope_home) == hermes_home_key(home):
@@ -333,7 +333,7 @@ def camofox_in_use(home: Path, *, process_env: bool = False) -> bool:
     none stored, ``CAMOFOX_URL`` in its dotenv layers (the process env too for the launch home with
     *process_env*). ``browser.camofox`` settings never selected it: a leftover block without an
     address ran browser_exec. Config is the raw config.yaml, as core read it; read-only."""
-    from utils import is_truthy_value
+    from hermes_agent.utils import is_truthy_value
     browser = _read_config(home).get("browser")
     browser = browser if isinstance(browser, dict) else {}
     if str(browser.get("cdp_url") or "").strip() or _home_env(home, "BROWSER_CDP_URL", process_env=process_env):
@@ -405,7 +405,7 @@ def routes_at_hosts(home: Path, hosts: tuple[str, ...]) -> bool:
 def _at_host(url: str, host: str) -> bool:
     """*url* is at *host* or a subdomain. A URL ``urlparse`` rejects (an unclosed IPv6 bracket) is at no host:
     that route fails on its own, and one bad slot must not abort the home's other migrations."""
-    from utils import base_url_host_matches
+    from hermes_agent.utils import base_url_host_matches
     try:
         return base_url_host_matches(url, host)
     except ValueError:
@@ -651,7 +651,7 @@ LEFT_CORE: tuple[LeftCoreFeature, ...] = (
 )
 
 def _install_sentence(feature: LeftCoreFeature) -> str:
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     return (f"{feature.label} moved out of core into the '{feature.plugin}' plugin: install it with "
             f"`{_install_command(feature.plugin, Path(get_hermes_home()))}`")
 
@@ -684,7 +684,7 @@ def provider_install_hint(name: str) -> str:
     feature = _provider_feature(name)
     if feature is None:
         return ""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     home = Path(get_hermes_home())
     if not plugin_present(feature.plugin, home):
         return f"{_install_sentence(feature)}."
@@ -737,7 +737,7 @@ def recover_for_provider(name: Optional[str]) -> None:
     (whose start runs the migration) exists, so they would otherwise stop at "unknown provider" on a home no
     ``hermes update`` migrated. Outcomes print in a declared terminal front end (:func:`serve_notices_on_stderr`),
     else wait for the home's next turn someone sees."""
-    from hermes_constants import get_hermes_home, hermes_home_key
+    from hermes_agent.hermes_constants import get_hermes_home, hermes_home_key
     from hermes_agent.providers import get_provider_profile
     home = Path(get_hermes_home())
     name = str(name or "").strip().lower()
@@ -799,7 +799,7 @@ def moved_command_hint(prog: str, value: str, action: str = "") -> str:
     spelling), core's old nested spelling (``hermes mcp serve``), or the plugin's own ``hermes <cli>`` /
     ``hermes <command>`` / ``hermes <old_cli>`` while the plugin is not loaded, the line saying where it
     went and how to get it for the active home, else ``""``."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     home = Path(get_hermes_home())
     moved = next((f for f in LEFT_CORE if f.old_command and f.old_command == f"{prog} {value}"), None)
     if moved is not None:
@@ -854,7 +854,7 @@ def installs_held():
 def defer_startup_notice(message: str) -> None:
     """Hand *message* to the active home's next turn someone sees (:func:`claim_kept_notices`), once.
     For boot-path work that runs before any agent exists."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     logger.warning(message)
     _queue_notice(Path(get_hermes_home()), message)
 
@@ -916,7 +916,7 @@ def _claim_notices(home: Path) -> list[str]:
 
 def claim_kept_notices() -> list[str]:
     """Every notice kept for the active home in any process, for a turn someone sees (exactly once)."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     return _claim_notices(Path(get_hermes_home()))
 
 
@@ -1144,7 +1144,7 @@ def _noticed(message: str, home: Path, feature: LeftCoreFeature, process_env: bo
 def _install_into(home: Path, *, consent: Optional[bool] = None) -> Callable[[str], dict]:
     def _install(name: str) -> dict:
         from hermes_agent.hermes_cli.plugins_cmd import dashboard_install_plugin
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
         token = set_hermes_home_override(home)
         try:
             return dashboard_install_plugin("", force=False, enable=True, catalog_name=name,
@@ -1201,7 +1201,7 @@ def migrate_all_homes(*, say: Callable[[str], None] = print) -> list[str]:
     unattended consent like the memory migration: homes of one group share dependency answers, and a
     failure names the rest of its group in one line instead of failing them one by one."""
     from hermes_agent.hermes_cli.plugins_cmd_install import shared_dependency_answers
-    from hermes_constants import get_routing_process_hermes_home, hermes_home_key
+    from hermes_agent.hermes_constants import get_routing_process_hermes_home, hermes_home_key
     from pm.plugins_state import dependency_homes
 
     def labelled(home: Path) -> Callable[[str], None]:
@@ -1269,7 +1269,7 @@ def recover_at_startup(*, say: Optional[Callable[[str], None]] = None, gateway_s
         # A frozen safe/ignore-user-config worker never reads the profile's config.yaml and never
         # installs customizations; the owner process runs this migration for the home.
         return []
-    from hermes_constants import get_hermes_home, hermes_home_key
+    from hermes_agent.hermes_constants import get_hermes_home, hermes_home_key
 
     home = Path(get_hermes_home())
     key = hermes_home_key(home)
@@ -1332,7 +1332,7 @@ def recover_for_command(name: Optional[str]) -> None:
     discovered, so the command it installs runs in this same invocation. A home nothing migrated yet
     (a Docker image swap runs no ``hermes update``) whose only Hermes process is a scheduled
     ``hermes import-agent --sync`` never starts an agent or a gateway to do it."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     home = Path(get_hermes_home())
     if any(name and name in (f.cli, f.command, *f.old_cli) and not plugin_present(f.plugin, home)
            and feature_in_use(f, home) for f in LEFT_CORE):

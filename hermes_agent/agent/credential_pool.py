@@ -18,7 +18,7 @@ from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
-from hermes_constants import OPENROUTER_BASE_URL
+from hermes_agent.hermes_constants import OPENROUTER_BASE_URL
 from hermes_agent.hermes_cli.config import load_env
 from hermes_agent.agent.secret_scope import get_secret as _get_secret, get_secret_str
 from hermes_agent.agent.retry_utils import reset_delay_from_message

@@ -50,7 +50,7 @@ def _constants_stage(tmp_path, *, with_acl: bool) -> Path:
 
 
 def _mkdir_in_stage(stage: Path, home: Path) -> subprocess.CompletedProcess:
-    script = "import hermes_constants, sys; print(hermes_constants.mkdir_under_hermes_home(sys.argv[1]))"
+    script = "from hermes_agent import hermes_constants; import sys; print(hermes_constants.mkdir_under_hermes_home(sys.argv[1]))"
     return subprocess.run([sys.executable, "-S", "-c", script, str(home / "logs")], cwd=stage,
                           env=dict(os.environ, HERMES_HOME=str(home), PYTHONPATH=str(stage)),
                           capture_output=True, text=True, timeout=15, check=False)
@@ -72,7 +72,7 @@ def test_home_mkdir_never_silently_skips_the_elevated_grant(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
     stage = _constants_stage(tmp_path, with_acl=False)
-    alone = subprocess.run([sys.executable, "-S", "-c", "import hermes_constants"], cwd=stage,
+    alone = subprocess.run([sys.executable, "-S", "-c", "from hermes_agent import hermes_constants"], cwd=stage,
                            env=dict(os.environ, PYTHONPATH=str(stage)), capture_output=True, text=True,
                            timeout=15, check=False)
     assert alone.returncode == 0, alone.stderr

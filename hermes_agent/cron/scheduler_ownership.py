@@ -22,7 +22,7 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
-from hermes_constants import get_hermes_home, hermes_home_key
+from hermes_agent.hermes_constants import get_hermes_home, hermes_home_key
 
 # Home key -> home path for every profile this process ticks, republished each ticker cycle so a
 # profile created or tombstoned mid-run is reflected without a restart.

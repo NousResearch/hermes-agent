@@ -442,7 +442,7 @@ def _apply_switch_reasoning(sid: str, session, agent, effort: str, *, persist_gl
     AFTER ``agent.switch_model`` (which re-resolves ``reasoning_config`` from config.yaml, so an
     earlier write would be clobbered). ``--once`` restores through ``one_turn_model_restore`` —
     the snapshot's ``primary_runtime`` carries the pre-switch ``reasoning_config``."""
-    from hermes_constants import parse_reasoning_effort
+    from hermes_agent.hermes_constants import parse_reasoning_effort
     parsed = parse_reasoning_effort(effort)
     if parsed is None:
         return

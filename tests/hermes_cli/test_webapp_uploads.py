@@ -21,7 +21,7 @@ from fastapi.testclient import TestClient
 
 from hermes_agent.hermes_cli import profiles, staged_uploads, web_server
 from hermes_agent.hermes_cli.web_routers import uploads
-from hermes_constants import WEBAPP_ATTACHMENT_MAX_BYTES, mark_named_profile_deleted
+from hermes_agent.hermes_constants import WEBAPP_ATTACHMENT_MAX_BYTES, mark_named_profile_deleted
 
 
 _SESSION_HEADER = "X-Hermes-Session-Token"

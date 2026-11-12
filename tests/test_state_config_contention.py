@@ -14,7 +14,7 @@ import pytest
 
 from hermes_agent.hermes_cli import config
 from hermes_agent.hermes_state_wal import apply_wal_with_fallback
-from utils import atomic_yaml_write
+from hermes_agent.utils import atomic_yaml_write
 import hermes_agent.hermes_state_wal as wal
 
 

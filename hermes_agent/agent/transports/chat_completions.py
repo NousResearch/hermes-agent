@@ -285,7 +285,7 @@ def _model_consumes_thought_signature(model: Any, base_url: Any = None, provider
     A Gemini host or provider counts even when the model id is an alias without "gemini" in it;
     every other strict provider (Fireworks, Cerebras) rejects the key, so it is stripped there.
     """
-    from utils import base_url_host_matches
+    from hermes_agent.utils import base_url_host_matches
 
     m = str(model or "").lower()
     return (
@@ -431,7 +431,7 @@ _MISTRAL_MODEL_MARKERS = (
 
 
 def _route_requires_mistral_tool_ids(provider: str | None, model: str | None, base_url: str | None) -> bool:
-    from utils import base_url_host_matches
+    from hermes_agent.utils import base_url_host_matches
 
     if (provider or "").strip().lower() == "mistral" or base_url_host_matches(str(base_url or ""), "mistral.ai"):
         return True

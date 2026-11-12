@@ -7,7 +7,7 @@ layout, so the writer and the reader of the layout live here together. The file 
 file back from this host by the same layout when the profile's workspace is an SSH machine.
 
 A named profile that is missing or deleted is refused on both sides by the rule every named-home
-write follows (``hermes_constants.assert_named_profile_home_live`` / ``mkdir_under_hermes_home``):
+write follows (``hermes_agent.hermes_constants.assert_named_profile_home_live`` / ``mkdir_under_hermes_home``):
 an upload never recreates a deleted home, and a receipt from one is never redeemed.
 """
 
@@ -23,7 +23,7 @@ import time
 
 from fastapi import HTTPException
 
-from hermes_constants import WEBAPP_ATTACHMENT_MAX_BYTES
+from hermes_agent.hermes_constants import WEBAPP_ATTACHMENT_MAX_BYTES
 from hermes_agent.hermes_cli.install_identity import get_install_id
 from hermes_agent.hermes_cli.web_deps import late
 
@@ -82,7 +82,7 @@ def resolve_upload_home(profile: str | None) -> Path:
     on its process-wide skills lock or wait on its secret-source hydration. A named home that is
     missing or deleted is a 404.
     """
-    from hermes_constants import assert_named_profile_home_live, get_hermes_home
+    from hermes_agent.hermes_constants import assert_named_profile_home_live, get_hermes_home
 
     if _is_current_profile(profile):
         home = get_hermes_home()
@@ -108,7 +108,7 @@ def ensure_profile_subdir(
     That case is a 404 (``mkdir_under_hermes_home``). Other directory errors are 403 *denied* and
     500 ``"<failed>: <exc>"``; *mode* is applied inside that mapping.
     """
-    from hermes_constants import mkdir_under_hermes_home
+    from hermes_agent.hermes_constants import mkdir_under_hermes_home
 
     directory = home / name
     try:
@@ -126,7 +126,7 @@ def ensure_profile_subdir(
 
 def publish_staged_upload(staged, profile_home: Path, filename: str) -> Path:
     """Publish staged bytes as a new owner-only file under ``<profile_home>/uploads``."""
-    from hermes_constants import assert_named_profile_home_live
+    from hermes_agent.hermes_constants import assert_named_profile_home_live
 
     upload_root = ensure_profile_subdir(
         profile_home,
@@ -197,7 +197,7 @@ def resolve_staged_upload(home: Path, raw_path: str) -> Path:
     The check is anchored on *home*, never on where the descriptor's path claims to point. A named
     *home* that is missing or deleted raises ``FileNotFoundError``: its receipts are void.
     """
-    from hermes_constants import assert_named_profile_home_live
+    from hermes_agent.hermes_constants import assert_named_profile_home_live
 
     assert_named_profile_home_live(home)
     source = Path(raw_path)

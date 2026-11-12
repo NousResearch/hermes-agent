@@ -15,7 +15,7 @@ _OS = {"darwin": "macos", "win32": "windows"}
 def read_facts(*, facts_source: str = "local", locale: str | None = None) -> Facts:
     """``locale``: the desktop's UI language, preferred over the backend OS locale for wording."""
     from hermes_agent.hermes_cli.plugin_catalog_presence import onboarding_names
-    from hermes_platform.host.summary import summary
+    from hermes_agent.hermes_platform.host.summary import summary
     from hermes_agent.tools.tour_tool import check_tours_enabled
 
     host = summary()
@@ -30,6 +30,6 @@ def read_facts(*, facts_source: str = "local", locale: str | None = None) -> Fac
 def suggested_name() -> str | None:
     """The OS account's real name for the name card. It goes to the card only: the model sees it
     when the user picks it."""
-    from hermes_platform.host.summary import summary
+    from hermes_agent.hermes_platform.host.summary import summary
 
     return summary()["full_name"]

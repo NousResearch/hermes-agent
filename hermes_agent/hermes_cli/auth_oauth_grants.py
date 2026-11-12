@@ -13,7 +13,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from hermes_agent.hermes_cli.auth_constants import _decode_jwt_claims
-from utils import file_signature
+from hermes_agent.utils import file_signature
 
 # Log-record parity with the origin module (caplog tests pin "hermes_agent.hermes_cli.auth").
 logger = logging.getLogger("hermes_agent.hermes_cli.auth")
@@ -236,7 +236,7 @@ def strip_cloned_single_use_oauth_grants(profile_dir: Path) -> dict[str, Any]:
     # a samefile() OSError as "two stores", which here would fail OPEN — so resolve identity
     # positively: same path, or samefile() says so; any error refuses.
     try:
-        from hermes_constants import get_default_hermes_root
+        from hermes_agent.hermes_constants import get_default_hermes_root
         root_auth_path = get_default_hermes_root() / "auth.json"
         if _same_path(auth_path, root_auth_path) or (
             root_auth_path.exists() and auth_path.samefile(root_auth_path)
@@ -351,7 +351,7 @@ def _persist_oauth_heal_clean_mark(provider_id: str, fingerprint: tuple) -> None
     if path is None:
         return
     try:
-        from utils import atomic_json_write
+        from hermes_agent.utils import atomic_json_write
 
         try:
             existing = json.loads(path.read_text(encoding="utf-8-sig"))
@@ -367,7 +367,7 @@ def _persist_oauth_heal_clean_mark(provider_id: str, fingerprint: tuple) -> None
         if marks.get(provider_id) == new_mark:
             return  # already recorded; skip the rewrite
         marks[provider_id] = new_mark
-        from hermes_constants import mkdir_under_hermes_home
+        from hermes_agent.hermes_constants import mkdir_under_hermes_home
         mkdir_under_hermes_home(path.parent)
         # 0o600 like the MCP schema cache: this names credential-store paths.
         atomic_json_write(path, marks, mode=0o600)

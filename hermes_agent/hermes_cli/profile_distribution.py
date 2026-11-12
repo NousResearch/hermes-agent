@@ -20,7 +20,7 @@ from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 from hermes_agent.agent.skill_utils import DIST_SWAP_DIR
 from hermes_agent.hermes_cli._subprocess_compat import noninteractive_git_env
@@ -29,8 +29,8 @@ from hermes_agent.hermes_cli.profiles import (
     DEFAULT_EXPORT_EXCLUDE_ROOT, profile_path_contains_private_store,
     profile_path_is_private,
 )
-from hermes_constants import clear_named_profile_deleted
-from utils import rmtree_readonly
+from hermes_agent.hermes_constants import clear_named_profile_deleted
+from hermes_agent.utils import rmtree_readonly
 
 
 MANIFEST_FILENAME = "distribution.yaml"
@@ -171,7 +171,7 @@ def write_manifest(profile_dir: Path, manifest: DistributionManifest) -> Path:
     lands and read_manifest() treats a missing/unparseable manifest as "not a distribution",
     so an interrupted install/update would silently demote the profile."""
     mf_path = profile_dir / MANIFEST_FILENAME
-    from utils import atomic_yaml_write
+    from hermes_agent.utils import atomic_yaml_write
 
     # create_mode=0o644: with an explicit `distribution_owned` allowlist that omits
     # distribution.yaml, _copy_dist_payload reaches here with no manifest on disk. It is a

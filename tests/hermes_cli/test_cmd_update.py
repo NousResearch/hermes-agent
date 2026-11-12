@@ -111,7 +111,7 @@ class TestGitTrampolineSelfHeal:
         # PortableGit tree lives under the SHARED root (monerostar review on
         # #88136). The candidate list must check get_default_hermes_root()
         # before the profile home.
-        import hermes_constants
+        from hermes_agent import hermes_constants
         from hermes_agent.hermes_cli.update_cmd_git import _portable_git_candidates
 
         root = tmp_path / "root"

@@ -40,14 +40,14 @@ def set_multiplex_active(active: bool) -> None:
     """Mark whether the process is a profile multiplexer (get_secret fails closed).
 
     Activation also pins the launch home for routed-profile decisions
-    (``hermes_constants.pin_process_hermes_home``) unless an embedding host already pinned one:
+    (``hermes_agent.hermes_constants.pin_process_hermes_home``) unless an embedding host already pinned one:
     from here on "is this task routed" compares the override against the home the process was
     launched with, not against whatever a host later mirrors into ``os.environ["HERMES_HOME"]``.
     Deactivation releases only the pin activation itself created — a transient toggle
     (``gateway_migrate._multiplex_read_mode``, a cron worker restoring the caller's mode) must not
     drop the host's explicit pin (#119242)."""
     global _MULTIPLEX_ACTIVE, _AUTO_PINNED_HOME
-    from hermes_constants import (
+    from hermes_agent.hermes_constants import (
         get_routing_process_hermes_home,
         pin_process_hermes_home,
         process_hermes_home_is_pinned,
@@ -94,11 +94,11 @@ def serves_routed_profile() -> bool:
     per-profile cron ticker) or a secret scope stamped with a foreign home is bound. The MCP
     registry scope and the check_fn cache key both follow this predicate so a served profile's
     view never aliases the launch profile's (#111151). A host that mirrors the turn's profile into
-    ``HERMES_HOME`` pins its own home with ``hermes_constants.pin_process_hermes_home`` so the
+    ``HERMES_HOME`` pins its own home with ``hermes_agent.hermes_constants.pin_process_hermes_home`` so the
     mirror cannot flip this predicate."""
     if is_multiplex_active():
         return True
-    from hermes_constants import get_hermes_home_override, get_routing_process_hermes_home, hermes_home_key
+    from hermes_agent.hermes_constants import get_hermes_home_override, get_routing_process_hermes_home, hermes_home_key
     own = hermes_home_key(get_routing_process_hermes_home())
     bound = _SECRET_SCOPE.get()
     if bound is not None and bound.profile_home and hermes_home_key(bound.profile_home) != own:
@@ -439,7 +439,7 @@ def _is_process_home(hermes_home: Path) -> bool:
     """Is *hermes_home* the profile this process serves as its own? Same launch-home identity as
     ``serves_routed_profile()``: a host that mirrors a served profile into ``HERMES_HOME`` would
     otherwise seed the launch profile's bridged allow-all grant into that profile's scope."""
-    from hermes_constants import get_routing_process_hermes_home
+    from hermes_agent.hermes_constants import get_routing_process_hermes_home
     try:
         return Path(hermes_home).resolve() == get_routing_process_hermes_home().resolve()
     except OSError:

@@ -13,7 +13,7 @@ from typing import Callable, List, Optional
 from hermes_agent.hermes_cli.browser_runtime import chromium_executable
 from hermes_agent.hermes_cli.doctor import _section, check_info
 from hermes_agent.hermes_cli.doctor_report import check_fail, check_ok, check_warn
-from utils import normalize_proxy_env_vars
+from hermes_agent.utils import normalize_proxy_env_vars
 
 DEFAULT_PROBE_TIMEOUT = 10.0
 

@@ -56,7 +56,7 @@ def _notify_agents_of_screen_change(profile_key: str, payload: dict) -> None:
     agent per turn, so the note is staged on every live session of the profile, not just one.
     ``payload`` is the just-broadcast display.status snapshot (``running``/``display`` and the
     lease's public view), already read under the profile's home override."""
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
     try:
         from hermes_agent.agent.prompt_builder import bot_screen_note
         lease_view = payload.get("lease") if isinstance(payload.get("lease"), dict) else {}
@@ -82,7 +82,7 @@ def _poll_runtime_files() -> None:
     """Broadcast ``display.status`` when a home's screen started/stopped outside this process — a
     file move (start/stop by the CLI or gateway) or the launcher dying without touching its files
     (Xvnc crash: env and launcher.pid stay put, only the pid stops being live)."""
-    from hermes_constants import hermes_home_key, reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import hermes_home_key, reset_hermes_home_override, set_hermes_home_override
     from hermes_agent.tools.bot_desktop import runtime as _bd_runtime
     for home in _watched_lease_homes():
         key = hermes_home_key(home)
@@ -114,7 +114,7 @@ def _poll_idle_screens() -> None:
     if time.monotonic() - _last_idle_check < _IDLE_CHECK_S:
         return
     _last_idle_check = time.monotonic()
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from hermes_agent.tools.bot_desktop import runtime as _bd_runtime
     for home in _watched_lease_homes():
         token = set_hermes_home_override(home)
@@ -126,7 +126,7 @@ def _poll_idle_screens() -> None:
 
 def _poll_lease_files() -> None:
     """One pass: read a home's lease only when its file mtime moved; broadcast when the epoch did."""
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
     from hermes_agent.tools.bot_desktop import lease as _bd_lease
     for home in _watched_lease_homes():
         key = hermes_home_key(home)

@@ -13,7 +13,7 @@ import hermes_agent.hermes_cli.plugins_cadence as cad
 @pytest.fixture
 def homed(tmp_path, monkeypatch):
     """Cadence state (markers) inside a temp hermes home."""
-    import hermes_constants
+    from hermes_agent import hermes_constants
 
     monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)
     return tmp_path

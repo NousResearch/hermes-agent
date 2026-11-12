@@ -17,7 +17,7 @@ NOTE = "[System note: Your previous turn was interrupted. Continue the old task.
 
 
 def _render(text, timestamp=STAMP):
-    from hermes_time import get_timezone
+    from hermes_agent.hermes_time import get_timezone
 
     return render_user_content_with_timestamp(text, timestamp, tz=get_timezone())
 

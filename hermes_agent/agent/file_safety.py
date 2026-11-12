@@ -18,7 +18,7 @@ from hermes_agent.hermes_cli.home_data_layout import SECRET_CACHE_STORES
 def _constants_path(getter_name: str) -> Path:
     """Call ``hermes_constants.<getter_name>()`` (local import avoids cycles); ``~/.hermes`` on any failure."""
     try:
-        import hermes_constants
+        from hermes_agent import hermes_constants
 
         return getattr(hermes_constants, getter_name)()
     except Exception:
@@ -82,7 +82,7 @@ def _guard_homes(path: str = "") -> set[str]:
     account's home, which joins the set so ``~root/.ssh/authorized_keys`` stays denied."""
     homes = {os.path.expanduser("~")}
     with suppress(Exception):
-        from hermes_constants import get_real_home, get_subprocess_home, _profile_home_path
+        from hermes_agent.hermes_constants import get_real_home, get_subprocess_home, _profile_home_path
 
         for candidate in (get_real_home(), get_subprocess_home(), _profile_home_path()):
             if candidate:

@@ -7,7 +7,7 @@ import logging
 
 from hermes_agent.agent.chat_completion_helpers import _log_fallback_activated
 from hermes_agent.agent.error_classifier import FailoverReason, classify_api_error
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
 
 class _StatusError(Exception):

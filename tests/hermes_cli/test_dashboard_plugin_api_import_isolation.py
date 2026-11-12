@@ -8,12 +8,12 @@ execute in-process, registered in ``sys.modules`` while the body runs and remove
 import sys
 from unittest.mock import patch
 
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 import pytest
 from fastapi import FastAPI
 
 from hermes_agent.hermes_cli import web_server_dashboard as dashboard
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 
 NAME = "isoprobe"
 MODULE = f"hermes_dashboard_plugin_{NAME}"

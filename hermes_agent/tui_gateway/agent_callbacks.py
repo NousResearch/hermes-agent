@@ -363,7 +363,7 @@ def _load_prefill_messages() -> list:
     ``agent.*``). Desktop/TUI agents never run the CLI bootstrap, so without this the setting was
     ignored there (#60456). Relative paths resolve against the active profile home, per call."""
     from hermes_agent.hermes_cli.cli_config_load import _load_prefill_messages as _load, _resolve_prefill_messages_file
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     return _load(_resolve_prefill_messages_file(_load_cfg()), get_hermes_home())
 
 

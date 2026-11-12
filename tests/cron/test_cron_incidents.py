@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from hermes_agent.cron import incidents
 import hermes_agent.cron.jobs as cron_jobs
 import hermes_agent.cron.scheduler as sched
-from hermes_time import now as _hermes_now
+from hermes_agent.hermes_time import now as _hermes_now
 
 
 def _point_db(monkeypatch, tmp_path):

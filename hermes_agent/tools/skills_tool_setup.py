@@ -7,8 +7,8 @@ import re
 from enum import Enum
 from typing import Any, Dict, List
 
-from hermes_constants import display_hermes_home
-from utils import env_var_enabled
+from hermes_agent.hermes_constants import display_hermes_home
+from hermes_agent.utils import env_var_enabled
 
 logger = logging.getLogger("hermes_agent.tools.skills_tool")
 

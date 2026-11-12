@@ -17,7 +17,7 @@ from __future__ import annotations
 import threading
 
 import pytest
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 
 @pytest.fixture
@@ -81,7 +81,7 @@ def _race_second_writer_into_first_writers_save(monkeypatch, first, second, time
 
 
 def _on_disk() -> dict:
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     return yaml.safe_load((get_hermes_home() / "config.yaml").read_text(encoding="utf-8"))
 
 

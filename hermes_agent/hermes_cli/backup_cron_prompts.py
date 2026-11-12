@@ -11,7 +11,7 @@ import logging
 from pathlib import Path
 from typing import Any, Optional
 
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("hermes_agent.hermes_cli.backup")

@@ -56,7 +56,7 @@ def _toggles():
 
 def _words():
     """key -> (display field, accepted words)."""
-    from hermes_constants import INDICATOR_STYLES
+    from hermes_agent.hermes_constants import INDICATOR_STYLES
     return {'theme': ('tui_theme', frozenset({'auto', 'light', 'dark'})),
             'indicator': ('tui_status_indicator', frozenset(INDICATOR_STYLES))}
 
@@ -378,7 +378,7 @@ async def _set_command_setting(connection, ref, params):
     if not value:
         raise RuntimeStoreError('invalid_params')
     from hermes_agent.gateway.run import _profile_runtime_scope
-    from hermes_constants import parse_reasoning_effort
+    from hermes_agent.hermes_constants import parse_reasoning_effort
     from hermes_agent.gateway.slash_commands_model import _REASONING_DISPLAY_TOGGLES
     if value not in _REASONING_DISPLAY_TOGGLES and value != 'reset' and parse_reasoning_effort(value) is None:
         raise RuntimeStoreError('invalid_params')

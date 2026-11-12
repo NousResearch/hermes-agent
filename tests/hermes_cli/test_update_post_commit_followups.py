@@ -98,8 +98,8 @@ def test_profile_process_writes_receipts_to_the_root_home(tmp_path, monkeypatch)
     root = tmp_path / ".hermes"
     profile = root / "profiles/work"
     profile.mkdir(parents=True)
-    monkeypatch.setattr("hermes_constants._get_platform_default_hermes_home", lambda: root)
-    monkeypatch.setattr("hermes_constants._default_hermes_root_memo", None)
+    monkeypatch.setattr("hermes_agent.hermes_constants._get_platform_default_hermes_home", lambda: root)
+    monkeypatch.setattr("hermes_agent.hermes_constants._default_hermes_root_memo", None)
     monkeypatch.setenv("HERMES_HOME", str(profile))
     assert update_receipt._receipt_dir() == root / "logs/update_receipts"
 

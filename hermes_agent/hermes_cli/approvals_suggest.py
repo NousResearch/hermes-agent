@@ -87,7 +87,7 @@ class Proposal:
 # ---------------------------------------------------------------------------
 
 def default_db_path() -> Path:
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     return get_hermes_home() / "state.db"
 
 

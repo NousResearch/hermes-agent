@@ -455,7 +455,7 @@ def test_run_prompt_preserves_real_home_when_profile_home_available(monkeypatch,
     # the contract under test.
     monkeypatch.delenv("HERMES_REAL_HOME", raising=False)
     monkeypatch.delenv("TERMINAL_HOME_MODE", raising=False)
-    monkeypatch.setattr("hermes_constants.is_container", lambda: False)
+    monkeypatch.setattr("hermes_agent.hermes_constants.is_container", lambda: False)
     captured = {}
 
     # The --acp support probe runs subprocess.run before Popen; inconclusive so no host CLI interferes.

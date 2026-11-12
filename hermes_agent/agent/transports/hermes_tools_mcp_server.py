@@ -12,7 +12,7 @@ from __future__ import annotations
 # bootstrap's scratch/TMPDIR exports must not fire in those library importers.
 if __name__ == "__main__":
     try:
-        import hermes_bootstrap
+        import hermes_agent.hermes_bootstrap as hermes_bootstrap  # noqa: PLR0402
     except ModuleNotFoundError:
         pass  # a partial ``hermes update`` can leave the bootstrap unregistered
 
@@ -136,7 +136,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     """Entry point for `python -m hermes_agent.agent.transports.hermes_tools_mcp_server`."""
     argv = argv or sys.argv[1:]
     verbose = "--verbose" in argv or "-v" in argv
-    from hermes_logging import DisplayNameFormatter
+    from hermes_agent.hermes_logging import DisplayNameFormatter
     stderr_handler = logging.StreamHandler(sys.stderr)  # MCP uses stdio for protocol — logs MUST go to stderr
     stderr_handler.setFormatter(DisplayNameFormatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
     logging.basicConfig(level=logging.INFO if verbose else logging.WARNING, handlers=[stderr_handler])

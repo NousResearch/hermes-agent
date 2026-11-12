@@ -41,7 +41,7 @@ def completion_tail(monkeypatch):
 
 
 def _checkout(tmp_path, monkeypatch, *, parent: Path | None = None) -> Path:
-    import hermes_constants
+    from hermes_agent import hermes_constants
 
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     # The layout's default root is ``<tmp>/.hermes`` on every OS. On Windows the platform default is

@@ -5,7 +5,7 @@ from hermes_agent.hermes_cli.gateway_setup_service import ensure_gateway_service
 
 
 def _patch_host(monkeypatch, *, container=False, systemd=True, macos=False, windows=False):
-    monkeypatch.setattr("hermes_constants.is_container", lambda: container)
+    monkeypatch.setattr("hermes_agent.hermes_constants.is_container", lambda: container)
     monkeypatch.setattr(gateway_mod, "supports_systemd_services", lambda: systemd)
     monkeypatch.setattr(gateway_mod, "is_macos", lambda: macos)
     monkeypatch.setattr(gateway_mod, "is_windows", lambda: windows)

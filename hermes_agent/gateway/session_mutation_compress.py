@@ -36,7 +36,7 @@ async def prepare_compress(authority, live, payload, prepared):
     from hermes_agent.agent.model_metadata import estimate_request_tokens_rough
     from hermes_agent.hermes_cli.partial_compress import (
         rejoin_compressed_head_and_tail, split_history_for_partial_compress, summarize_compress_preview)
-    from utils import is_truthy_value
+    from hermes_agent.utils import is_truthy_value
     request = compress_request(payload)
     snapshot = prepared['snapshot']
     policy = restore_policy(snapshot['receipt']['policy'])

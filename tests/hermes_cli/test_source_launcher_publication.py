@@ -587,10 +587,10 @@ def test_sync_migrates_old_store_wrapper_before_python_collection(tmp_path, monk
     assert Path(json.loads(result.stdout)["exe"]) == store / "python-B/bin/python3"
 
 def _torn_by_a_killed_merge(tmp_path, monkeypatch):
-    """A git install whose update was killed mid-merge while git rewrote ``hermes_constants.py``.
+    """A git install whose update was killed mid-merge while git rewrote ``hermes_agent/hermes_constants.py``.
 
     Git rewrites a file as unlink, create, write: the kill left HEAD at the old commit, the
-    interrupted-pull marker of a dead updater, ``.git/index.lock`` and no ``hermes_constants.py``.
+    interrupted-pull marker of a dead updater, ``.git/index.lock`` and no ``hermes_agent/hermes_constants.py``.
     """
     repo, home, interpreter = fixture_tree(tmp_path, monkeypatch)
     for relative in ("hermes_agent/hermes_cli/update_lock.py", "hermes_agent/hermes_cli/update_custody.py"):
@@ -629,7 +629,7 @@ def _torn_by_a_killed_merge(tmp_path, monkeypatch):
 @pytest.mark.parametrize("surface", ["launcher", "runtime-command"])
 def test_a_merge_killed_writing_hermes_constants_is_repaired_by_the_next_launch(tmp_path, monkeypatch, surface):
     """C1 recovery reachability: the launcher reaches the repair before importing any other
-    checkout module, so a torn ``hermes_constants.py`` is put back instead of killing every launch."""
+    checkout module, so a torn ``hermes_agent/hermes_constants.py`` is put back instead of killing every launch."""
     repo, home, interpreter, pre, original, marker = _torn_by_a_killed_merge(tmp_path, monkeypatch)
     env = dict(os.environ)
     env.pop("HERMES_HOME", None)  # the default-home pin itself needs hermes_constants

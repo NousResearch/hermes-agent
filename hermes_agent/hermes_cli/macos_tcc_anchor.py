@@ -24,7 +24,7 @@ import tempfile
 from pathlib import Path
 
 from pm.environments import venv_python
-from utils import atomic_write_text
+from hermes_agent.utils import atomic_write_text
 from hermes_agent.hermes_cli._startup_fast import project_root_str
 
 logger = logging.getLogger(__name__)

@@ -7,7 +7,7 @@ import logging
 import os
 from typing import Any
 
-from utils import is_truthy_value
+from hermes_agent.utils import is_truthy_value
 
 # Same logger name as the origin module so log records / caplog filters are unchanged.
 logger = logging.getLogger("hermes_agent.run_agent")
@@ -18,7 +18,7 @@ def _is_nous_agent(agent) -> bool:
     """True for the Nous provider (or a route to a nousresearch.com host)."""
     if (getattr(agent, "provider", "") or "").strip().lower() == "nous":
         return True
-    from utils import base_url_host_matches
+    from hermes_agent.utils import base_url_host_matches
     base_url = str(getattr(agent, "base_url", "") or "")
     return bool(base_url) and base_url_host_matches(base_url, "nousresearch.com")
 

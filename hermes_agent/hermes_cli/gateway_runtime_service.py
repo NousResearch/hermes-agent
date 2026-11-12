@@ -49,7 +49,7 @@ def service_suffix(home: Path) -> str:
     profile name; any other root (Docker, a temp harness) yields a path hash so a
     custom root can never resolve to the production ``hermes-gateway`` unit.
     """
-    from hermes_constants import account_default_hermes_home
+    from hermes_agent.hermes_constants import account_default_hermes_home
     from hermes_agent.hermes_cli.gateway import _profile_name_from_home
     default = account_default_hermes_home().resolve()
     home = home.resolve()

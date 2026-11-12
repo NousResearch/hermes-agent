@@ -14,7 +14,7 @@ from datetime import datetime
 from typing import Dict, Optional, Tuple
 from zoneinfo import ZoneInfo
 
-from hermes_constants import get_config_path
+from hermes_agent.hermes_constants import get_config_path
 
 logger = logging.getLogger(__name__)
 

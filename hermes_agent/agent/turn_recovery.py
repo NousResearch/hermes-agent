@@ -37,8 +37,8 @@ from hermes_agent.agent.turn_failure_copy import (
 from hermes_agent.agent.route_verdicts import route_visit
 from hermes_agent.agent.turn_retry_state import TurnRetryState
 from hermes_agent.agent.turn_recovery_codex import _codex_soft_failure_error, _is_codex_token_expired, _recover_stale_codex_reasoning
-from hermes_constants import display_hermes_home
-from utils import base_url_host_matches
+from hermes_agent.hermes_constants import display_hermes_home
+from hermes_agent.utils import base_url_host_matches
 
 logger = logging.getLogger("hermes_agent.agent.conversation_loop")
 
@@ -333,7 +333,7 @@ def _print_nous_401_diagnostics(agent: Any, api_error: Exception) -> None:
     """Nous 401 that survived a credential refresh: likely Portal OAuth expired/revoked,
     no credits, or agent key blocked."""
     from hermes_agent.agent.conversation_loop import _print_nous_entitlement_guidance
-    from hermes_constants import display_hermes_home
+    from hermes_agent.hermes_constants import display_hermes_home
     _body_text = ""
     try:
         _body = getattr(api_error, "body", None) or getattr(api_error, "response", None)
@@ -370,7 +370,7 @@ def _print_anthropic_401_diagnostics(agent: Any, key: Any) -> None:
     """Anthropic 401 that survived a credential refresh: show auth method + fixes."""
     from hermes_agent.agent.anthropic_credentials import _is_oauth_token
     from hermes_agent.agent.azure_identity_adapter import is_token_provider
-    from hermes_constants import display_hermes_home
+    from hermes_agent.hermes_constants import display_hermes_home
     _plines(agent, "🔐 Anthropic 401 — authentication failed.")
     if is_token_provider(key):
         # Azure Foundry Entra ID: JWT minted per-request by an httpx hook; 401 = Azure

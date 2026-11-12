@@ -96,7 +96,7 @@ def _launch_profile_scope():
     if not is_multiplex_active():
         return contextlib.nullcontext()
     from hermes_agent.gateway.run import _profile_runtime_scope  # late import to avoid cycle
-    from hermes_constants import get_process_hermes_home
+    from hermes_agent.hermes_constants import get_process_hermes_home
 
     return _profile_runtime_scope(get_process_hermes_home())
 
@@ -124,7 +124,7 @@ def relay_explicitly_disabled() -> bool:
     """
     from hermes_agent.gateway.config import Platform, PlatformConfig
     from hermes_agent.gateway.config_loader import bridge_platform_shared_keys, merge_platform_sections, read_yaml_layers
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     try:
         cfg = read_yaml_layers(get_hermes_home())

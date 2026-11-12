@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from hermes_agent.hermes_cli._subprocess_compat import windows_hide_flags
-from hermes_constants import find_node_executable, with_hermes_node_path
+from hermes_agent.hermes_constants import find_node_executable, with_hermes_node_path
 
 logger = logging.getLogger("hermes_agent.agent.lsp.install")
 
@@ -84,7 +84,7 @@ def _is_windows() -> bool:
 
 def hermes_lsp_bin_dir() -> Path:
     """Return the Hermes-owned bin staging dir for LSP servers."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     p = get_hermes_home() / "lsp" / "bin"
     p.mkdir(parents=True, exist_ok=True)

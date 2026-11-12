@@ -21,7 +21,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Optional, Dict, Any
 
-from utils import is_truthy_value
+from hermes_agent.utils import is_truthy_value
 from hermes_agent.tools.transcription_common import (
     BUILTIN_STT_PROVIDERS, CLOUD_STT_PROVIDERS, DEFAULT_ELEVENLABS_STT_MODEL,
     DEFAULT_GROQ_STT_MODEL, DEFAULT_LOCAL_MODEL, DEFAULT_MISTRAL_STT_MODEL, DEFAULT_PROVIDER,

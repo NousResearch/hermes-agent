@@ -24,7 +24,7 @@ def _isolate(tmp_path, monkeypatch):
 
 
 def _write_config(tmp_path, config_dict):
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
     (tmp_path / ".hermes" / "config.yaml").write_text(yaml.safe_dump(config_dict))
 
 

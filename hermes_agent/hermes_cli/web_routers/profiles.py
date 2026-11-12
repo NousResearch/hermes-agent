@@ -923,7 +923,7 @@ async def update_profile_soul(name: str, body: ProfileSoulUpdate):
     soul_path = _resolve_profile_dir(name) / "SOUL.md"
 
     def _run():
-        from utils import atomic_write_text
+        from hermes_agent.utils import atomic_write_text
         # Atomic: a bare write_text() truncates SOUL.md before the new body lands, and the
         # paired GET reports an unreadable file as "never set" — so an interrupted save would
         # make the editor's next Save persist an empty document. preserve_mode keeps an

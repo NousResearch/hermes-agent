@@ -53,7 +53,7 @@ async def stage_user_content(content, home=None):
     if isinstance(content, str):
         return content, []
     if home is not None:
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
         token = set_hermes_home_override(home)
         try:
             return await stage_user_content(content)

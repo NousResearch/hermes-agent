@@ -20,7 +20,7 @@ from hermes_agent.gateway.platforms._shared import (
 from hermes_agent.gateway.platforms.send_targets import StandaloneSendPolicy, regex_stripped_parser
 from hermes_agent.hermes_cli._subprocess_compat import windows_detach_flags
 from hermes_agent.hermes_cli.process_identity import release_process_group_once_empty, spawn_owned
-from hermes_constants import (find_node_executable, get_hermes_dir, with_hermes_node_path)
+from hermes_agent.hermes_constants import (find_node_executable, get_hermes_dir, with_hermes_node_path)
 
 _IS_WINDOWS = platform.system() == "Windows"
 
@@ -287,7 +287,7 @@ from hermes_agent.gateway.platforms.base import (
 )
 from hermes_agent.gateway.platforms.helpers import cancel_task
 from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
-from utils import env_int
+from hermes_agent.utils import env_int
 
 
 def _cache_dirs() -> tuple:
@@ -432,7 +432,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             from hermes_agent.gateway.platforms.whatsapp_common import resolve_whatsapp_bridge_dir
             WhatsAppAdapter._DEFAULT_BRIDGE_DIR = resolve_whatsapp_bridge_dir()
         extra = config.extra
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         self._profile_home = get_hermes_home()
         self._bridge_process: Optional[subprocess.Popen] = None
         self._foreign_bridge_session: Optional[str] = None  # set by _reuse_running_bridge when /health names another profile's session
@@ -1236,7 +1236,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
     except ImportError:
         return send_error("aiohttp not installed. Run: pip install aiohttp")
     try:
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         from .bridge_ownership import standalone_bridge_port
         bridge_port = standalone_bridge_port(
             get_hermes_home(), (getattr(pconfig, "extra", {}) or {}).get("bridge_port")

@@ -25,7 +25,7 @@ from types import SimpleNamespace
 from typing import Any, Dict, Optional
 
 from hermes_agent.hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
-from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
+from hermes_agent.hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from hermes_agent.agent.error_classifier import (
     FailoverReason, PROVIDER_STREAM_EMPTY_FRAME_ERROR_CODE, PROVIDER_STREAM_NON_JSON_ERROR_CODE,
     _extract_status_code)
@@ -54,7 +54,7 @@ from hermes_agent.agent.local_prompt_progress import prompt_progress, with_promp
 from hermes_agent.agent.repetition_guard import RunawayStreamWatch, is_repetition_dominated
 from hermes_agent.agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 from hermes_agent.tools.terminal_tool_lifecycle import is_persistent_env
-from utils import base_url_host_matches, base_url_hostname, env_float, env_int
+from hermes_agent.utils import base_url_host_matches, base_url_hostname, env_float, env_int
 
 logger = logging.getLogger(__name__)
 _OPENROUTER_PROVIDER_SORT_VALUES = {"throughput", "latency", "price"}
@@ -478,7 +478,7 @@ def _provider_preferences_for_agent(agent) -> dict[str, Any]:
     per_model = {}
     with contextlib.suppress(Exception):
         from hermes_agent.hermes_cli.config import load_config_readonly
-        from hermes_constants import resolve_per_model_provider_routing
+        from hermes_agent.hermes_constants import resolve_per_model_provider_routing
         _pr = load_config_readonly().get("provider_routing")
         per_model = resolve_per_model_provider_routing(agent.model, (_pr or {}).get("models") if isinstance(_pr, dict) else None)
     merged = {**flat, **{k: v for k, v in per_model.items() if k in flat}}
@@ -1884,7 +1884,7 @@ def _log_fallback_activated(agent, reason, old_model, old_provider, fb_model, fb
     if reason != FailoverReason.billing:
         logger.info("Fallback activated: %s → %s (%s)", old_model, fb_model, fb_provider)
         return
-    from hermes_constants import get_hermes_home, profile_name_for_home
+    from hermes_agent.hermes_constants import get_hermes_home, profile_name_for_home
     profile = profile_name_for_home(get_hermes_home()) or "default"
     remedy = "hermes model" if profile == "default" else f"hermes -p {profile} model"
     logger.warning(
@@ -1991,7 +1991,7 @@ def _reresolve_fallback_reasoning_config(agent) -> None:
         # Re-resolve reasoning_config for the new fallback model (Closes #21256). Wrapped in try/except
         # because a config load failure must not kill the swap.
         from hermes_agent.hermes_cli.config import load_config
-        from hermes_constants import resolve_reasoning_config
+        from hermes_agent.hermes_constants import resolve_reasoning_config
         agent.reasoning_config = resolve_reasoning_config(load_config() or {}, agent.model)
         logger.info("Fallback %s: reasoning_config resolved: %s", agent.model, agent.reasoning_config)
     except Exception as _reasoning_err:

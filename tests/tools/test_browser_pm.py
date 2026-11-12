@@ -158,7 +158,7 @@ def test_cdp_override_does_not_require_pm_browser(browser_store, monkeypatch):
 def _pin_executable(path) -> None:
     """``browser.executable_path`` in this profile's config.yaml (the operator's browser pin)."""
     import json
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     (get_hermes_home() / "config.yaml").write_text(json.dumps({"browser": {"executable_path": str(path)}}))
 
 

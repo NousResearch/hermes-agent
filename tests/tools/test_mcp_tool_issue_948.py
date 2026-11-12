@@ -212,7 +212,7 @@ def _toolchain_bin(root, *names):
 
 
 def _pm_ships(monkeypatch, *, node_dirs=(), uv=None):
-    import hermes_constants
+    from hermes_agent import hermes_constants
     import pm
 
     monkeypatch.setattr(pm, "ensure", lambda name, **kw: None)
@@ -311,7 +311,7 @@ def test_packaged_npx_install_failure_degrades_to_plain_npx(tmp_path, monkeypatc
     assert _packaged_npx_entry(str(npm_bin / "npx.cmd"), ["-y", "@scope/srv"]) is None
 
     # A refresh that fails (offline) keeps the package an earlier start installed.
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     import hashlib
     pkg = (Path(get_hermes_home()) / "cache" / "mcp-npx" / hashlib.sha256(b"@scope/srv").hexdigest()[:16]
            / "node_modules" / "@scope" / "srv")
@@ -375,7 +375,7 @@ def test_bare_python3_steps_past_the_managed_runtime_to_the_user_hit(tmp_path, m
     user's. The user's wins; the resolved env prepends the user's dir (helpers the
     server spawns resolve against the same interpreter). The user dir must sit OUTSIDE
     the hermes home — everything under it counts as managed."""
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
     home = tmp_path / "home"
     managed_bin = home / "bin"  # <HERMES_HOME>/bin — a managed dir by definition
     managed_bin.mkdir(parents=True)
@@ -401,7 +401,7 @@ def test_bare_python3_keeps_the_managed_hit_when_the_user_has_none(tmp_path, mon
     """A managed-only PATH keeps the managed hit: no user hit exists to prefer, and a
     resolved absolute path still beats an ENOENT at execvp. The trailing user dir is a
     real directory with no executables — not /usr/bin, which may genuinely carry one."""
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
     home = tmp_path / "home"
     managed_bin = home / "bin"
     managed_bin.mkdir(parents=True)
@@ -460,7 +460,7 @@ def test_bare_launcher_commands_keep_the_managed_first_resolution(tmp_path, monk
 def test_tail_server_stderr_scopes_to_the_named_server(tmp_path, monkeypatch):
     """The connect-failure log line quotes the child's last stderr lines; a server that
     never started has no segment and gets nothing (not another server's output)."""
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from hermes_agent.tools import mcp_tool_config as cfg
 
     token = set_hermes_home_override(tmp_path)

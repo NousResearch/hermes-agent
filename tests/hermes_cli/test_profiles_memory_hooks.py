@@ -36,7 +36,7 @@ def _select(home: Path, name: str) -> None:
 def test_create_and_rename_call_the_selected_providers_hooks_with_its_home_bound(profile_env, monkeypatch):
     import plugins.memory as memory_pkg
     from hermes_agent.hermes_cli.profiles import create_profile, rename_profile
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     calls = []
 
@@ -135,7 +135,7 @@ def test_a_missing_profile_secret_never_falls_back_to_the_callers_env(profile_en
 def test_a_provider_hook_that_exits_never_fails_create_or_rename(profile_env, monkeypatch):
     import plugins.memory as memory_pkg
     from hermes_agent.hermes_cli.profiles import create_profile, rename_profile
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     class Exits(_Stub):
         name = "exits"

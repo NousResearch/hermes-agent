@@ -25,7 +25,7 @@ from typing import Any, Callable, NamedTuple, Optional
 # Several of these look unused here but are resolved BARE by split-module bodies rebound onto this
 # namespace (method_ctx.bind_module) — deleting one breaks a handler at call time, not import time.
 from hermes_agent.agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
-from hermes_constants import (
+from hermes_agent.hermes_constants import (
     get_hermes_home, get_hermes_home_override, get_process_hermes_home, profile_name_for_home,
     reset_hermes_home_override, set_hermes_home_override)
 from hermes_agent.hermes_cli import config_backend as _config_backend
@@ -34,7 +34,7 @@ from hermes_agent.hermes_cli.env_loader import load_hermes_dotenv
 # The slash-worker client (slash_worker_client.py) runs on these globals; tests patch them here.
 from hermes_agent.hermes_cli.process_identity import release_process_group_once_empty, spawn_owned
 from hermes_agent.tui_gateway.pet_sheet import _clone_pet_payload, _pet_row_frame_counts, _pet_sheet_revision, _pet_state_rows
-from utils import is_truthy_value
+from hermes_agent.utils import is_truthy_value
 from hermes_agent.hermes_state_ids import new_session_id
 from hermes_agent.tools.environments.local import hermes_subprocess_env
 from hermes_agent.agent.fast_mode import STATIC_TIERS

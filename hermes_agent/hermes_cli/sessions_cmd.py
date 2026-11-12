@@ -1412,7 +1412,7 @@ def cmd_sessions(args, sessions_parser=None):
     if pre is not None:
         return pre(args)
     from hermes_agent.hermes_state import SessionDB
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     # Verified deletion is an explicit mutation, not a read-only export.
     deleting_export = (
         action == "export" and getattr(args, "delete_after_verified", False)

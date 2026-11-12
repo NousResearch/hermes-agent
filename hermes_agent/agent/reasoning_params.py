@@ -9,7 +9,7 @@ import time
 
 from hermes_agent.agent.lazy_forward import forward as _forward, forward_static as _forward_static
 from hermes_agent.agent.message_sanitization import matches_reasoning_echo_family
-from utils import base_url_host_matches
+from hermes_agent.utils import base_url_host_matches
 
 # Static OpenRouter fallback when the live /v1/models capability cache is cold.
 _OPENROUTER_REASONING_PREFIXES = (

@@ -195,7 +195,7 @@ def auto_migration_opted_out(default_home: Path) -> bool:
     false, not truthy. Only the nested key counts, there is no top-level alias."""
     from hermes_agent.hermes_cli.config import load_config_readonly
     from hermes_agent.hermes_cli.gateway_migrate import _home_env
-    from utils import is_truthy_value
+    from hermes_agent.utils import is_truthy_value
     with _home_env(default_home):
         gateway_section = load_config_readonly().get("gateway")
     if not isinstance(gateway_section, dict):

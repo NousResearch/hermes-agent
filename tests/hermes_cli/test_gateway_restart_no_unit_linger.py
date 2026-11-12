@@ -114,7 +114,7 @@ def test_detached_restart_all_never_runs_the_host_gateway_in_the_caller(monkeypa
     The detached replacement is pinned to the root: a bare child follows the sticky active_profile."""
     import sys
 
-    import hermes_constants
+    from hermes_agent import hermes_constants
     from hermes_agent.hermes_cli import gateway as gw
 
     (tmp_path / "profiles" / "work").mkdir(parents=True)

@@ -34,7 +34,7 @@ async def test_runtime_wait_observes_listener_exit(tmp_path, listener_failure):
     from hermes_agent.gateway.run import GatewayRunner
     from hermes_agent.gateway import run_runtime
     from hermes_agent.gateway.runtime_ownership import process_ownership
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     process_ownership.reserve([get_hermes_home()])
     runner = GatewayRunner(GatewayConfig())
@@ -72,7 +72,7 @@ async def test_listener_failure_stops_bootstrap_background_threads(monkeypatch):
     import threading
     from hermes_agent.gateway import run_bootstrap, run_runtime
     from hermes_agent.gateway.config import GatewayConfig
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     get_hermes_home().chmod(0o700)
     stopped = threading.Event()

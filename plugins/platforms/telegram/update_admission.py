@@ -21,7 +21,7 @@ from telegram.ext import Application, ApplicationHandlerStop, ConversationHandle
 
 from hermes_agent.gateway.platforms._shared import coerce_port
 from hermes_agent.gateway.platforms.helpers import bounded_put
-from utils import atomic_json_write
+from hermes_agent.utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +89,7 @@ def _record_receipt(adapter, key: str) -> None:
 
 
 async def _flush_receipts(adapter) -> None:
-    from hermes_constants import mkdir_under_hermes_home
+    from hermes_agent.hermes_constants import mkdir_under_hermes_home
 
     while adapter._update_receipts_dirty:
         bot_id = adapter._update_receipts_dirty.pop()

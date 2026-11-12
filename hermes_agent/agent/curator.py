@@ -21,10 +21,10 @@ from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Set
 
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 from hermes_agent.agent.skill_utils import get_disabled_skill_names
 from hermes_agent.tools import skill_usage
-from utils import atomic_json_write
+from hermes_agent.utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
@@ -552,7 +552,7 @@ def _parse_structured_summary(llm_final: str) -> dict[str, list[dict[str, str]]]
     data = None
     if match:
         try:
-            import hermes_yaml as yaml
+            import hermes_agent.hermes_yaml as yaml
             data = yaml.safe_load(match.group(1))
         except Exception:
             pass
@@ -1119,7 +1119,7 @@ def _run_llm_review(prompt: str) -> dict[str, Any]:
             agent_kwargs.update(acp_command=acp_command, acp_args=list(rp.get("args") or []))
         from hermes_agent.agent.conversation_compression_checkpoint import checkpoint_required_from_config
         from hermes_agent.hermes_cli.config import load_config_readonly
-        from hermes_constants import resolve_reasoning_config
+        from hermes_agent.hermes_constants import resolve_reasoning_config
 
         review_agent = AIAgent(
             model=model_name, provider=provider, api_key=rp.get("api_key"), base_url=rp.get("base_url"),

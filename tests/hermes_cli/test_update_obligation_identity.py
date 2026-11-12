@@ -5,7 +5,7 @@ import json
 import pytest
 
 from hermes_agent.hermes_cli import update_cmd, update_cmd_fleet, update_receipt
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 
 
 @pytest.mark.parametrize("profiles", [["alpha"], ["alpha", "beta"]])

@@ -28,7 +28,7 @@ def test_suffix_scopes_default_home_and_profiles(tmp_path, suffix):
 import json
 import os
 from pathlib import Path
-from hermes_constants import get_hermes_home, get_process_hermes_home, get_default_hermes_root
+from hermes_agent.hermes_constants import get_hermes_home, get_process_hermes_home, get_default_hermes_root
 from hermes_agent.hermes_cli.profiles import _get_profiles_root, _get_active_profile_path, resolve_profile_env
 root = get_default_hermes_root()
 profile = root / 'profiles' / 'coder'
@@ -61,7 +61,7 @@ print(json.dumps(result))
 
 @pytest.mark.platforms("linux", "macos", "windows")
 def test_startup_readers_use_the_suffixed_home(tmp_path, monkeypatch):
-    from hermes_constants import get_process_hermes_home
+    from hermes_agent.hermes_constants import get_process_hermes_home
     from hermes_agent.hermes_cli.dashboard_procs import _hermes_home_dir
     from hermes_agent.hermes_cli.env_loader import load_hermes_dotenv
     from hermes_agent.hermes_startup_watchdog import get_startup_watchdog_dump_path
@@ -82,7 +82,7 @@ def test_startup_readers_use_the_suffixed_home(tmp_path, monkeypatch):
 
 
 def test_suffix_does_not_change_explicit_or_context_home(tmp_path, monkeypatch):
-    from hermes_constants import (
+    from hermes_agent.hermes_constants import (
         get_default_hermes_root, get_hermes_home, get_process_hermes_home,
         reset_hermes_home_override, set_hermes_home_override,
     )

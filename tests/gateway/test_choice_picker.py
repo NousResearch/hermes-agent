@@ -80,7 +80,7 @@ class TestReasoningChoicePicker:
         call = adapter.calls[0]
         values = [c["value"] for c in call["choices"]]
         # Full canonical ladder + none + subcommands, in order
-        from hermes_constants import VALID_REASONING_EFFORTS
+        from hermes_agent.hermes_constants import VALID_REASONING_EFFORTS
         assert values[0] == "none"
         assert values[1:1 + len(VALID_REASONING_EFFORTS)] == list(VALID_REASONING_EFFORTS)
         assert values[-3:] == ["reset", "show", "hide"]

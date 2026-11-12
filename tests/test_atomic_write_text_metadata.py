@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from utils import atomic_write_text, atomic_yaml_write
+from hermes_agent.utils import atomic_write_text, atomic_yaml_write
 
 
 pytestmark = pytest.mark.platforms("posix")  # POSIX permission bits
@@ -57,7 +57,7 @@ class TestPreserveMode:
         target.write_text("old\n", encoding="utf-8")
         os.chmod(target, 0o640)
 
-        import utils as utils_mod
+        import hermes_agent.utils as utils_mod
 
         real_replace = utils_mod.atomic_replace
         seen: list[int] = []
@@ -85,9 +85,9 @@ class TestPreserveMode:
         link.symlink_to(real)
 
         chown_calls: list[tuple[Path, int, int]] = []
-        monkeypatch.setattr("utils._preserve_file_owner", lambda _p: (123, 456))
+        monkeypatch.setattr("hermes_agent.utils._preserve_file_owner", lambda _p: (123, 456))
         monkeypatch.setattr(
-            "utils.os.chown",
+            "hermes_agent.utils.os.chown",
             lambda path, uid, gid: chown_calls.append((Path(path), uid, gid)),
         )
 
@@ -104,9 +104,9 @@ class TestPreserveMode:
         target.write_text("old\n", encoding="utf-8")
 
         chown_calls: list[tuple] = []
-        monkeypatch.setattr("utils._preserve_file_owner", lambda _p: (123, 456))
+        monkeypatch.setattr("hermes_agent.utils._preserve_file_owner", lambda _p: (123, 456))
         monkeypatch.setattr(
-            "utils.os.chown", lambda *a: chown_calls.append(a)
+            "hermes_agent.utils.os.chown", lambda *a: chown_calls.append(a)
         )
 
         atomic_write_text(target, "new\n")

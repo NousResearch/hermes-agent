@@ -165,7 +165,7 @@ def test_minimax_start_route_honors_poller_mock_on_owning_module(tmp_path, monke
 
 
 def test_oauth_provider_status_uses_profile_query(tmp_path, monkeypatch):
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     profile_home = _make_profile_home(tmp_path, monkeypatch)
     observed_homes = []
@@ -701,7 +701,7 @@ def test_dashboard_poller_saves_only_into_the_profile_the_login_started_in(tmp_p
     had removed the registry entry by then, so the tokens landed in the dashboard's launch profile
     (the Codex path was fixed the same way as IA-01). A cancelled login saves nothing."""
     from hermes_agent.hermes_cli import auth as auth_mod
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     coder_home = _make_profile_home(tmp_path, monkeypatch, profile="coder")
     saved_into = []

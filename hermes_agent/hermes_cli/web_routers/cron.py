@@ -25,9 +25,9 @@ from hermes_agent.hermes_cli.web_server_cron import (
 )
 from hermes_agent.hermes_cli.web_models import AutomationBlueprintInstantiate, CronJobCreate, CronJobUpdate
 from hermes_agent.hermes_cli.web_routers._common import log as _log
-from hermes_time import get_timezone as _get_timezone
+from hermes_agent.hermes_time import get_timezone as _get_timezone
 from hermes_agent.hermes_state_keys import legacy_cron_run_job
-from hermes_constants import (
+from hermes_agent.hermes_constants import (
     get_hermes_home as _get_hermes_home,
     reset_hermes_home_override as _reset_hermes_home_override,
     set_hermes_home_override as _set_hermes_home_override,
@@ -206,7 +206,7 @@ def _owner_home_scope(profile: Optional[str]):
 def _cron_output_run_timestamp(path: Path) -> Optional[float]:
     """Epoch seconds for an output filename's wall time.
 
-    save_job_output writes the stem with hermes_time.now() — the configured
+    save_job_output writes the stem with hermes_agent.hermes_time.now() — the configured
     IANA timezone (HERMES_TIMEZONE / config), falling back to server-local.
     Read it back with that same ZONE, not a fixed offset snapshot of today's
     local offset: a snapshot is wrong when the configured zone differs from
@@ -325,7 +325,7 @@ def _execution_contains(
 
     ``save_job_output`` runs after the script finishes but before
     ``finish_execution`` closes the attempt, and both clocks are
-    ``hermes_time.now()`` in the owner's zone, so a doc written by an attempt
+    ``hermes_agent.hermes_time.now()`` in the owner's zone, so a doc written by an attempt
     lands within ``[claimed_at, finished_at + grace]`` of THAT attempt (a still-
     open attempt has no ``finished_at``). Older attempts closed before this doc
     was written, which is what keeps a fast-firing job's status from bleeding

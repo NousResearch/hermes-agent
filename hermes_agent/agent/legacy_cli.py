@@ -11,7 +11,7 @@ from __future__ import annotations
 
 # hermes_bootstrap first (UTF-8 stdio on Windows; no-op on POSIX), like every other entry point.
 try:
-    import hermes_bootstrap
+    import hermes_agent.hermes_bootstrap as hermes_bootstrap  # noqa: PLR0402
 except ModuleNotFoundError:
     pass  # partial `hermes update` — only skips the Windows UTF-8 stdio setup
 

@@ -48,7 +48,7 @@ BLOCKED = {
 
 @pytest.mark.parametrize("case", list(BLOCKED))
 def test_the_trial_is_never_claimed_outside_a_first_desktop_install(portal, monkeypatch, case):
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     BLOCKED[case](monkeypatch, get_hermes_home())
 
@@ -121,7 +121,7 @@ def test_a_lost_trial_is_never_claimed_again_after_a_relaunch(portal, monkeypatc
     from hermes_agent.hermes_cli import free_tier_bootstrap
     from hermes_agent.hermes_cli.auth import resolve_provider
     from hermes_agent.hermes_cli.auth_constants import AuthError
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     lose, creates = LOSSES[loss]
     claimed_trial(monkeypatch)
@@ -159,7 +159,7 @@ def test_a_leftover_guest_pool_row_is_not_reported_as_a_nous_login(portal, monke
 def test_a_connector_guest_pinned_to_nous_gets_no_inference_token(portal, monkeypatch, desktop):
     from hermes_agent.hermes_cli.auth_constants import AuthError
     from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     if desktop:
         as_local_desktop_backend(monkeypatch)
@@ -187,7 +187,7 @@ def test_the_token_seam_refuses_an_inference_token_to_a_guest_without_the_trial(
 
 def _root_run():
     from hermes_agent.hermes_cli.config_effective import load_user_config_effective
-    from hermes_constants import get_default_hermes_root
+    from hermes_agent.hermes_constants import get_default_hermes_root
 
     section = load_user_config_effective(get_default_hermes_root() / "config.yaml").get("onboarding") or {}
     return section.get("run")
@@ -219,7 +219,7 @@ def test_the_first_desktop_boot_records_that_onboarding_is_due(portal, monkeypat
 
 def test_a_missed_first_launch_stays_due_and_keeps_the_trial(portal, monkeypatch):
     from hermes_agent.hermes_cli.onboarding_run import should_run
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     as_local_desktop_backend(monkeypatch)
     _relaunch()                                         # first boot; the app never opened onboarding
@@ -257,7 +257,7 @@ def test_two_installs_claiming_at_once_mint_one_trial(portal, monkeypatch, tmp_p
     import threading
 
     from hermes_agent.hermes_cli import auth_nous
-    from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
 
     as_local_desktop_backend(monkeypatch)
     _relaunch()                                          # the trial is reserved for this OS user
@@ -315,7 +315,7 @@ def _kanban_worker_model(monkeypatch, tmp_path) -> str:
     from hermes_agent.hermes_cli import kanban_db as kb
     from hermes_agent.hermes_cli.config import load_config
     from hermes_agent.hermes_cli.kanban_db_connect import connect
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.gateway.session_contract import SessionActor
     from hermes_agent.gateway.session_kanban import build_kanban_policy
     from hermes_agent.gateway.session_policy import restore_policy
@@ -359,7 +359,7 @@ def test_a_claimed_trial_runs_a_kanban_worker_when_no_model_is_configured(unconf
 
 
 def test_a_configured_model_beats_the_trial_for_cron_jobs_and_kanban_workers(portal, monkeypatch, tmp_path):
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     monkeypatch.delenv("HERMES_MODEL", raising=False)
     claimed_trial(monkeypatch)

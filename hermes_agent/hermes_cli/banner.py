@@ -10,7 +10,7 @@ from pathlib import Path
 from hermes_agent.hermes_cli import source_check
 # Historical updater import (tests/compat/old_updater_surface.json). In-tree callers use the owner.
 from hermes_agent.hermes_cli.source_check import _github_compare_behind
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from hermes_agent.hermes_cli._startup_fast import project_root_str
 
@@ -110,7 +110,7 @@ def _memo(cache_name: str, compute):
 
     Not consulted under a routed profile (HERMES_HOME override): every memo here is derived from the
     launch home (its skills tree, its checkout), and the TUI gateway calls these per profile."""
-    from hermes_constants import get_hermes_home_override
+    from hermes_agent.hermes_constants import get_hermes_home_override
     if get_hermes_home_override() is not None:
         return compute()
     cached = globals()[cache_name]
@@ -463,7 +463,7 @@ def save_banner_snapshot(tools: list[dict], enabled_toolsets: list[str], availab
     }
 
     def _write():
-        from utils import atomic_json_write
+        from hermes_agent.utils import atomic_json_write
         atomic_json_write(_banner_snapshot_path(), payload, indent=None, mode=0o600)
     _quiet(_write)
 

@@ -48,7 +48,7 @@ def _serialize_polls(server, monkeypatch) -> None:
 
 
 def _watching(server, home: Path, monkeypatch) -> list:
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
     events: list = []
     # Before the home is watched: no pass that can see it runs unlocked.
     _serialize_polls(server, monkeypatch)
@@ -65,7 +65,7 @@ def _lease_events(events, **want):
 
 def test_takeover_in_another_process_is_broadcast(tmp_path, monkeypatch):
     from hermes_agent.tui_gateway import server
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
     home = tmp_path / "home"
     home.mkdir()
     events = _watching(server, home, monkeypatch)

@@ -19,7 +19,7 @@ from hermes_agent.hermes_cli.config_migrations import (
     SUPPORT_FLOOR_VERSION,
     support_floor_message,
 )
-from utils import env_var_enabled
+from hermes_agent.utils import env_var_enabled
 
 
 def _backup_existing(paths: Iterable[Path]) -> dict[Path, Path]:

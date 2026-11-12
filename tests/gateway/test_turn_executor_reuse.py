@@ -27,7 +27,7 @@ def _wait_parked(ex, n=1):
 
 
 def test_a_reused_worker_sees_none_of_the_previous_turns_thread_state():
-    from hermes_constants import get_hermes_home, set_hermes_home_override
+    from hermes_agent.hermes_constants import get_hermes_home, set_hermes_home_override
     from hermes_agent.tools import interrupt, terminal_tool
     from hermes_agent.tools import terminal_tool_sudo as sudo
 
@@ -92,7 +92,7 @@ def test_submit_to_a_parked_worker_starts_no_thread_and_shutdown_releases_it(mon
 def test_a_reused_worker_does_not_log_as_the_previous_turns_session():
     import logging
 
-    import hermes_logging
+    from hermes_agent import hermes_logging
 
     ex = _UnboundedThreadExecutor("reuse-probe")
     try:

@@ -25,7 +25,7 @@ def live_default_gateway_pid() -> Optional[int]:
     recycled by an unrelated process must not make its ``served_profiles`` authoritative. Never key this
     off the record's ``updated_at``: an idle gateway never advances it.
     """
-    from hermes_constants import get_default_hermes_root
+    from hermes_agent.hermes_constants import get_default_hermes_root
     from hermes_agent.gateway.status import live_gateway_pid_for_home
     return live_gateway_pid_for_home(get_default_hermes_root())
 
@@ -34,7 +34,7 @@ def recorded_served_profiles(default_root: Optional[Path] = None) -> Optional[li
     """``served_profiles`` the live default gateway recorded, or None when the key is absent (a record
     from before the multiplexer recorded it, or a stopped/absent gateway). Callers fall back to config
     derivation only on None: an empty list is an authoritative "serves nobody else"."""
-    from hermes_constants import get_default_hermes_root
+    from hermes_agent.hermes_constants import get_default_hermes_root
     from hermes_agent.gateway.status import read_runtime_status
     if live_default_gateway_pid() is None:
         return None
@@ -52,7 +52,7 @@ def served_profile_unserved_platforms(profile: str) -> dict[str, str]:
     """``{platform: reason}`` for a served profile's platforms the multiplexer deliberately does not run
     (unpaired WhatsApp or Relay shared ingress; ``hermes_agent.gateway.run_adapters`` stamps
     ``<profile>:<platform>`` as ``disabled`` with a reason and remedy)."""
-    from hermes_constants import get_default_hermes_root
+    from hermes_agent.hermes_constants import get_default_hermes_root
     from hermes_agent.gateway.status import read_runtime_status
     if not profile or live_default_gateway_pid() is None:
         return {}
@@ -73,7 +73,7 @@ def served_profile_ingress_urls(profile: Optional[str] = None) -> dict[str, dict
     """``{profile: {platform: url}}`` for every secondary inbound-port platform the live multiplexer
     serves on its shared listener (``<profile>:<platform>`` entries carrying ``ingress_url``). This is
     what the user pastes into the vendor console (Twilio, LINE, Teams, ...). ``profile`` narrows the map."""
-    from hermes_constants import get_default_hermes_root
+    from hermes_agent.hermes_constants import get_default_hermes_root
     from hermes_agent.gateway.status import read_runtime_status, shared_listener_mirror_platforms
     if live_default_gateway_pid() is None:
         return {}
@@ -112,7 +112,7 @@ def notify_multiplexer_profiles_changed(profile_name: str, *, timeout: float = 8
     served-profile list the gateway answered with, or None when no multiplexer answered (no live default
     gateway, single-profile gateway, or a gateway predating the verb). Never raises."""
     try:
-        from hermes_constants import get_default_hermes_root
+        from hermes_agent.hermes_constants import get_default_hermes_root
         from hermes_agent.gateway.control_socket import rescan_gateway_profiles
         if live_default_gateway_pid() is None:
             return None

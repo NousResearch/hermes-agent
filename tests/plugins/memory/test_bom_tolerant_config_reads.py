@@ -20,7 +20,7 @@ def _write_bom_json(path: Path, payload: dict) -> Path:
 
 
 def _via_shared_reader(p: Path, monkeypatch) -> dict:
-    from utils import read_json_or_empty  # mem0 reads through this
+    from hermes_agent.utils import read_json_or_empty  # mem0 reads through this
     return read_json_or_empty(p)
 
 

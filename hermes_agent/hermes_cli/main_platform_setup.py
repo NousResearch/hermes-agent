@@ -117,8 +117,8 @@ def _whatsapp_bridge_dependencies_current(bridge_dir) -> bool:
 
 def _whatsapp_install_bridge(bridge_dir) -> bool:
     """Step 4 of ``hermes whatsapp``: ``npm install`` the bridge when needed. False = stop."""
-    from hermes_constants import find_node_executable, with_hermes_node_path
-    from utils import env_int
+    from hermes_agent.hermes_constants import find_node_executable, with_hermes_node_path
+    from hermes_agent.utils import env_int
     if _whatsapp_bridge_dependencies_current(bridge_dir):
         print("✓ Bridge dependencies already installed")
         return True
@@ -170,7 +170,7 @@ def cmd_whatsapp(args):
     from hermes_agent.hermes_cli.main import _require_tty, get_hermes_home
     _require_tty("whatsapp")
     from hermes_agent.hermes_cli.config import get_env_value, save_env_value
-    from hermes_constants import find_node_executable, with_hermes_node_path
+    from hermes_agent.hermes_constants import find_node_executable, with_hermes_node_path
     _say("", "☤ WhatsApp Setup", "=" * 50)
 
     wa_mode = _whatsapp_choose_mode(get_env_value, save_env_value)

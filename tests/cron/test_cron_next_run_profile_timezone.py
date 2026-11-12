@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-import hermes_time
+from hermes_agent import hermes_time
 
 
 @pytest.fixture(autouse=True)
@@ -53,7 +53,7 @@ def test_foreign_process_tick_persists_owning_profile_offset(
         ZoneInfo("UTC")
     ).utcoffset()
 
-    from hermes_constants import (
+    from hermes_agent.hermes_constants import (
         reset_hermes_home_override,
         set_hermes_home_override,
     )

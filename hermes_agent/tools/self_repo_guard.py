@@ -552,7 +552,7 @@ def detect_self_repo_git_mutation(
 
 
 def _block_message(operation: str, root: Path) -> str:
-    from hermes_constants import get_scratch_dir
+    from hermes_agent.hermes_constants import get_scratch_dir
 
     scratch = get_scratch_dir()
     return (

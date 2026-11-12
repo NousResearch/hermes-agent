@@ -314,7 +314,7 @@ def _safe_directory_cache_key(env: Mapping[str, str]) -> tuple:
         env.get("GIT_CONFIG_GLOBAL") or os.path.join(home, ".gitconfig"),
         os.path.join(xdg, "git", "config"),
     )
-    from utils import file_cache_version
+    from hermes_agent.utils import file_cache_version
     stamps = []
     for path in candidates:
         try:
@@ -414,7 +414,7 @@ def expose_pm_git(project_root: Path) -> None:
     """
     if sys.platform != "win32" or not (Path(project_root) / ".git").exists():
         return
-    from hermes_platform.resolver import locate_command
+    from hermes_agent.hermes_platform.resolver import locate_command
     from pm.paths import store_root
 
     found = locate_command("git").command

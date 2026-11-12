@@ -41,7 +41,7 @@ def test_lc_ctype_rule(env, platform, expected):
 def test_linux_host_shell_env_selects_a_utf8_locale(monkeypatch, lang):
     """The env resolve_argv hands the PTY must pass glibc's setlocale with a UTF-8 codeset."""
     from hermes_agent.hermes_cli.web_host_terminal import resolve_argv
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     for key in [k for k in os.environ if k.startswith("LC_") or k in ("LANG", "LANGUAGE")]:
         monkeypatch.delenv(key)

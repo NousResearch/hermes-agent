@@ -10,10 +10,10 @@ def test_shared_bot_named_topic_is_persisted_in_the_bot_owners_config(tmp_path, 
     """A credentialless satellite's cron job delivers through the primary's bot (exact profile route).
     The topic that bot creates, and the one the router recreates after thread-not-found, belong to the
     bot's profile: the satellite's config.yaml must not gain Telegram dm_topics."""
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
     from hermes_agent.cron.scheduler_preflight import SharedRouteAdapters
     from hermes_agent.gateway.profile_routing import ProfileRoute
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from tests.gateway.conftest import _ensure_telegram_mock
 
     _ensure_telegram_mock()

@@ -2616,7 +2616,7 @@ def _worker_profile_scope(hermes_home: str, *, bind_home: bool = True):
     resolves for a standalone dispatcher.
     """
     from hermes_agent.agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
-    from hermes_constants import get_process_hermes_home, reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import get_process_hermes_home, reset_hermes_home_override, set_hermes_home_override
     from hermes_agent.tools.terminal_scope import install_profile_terminal_scope, reset_terminal_scope
     from hermes_agent.tui_gateway.launch_profile_policy import launch_secret_scope, launch_terminal_env
 

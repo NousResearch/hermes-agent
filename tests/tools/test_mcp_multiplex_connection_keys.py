@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_constants import hermes_home_key, reset_hermes_home_override, set_hermes_home_override
+from hermes_agent.hermes_constants import hermes_home_key, reset_hermes_home_override, set_hermes_home_override
 
 
 def _tool():
@@ -320,7 +320,7 @@ def test_served_profile_without_multiplex_flag_gets_its_own_connection(two_profi
     assert registry.get_tool_names_for_toolset("mcp-x") == []
     assert "x" in disc._select_new_servers({"x": cfg_b})
 
-    with patch("hermes_constants.get_hermes_home_override", return_value=None):
+    with patch("hermes_agent.hermes_constants.get_hermes_home_override", return_value=None):
         assert core._mcp_registry_scope() is None
         assert _server_key("x") == "x"
 
@@ -337,7 +337,7 @@ def test_served_profile_check_fn_verdict_does_not_shadow_launch_profile(two_prof
     monkeypatch.setattr("hermes_agent.agent.secret_scope.is_multiplex_active", lambda: False)
     cfg_a = {"url": "https://mcp.example/x", "headers": {"Authorization": "Bearer A"}}
     srv_a = _server("x", cfg_a)
-    with patch("hermes_constants.get_hermes_home_override", return_value=None):
+    with patch("hermes_agent.hermes_constants.get_hermes_home_override", return_value=None):
         disc._adopt_server("x", srv_a)
         srv_a._registered_tool_names = reg._register_server_tools("x", srv_a, cfg_a)
         entry = registry._tools["mcp__x__t"]
@@ -346,7 +346,7 @@ def test_served_profile_check_fn_verdict_does_not_shadow_launch_profile(two_prof
         two_profiles("b")
         assert registry_mod.check_fn_cache_scope() is not None
         assert registry_mod._check_fn_cached(entry.check_fn) is False
-        with patch("hermes_constants.get_hermes_home_override", return_value=None):
+        with patch("hermes_agent.hermes_constants.get_hermes_home_override", return_value=None):
             assert registry_mod._check_fn_cached(entry.check_fn) is True
     finally:
         registry.deregister("mcp__x__t")
@@ -369,7 +369,7 @@ def test_launch_profile_pruning_a_server_keeps_served_profiles_same_named_connec
     disc._adopt_server("x", srv_b)
     assert core._server_scope_keys[(scope_b, "x")] == scope_b
 
-    with patch("hermes_constants.get_hermes_home_override", return_value=None):
+    with patch("hermes_agent.hermes_constants.get_hermes_home_override", return_value=None):
         assert core._mcp_registry_scope() is None
         srv_launch = _server("x", cfg)
         disc._adopt_server("x", srv_launch)
@@ -422,7 +422,7 @@ def test_adopter_scope_setup_failure_leaks_no_override_and_continues(two_profile
 
     lifecycle._reregister_orphaned_adopters()
 
-    from hermes_constants import get_hermes_home_override
+    from hermes_agent.hermes_constants import get_hermes_home_override
     assert get_hermes_home_override() is None
     assert ss.current_secret_scope() is None
     assert registered == [{"x": {"url": "https://mcp.example/x"}}]

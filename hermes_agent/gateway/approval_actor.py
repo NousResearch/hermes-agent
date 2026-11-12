@@ -203,7 +203,7 @@ def update_prompt_refusal(actor_id: Any, *, admin_ids: Iterable[str] = (), extra
     recorded in its pending marker. No marker or no authority in it is never refused."""
     import json
 
-    from hermes_constants import get_process_hermes_home  # where /update wrote it (hermes_agent.gateway.run._hermes_home)
+    from hermes_agent.hermes_constants import get_process_hermes_home  # where /update wrote it (hermes_agent.gateway.run._hermes_home)
 
     for name in (".update_pending.claimed.json", ".update_pending.json"):
         try:

@@ -95,7 +95,7 @@ def test_upload_file_allows_regular_file(tmp_path):
 
 def _capture_initialized_client(monkeypatch, tmp_path):
     """Patch _Client/_WriteQueue/get_hermes_home; return a dict capturing args."""
-    import hermes_constants
+    from hermes_agent import hermes_constants
 
     import plugins.memory.retaindb as retaindb_module
 

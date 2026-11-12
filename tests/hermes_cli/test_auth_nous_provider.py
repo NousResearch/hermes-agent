@@ -441,7 +441,7 @@ class TestLoginNousSkipKeepsCurrent:
     """
 
     def _setup_home_with_openrouter(self, tmp_path, monkeypatch):
-        import hermes_yaml as yaml
+        import hermes_agent.hermes_yaml as yaml
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir(parents=True, exist_ok=True)
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
@@ -510,7 +510,7 @@ class TestLoginNousSkipKeepsCurrent:
     def test_skip_keep_current_preserves_provider_and_model(self, tmp_path, monkeypatch):
         """User picks Skip → config.yaml untouched, Nous creds still saved."""
         import argparse
-        import hermes_yaml as yaml
+        import hermes_agent.hermes_yaml as yaml
         from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY, _login_nous
 
         _hermes_home, config_path, auth_path = self._setup_home_with_openrouter(
@@ -541,7 +541,7 @@ class TestLoginNousSkipKeepsCurrent:
     def test_picking_model_switches_to_nous(self, tmp_path, monkeypatch):
         """User picks a Nous model → provider flips to nous with that model."""
         import argparse
-        import hermes_yaml as yaml
+        import hermes_agent.hermes_yaml as yaml
         from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY, _login_nous
 
         _hermes_home, config_path, auth_path = self._setup_home_with_openrouter(
@@ -568,7 +568,7 @@ class TestLoginNousSkipKeepsCurrent:
         """Fresh install (no prior active_provider) → Skip clears active_provider
         instead of leaving it as nous."""
         import argparse
-        import hermes_yaml as yaml
+        import hermes_agent.hermes_yaml as yaml
         from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY, _login_nous
 
         hermes_home = tmp_path / "hermes"

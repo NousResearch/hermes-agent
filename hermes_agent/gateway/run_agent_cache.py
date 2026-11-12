@@ -810,7 +810,7 @@ class GatewayAgentCacheMixin:
             from hermes_agent.gateway.session import _slack_tools_loaded
             slack_tools = "1" if _slack_tools_loaded() else "0"
         try:
-            from hermes_constants import display_hermes_home
+            from hermes_agent.hermes_constants import display_hermes_home
             home_display = str(display_hermes_home())
         except Exception:
             home_display = ""
@@ -913,7 +913,7 @@ class GatewayAgentCacheMixin:
         scope = nullcontext()
         if is_multiplex_active():
             from hermes_agent.gateway.run import _profile_runtime_scope
-            from hermes_constants import get_default_hermes_root, get_hermes_home, hermes_home_key
+            from hermes_agent.hermes_constants import get_default_hermes_root, get_hermes_home, hermes_home_key
             owner = None
             store = getattr(self, "session_store", None)
             if session_key and store is not None:

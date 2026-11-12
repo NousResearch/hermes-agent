@@ -302,7 +302,7 @@ def _legacy_group_fence_error(rid, session, params):
         hosted = probe_hosted_room(default_db_path(), room_id=room_id)
         peer = False
         if not hosted:
-            from hermes_constants import profile_name_for_home
+            from hermes_agent.hermes_constants import profile_name_for_home
             peer = probe_peer_room_reservation(
                 default_db_path(), room_id=room_id, target_profile=(
                     profile_name_for_home(session.get("profile_home"))

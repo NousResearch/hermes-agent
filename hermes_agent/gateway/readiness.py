@@ -8,7 +8,7 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 
 
 _DISK_DEGRADED_PERCENT = 90.0

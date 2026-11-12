@@ -24,7 +24,7 @@ def refresh_launch_files() -> None:
     """Regenerate every profile's launch file that differs from what this checkout generates."""
     from hermes_agent.hermes_cli.config_backend import ConfigBackendUnavailable
     from hermes_agent.hermes_cli.update_receipt import _profile_homes, record_followup
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     try:
         refreshers = _refreshers()

@@ -20,7 +20,7 @@ from pathlib import Path
 from time import monotonic as _monotonic
 from typing import Optional, Sequence
 
-from hermes_constants import (
+from hermes_agent.hermes_constants import (
     get_config_path, get_hermes_home, mkdir_under_hermes_home, named_profile_is_deleted,
 )
 
@@ -221,7 +221,7 @@ def _warn_windows_lock_timeout_once() -> None:
         if _windows_lock_timeout_warned:
             return
         _windows_lock_timeout_warned = True
-    logging.getLogger("hermes_logging").warning(
+    logging.getLogger("hermes_agent.hermes_logging").warning(
         "concurrent-log-handler timed out acquiring the cross-process log "
         "lock; this and later records were dropped (the Desktop slash-worker "
         "surface stays clean, but file logging is degraded)."
@@ -436,7 +436,7 @@ def setup_logging(
         # One-shot, and the file handlers above are already live, so this lands
         # in errors.log/agent.log — the fallback must never be invisible again.
         _fallback_warned = True
-        logging.getLogger("hermes_logging").warning(
+        logging.getLogger("hermes_agent.hermes_logging").warning(
             "concurrent-log-handler unavailable on this Windows install (%s); "
             "file logging fell back to stdlib rotation without rollover.",
             _WINDOWS_CLH_FALLBACK_REASON or "portalocker probe failed",
@@ -770,7 +770,7 @@ class _ProfileRoutingFileHandler(logging.Handler):
                 return
             # Formatted here, on the listener thread, where the record's profile scope is gone: bind its home so
             # RedactingFormatter applies THAT profile's redact_secrets policy and vault values, not the launch's.
-            from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+            from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
             token = set_hermes_home_override(str(home))
             try:
                 handler.handle(record)

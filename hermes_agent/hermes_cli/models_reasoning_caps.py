@@ -71,7 +71,7 @@ _REASONING_CAPS_DISK_TTL_SECONDS = 24 * 3600
 
 
 def _reasoning_caps_disk_path() -> Path:
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     return get_hermes_home() / "cache" / "reasoning_caps.json"
 
 

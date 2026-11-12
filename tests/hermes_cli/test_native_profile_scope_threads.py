@@ -1,7 +1,7 @@
 """A secondary-profile native ticket's implicit scope must reach the audio worker thread."""
 import asyncio
 
-from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+from hermes_agent.hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
 
 
 def test_config_scoped_worker_keeps_the_request_home_override(tmp_path):

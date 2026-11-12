@@ -14,7 +14,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from hermes_constants import hermes_home_key
+from hermes_agent.hermes_constants import hermes_home_key
 from hermes_agent.tools import browser_session_cloud as bs_cloud
 
 
@@ -32,7 +32,7 @@ def _resolution_cached() -> bool:
 
 class TestCloudProviderCachePolicy:
     def test_cache_is_isolated_by_hermes_home(self, tmp_path, monkeypatch):
-        from hermes_constants import (
+        from hermes_agent.hermes_constants import (
             get_hermes_home,
             reset_hermes_home_override,
             set_hermes_home_override,
@@ -74,7 +74,7 @@ class TestCloudProviderCachePolicy:
     ):
         from hermes_agent.agent.browser_provider import BrowserProvider
         from hermes_agent.agent import browser_registry
-        from hermes_constants import (
+        from hermes_agent.hermes_constants import (
             reset_hermes_home_override,
             set_hermes_home_override,
         )
@@ -131,7 +131,7 @@ class TestCloudProviderCachePolicy:
 
         from hermes_agent.agent.browser_provider import BrowserProvider
         from hermes_agent.agent import browser_registry
-        from hermes_constants import (
+        from hermes_agent.hermes_constants import (
             reset_hermes_home_override,
             set_hermes_home_override,
         )

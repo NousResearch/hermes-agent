@@ -122,7 +122,7 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None, toolchain
 def _build_child_env(*, rpc_endpoint: str, rpc_token: str, tmpdir: str,
                      child_python: str) -> dict[str, str]:
     """Build the scrubbed child environment both execution paths share."""
-    from hermes_constants import apply_scratch_tmp_env, apply_subprocess_home_env, get_hermes_home_override
+    from hermes_agent.hermes_constants import apply_scratch_tmp_env, apply_subprocess_home_env, get_hermes_home_override
     from hermes_agent.agent.session_client_env import tool_env, toolchain_environ
     # A local session's client toolchain replaces the daemon's PATH / venv, then the whole scrub (secret
     # names, delegated-child restrictions) runs over the merged environment.
@@ -136,7 +136,7 @@ def _build_child_env(*, rpc_endpoint: str, rpc_token: str, tmpdir: str,
     child_env["PYTHONUTF8"] = "1"
     # Only TZ reaches the child; HERMES_TIMEZONE is an internal setting (and under the multiplexed
     # gateway holds only the default profile's value — hermes_time resolves the routed profile's).
-    from hermes_time import get_timezone_name
+    from hermes_agent.hermes_time import get_timezone_name
 
     _tz_name = get_timezone_name()
     # Windows CPython does not support IANA names in TZ.  Leaving TZ unset

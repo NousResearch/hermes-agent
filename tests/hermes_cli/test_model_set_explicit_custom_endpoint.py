@@ -40,7 +40,7 @@ def _write(home, layout):
 
 
 def _read(home):
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
 
     return yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8")) or {}
 

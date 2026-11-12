@@ -14,7 +14,7 @@ from types import SimpleNamespace
 from hermes_agent.agent import secret_scope
 from hermes_agent.gateway.config import GatewayConfig
 from hermes_agent.gateway.run import GatewayRunner
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 
 
 def _runner(profile_homes: dict[str, Path]) -> GatewayRunner:
@@ -70,7 +70,7 @@ def test_in_turn_cap_eviction_keeps_the_callers_scope(tmp_path, monkeypatch):
 def test_in_turn_cap_eviction_of_another_profiles_agent_enters_the_owners_scope(tmp_path, monkeypatch):
     """The LRU cap is enforced inside the REQUESTING turn (profile A's scope), and the agent it
     evicts may be profile B's. B's end-of-session commit must run under B, not under A."""
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     default_home = tmp_path / ".hermes"
     prof_a, prof_b = default_home / "profiles" / "a", default_home / "profiles" / "b"
@@ -93,7 +93,7 @@ def test_in_turn_cap_eviction_of_another_profiles_agent_enters_the_owners_scope(
 def test_in_turn_cap_eviction_of_a_default_profile_agent_leaves_the_secondarys_scope(tmp_path, monkeypatch):
     """Inverse: secondary A's turn evicts a default-profile session (``agent:main:`` — no named
     owner in the key). The commit runs under the default home, not under A."""
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     default_home = tmp_path / ".hermes"
     prof_a = default_home / "profiles" / "a"
@@ -116,7 +116,7 @@ def test_default_profile_owner_is_the_root_even_when_launched_under_a_named_prof
     """``hermes -p x gateway`` sets HERMES_HOME to x's home and serves the default profile as a
     secondary. An ``agent:main:`` session still belongs to the default profile at the ROOT, not to
     the launch profile x — otherwise x's turn would commit default's transcript under x."""
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     root = tmp_path / ".hermes"
     prof_x = root / "profiles" / "x"

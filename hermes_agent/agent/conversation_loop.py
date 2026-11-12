@@ -60,9 +60,9 @@ from hermes_agent.agent.turn_request_assembly import assemble_api_request
 from hermes_agent.agent.turn_response_check import check_api_response
 from hermes_agent.agent.turn_response_intake import normalize_model_response
 from hermes_agent.agent.turn_tool_round import run_tool_round
-from hermes_logging import set_session_context
+from hermes_agent.hermes_logging import set_session_context
 from hermes_agent.tools.skill_provenance import set_current_write_origin
-from utils import base_url_host_matches
+from hermes_agent.utils import base_url_host_matches
 
 logger = logging.getLogger(__name__)
 

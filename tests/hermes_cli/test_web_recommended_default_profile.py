@@ -21,7 +21,7 @@ def client(_isolate_hermes_home, monkeypatch):
     freebie.mkdir(parents=True, exist_ok=True)
     (freebie / "config.yaml").write_text("model: {}\n", encoding="utf-8")
 
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.hermes_cli import nous_account
 
     # The launch profile's account is paid, the "freebie" profile's is free tier.

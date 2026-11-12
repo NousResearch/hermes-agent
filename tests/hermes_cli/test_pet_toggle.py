@@ -12,7 +12,7 @@ def test_pets_cli_quoted_false_disables_and_toggle_enables(tmp_path, monkeypatch
     bool('false') is True — before the is_truthy_value fix, _has_active_pet
     reported an active pet and /pet toggle DISABLED instead of enabling.
     """
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
 
     from hermes_agent.hermes_cli.pets import _has_active_pet, toggle_pet_display
 

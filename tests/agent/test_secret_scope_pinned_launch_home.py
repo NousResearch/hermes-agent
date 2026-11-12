@@ -1,6 +1,6 @@
 """The launch home is pinned once the process serves several profiles (#119242).
 
-``hermes_constants.pin_process_hermes_home`` (salvaged from #119129) gives the four routed-profile
+``hermes_agent.hermes_constants.pin_process_hermes_home`` (salvaged from #119129) gives the four routed-profile
 decisions one stable launch-home identity; ``set_multiplex_active(True)`` pins it automatically for
 a multiplexing gateway/dashboard, since neither calls the pin itself. Two contracts around that:
 
@@ -14,9 +14,9 @@ from __future__ import annotations
 
 import pytest
 
-import hermes_constants
+from hermes_agent import hermes_constants
 from hermes_agent.agent.secret_scope import serves_routed_profile, set_multiplex_active
-from hermes_constants import (
+from hermes_agent.hermes_constants import (
     get_hermes_home,
     get_process_hermes_home,
     get_routing_process_hermes_home,

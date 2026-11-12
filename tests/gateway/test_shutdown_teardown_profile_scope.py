@@ -18,7 +18,7 @@ import pytest
 from hermes_agent.agent import secret_scope
 from hermes_agent.gateway.config import GatewayConfig
 from hermes_agent.gateway.run import GatewayRunner
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 
 
 def _runner(profile_homes: dict[str, Path]) -> GatewayRunner:

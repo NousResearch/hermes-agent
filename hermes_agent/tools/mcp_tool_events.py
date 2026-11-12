@@ -120,7 +120,7 @@ def _subscribe_params(route_name: str, route: dict, url_base: str, state: dict) 
 # refused if the route changed, so per-event cursor writes on the route would strand in-flight runs.
 
 def _state_path():
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     return get_hermes_home() / _STATE_FILENAME
 
 
@@ -138,7 +138,7 @@ def _mutate_state(mutate, *, route_must_exist: Optional[str] = None) -> Any:
     ``_mutate_subscriptions``: the lock is not reentrant). With *route_must_exist*, nothing is written
     and None is returned when that route is gone."""
     from hermes_agent.hermes_cli.webhook import _load_subscriptions_unlocked, _subscriptions_lock
-    from utils import atomic_json_write
+    from hermes_agent.utils import atomic_json_write
     with _subscriptions_lock():
         if route_must_exist is not None:
             route = _load_subscriptions_unlocked().get(route_must_exist)

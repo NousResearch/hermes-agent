@@ -150,7 +150,7 @@ def test_day_row_reports_each_profiles_peak_of_chats_running_at_once(tmp_path, m
     carries its own peak (claimed in the owning profile's scope, not the launch profile's), and a
     row recorded before the field existed still packages."""
     from hermes_agent.gateway.run_agent_cache import GatewayAgentCacheMixin
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     monkeypatch.setattr("hermes_agent.gateway.run._write_runtime_status_quiet", lambda **_: None)
     monkeypatch.setattr(busy, "_running", {})
@@ -273,7 +273,7 @@ def test_a_held_burst_dropped_by_stop_counts_under_its_own_profile_not_the_chats
     chat's latest turn. A burst held for this profile's bot and dropped by /stop is recorded under
     the profile its routing identity names, so that profile's collection setting decides."""
     from hermes_agent.gateway.session_identity import RoutingIdentity
-    from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
 
     homes = []
     monkeypatch.setattr(rsm, "record_process_mark", lambda mark, data: homes.append(str(get_hermes_home())))
@@ -303,7 +303,7 @@ def test_a_held_burst_dropped_by_stop_counts_under_its_own_profile_not_the_chats
 def test_a_closing_day_keeps_a_peak_reached_just_before_midnight(tmp_path, monkeypatch):
     """A third chat starts at 23:59:30; its first engagement event lands after midnight, and a turn
     boundary after midnight already started the new day. The closed day still reports 3."""
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     monkeypatch.setattr(busy, "_running", {})
     monkeypatch.setattr(busy, "_peaks", {})
@@ -377,7 +377,7 @@ async def test_a_message_the_adapter_saw_idle_counts_when_it_waits_behind_a_runn
     from hermes_agent.gateway.session_contract import SessionRef
     from hermes_agent.gateway.session_authority import SessionAuthority
     from hermes_agent.gateway.session_ingress_context import native_callback
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     runner, authority, source, key = await _real_runner(monkeypatch)
     monkeypatch.setattr(runner, "_effective_busy_input_mode", lambda source: "queue")
@@ -407,7 +407,7 @@ async def test_a_busy_message_cancelled_before_admission_reads_its_row_counts_as
     finds it terminal ``cancelled``. It never reached the agent: ``dropped`` / ``never``."""
     from hermes_agent.gateway.session_ingress import admit_message
     from hermes_agent.gateway.session_ingress_context import native_callback
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     runner, authority, source, _key = await _real_runner(monkeypatch)
     follow_up = MessageEvent(text="B", source=source, message_id="B")

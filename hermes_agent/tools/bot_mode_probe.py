@@ -45,7 +45,7 @@ _cached: dict[str, str] = {}
 
 def _default_home() -> str:
     """Ambient process HERMES_HOME (env, else the platform default) as a string."""
-    from hermes_constants import get_process_hermes_home
+    from hermes_agent.hermes_constants import get_process_hermes_home
     return str(get_process_hermes_home())
 
 
@@ -88,7 +88,7 @@ def _roster(root: Path) -> list[tuple[str, Path]]:
     predicate as ``profile list``: infra dirs (``sessions/``, ``logs/``) and tombstones are not
     teammates (#99392), and neither is a marker-carrying dir whose name is not a profile id —
     a parked backup or staging dir must never become a ``message_agent`` target (#116905)."""
-    from hermes_constants import PROFILE_ID_RE, named_profile_is_live
+    from hermes_agent.hermes_constants import PROFILE_ID_RE, named_profile_is_live
 
     profiles = root / "profiles"
     named = _swallow(
@@ -113,7 +113,7 @@ def _read_yaml_dict(path: Path, needle: str | None = None) -> dict | None:
         raw = path.read_text(encoding="utf-8-sig", errors="replace")
         if needle is not None and needle not in raw:
             return None
-        import hermes_yaml as yaml
+        import hermes_agent.hermes_yaml as yaml
 
         data = yaml.safe_load(raw)
         return data if isinstance(data, dict) else None
@@ -402,7 +402,7 @@ def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
         # scoped to the bot's home via the override the loaders already honor.
         from hermes_agent.agent.skill_utils import parse_config_string_list
         from hermes_agent.hermes_cli.config import load_config_readonly
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
         token = set_hermes_home_override(str(resolved))
         try:

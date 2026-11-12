@@ -214,7 +214,7 @@ def _launchd_unsupported_marker_exists() -> bool:
 
 def _gateway_run_command() -> list[str]:
     from hermes_agent.hermes_cli._launchers import runtime_command
-    from hermes_constants import get_default_hermes_root
+    from hermes_agent.hermes_constants import get_default_hermes_root
     # Every caller spawns an UNSUPERVISED child, which follows the sticky active_profile unless a
     # selector pins it (main._apply_profile_override): the root's replacement booted that profile.
     selector = shlex.split(_gw()._profile_arg())
@@ -295,7 +295,7 @@ def _spawn_detached_gateway() -> bool:
     file that `run_gateway` writes, so stop/status/restart keep working.
     """
     from hermes_agent.hermes_cli._subprocess_compat import windows_detach_popen_kwargs
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.tools.environments.local import served_profile_child_env
     log_dir = _gw().get_hermes_home() / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -320,7 +320,7 @@ def _spawn_detached_gateway() -> bool:
 def _launchd_fallback_to_detached(reason: str, *, exit_on_failure: bool = True) -> bool:
     """Start the gateway detached when launchd can't manage it; on failure print the manual workaround
     and (by default) exit 1."""
-    from hermes_constants import display_hermes_home as _dhh
+    from hermes_agent.hermes_constants import display_hermes_home as _dhh
     _gw()._write_launchd_unsupported_marker()
     print(f"⚠ launchd cannot manage the gateway on this macOS version ({reason}).")
     if _gw()._spawn_detached_gateway():
@@ -673,7 +673,7 @@ def launchd_install(force: bool = False, *, start_now: bool = True, force_unit_p
             else:
                 # The plist was rewritten but launchd never registered it (or the write was refused):
                 # a success line here would hide an unloaded service with no KeepAlive.
-                from hermes_constants import display_hermes_home
+                from hermes_agent.hermes_constants import display_hermes_home
                 print(
                     "⚠ Service definition could not be reloaded with launchd. "
                     "Run 'hermes gateway install --force' or check "
@@ -730,7 +730,7 @@ def launchd_install(force: bool = False, *, start_now: bool = True, force_unit_p
     print()
     print("Next steps:")
     print("  hermes gateway status             # Check status")
-    from hermes_constants import display_hermes_home as _dhh
+    from hermes_agent.hermes_constants import display_hermes_home as _dhh
     print(f"  tail -f {_dhh()}/logs/gateway.log  # View logs")
 
 

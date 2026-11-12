@@ -11,7 +11,7 @@ import re
 from pathlib import Path
 
 import pytest
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 
 # ---------------------------------------------------------------------------
@@ -61,7 +61,7 @@ def _isolate_hermes_home(tmp_path, monkeypatch):
     )
     # mcp_catalog grabs get_hermes_home() lazily through hermes_constants
     monkeypatch.setattr(
-        "hermes_constants.get_hermes_home", lambda: hh
+        "hermes_agent.hermes_constants.get_hermes_home", lambda: hh
     )
     return hh
 

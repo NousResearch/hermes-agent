@@ -4,7 +4,7 @@ The TUI backend is spawned by Node with the user's launch directory as CWD. A
 local package there (e.g. ``utils/``, ``proxy/``, ``ui/`` in tg-ws-proxy) shadowed
 Hermes's own top-level modules and crashed the backend on import
 (``ImportError: cannot import name ... from 'utils'``). entry.py must run
-``hermes_bootstrap.harden_import_path()`` before its first non-stdlib import.
+``hermes_agent.hermes_bootstrap.harden_import_path()`` before its first non-stdlib import.
 Sibling guard for the slash worker: test_slash_worker_sys_path.py.
 """
 

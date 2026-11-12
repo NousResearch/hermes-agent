@@ -122,7 +122,8 @@ def _row(conn, sid: str) -> Optional[dict[str, Any]]:
 def _upsert(conn, sid: str, record: dict[str, Any], *, state: str, pinned: bool, expires_at: Optional[float],
             stop_cause: Optional[str] = None) -> None:
     now = time.time()
-    record = {k: v for k, v in record.items() if k not in ("state", "stop_cause")}
+    # ``auto_claim`` marks only a claim no run has started yet: a written run record never carries it.
+    record = {k: v for k, v in record.items() if k not in ("state", "stop_cause", "auto_claim")}
     conn.execute(
         """INSERT INTO resumable_subagents (subagent_id, state, pinned, stop_cause, owner_pid, owner_started_at,
                record_json, created_at, updated_at, expires_at) VALUES (?,?,?,?,?,?,?,?,?,?)

@@ -36,8 +36,10 @@ logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the 
 
 MAX_AUTO_ATTEMPTS = 2
 SUPERSEDED = "superseded"
+CANCELLED = "Not continued: its parent cancelled the automatic resume"
 # A continue refused for one of these reasons ran nothing and can succeed on a later tick: the attempt is refunded.
-_TRANSIENT_REFUSALS = ("still running", "being continued", "still stopping", "paused", "capacity", "depth limit")
+_TRANSIENT_REFUSALS = ("still running", "being continued", "still stopping", "paused", "capacity", "depth limit",
+                       CANCELLED)
 
 
 def enabled() -> bool:
@@ -85,14 +87,18 @@ def _write(fn) -> Any:
     return write(_db(), fn)
 
 
-def _note(conn, sid: str, *, state: Optional[str], note: str, from_states=("resumable",), unpin=False) -> bool:
-    """Record why the scheduler will not (or no longer) run this record; *state* moves it when given."""
+def _note(conn, sid: str, *, state: Optional[str], note: str, from_states=("resumable",), unpin=False,
+          unstarted_claim=False) -> bool:
+    """Record why the scheduler will not (or no longer) run this record; *state* moves it when given.
+    *unstarted_claim*: also a record an automatic continue claimed whose run has not started (``$.auto_claim``)."""
     marks = ",".join("?" * len(from_states))
-    sets = "record_json=json_set(record_json, '$.auto_note', ?), updated_at=?"
+    sets = "record_json=json_remove(json_set(record_json, '$.auto_note', ?), '$.auto_claim'), updated_at=?"
     if state:
         sets += ", state=?" + (", pinned=0" if unpin else "")
+    claimed = (" OR (state='claimed' AND json_extract(record_json, '$.auto_claim') IS NOT NULL)"
+               if unstarted_claim else "")
     params = [note, time.time(), *([state] if state else []), sid, *from_states]
-    return conn.execute(f"UPDATE resumable_subagents SET {sets} WHERE subagent_id=? AND state IN ({marks})",
+    return conn.execute(f"UPDATE resumable_subagents SET {sets} WHERE subagent_id=? AND (state IN ({marks}){claimed})",
                         params).rowcount == 1
 
 
@@ -117,27 +123,26 @@ def _unit_row(unit_id: Any) -> Optional[dict[str, Any]]:
     return dict(zip(cols, got)) if got else None
 
 
-def _records_since(stopped_at: float, exclude: str) -> list[dict[str, Any]]:
+def _records_since(conn, stopped_at: float, exclude: str) -> list[dict[str, Any]]:
     """Every OTHER record a parent SPAWNED after *stopped_at* (a continue of another child, or this scheduler's,
     is not new work)."""
-    def read(conn):
-        rows = conn.execute("SELECT subagent_id, record_json FROM resumable_subagents WHERE subagent_id != ?",
-                            (exclude,)).fetchall()
-        return [json.loads(raw or "{}") for _sid, raw in rows]
-    return [r for r in (_write(read) or []) if r.get("run_origin", "spawn") == "spawn"
+    rows = conn.execute("SELECT subagent_id, record_json FROM resumable_subagents WHERE subagent_id != ?",
+                        (exclude,)).fetchall()
+    return [r for r in (json.loads(raw or "{}") for _sid, raw in rows) if r.get("run_origin", "spawn") == "spawn"
             and float(r.get("run_started_at") or 0) > stopped_at]
 
 
 # ── verdicts ───────────────────────────────────────────────────────────────
-def _lineage(parent_sid: str) -> tuple[set[str], Optional[dict[str, Any]]]:
-    """``(ids of the parent's compression lineage, the live tip's session row or None)``."""
-    from hermes_state_registry import acquire, release_or_close
-    db = acquire(_db())
-    try:
-        chain = db.get_compression_chain(parent_sid) or [parent_sid]
-        return set(chain), db.get_session(chain[-1])
-    finally:
-        release_or_close(db)
+def _lineage(conn, parent_sid: str) -> tuple[set[str], Optional[dict[str, Any]]]:
+    """``(ids of the parent's compression lineage, the live tip's session row or None)``, read on *conn*."""
+    from hermes_state_compression import _CHAIN_STEP_SQL, _walk_compression_chain
+
+    def step(current):
+        row = conn.execute(_CHAIN_STEP_SQL, (current,)).fetchone()
+        return {"id": row[0]} if row else None
+    chain = _walk_compression_chain(parent_sid, step) or [parent_sid]
+    tip = conn.execute("SELECT ended_at, end_reason FROM sessions WHERE id=?", (chain[-1],)).fetchone()
+    return set(chain), ({"ended_at": tip[0], "end_reason": tip[1]} if tip else None)
 
 
 def _repo_of(path: Any) -> Optional[str]:
@@ -169,14 +174,15 @@ def _parent_ended(row: Optional[dict[str, Any]]) -> Optional[str]:
     return None if is_automatic_end_reason(reason) else f"its parent session ended ({reason})"
 
 
-def superseded_reason(record: dict[str, Any], parent_sid: str) -> Optional[str]:
-    """Why the parent no longer wants *record* resumed, or None while it still does."""
-    lineage, tip_row = _lineage(parent_sid)
+def superseded_reason(conn, record: dict[str, Any], parent_sid: str) -> Optional[str]:
+    """Why the parent no longer wants *record* resumed, or None while it still does (read on *conn*, so inside a
+    write transaction nothing the parent does can land between this answer and the write that acts on it)."""
+    lineage, tip_row = _lineage(conn, parent_sid)
     if ended := _parent_ended(tip_row):
         return ended
     stopped_at = float(record.get("stopped_at") or 0)
     mine = None
-    for other in _records_since(stopped_at, record["subagent_id"]):
+    for other in _records_since(conn, stopped_at, record["subagent_id"]):
         if not lineage & set(other.get("owners") or ()):
             continue
         mine = _repos(record) if mine is None else mine
@@ -221,42 +227,102 @@ def resume_message(record: dict[str, Any]) -> str:
             "of your last tool call before re-running anything with side effects.")
 
 
-def _count_attempt(sid: str, attempts: int) -> bool:
-    """Spend one attempt BEFORE it runs (a resume that kills the process still counts); False when the record moved."""
-    return bool(_write(lambda conn: conn.execute(
-        "UPDATE resumable_subagents SET record_json=json_set(record_json, '$.auto_attempts', ?, '$.auto_last_at', ?),"
-        " updated_at=? WHERE subagent_id=? AND state='resumable' "
-        "AND COALESCE(json_extract(record_json, '$.auto_attempts'), 0)=?",
-        (attempts + 1, time.time(), time.time(), sid, attempts)).rowcount))
+def _claim(record: dict[str, Any], parent_sid: str) -> tuple[Optional[dict[str, Any]], Optional[str]]:
+    """The automatic claim: ONE write transaction re-reads the row, re-runs supersession on that connection and,
+    only while it is still ``resumable``, unsuperseded, uncancelled and under the cap, moves it to ``claimed`` and
+    spends the attempt (BEFORE it runs: a resume that kills the process still counts). A parent decision that
+    committed first wins; none can land in between. ``(claimed record, None)``, or ``(None, supersede note)``,
+    or ``(None, None)`` when the row moved."""
+    from tools.delegate_tool_resumable import _begin_immediate, _owner_identity, _row
+    sid, attempts = record["subagent_id"], int(record.get("auto_attempts") or 0)
+    owner = _owner_identity()
+
+    def do(conn):
+        _begin_immediate(conn)
+        row = _row(conn, sid)
+        if (not row or row.get("state") != "resumable" or row.get("auto_off")
+                or int(row.get("auto_attempts") or 0) != attempts or attempts >= MAX_AUTO_ATTEMPTS):
+            return None, None
+        if reason := superseded_reason(conn, row, parent_sid):
+            _note(conn, sid, state=SUPERSEDED, note=reason)
+            return None, reason
+        now = time.time()
+        conn.execute(
+            "UPDATE resumable_subagents SET state='claimed', owner_pid=?, owner_started_at=?, updated_at=?, "
+            "record_json=json_set(record_json, '$.auto_attempts', ?, '$.auto_last_at', ?, '$.auto_claim', ?) "
+            "WHERE subagent_id=? AND state='resumable'",
+            (owner["owner_pid"], owner["owner_started_at"], now, attempts + 1, now, parent_sid, sid))
+        return {**row, "auto_attempts": attempts + 1}, None
+    return _write(do) or (None, None)
+
+
+def take_claim(path: Any, sid: str) -> Optional[dict[str, Any]]:
+    """The continue path's view of this process's automatic claim of *sid* (``claimed``, ``$.auto_claim`` set, by
+    this process), as the record a release hands back to ``resumable``; None once the parent cancelled it."""
+    from tools.delegate_tool_resumable import _row, _write as write
+    row = write(path, lambda conn: _row(conn, sid))
+    if not row or row.get("state") != "claimed" or not row.get("auto_claim") or row.get("owner_pid") != os.getpid():
+        return None
+    return {**row, "state": "resumable"}
+
+
+def confirm_start(path: Any, sid: str) -> Optional[str]:
+    """Right before the continued child is dispatched: the final eligibility check, in one write transaction. While
+    the parent has not cancelled it (stop, /stop, /new, a replacement in the same repository) the claim stops being
+    cancellable as unstarted (from here the parent stops it like any running child) and None is returned; else
+    the reason, with the row left as the parent's decision put it (or moved to ``superseded``)."""
+    from tools.delegate_tool_resumable import _begin_immediate, _row, _write as write
+
+    def do(conn):
+        _begin_immediate(conn)
+        row = _row(conn, sid)
+        if not row or row.get("state") != "claimed" or not row.get("auto_claim"):
+            return CANCELLED
+        if reason := superseded_reason(conn, row, str(row["auto_claim"])):
+            _note(conn, sid, state=SUPERSEDED, note=reason, from_states=(), unstarted_claim=True)
+            return f"{CANCELLED}: {reason}"
+        conn.execute("UPDATE resumable_subagents SET record_json=json_remove(record_json, '$.auto_claim') "
+                     "WHERE subagent_id=?", (sid,))
+        return None
+    return write(path, do) if path is not None else CANCELLED
 
 
 def _settle_refusal(sid: str, attempts: int, error: str) -> None:
-    """A continue refused before anything ran: a transient refusal refunds the attempt, any other one (a changed
-    route, a missing transcript) ends automatic resumes of this record."""
+    """A continue refused before anything ran: the claim goes back (unless the parent already moved the row), a
+    transient refusal refunds the attempt, any other one (a changed route, a missing transcript) ends automatic
+    resumes of this record."""
     note = f"automatic continue refused: {error}"[:500]
-    if any(word in error for word in _TRANSIENT_REFUSALS):
+    if error.startswith(CANCELLED):  # the parent's decision already wrote the row: only the attempt is refunded
+        sql, params = "json_set(record_json, '$.auto_attempts', ?)", (attempts,)
+    elif any(word in error for word in _TRANSIENT_REFUSALS):
         sql, params = "json_set(record_json, '$.auto_attempts', ?, '$.auto_note', ?)", (attempts, note)
     else:
         sql, params = "json_set(record_json, '$.auto_off', ?, '$.auto_note', ?)", (note, note)
-    _write(lambda conn: conn.execute(f"UPDATE resumable_subagents SET record_json={sql} WHERE subagent_id=?",
-                                     (*params, sid)))
+    _write(lambda conn: conn.execute(
+        f"UPDATE resumable_subagents SET record_json=json_remove({sql}, '$.auto_claim'), "
+        "state=CASE WHEN state='claimed' AND owner_pid=? THEN 'resumable' ELSE state END WHERE subagent_id=?",
+        (*params, os.getpid(), sid)))
 
 
-def _resume(record: dict[str, Any], unit: dict[str, Any], start: Callable[..., Optional[str]]) -> bool:
+def _resume(record: dict[str, Any], unit: dict[str, Any], start: Callable[..., Optional[str]]) -> Optional[str]:
+    """Claim, then continue; returns ``"resumed"``, ``"superseded"`` or None (nothing ran)."""
     sid, attempts = record["subagent_id"], int(record.get("auto_attempts") or 0)
-    if not _count_attempt(sid, attempts):
-        return False
+    claimed, superseded = _claim(record, str(unit["parent_session_id"]))
+    if claimed is None:
+        if superseded:
+            logger.info("Subagent %s will not resume automatically: %s", sid, superseded)
+        return "superseded" if superseded else None
     try:
-        error = start(record, unit, resume_message(record))
+        error = start(claimed, unit, resume_message(claimed))
     except Exception as exc:  # health: allow BLE001 -- one record's failure must not stop the tick
         logger.warning("automatic resume of subagent %s failed", sid, exc_info=True)
         error = f"{type(exc).__name__}: {exc}"
     if error:
         _settle_refusal(sid, attempts, error)
         logger.info("automatic resume of subagent %s refused: %s", sid, error)
-        return False
+        return None
     logger.info("Automatically resumed subagent %s (attempt %d/%d)", sid, attempts + 1, MAX_AUTO_ATTEMPTS)
-    return True
+    return "resumed"
 
 
 def _verdict(record: dict[str, Any], now: float) -> tuple[str, Any]:
@@ -268,7 +334,7 @@ def _verdict(record: dict[str, Any], now: float) -> tuple[str, Any]:
     unit = _unit_row(record.get("unit_id"))
     if unit is None or not unit.get("parent_session_id"):
         return "never", "no background completion route (a nested or joined child)"
-    if reason := superseded_reason(record, str(unit["parent_session_id"])):
+    if reason := _write(lambda conn: superseded_reason(conn, record, str(unit["parent_session_id"]))):
         return "supersede", reason
     return "run", unit
 
@@ -295,7 +361,7 @@ def tick(start: Callable[..., Optional[str]], *, capacity: int, now: Optional[fl
         if kind != "run" or endpoint in endpoints or len(resumed) >= capacity:
             continue  # one resume per endpoint per tick: children sharing one reset are staggered
         endpoints.add(endpoint)
-        if _resume(record, payload, start):
+        if _resume(record, payload, start) == "resumed":
             resumed.append(sid)
     return resumed
 
@@ -318,9 +384,10 @@ def supersede_for_session(*, session_key: str = "", origin_ui_session_id: str = 
         units = {row[0] for row in conn.execute(f"SELECT delegation_id FROM async_delegations WHERE {where}",
                                                 [val for _, val in selectors])}
         rows = conn.execute("SELECT subagent_id, json_extract(record_json, '$.unit_id') FROM resumable_subagents "
-                            "WHERE state='resumable'").fetchall()
+                            "WHERE state IN ('resumable','claimed')").fetchall()
         note = f"its parent conversation was stopped or closed ({reason or 'session end'})"
-        return sum(_note(conn, sid, state=SUPERSEDED, note=note) for sid, unit in rows if unit in units)
+        return sum(_note(conn, sid, state=SUPERSEDED, note=note, unstarted_claim=True)
+                   for sid, unit in rows if unit in units)
     return int(_write(do) or 0)
 
 
@@ -333,9 +400,13 @@ def dismiss(parent_agent: Any, sid: str) -> bool:
     from tools.delegate_tool_resumable import _db_path_for, _row, _write as write
     path = _db_path_for(parent_agent)
     record = write(path, lambda conn: _row(conn, sid))
-    if not record or record.get("state") not in ("resumable", SUPERSEDED):
+    waiting = record and (record.get("state") in ("resumable", SUPERSEDED)
+                          or (record.get("state") == "claimed" and record.get("auto_claim")))
+    if not waiting:
         return False
     if not _owns_subagent_record({"ancestor_owner_session_ids": record.get("owners") or ()}, parent_agent):
         return False
+    # An automatic continue that claimed it but has not started it yet is cancelled too (``confirm_start``).
     return bool(write(path, lambda conn: _note(conn, sid, state="stopped", note="dismissed by its parent",
-                                               from_states=("resumable", SUPERSEDED), unpin=True)))
+                                               from_states=("resumable", SUPERSEDED), unpin=True,
+                                               unstarted_claim=True)))

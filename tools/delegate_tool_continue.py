@@ -109,15 +109,23 @@ def _durable_spec(sid: str, record: dict[str, Any], parent_agent: Any) -> tuple[
     return {**record, "route": routes[0], "endpoint": tuple(record.get("endpoint") or ()) or None}, None
 
 
-def _claim(sid: str, parent_agent: Any) -> tuple[Optional[dict[str, Any]], Optional[dict[str, Any]], Optional[str]]:
+def _claim(sid: str, parent_agent: Any, auto: bool = False,
+           ) -> tuple[Optional[dict[str, Any]], Optional[dict[str, Any]], Optional[str]]:
     """``(spec, durable_record, error)``: the in-process record while it is retained, else the durable one. The
     durable claim is the single gate for both: a refusal there refuses the continue even when this caller holds the
-    in-process spec (a second continue that fell through to the row, or one from another process, owns it)."""
+    in-process spec (a second continue that fell through to the row, or one from another process, owns it). *auto*:
+    the scheduler already claimed the row (``delegate_tool_auto_resume._claim``); this takes that claim over."""
     from tools.delegate_tool_resumable import claim as claim_durable
     spec, err = _claim_resume(sid, parent_agent)
     if spec is None and err != _NOT_FOUND.format(sid=sid):
         return None, None, err
-    record, durable_err = claim_durable(parent_agent, sid)
+    if auto:
+        from tools.delegate_tool_auto_resume import CANCELLED, take_claim
+        from tools.delegate_tool_resumable import _db_path_for
+        record = take_claim(_db_path_for(parent_agent), sid)
+        durable_err = None if record is not None else CANCELLED
+    else:
+        record, durable_err = claim_durable(parent_agent, sid)
     if durable_err:  # the durable row is the one gate: another continue holds it (here or in another process)
         if spec is not None:
             _release_resume(sid, spec)
@@ -189,6 +197,15 @@ def _start(
         children[0][2]._delegate_continue_workspace = last_workspace(parent_agent, sid)
         if record is not None:  # a run that fails before it records itself hands the claim back
             hold_claim(children[0][2], parent_agent, sid, record)
+        if run_origin == "auto":  # the last word is the parent's: a stop, /stop, /new or replacement since the claim
+            from tools.delegate_tool_auto_resume import confirm_start
+            from tools.delegate_tool_resumable import _db_path_for
+            if cancelled := confirm_start(_db_path_for(parent_agent), sid):
+                from tools.delegate_tool_child_run import _close_child, _detach_child
+                children[0][2]._delegate_claim = None
+                _detach_child(parent_agent, children[0][2])
+                _close_child(children[0][2], "Failed to close a cancelled continue's child")
+                return None, cancelled
     batch = _Batch(
         task_list, [(0, task_list[0], children[0][2])], parent_agent, route.creds, None, "leaf",
         _get_max_concurrent_children(), live_id, writers, paths, *origin, time.monotonic(), live_home=live_home,
@@ -210,7 +227,7 @@ def continue_subagent(subagent_id: Optional[str], message: Optional[str], parent
     refusal = _refusal(parent_agent)
     if refusal:
         return tool_error(refusal)
-    spec, record, err = _claim(sid, parent_agent)
+    spec, record, err = _claim(sid, parent_agent, auto)
     if spec is None:
         return tool_error(err or _NOT_FOUND.format(sid=sid))
     try:

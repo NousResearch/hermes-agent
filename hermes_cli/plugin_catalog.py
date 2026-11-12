@@ -8,7 +8,9 @@ the human-merged approval gate; SHA bumps are new, re-reviewed PRs; ``removed.ya
 
 Live refresh: the docs build publishes the same data as ONE JSON document
 (``website/scripts/extract-plugins.py`` → ``/docs/api/plugin-catalog.json``, like the skills index), so
-an installed Hermes sees new entries and removals without updating. A fetch failure reuses the last valid
+an installed Hermes sees new entries and removals without updating. The doc is built from the same merged
+directory on ``main``, so it is trusted only as served over HTTPS by the docs host or its GitHub Pages
+origin (redirects elsewhere are refused). A fetch failure reuses the last valid
 cached copy regardless of age, then falls back to the in-tree copy when no valid cache exists.
 """
 
@@ -42,6 +44,11 @@ _REQUEST_TIMEOUT = 5.0
 # client that refuses it silently installs its own in-tree pins and misses newer removals. 16 MiB leaves
 # room for roughly 9,000 entries while still bounding a hostile or broken response.
 _MAX_LIVE_BYTES = 16 * 1024 * 1024
+# The docs host 301s the document to GitHub Pages. A redirect anywhere else (or to plain http) is
+# refused: the document names the repo + sha every catalog install clones, so its integrity rests on
+# HTTPS to hosts Nous publishes to, and an open redirect must not extend that trust to a third host.
+_LIVE_CATALOG_HOSTS = frozenset({"hermes-agent.nousresearch.com", "nousresearch.github.io"})
+_MAX_LIVE_REDIRECTS = 5
 
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,31}$")
@@ -368,6 +375,28 @@ def _stale_live_cache(cache: Path) -> Optional[dict[str, Any]]:
         return None
 
 
+def _download_live_catalog(httpx: Any) -> bytes:
+    """Body of :data:`LIVE_CATALOG_URL`, following redirects only onto :data:`_LIVE_CATALOG_HOSTS`
+    over HTTPS and reading at most :data:`_MAX_LIVE_BYTES` (streamed, so the cap bounds memory)."""
+    url = LIVE_CATALOG_URL
+    for _hop in range(_MAX_LIVE_REDIRECTS + 1):
+        with httpx.stream("GET", url, timeout=_REQUEST_TIMEOUT, follow_redirects=False) as resp:
+            if resp.next_request is not None:
+                target = resp.next_request.url
+                if target.scheme != "https" or target.host not in _LIVE_CATALOG_HOSTS:
+                    raise ValueError(f"live catalog redirected off the catalog hosts: {target}")
+                url = str(target)
+                continue
+            resp.raise_for_status()
+            body = bytearray()
+            for chunk in resp.iter_bytes():
+                body += chunk
+                if len(body) > _MAX_LIVE_BYTES:
+                    raise ValueError("live catalog payload too large")
+            return bytes(body)
+    raise ValueError("live catalog: too many redirects")
+
+
 def fetch_live_catalog(*, force: bool = False) -> Optional[dict[str, Any]]:
     """The published ``plugin-catalog.json`` (``{"entries": [...], "removed": [...]}``), cached under
     ``HERMES_HOME/cache`` for :data:`LIVE_CATALOG_TTL_SECONDS`. ``None`` on ANY failure — callers fall
@@ -388,11 +417,7 @@ def fetch_live_catalog(*, force: bool = False) -> Optional[dict[str, Any]]:
         from hermes_constants import mkdir_under_hermes_home
         from utils import atomic_write_text
 
-        resp = httpx.get(LIVE_CATALOG_URL, timeout=_REQUEST_TIMEOUT, follow_redirects=True)
-        resp.raise_for_status()
-        if len(resp.content) > _MAX_LIVE_BYTES:
-            raise ValueError("live catalog payload too large")
-        data = resp.json()
+        data = json.loads(_download_live_catalog(httpx))
         if not isinstance(data, dict) or not isinstance(data.get("entries"), list):
             raise ValueError("unexpected live catalog payload")
         mkdir_under_hermes_home(cache.parent)

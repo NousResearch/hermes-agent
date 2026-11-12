@@ -86,7 +86,15 @@ def test_authenticated_deliveries_are_still_rate_limited(monkeypatch):
 def test_unauthenticated_url_verification_flood_does_not_block_signed_delivery(monkeypatch):
     adapter = _adapter(monkeypatch, FEISHU_ENCRYPT_KEY="key")
     for _ in range(_FEISHU_WEBHOOK_RATE_LIMIT_MAX + 5):
-        _send(adapter, _request({"type": "url_verification", "challenge": "x"}))
+        assert _send(adapter, _request({"type": "url_verification", "challenge": "x"})) == 200
 
     assert _send(adapter, _signed(_EVENT, "key")) == 200
     adapter._on_message_event.assert_called_once()
+
+
+def test_token_authenticated_url_verification_is_rate_limited(monkeypatch):
+    adapter = _adapter(monkeypatch, FEISHU_VERIFICATION_TOKEN="tok")
+    challenge = {"type": "url_verification", "challenge": "x", "token": "tok"}
+    for _ in range(_FEISHU_WEBHOOK_RATE_LIMIT_MAX):
+        assert _send(adapter, _request(challenge)) == 200
+    assert _send(adapter, _request(challenge)) == 429

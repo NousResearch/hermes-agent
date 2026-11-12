@@ -59,6 +59,16 @@ class StreamThinkFilterMixin:
         self._think_buffer = ""
 
         while buf:
+            if self._pending_midline:
+                pending = self._pending_midline + buf
+                pair = _Scrubber._find_earliest_closed_pair(_Scrubber(), pending)
+                if pair is None:
+                    self._pending_midline = pending
+                    return
+                self._pending_midline = ""
+                buf = pending[pair[1]:]
+                continue
+
             # Case-insensitive: models emit <Think>, <THINKING>, …
             lower_buf = buf.lower()
             if self._in_think_block:
@@ -84,9 +94,18 @@ class StreamThinkFilterMixin:
                         self._append_accumulated(buf[:-held_back])
                         self._think_buffer = buf[-held_back:]
                     else:
-                        # An orphan </think> (thinking-mode toggle dropped the open, or
-                        # incomplete upstream stripping) is noise.
-                        self._append_accumulated(self._strip_orphan_close_tags(buf))
+                        complete_pair = _Scrubber._find_earliest_closed_pair(_Scrubber(), buf)
+                        if complete_pair is not None:
+                            self._append_accumulated(buf)
+                            return
+                        any_open_idx, _ = _Scrubber._find_first_tag(buf, self._OPEN_THINK_TAGS)
+                        if any_open_idx != -1:
+                            self._append_accumulated(buf[:any_open_idx])
+                            self._pending_midline = buf[any_open_idx:]
+                        else:
+                            # An orphan </think> (thinking-mode toggle dropped the open, or
+                            # incomplete upstream stripping) is noise.
+                            self._append_accumulated(self._strip_orphan_close_tags(buf))
                     return
 
     @staticmethod
@@ -96,6 +115,9 @@ class StreamThinkFilterMixin:
 
     def _flush_think_buffer(self) -> None:
         """On stream end, flush text held back waiting for a possible open tag."""
+        if self._pending_midline:
+            self._append_accumulated(self._pending_midline)
+            self._pending_midline = ""
         if self._think_buffer and not self._in_think_block:
             self._append_accumulated(self._strip_orphan_close_tags(self._think_buffer))
             self._think_buffer = ""

@@ -29,7 +29,13 @@ export function packagedWorkingDirectoryTarget(facts: WorkingDirectoryFacts): st
 }
 
 function hostFacts(isPackaged: boolean): WorkingDirectoryFacts {
-  return { platform: process.platform, isPackaged, execPath: process.execPath, cwd: process.cwd(), homedir: os.homedir() }
+  return {
+    platform: process.platform,
+    isPackaged,
+    execPath: process.execPath,
+    cwd: process.cwd(),
+    homedir: os.homedir()
+  }
 }
 
 /**

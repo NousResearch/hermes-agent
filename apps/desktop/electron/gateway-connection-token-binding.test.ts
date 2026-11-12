@@ -30,15 +30,27 @@ function storeIn() {
   const store = createGatewayConnectionsStore({
     root,
     userData,
-    legacyRegistry: () => ({ version: 2, primary: 'local', launchMode: 'primary', lastUsed: 'local',
-      connections: [{ id: 'local', kind: 'local', label: 'This device' }] }) as any,
+    legacyRegistry: () =>
+      ({
+        version: 2,
+        primary: 'local',
+        launchMode: 'primary',
+        lastUsed: 'local',
+        connections: [{ id: 'local', kind: 'local', label: 'This device' }]
+      }) as any,
     decrypt: (secret: any) => String(secret?.value || '')
   })
 
   return { root, store }
 }
 
-const set = (access: string) => ({ accessToken: access, refreshToken: `rt-${access}`, expiresAt: 99, provider: 'p', userId: 'u' })
+const set = (access: string) => ({
+  accessToken: access,
+  refreshToken: `rt-${access}`,
+  expiresAt: 99,
+  provider: 'p',
+  userId: 'u'
+})
 const mac = (url: string) => ({ id: 'mac-mini', kind: 'remote', label: 'Mac mini', url, authMode: 'oauth' }) as any
 
 test('a re-pointed or removed-and-re-added connection never loads the old gateway’s sign-in', () => {
@@ -62,7 +74,11 @@ test('a set stored under an id for another URL (an older writer) is never handed
   store.write(upsertConnection(store.read(), mac('https://b.example')))
   fs.writeFileSync(
     path.join(root, GATEWAY_CONNECTION_TOKENS_FILE),
-    JSON.stringify({ version: 1, revision: 1, tokens: { 'mac-mini': { ...set('AT-A'), baseUrl: 'https://a.example' } } })
+    JSON.stringify({
+      version: 1,
+      revision: 1,
+      tokens: { 'mac-mini': { ...set('AT-A'), baseUrl: 'https://a.example' } }
+    })
   )
   assert.equal(loadNativeTokenSet('https://b.example', store.nativeTokenIo()), null)
 })

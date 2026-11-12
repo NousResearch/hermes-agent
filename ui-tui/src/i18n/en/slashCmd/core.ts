@@ -172,7 +172,8 @@ export const slashCmdCoreEn = {
     rewind: {
       nothing: 'nothing to rewind to',
       noPrevious: 'No previous message to edit.',
-      editNotSent: '↺ edit not sent: the session changed before the rewind, so nothing was removed (↑ recalls the text)',
+      editNotSent:
+        '↺ edit not sent: the session changed before the rewind, so nothing was removed (↑ recalls the text)',
       editNotSentUnknown:
         '↺ edit not sent: the session changed while the rewind was in flight, so it may have been applied; check that session (↑ recalls the text)',
       cancelled: '↺ Rewind cancelled; nothing was removed.',

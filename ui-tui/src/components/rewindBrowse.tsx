@@ -4,7 +4,14 @@ import { useEffect, useMemo, useState } from 'react'
 import type { RewindOverlay } from '../app/interfaces.js'
 import { $rewindFocus, $rewindScrollRestore, rewindFocusIndex } from '../app/rewindFocusStore.js'
 import { useT } from '../i18n/useT.js'
-import { clampOffset, ensureVisible, fitBrowseHint, messageRange, pagerLines, pagerMessages } from '../lib/transcriptPager.js'
+import {
+  clampOffset,
+  ensureVisible,
+  fitBrowseHint,
+  messageRange,
+  pagerLines,
+  pagerMessages
+} from '../lib/transcriptPager.js'
 import type { Theme } from '../theme.js'
 
 // Rows the native pager leaves for the hint, the composer chrome and the status rule.
@@ -88,7 +95,10 @@ export function RewindBrowse({
     if (typeof action === 'number') {
       // Default mode: the transcript scroll belongs to the global handler.
       return (
-        native && setOffset(prev => clampOffset(prev + (Math.abs(action) > 1 ? Math.sign(action) * rows : action), lines.length, rows))
+        native &&
+        setOffset(prev =>
+          clampOffset(prev + (Math.abs(action) > 1 ? Math.sign(action) * rows : action), lines.length, rows)
+        )
       )
     }
 

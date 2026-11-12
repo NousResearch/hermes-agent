@@ -7,6 +7,7 @@ import { runPreviewGuestScript, withPreviewDeadline } from './preview-drive-chan
 
 const rect = { height: 20, width: 40, x: 10, y: 10 }
 const originalDesktop = window.hermesDesktop
+
 const guestWindow = window as Window & {
   __hermesAnnotate?: { beginCapture: () => Promise<void>; endCapture: () => void }
 }
@@ -35,6 +36,7 @@ function setup(stalled: 'begin' | 'capture' | 'cleanup' | 'read' | 'viewport') {
       pinsVisible = true
     }
   }
+
   const execute = async (code: string) => {
     if ((stalled === 'viewport' && code.includes('innerWidth')) || (stalled === 'read' && code.includes('innerText'))) {
       return pending.promise
@@ -48,6 +50,7 @@ function setup(stalled: 'begin' | 'capture' | 'cleanup' | 'read' | 'viewport') {
 
     return result
   }
+
   window.hermesDesktop = {
     beginPreviewGuestActivity: async () => {
       leases.add(++nextToken)
@@ -60,6 +63,7 @@ function setup(stalled: 'begin' | 'capture' | 'cleanup' | 'read' | 'viewport') {
     executePreviewGuestScript: async (_token: number, code: string) => execute(code),
     capturePreview: capture
   } as unknown as Window['hermesDesktop']
+
   const webview = Object.assign(document.createElement('div'), {
     executeJavaScript: execute,
     getWebContentsId: () => 42
@@ -109,9 +113,11 @@ describe('bounded first-party preview work', () => {
   it('bounds page reads and releases their lease without a polling timer', async () => {
     vi.useFakeTimers()
     const fixture = setup('read')
+
     const result = withPreviewDeadline(signal =>
       runPreviewGuestScript(fixture.webview, 'document.body.innerText', signal)
     )
+
     const rejected = expect(result).rejects.toThrow('Preview operation timed out')
     await vi.advanceTimersByTimeAsync(0)
     expect(fixture.leases.size).toBe(1)

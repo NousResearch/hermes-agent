@@ -19,13 +19,19 @@ export function serverOwnsComposerQueue(sessionId: string | null | undefined): b
   const connection = $connection.get()
   const wire = connectionWire(route ?? connection)
 
-  if (wire) { return wire === 'canonical' }
+  if (wire) {
+    return wire === 'canonical'
+  }
 
   // Before the owner's socket is ready: a local owner is a native dial, and so is a window whose
   // own socket carries the native-dial marker.
-  if (route?.mode === 'local') { return true }
+  if (route?.mode === 'local') {
+    return true
+  }
 
-  if (route && route.connectionId !== connection?.connectionId) { return false }
+  if (route && route.connectionId !== connection?.connectionId) {
+    return false
+  }
 
   return Boolean(connection?.wsUrl && new URL(connection.wsUrl).searchParams.has('native_dial'))
 }
@@ -307,8 +313,7 @@ const mutateSession = (sid: string, op: (queue: QueuedPromptEntry[]) => null | Q
 
 /** Replace one session's queue wholesale (canonical receipt reconciliation),
  *  through the same live-merge path as every other mutation. */
-export const writeSessionQueue = (sid: string, queue: QueuedPromptEntry[]): boolean =>
-  mutateSession(sid, () => queue)
+export const writeSessionQueue = (sid: string, queue: QueuedPromptEntry[]): boolean => mutateSession(sid, () => queue)
 
 if (typeof window !== 'undefined') {
   // Cross-window sync (#46732): every desktop window boots the queue atom from

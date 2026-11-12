@@ -24,6 +24,7 @@ from typing import Any, Iterator, Optional
 
 from agent.gemini_native_adapter import (
     _FREE_TIER_GUIDANCE,
+    _SKIP_SIGNATURE,
     GeminiAPIError,
     _response_text,
     gemini_http_error,
@@ -132,7 +133,6 @@ def _assistant_steps(message: dict[str, Any], names: dict[str, str]) -> list[dic
     replayed: set[str] = set()
 
     def thought(sig: Optional[str]) -> None:
-        # A turn from another provider carries no signature: it replays without thought steps.
         if sig and sig not in replayed:
             replayed.add(sig)
             steps.append({"type": "thought", "signature": sig})
@@ -150,6 +150,11 @@ def _assistant_steps(message: dict[str, Any], names: dict[str, str]) -> list[dic
         steps.append({"type": "function_call", "id": call_id, "name": name, "arguments": _call_arguments(tool_call)})
     if not text_blocks and not tool_calls:
         thought(_tool_call_extra_signature(message))
+    # A turn that calls tools must open with a thought step or the request is rejected (HTTP 400). One
+    # from another provider has no signature to replay, so it opens with the placeholder Google accepts
+    # in its place, as on generateContent.
+    if tool_calls and steps[0]["type"] != "thought":
+        steps.insert(0, {"type": "thought", "signature": _SKIP_SIGNATURE})
     return steps
 
 

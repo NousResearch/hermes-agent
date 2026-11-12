@@ -6,9 +6,8 @@ import { notifyError } from '@/store/notifications'
 import {
   $currentModel,
   $currentProvider,
-  getComposerModelSelection,
   getComposerSelectionScope,
-  setCurrentModelSource,
+  releaseComposerModelSelection,
   setCurrentModelTransient,
   setCurrentProviderTransient
 } from '@/store/session'
@@ -43,19 +42,23 @@ function repaintCommitted(
   }
 }
 
-/** A primary pick made during a turn was saved at once as the next chat's launch pick. Once it is refused,
- *  hand the launch back to the Settings default rather than guess which earlier pick to restore. Only for the
- *  owner whose composer saved it, and only while the saved pick is still the refused one. */
-function releaseRefusedLaunchPick(sessionId: string, target: unknown, scope: null | string) {
-  const saved = getComposerModelSelection()
+/** A primary pick made during a turn was saved at once as the next chat's launch pick: release it once refused
+ *  or declined. A refusal names only the model, so it needs the route this run queued; a declined prompt for
+ *  the primary chat names the whole route, which also covers a pick queued before a reload. */
+function releaseRefusedLaunchPick(
+  sessionId: string,
+  target: unknown,
+  scope: null | string,
+  declined?: { model?: string; onScreen: boolean; provider?: string }
+) {
+  const queued = takeQueuedLaunchPick(sessionId, target)
 
-  if (
-    takeQueuedLaunchPick(sessionId, target) &&
-    getComposerSelectionScope() === scope &&
-    saved.source === 'manual' &&
-    saved.model === target
-  ) {
-    setCurrentModelSource('default')
+  // A tile's prompt never decides the primary composer's pick; the gateway re-asks the chat being viewed.
+  const route =
+    declined?.onScreen && declined.model ? { model: declined.model, provider: declined.provider ?? '' } : queued
+
+  if (route) {
+    releaseComposerModelSelection(route, scope)
   }
 }
 
@@ -98,6 +101,8 @@ export function handleDeferredPickEvent(ctx: GatewayEventContext): boolean {
     const target = String(update.target_model ?? pick.model ?? '')
     const committed = typeof update.committed_model === 'string' ? update.committed_model : ''
 
+    const declined = { ...pick, onScreen: deps.activeSessionIdRef.current === sessionId }
+
     void surfaceModelSwitchConfirm({
       confirmMessage: typeof update.confirm_message === 'string' ? update.confirm_message : undefined,
       failureMessage: translateNow('desktop.modelSwitchFailed'),
@@ -111,7 +116,7 @@ export function handleDeferredPickEvent(ctx: GatewayEventContext): boolean {
       finish: invalidate
     }).then(applied => {
       if (!applied && ownSource) {
-        releaseRefusedLaunchPick(sessionId, target, scope)
+        releaseRefusedLaunchPick(sessionId, target, scope, declined)
       }
 
       // Declined, or the confirmed resend failed: the committed model is still the session's.

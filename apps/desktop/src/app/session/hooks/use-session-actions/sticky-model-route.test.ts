@@ -5,14 +5,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   $activeSessionId,
   $currentProvider,
+  $currentReasoningEffortWire,
   clearComposerSelectionOwner,
   markComposerSelectionManual,
+  restoreComposerModelSelection,
   setComposerSelectionOwner,
   setConnection,
   setCurrentModel,
   setCurrentModelSource,
   setCurrentProvider,
-  setCurrentProviderTransient
+  setCurrentProviderTransient,
+  setCurrentReasoningEffortWire
 } from '@/store/session'
 
 import { deferred } from '../../../../test/deferred'
@@ -92,6 +95,33 @@ describe('new chats launch on the picked route', () => {
     await expect(desktopSessionCreateParams('')).resolves.toMatchObject(picked)
     expect($currentProvider.get()).toBe('opencode-go')
   })
+
+  it.each([
+    { switched: false, launches: undefined },
+    { switched: true, launches: 'queued' }
+  ])('after a switch that fails once its chat is left, not the failed pick (owner switched: $switched)', async ({ switched, launches }) => {
+    const failed = deferred<never>()
+    const switching = pick(failed.promise)
+    $activeSessionId.set('elsewhere')
+
+    if (switched) {
+      setComposerSelectionOwner('other-backend', 'other')
+      setCurrentModel('queued')
+      setCurrentProvider('p')
+      markComposerSelectionManual()
+    }
+
+    failed.reject(new Error('refused'))
+    await expect(switching).resolves.toBe(false)
+    expect(await launched()).toBe(launches)
+  })
+
+  it('which a fresh draft repaints without the outgoing route\'s effort label', () => {
+    setCurrentProviderTransient('opencode-go')
+    setCurrentReasoningEffortWire('max')
+    restoreComposerModelSelection()
+    expect([$currentProvider.get(), $currentReasoningEffortWire.get()]).toEqual([picked.provider, ''])
+  })
 })
 
 describe('a pick queued for the next turn', () => {
@@ -99,6 +129,7 @@ describe('a pick queued for the next turn', () => {
     { when: 'is refused', then: () => refuse(), launches: undefined },
     { when: 'is refused after switching chats', then: () => refuse('busy', 'elsewhere'), launches: undefined },
     { when: 'is overtaken by a newer pick', then: () => (setCurrentModel('newer'), refuse()), launches: 'newer' },
+    { when: 'is overtaken by its model on another provider', then: () => (setCurrentProvider('other'), refuse()), launches: 'queued' },
     { when: 'has a same-model tile pick refused', then: async () => (await pick({ deferred: true }, 'queued', 'tile'), refuse('tile')), launches: 'queued' },
     {
       when: 'is followed by a tile pick on its session that is refused',
@@ -112,17 +143,22 @@ describe('a pick queued for the next turn', () => {
   })
 
   it.each([
-    { switched: false, launches: undefined },
-    { switched: true, launches: 'queued' }
-  ])('with its cost prompt declined (owner switched: $switched)', async ({ switched, launches }) => {
+    { reloaded: false, switched: false, session: 'busy', launches: undefined },
+    { reloaded: true, switched: false, session: 'busy', launches: undefined },
+    { reloaded: true, switched: false, session: 'tile', launches: 'queued' },
+    { reloaded: false, switched: true, session: 'busy', launches: 'queued' }
+  ])('with its cost prompt declined (reloaded: $reloaded, owner switched: $switched, $session)', async ({ reloaded, switched, session, launches }) => {
     const answer = deferred<boolean>()
     confirm.mockReturnValueOnce(answer.promise)
-    await pick({ deferred: true })
-    verdict({ committed_model: picked.model, confirm: 'token', payload: { model: 'queued' }, status: 'confirmation_required' })
+    // After a reload the gateway asks again for a pick this run never queued.
+    await (reloaded ? (setCurrentModel('queued'), setCurrentProvider('p')) : pick({ deferred: true }))
+    verdict({ committed_model: picked.model, confirm: 'token', payload: { model: 'queued', provider: 'p' },
+      status: 'confirmation_required' }, session)
 
     if (switched) {
       setComposerSelectionOwner('other-backend', 'other')
       setCurrentModel('queued')
+      setCurrentProvider('p')
       markComposerSelectionManual()
     }
 

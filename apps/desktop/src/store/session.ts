@@ -1758,8 +1758,30 @@ export const getComposerSelectionScope = (): null | string => composerSelectionS
 
 export const restoreComposerModelSelection = (): void => {
   const selection = getComposerModelSelection()
+
+  if (selection.model !== $currentModel.get() || selection.provider !== $currentProvider.get()) {
+    // The wire level described the outgoing chat's route.
+    $currentReasoningEffortWire.set('')
+  }
+
   setCurrentModelTransient(selection.model)
   setCurrentProviderTransient(selection.provider)
+}
+
+/** A saved pick that turned out not to apply hands new chats back to the Settings default, rather than
+ *  guess which earlier pick to restore. Only for the owner `scope` that saved it (the answer can arrive
+ *  after an owner switch), and only while that exact route is still the saved pick. */
+export const releaseComposerModelSelection = (route: { model: string; provider: string }, scope: null | string) => {
+  const saved = getComposerModelSelection()
+
+  if (
+    composerSelectionScope === scope &&
+    saved.source === 'manual' &&
+    saved.model === route.model &&
+    saved.provider === route.provider
+  ) {
+    setCurrentModelSource('default')
+  }
 }
 
 // Reactive mirror of the persisted source so UI (the composer pill's

@@ -22,8 +22,10 @@ import {
   $currentReasoningEffortWire,
   getComposerModelSelection,
   getComposerSelectionGeneration,
+  getComposerSelectionScope,
   getCurrentModelSource,
   markComposerSelectionManual,
+  releaseComposerModelSelection,
   setCurrentModel,
   setCurrentModelSource,
   setCurrentModelTransient,
@@ -282,6 +284,7 @@ export function useModelControls({
       }
 
       const before = readSnapshot()
+      const composerScope = getComposerSelectionScope()
       const liveGatewayProfile = cacheProfile || $activeGatewayProfile.get()
 
       const paintSelection = () => {
@@ -348,7 +351,14 @@ export function useModelControls({
       const settleUnapplied = () => {
         const repaint = settleModelPick(liveSessionId, pickToken, false)
 
-        return repaint && !(touchesPrimary && $activeSessionId.get() !== liveSessionId) ? repaint : null
+        if (repaint && touchesPrimary && $activeSessionId.get() !== liveSessionId) {
+          // Its chat is no longer on screen to repaint, but the failed pick is still the saved one.
+          releaseComposerModelSelection(selection, composerScope)
+
+          return null
+        }
+
+        return repaint
       }
 
       // The PRIMARY profile's main agent lets the gateway decide persistence
@@ -376,7 +386,7 @@ export function useModelControls({
         })
 
       const finishSwitch = (result: ModelSwitchResponse | undefined) => {
-        noteQueuedLaunchPick(liveSessionId, touchesPrimary && result?.deferred ? selection.model : null)
+        noteQueuedLaunchPick(liveSessionId, touchesPrimary && result?.deferred ? selection : null)
 
         // A pick made DURING a turn is queued by the gateway and applied at the
         // next turn start (`deferred`). Re-fetching now would answer with the

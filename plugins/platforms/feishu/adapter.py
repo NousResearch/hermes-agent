@@ -3794,9 +3794,24 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
             request = self._build_reply_message_request(effective_reply_to, body)
             return await self._run_blocking(self._client.im.v1.message.reply, request)
         if thread_id:
-            # reply→create fallback inside a topic: thread_id as receive_id keeps it in the topic.
-            receive_id, receive_id_type = thread_id, "thread_id"
-        elif chat_id.startswith("feishu_user_id:"):
+            # A message created with ``receive_id_type="thread_id"`` is rejected by the API
+            # (99992402 field validation — the receive_id_type enum has no thread_id), so
+            # every send into a topic that was not already a reply was dropped. Enter the
+            # thread by replying to its newest message instead. Two id shapes reach here:
+            #   omt_…  a real topic id   → list its messages and reply to the newest
+            #   om_…   a message id      → reply to it directly (it is not a thread container,
+            #                              so the list call answers "invalid container_id")
+            anchor = (
+                str(thread_id) if str(thread_id).startswith("om_")
+                else await self._fetch_last_message_in_thread(thread_id)
+            )
+            if anchor:
+                body = self._build_reply_message_body(
+                    content=payload, msg_type=msg_type, reply_in_thread=True, uuid_value=str(uuid.uuid4()),
+                )
+                request = self._build_reply_message_request(anchor, body)
+                return await self._run_blocking(self._client.im.v1.message.reply, request)
+        if chat_id.startswith("feishu_user_id:"):
             receive_id, receive_id_type = chat_id.split(":", 1)[1], "user_id"
         else:
             receive_id, receive_id_type = chat_id, "open_id" if chat_id.startswith("ou_") else "chat_id"

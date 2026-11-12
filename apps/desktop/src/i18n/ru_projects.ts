@@ -4,6 +4,7 @@ export const ruProjects: NonNullable<TranslationOverrides['sidebar']>['projects'
   showAllSessions: 'Показать все сессии',
   sectionLabel: 'Проекты',
   home: 'Главная',
+  autoDiscovered: 'Найдено автоматически',
   newButton: 'Новый проект',
   createTitle: 'Новый проект',
   createDesc: 'Назовите рабочее пространство и добавьте одну или несколько папок.',

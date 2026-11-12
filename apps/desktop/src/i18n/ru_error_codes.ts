@@ -4,6 +4,10 @@ type ThreadCopy = Translations['assistant']['thread']
 
 // The error card's per-code title and body (lib/error-surface-copy.ts), keyed by error_surface.code.
 export const ruErrorCodes: Partial<ThreadCopy['errorCodes']> = {
+  stream_drop: {
+    title: 'Ответ оборвался',
+    body: 'Соединение прервалось до завершения ответа. Повторите отправку.'
+  },
   cron_session_read_only: {
     title: 'Этот чат относится к запланированной задаче',
     body: 'Он только выполняет эту задачу, поэтому ваше сообщение не было выполнено. Начните новый чат, чтобы отправить его.'

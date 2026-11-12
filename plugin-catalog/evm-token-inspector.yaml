@@ -1,6 +1,6 @@
 name: evm-token-inspector
 repo: https://github.com/sawi57003-ops/evm-token-inspector
-sha: df5d0720127991cad9978037ff39d570ae56c96b
+sha: abe6d9bdb2e93c1a4426ad5912a7394ade35f2a6
 description: >-
   Inspect any EVM token contract before interacting with it: name, symbol,
   decimals, total supply, owner/renounced status, EIP-1967 proxy detection,

@@ -30,6 +30,26 @@ _RUNTIME_FIELDS = (
     "model", "provider", "requested_provider", "_explicit_api_key", "_explicit_base_url",
     "api_key", "base_url", "api_mode", "reasoning_config")
 
+_SWITCH_INIT_FIELDS = (
+    "_reasoning_user_set", "acp_command", "acp_args", "_credential_pool", "_provider_source",
+    "_credentials_rate_limited", "_credentials_terminal", "_active_agent_route_signature")
+
+
+def _rollback_model_switch(cli, snapshot, previous_agent) -> None:
+    """Restore the route and discard only a stand-in created by this failed switch."""
+    if previous_agent is None and cli.agent is not None:
+        import cli as cli_module
+        from hermes_cli.gateway_tools import bind_session
+        discarded = cli.agent
+        _retire_agent(cli)
+        if cli_module._active_agent_ref is discarded:
+            cli_module._active_agent_ref = None
+        connection = getattr(getattr(cli, "_session_db", None), "connection", None)
+        if connection is not None:
+            bind_session(cli, connection)
+    for key, value in snapshot.items():
+        setattr(cli, key, value)
+
 
 def _runtime_fields(cli) -> dict:
     return {key: getattr(cli, key, None) for key in _RUNTIME_FIELDS}
@@ -823,12 +843,11 @@ class CLIModelSwitchMixin:
         rolled back. Returns False after printing the failure (a failed switch is a no-op).
         """
         from cli import _cprint
-        # Snapshot and stage BEFORE any agent init. A fresh session has no agent yet, and
-        # _init_agent() -> _ensure_runtime_credentials() resolves credentials for self.model /
-        # self.requested_provider: initializing on the OLD route fails outright when that provider
-        # is exhausted (e.g. Codex 429), which aborted the whole switch and left the session on the
-        # dead provider (#model-picker-first-turn). Build the stand-in on the NEW route instead.
-        _cli_snapshot = _runtime_fields(self)
+        # Resolve the selected route, not the exhausted launch provider (#154391).
+        previous_agent = self.agent
+        cold_init = previous_agent is None and getattr(self, "_gateway_session_open", False)
+        snapshot = {**_runtime_fields(self),
+                    **{key: getattr(self, key, None) for key in _SWITCH_INIT_FIELDS}}
         self.model = result.new_model
         self.provider = result.target_provider
         self.requested_provider = result.target_provider
@@ -842,18 +861,16 @@ class CLIModelSwitchMixin:
             self.base_url = result.base_url
         if result.api_mode:
             self.api_mode = result.api_mode
-        _resolve_cli_reasoning(self)
-        if self.agent is None and getattr(self, "_gateway_session_open", False) and not self._init_agent():
-            # Before the first turn: the stand-in built for that turn reads the gateway session's model,
-            # so the switch must commit on the session now; _init_agent printed why it could not.
-            # Roll the staged route back — a failed switch is a no-op.
-            for _k, _v in _cli_snapshot.items():
-                setattr(self, _k, _v)
-            self._confirmed_switch_warning = None
-            return False
-
-        if self.agent is not None:
-            try:
+        try:
+            _resolve_cli_reasoning(self)
+            if cold_init:
+                # An explicit pick must not initialize a different fallback and then commit this pick.
+                if not self._init_agent(allow_fallback=False):
+                    _rollback_model_switch(self, snapshot, previous_agent)
+                    return False
+                if (self.model, self.requested_provider) != (result.new_model, result.target_provider):
+                    raise ValueError("Selected model route changed during initialization")
+            if self.agent is not None:
                 fields = dict(
                     new_model=result.new_model, new_provider=result.target_provider,
                     api_key=result.api_key, base_url=result.base_url, api_mode=result.api_mode,
@@ -863,27 +880,20 @@ class CLIModelSwitchMixin:
                     fields.update(once=True, alias=getattr(result, "resolved_via_alias", "") or "")
                 if self.agent.switch_model(**fields) is False:
                     # Declined at the gateway owner's guard prompt: nothing was committed.
-                    for _k, _v in _cli_snapshot.items():
-                        setattr(self, _k, _v)
+                    _rollback_model_switch(self, snapshot, previous_agent)
                     _cprint(f"  {t('cli.model.switch_cancelled')}")
                     return False
-            except Exception as exc:
-                # The agent rolled itself back to the old working model/client. Roll the CLI's own staged
-                # fields back too and abort the rest of the commit (note + success print) so a failed switch
-                # is a no-op rather than a dead session (#50163).
-                # Agent rolled itself back; roll the CLI back too and abort so a failed switch is a no-op
-                # rather than a dead session (#50163).
-                for _k, _v in _cli_snapshot.items():
-                    setattr(self, _k, _v)
-                if str(exc) == "launch_credentials_unavailable":
-                    # No model switch can fix a chat whose launch key changed; say what does.
-                    from hermes_cli.cli_chat_error_copy import refusal_text
-                    _cprint(f"  {refusal_text(exc)}")
-                    return False
-                _cprint(f"  {t('cli.model.switch_failed', model=result.new_model, error=exc, old_model=old_model)}")
+        except Exception as exc:
+            _rollback_model_switch(self, snapshot, previous_agent)
+            if str(exc) == "launch_credentials_unavailable":
+                # No model switch can fix a chat whose launch key changed; say what does.
+                from hermes_cli.cli_chat_error_copy import refusal_text
+                _cprint(f"  {refusal_text(exc)}")
                 return False
-            finally:
-                self._confirmed_switch_warning = None  # this switch's confirmation only
+            _cprint(f"  {t('cli.model.switch_failed', model=result.new_model, error=exc, old_model=old_model)}")
+            return False
+        finally:
+            self._confirmed_switch_warning = None
         return True
 
     def _apply_model_switch_result(

@@ -99,7 +99,7 @@ def test_model_before_the_first_turn_commits_on_the_session_that_turn_runs(gatew
     conn.state(SID).info.update(model="old-model", provider="openrouter")
     cli = _cli()
 
-    def init_agent():  # main's _init_agent: the stand-in on this CLI's gateway session
+    def init_agent(**_kwargs):  # main's _init_agent: the stand-in on this CLI's gateway session
         cli.agent = GatewayAgent(connection=conn, session_id=SID, model=cli.model, provider=cli.provider)
         return True
     cli._init_agent = init_agent
@@ -114,15 +114,13 @@ def test_model_before_the_first_turn_commits_on_the_session_that_turn_runs(gatew
 
 
 def test_first_turn_init_runs_on_the_switched_route(gateway, monkeypatch):
-    """A fresh session has no agent: ``_init_agent()`` resolves credentials for the CLI's route, so
-    the pick must already be staged. Initializing on the OLD route aborted the switch whenever that
-    provider was exhausted (Codex 429) and left the chat on the dead provider; a failed init must
-    roll the staged route back (a failed switch is a no-op)."""
+    """Initialization sees the selected route; a failed initialization restores the previous route."""
     from cli import HermesCLI
     cli = _cli()
     seen = {}
 
-    def init_agent():
+    def init_agent(**kwargs):
+        assert kwargs == {"allow_fallback": False}
         seen.update(model=cli.model, provider=cli.provider,
                     requested=cli.requested_provider, base_url=cli.base_url)
         return False

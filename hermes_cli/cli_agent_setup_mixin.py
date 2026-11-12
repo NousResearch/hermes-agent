@@ -253,9 +253,10 @@ def _retire_agent(cli) -> None:
 class CLIAgentSetupMixin:
     """Agent construction + session-resume display methods for ``HermesCLI``."""
 
-    def _ensure_runtime_credentials(self) -> bool:
+    def _ensure_runtime_credentials(self, *, allow_fallback: bool = True) -> bool:
         """Re-resolve provider credentials before agent use so key rotation / token
-        refresh are picked up without restarting the CLI. False on auth failure."""
+        refresh are picked up without restarting the CLI. Explicit model switches disable fallback.
+        False on auth failure."""
         from cli import ChatConsole, logger
         from hermes_cli.runtime_provider import (
             deferred_token_mint, format_runtime_provider_error, resolve_runtime_provider)
@@ -277,7 +278,7 @@ class CLIAgentSetupMixin:
                     explicit_base_url=self._explicit_base_url, target_model=self.model or None)
             except Exception as exc:
                 _primary_exc = exc
-            if _primary_exc is not None:
+            if _primary_exc is not None and allow_fallback:
                 runtime = self._resolve_fallback_runtime(_primary_exc)
                 if runtime is not None:
                     _primary_exc = None
@@ -640,7 +641,8 @@ class CLIAgentSetupMixin:
         self._reopen_session()
         return True
 
-    def _init_agent(self, *, model_override: str | None = None, runtime_override: dict | None = None, request_overrides: dict | None = None) -> bool:
+    def _init_agent(self, *, model_override: str | None = None, runtime_override: dict | None = None,
+                    request_overrides: dict | None = None, allow_fallback: bool = True) -> bool:
         """Build the agent on first use; when resuming, restore history from SQLite.
         Returns True on success."""
         from cli import ChatConsole, _cprint, logger
@@ -653,7 +655,9 @@ class CLIAgentSetupMixin:
         self.finalize_preloaded_skills()
         # No deferred plugin discovery either: the gateway that runs the turn loads the plugins (PLG-7).
         self._install_tool_callbacks()
-        if not self._ensure_runtime_credentials():
+        credentials_ready = (self._ensure_runtime_credentials() if allow_fallback
+                             else self._ensure_runtime_credentials(allow_fallback=False))
+        if not credentials_ready:
             return False
         # No MCP discovery here: the gateway session that runs the turn owns its MCP servers.
         from hermes_cli.cli_chat_error_copy import agent_init_failure_message

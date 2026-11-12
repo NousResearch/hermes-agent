@@ -1,7 +1,6 @@
 name: goneby
 repo: https://github.com/rahlquist/goneby
-sha: c7cc997ee7fde0629daf0ddf79cd65093b6e98b6
-subdir: plugin
+sha: 668cf23db493846d117f91758a50d756f085a956
 title: GoneBy
 description: >-
   Retroactive project memory for LLM agents. Captures every turn into an
@@ -17,12 +16,12 @@ category: memory
 version: "1.0.0"
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/rahlquist/goneby/blob/main/docs/OVERVIEW.md
-image: https://raw.githubusercontent.com/rahlquist/goneby/c7cc997ee7fde0629daf0ddf79cd65093b6e98b6/docs/gallery/banner.jpg
+image: https://raw.githubusercontent.com/rahlquist/goneby/668cf23db493846d117f91758a50d756f085a956/docs/gallery/banner.jpg
 screenshots:
-  - https://raw.githubusercontent.com/rahlquist/goneby/c7cc997ee7fde0629daf0ddf79cd65093b6e98b6/docs/gallery/screenshot-tape.png
-  - https://raw.githubusercontent.com/rahlquist/goneby/c7cc997ee7fde0629daf0ddf79cd65093b6e98b6/docs/gallery/screenshot-verification.png
-  - https://raw.githubusercontent.com/rahlquist/goneby/c7cc997ee7fde0629daf0ddf79cd65093b6e98b6/docs/gallery/screenshot-retrieve.png
-  - https://raw.githubusercontent.com/rahlquist/goneby/c7cc997ee7fde0629daf0ddf79cd65093b6e98b6/docs/gallery/screenshot-endcard.png
+  - https://raw.githubusercontent.com/rahlquist/goneby/668cf23db493846d117f91758a50d756f085a956/docs/gallery/screenshot-tape.png
+  - https://raw.githubusercontent.com/rahlquist/goneby/668cf23db493846d117f91758a50d756f085a956/docs/gallery/screenshot-verification.png
+  - https://raw.githubusercontent.com/rahlquist/goneby/668cf23db493846d117f91758a50d756f085a956/docs/gallery/screenshot-retrieve.png
+  - https://raw.githubusercontent.com/rahlquist/goneby/668cf23db493846d117f91758a50d756f085a956/docs/gallery/screenshot-endcard.png
 readme: true
 platforms: [linux, macos]
 capabilities:

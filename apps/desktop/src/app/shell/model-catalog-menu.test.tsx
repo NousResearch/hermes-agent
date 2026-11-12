@@ -725,6 +725,204 @@ describe('the per-row options submenu is discoverable', () => {
   })
 })
 
+// The composer opts into model + options selection. Detached hosts can keep
+// handling their own edits without a second model selection from the catalog.
+describe('picking options on another model', () => {
+  const openGeminiPro = async () => {
+    const trigger = (await screen.findByText(/Gemini 3\.1 Pro/i)).closest('[data-slot="dropdown-menu-sub-trigger"]')
+
+    fireEvent.pointerMove(trigger as Element, { pointerType: 'mouse' })
+    await screen.findByText('Effort')
+  }
+
+  const pickHighOnGeminiPro = async () => {
+    await openGeminiPro()
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'High' }))
+  }
+
+  const other = { model: 'gemini-2.5-flash', provider: 'google' }
+  const row = { isActive: false, model: 'gemini-3.1-pro', provider: 'google' }
+
+  it('selects that model with the picked level instead of its rendered preset', async () => {
+    const applyPreset = vi.fn()
+    const setOptions = vi.fn()
+
+    const select = renderMenu(other, {
+      applyPreset,
+      optionPickSelects: true,
+      presetFor: () => ({ effort: 'low' }),
+      setOptions
+    })
+
+    await pickHighOnGeminiPro()
+
+    expect(setOptions).toHaveBeenCalledWith({ effort: 'high' }, row)
+    expect(select).toHaveBeenCalledWith('gemini-3.1-pro', 'google')
+    await waitFor(() =>
+      expect(applyPreset).toHaveBeenCalledWith(expect.objectContaining({ effort: 'high' }), {
+        model: 'gemini-3.1-pro',
+        provider: 'google'
+      })
+    )
+    await waitFor(() => expect(closeMenu).toHaveBeenCalled())
+  })
+
+  it('leaves selection to a host that does not opt in', async () => {
+    const setOptions = vi.fn()
+    const select = renderMenu(other, { setOptions })
+
+    await pickHighOnGeminiPro()
+
+    expect(setOptions).toHaveBeenCalledWith({ effort: 'high' }, row)
+    expect(select).not.toHaveBeenCalled()
+    expect(closeMenu).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['medium', 'none'],
+    ['none', 'medium']
+  ])('selects that model when Thinking changes from %s to %s', async (effort, expected) => {
+    const applyPreset = vi.fn()
+
+    const select = renderMenu(other, {
+      applyPreset,
+      optionPickSelects: true,
+      presetFor: () => ({ effort })
+    })
+
+    await openGeminiPro()
+    fireEvent.click(screen.getByRole('switch'))
+
+    expect(select).toHaveBeenCalledWith('gemini-3.1-pro', 'google')
+    await waitFor(() =>
+      expect(applyPreset).toHaveBeenCalledWith(expect.objectContaining({ effort: expected }), {
+        model: 'gemini-3.1-pro',
+        provider: 'google'
+      })
+    )
+  })
+
+  it.each([
+    ['Fast', false, 'normal', true, 'priority'],
+    ['Fast', true, 'priority', false, 'normal'],
+    ['Ultrafast', false, 'normal', true, 'ultrafast'],
+    ['Ultrafast', true, 'ultrafast', false, 'normal']
+  ] as const)(
+    'selects that model when %s changes to %s/%s',
+    async (control, fast, serviceTier, expectedFast, expectedTier) => {
+      getGlobalModelOptions.mockResolvedValue({
+        providers: [
+          {
+            capabilities: { 'gemini-3.1-pro': { fast: true, ultrafast: true } },
+            models: ['gemini-3.1-pro', 'gemini-2.5-flash'],
+            name: 'Google',
+            slug: 'google'
+          }
+        ]
+      })
+      const applyPreset = vi.fn()
+      const setOptions = vi.fn()
+
+      const select = renderMenu(other, {
+        applyPreset,
+        optionPickSelects: true,
+        presetFor: () => ({ fast, serviceTier }),
+        setOptions
+      })
+
+      await openGeminiPro()
+      fireEvent.click(screen.getByRole('switch', { name: control }))
+
+      expect(setOptions).toHaveBeenCalledWith(
+        control === 'Fast' ? { fast: expectedFast } : { serviceTier: expectedTier },
+        row
+      )
+      expect(select).toHaveBeenCalledWith('gemini-3.1-pro', 'google')
+      await waitFor(() =>
+        expect(applyPreset).toHaveBeenCalledWith(
+          expect.objectContaining({ fast: expectedFast, serviceTier: expectedTier }),
+          {
+            model: 'gemini-3.1-pro',
+            provider: 'google'
+          }
+        )
+      )
+      await waitFor(() => expect(closeMenu).toHaveBeenCalled())
+    }
+  )
+
+  it.each([false, true])('selects the correct variant when Fast was %s', async fast => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          models: ['gemini-3.1-pro', 'gemini-3.1-pro-fast', 'gemini-2.5-flash'],
+          name: 'Google',
+          slug: 'google'
+        }
+      ]
+    })
+    const applyPreset = vi.fn()
+
+    const select = renderMenu(other, {
+      applyPreset,
+      optionPickSelects: true,
+      presetFor: () => ({ fast, serviceTier: fast ? 'priority' : 'normal' })
+    })
+
+    await openGeminiPro()
+    fireEvent.click(screen.getByRole('switch', { name: 'Fast' }))
+
+    expect(select).toHaveBeenCalledWith(fast ? 'gemini-3.1-pro' : 'gemini-3.1-pro-fast', 'google')
+    await waitFor(() => expect(closeMenu).toHaveBeenCalled())
+    // A variant encodes Fast in its id, not the request's service tier.
+    expect(applyPreset).toHaveBeenCalledWith(expect.objectContaining({ fast: false, serviceTier: 'normal' }), {
+      model: 'gemini-3.1-pro',
+      provider: 'google'
+    })
+  })
+
+  it('edits the current model in place instead of selecting it again', async () => {
+    const setOptions = vi.fn()
+    const select = renderMenu({ model: 'gemini-3.1-pro', provider: 'google' }, { optionPickSelects: true, setOptions })
+
+    await pickHighOnGeminiPro()
+
+    expect(setOptions).toHaveBeenCalledWith({ effort: 'high' }, { ...row, isActive: true })
+    expect(select).not.toHaveBeenCalled()
+    expect(closeMenu).not.toHaveBeenCalled()
+  })
+
+  it('keeps the menu open when the host refuses the switch', async () => {
+    const applyPreset = vi.fn()
+    const select = vi.fn(async () => false)
+
+    renderMenu(other, { applyPreset, optionPickSelects: true, select })
+    await pickHighOnGeminiPro()
+    await act(async () => {})
+
+    expect(select).toHaveBeenCalledWith('gemini-3.1-pro', 'google')
+    expect(applyPreset).not.toHaveBeenCalled()
+    expect(closeMenu).not.toHaveBeenCalled()
+  })
+
+  // Regression test proposed by @kvnloo in review of #149461.
+  it('keeps the menu open when an option-triggered switch rejects', async () => {
+    const applyPreset = vi.fn()
+
+    const select = vi.fn(async () => {
+      throw new Error('gateway rejected model selection')
+    })
+
+    renderMenu(other, { applyPreset, optionPickSelects: true, select })
+    await pickHighOnGeminiPro()
+    await act(async () => {})
+
+    expect(select).toHaveBeenCalledWith('gemini-3.1-pro', 'google')
+    expect(applyPreset).not.toHaveBeenCalled()
+    expect(closeMenu).not.toHaveBeenCalled()
+  })
+})
+
 describe('the catalog renders per-model pricing', () => {
   beforeEach(() => setShowModelPricing(true))
   afterEach(() => setShowModelPricing(false))

@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import { atom } from 'nanostores'
 import { useCallback, useEffect, useRef } from 'react'
 
-import { useSessionView } from '@/app/chat/session-view'
+import { type SessionView, useSessionView } from '@/app/chat/session-view'
 import type { HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
@@ -26,6 +26,8 @@ import type { ModelMenuController } from './model-catalog-menu'
 
 const UNKNOWN_SERVICE_TIER = atom('')
 const optionEdits = new Map<string, symbol>()
+// Both menus (and their remounts) share the surface's latest selection intent.
+const selectionRevisions = new WeakMap<SessionView, symbol>()
 
 const nextEdit = (key: string) => {
   const revision = Symbol(key)
@@ -37,6 +39,8 @@ const nextEdit = (key: string) => {
 export interface ModelSelection {
   model: string
   provider: string
+  /** Compound menu choices apply their options after an accepted confirmation. */
+  awaitConfirmation?: boolean
   /** Runtime id of the surface that opened the menu. When set, the switch
    *  targets that session (a tile) instead of the primary `$activeSessionId`. */
   sessionId?: null | string
@@ -69,7 +73,6 @@ export function useModelMenuController({
   // shows/switches its own model — not the primary-only globals.
   const view = useSessionView()
   const activeSessionId = useStore(view.$runtimeId)
-  const storedSessionId = useStore(view.$storedId)
   const currentFastMode = useStore(view.$fast)
   const currentServiceTier = useStore(view.$serviceTier ?? UNKNOWN_SERVICE_TIER)
   const currentModel = useStore(view.$model)
@@ -130,7 +133,12 @@ export function useModelMenuController({
     }
   }, [daybreakListed, ownerConnectionId, profile])
 
-  const patchPreset = (patch: ModelPreset, row: { model: string; provider: string }, failMessage: string) => {
+  const patchPreset = (
+    patch: ModelPreset,
+    row: { model: string; provider: string },
+    failMessage: string,
+    remembered: ModelPreset = patch
+  ) => {
     const dimensions = [
       ...(patch.effort !== undefined ? ['effort' as const] : []),
       ...(modelPresetServiceTier(patch) !== undefined ? ['speed' as const] : [])
@@ -145,7 +153,7 @@ export function useModelMenuController({
       })
     )
 
-    setModelPreset(row.provider, row.model, patch)
+    setModelPreset(row.provider, row.model, remembered)
 
     if (touchesPrimary) {
       markComposerSelectionManual()
@@ -217,7 +225,14 @@ export function useModelMenuController({
   const controller: ModelMenuController = {
     // Selecting a model row restores that model's remembered preset onto the
     // session (effort/fast). applyModelPreset owns the batched gateway write.
-    applyPreset: (preset, row) => patchPreset(preset, row, t.shell.modelOptions.updateFailed),
+    applyPreset: (preset, row) =>
+      patchPreset(
+        preset,
+        row,
+        t.shell.modelOptions.updateFailed,
+        // A -fast sibling remembers Fast through its model id, independently of the request tier.
+        view.$model.get() === `${row.model}-fast` ? { effort: preset.effort } : preset
+      ),
 
     current: {
       effort: currentReasoningEffort,
@@ -242,19 +257,46 @@ export function useModelMenuController({
       }
     },
 
+    // Choosing a model's options configures the next message, in a draft or
+    // an existing chat, through the same guarded switch as a row click.
+    optionPickSelects: true,
+
     // The composer picker never persists the profile default. With a session it
     // scopes the switch to that session; with none it's UI state shipped on the
     // next session.create. Always stamp sessionId from this surface so a tile
     // switch never hits the primary (busy) session by accident.
-    select: (model, provider) => {
-      return onSelectModel({ model, provider, sessionId: activeSessionId || null })
+    select: async (model, provider) => {
+      const revision = Symbol()
+      selectionRevisions.set(view, revision)
+      const storedSessionId = view.$storedId.get()
+
+      const accepted = await onSelectModel({
+        model,
+        provider,
+        sessionId: activeSessionId || null,
+        awaitConfirmation: true
+      })
+
+      // An older completion must not apply its options after another pick or a chat switch.
+      return (
+        accepted !== false &&
+        revision === selectionRevisions.get(view) &&
+        latestHostScope.current === hostScope &&
+        view.$runtimeId.get() === activeSessionId &&
+        view.$storedId.get() === storedSessionId &&
+        view.$model.get() === model &&
+        view.$provider.get() === provider
+      )
     },
 
     setOptions: (patch, row) => {
+      selectionRevisions.set(view, Symbol())
+
       // Editing always records the model's global preset (keyed by
       // provider::model, not per-surface — a tile edit re-applies to that model
       // everywhere); the active model also gets it pushed onto its OWN session.
-      // Non-active edits stay preset-only — no model switch, no session write.
+      // Non-active edits stay preset-only here; the catalog does the model
+      // switch itself when `optionPickSelects` allows it.
       if (!row.isActive) {
         setModelPreset(row.provider, row.model, patch)
 

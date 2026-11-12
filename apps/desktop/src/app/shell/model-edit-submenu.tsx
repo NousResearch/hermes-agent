@@ -144,9 +144,8 @@ export function ModelOptionsContent({
 
   const setFast = (enabled: boolean) => {
     if (fastControl.kind === 'variant') {
-      // Fast is a separate model id. Report the choice so the controller can
-      // record it against the base model, and only swap models now if this is
-      // the active row — inactive edits stay preference-only.
+      // Fast is a separate model id. Report the choice against its base;
+      // the host decides whether an inactive edit also selects the model.
       onSetOptions({ fast: enabled })
 
       if (isActive) {

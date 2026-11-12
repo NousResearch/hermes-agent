@@ -7,6 +7,7 @@ preparation, CWD tracking and env-snapshot management server-side, so the base
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
@@ -91,7 +92,23 @@ class ManagedModalEnvironment(BaseEnvironment):
         payload: dict[str, Any] = {"execId": exec_id, "command": exec_command, "cwd": cwd or self.cwd,
                                    "timeoutMs": int(timeout * 1000)}
         if stdin_data is not None:
-            payload["stdinData"] = stdin_data
+            # The managed transport may append a newline to stdinData. Frame the
+            # original UTF-8 bytes, then decode remotely; never strip user data or
+            # weaken the registered file writer's post-write integrity checks.
+            # Keep content in stdinData, not command text. The managed image must
+            # provide bash and base64; decode errors remain non-zero results.
+            framed_command = (
+                "base64 --decode | (\n" + exec_command + "\n)\n"
+                'hermes_stdin_status=("${PIPESTATUS[@]}")\n'
+                'if [ "${hermes_stdin_status[1]}" -ne 0 ]; then\n'
+                '  exit "${hermes_stdin_status[1]}"\n'
+                "fi\n"
+                # A successful consumer may intentionally close stdin early.
+                'if [ "${hermes_stdin_status[0]}" -eq 141 ]; then exit 0; fi\n'
+                'exit "${hermes_stdin_status[0]}"'
+            )
+            payload["command"] = "bash -c " + shlex.quote(framed_command)
+            payload["stdinData"] = base64.b64encode(stdin_data.encode("utf-8")).decode("ascii")
         try:
             response = self._request("POST", f"/v1/sandboxes/{self._sandbox_id}/execs", json=payload, timeout=10)
             body = response.json() if response.status_code < 400 else None

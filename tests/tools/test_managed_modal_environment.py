@@ -1,3 +1,7 @@
+import base64
+import hashlib
+import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -191,3 +195,103 @@ def test_managed_modal_execute_times_out_and_cancels(monkeypatch):
         "returncode": 124,
     }
     assert any(call[0] == "POST" and call[1].endswith("/cancel") for call in calls)
+
+
+@pytest.fixture
+def stdin_gateway(monkeypatch):
+    """Exercise real shell commands with a local gateway fixture; no cloud calls."""
+    if not shutil.which("bash") or not shutil.which("base64"):
+        pytest.skip("managed stdin shell regression requires bash and base64")
+    _install_fake_tools_package()
+    managed_modal = _load_tool_module("tools.environments.managed_modal", "environments/managed_modal.py")
+    monkeypatch.setattr(
+        managed_modal.requests, "request",
+        lambda *args, **kwargs: pytest.fail("unexpected network request"),
+    )
+    # Do not call __init__: these regressions must not create a sandbox or use auth.
+    env = object.__new__(managed_modal.ManagedModalEnvironment)
+    env.cwd = "/synthetic"
+    env.timeout = 10
+    env._sandbox_id = "offline-fixture"
+
+    def run(command, body, appended="\n"):
+        captured = {}
+
+        def request(method, path, **kwargs):
+            assert method == "POST"
+            assert path == "/v1/sandboxes/offline-fixture/execs"
+            payload = kwargs["json"]
+            captured.update(payload)
+            wire = (payload["stdinData"] + appended).encode("utf-8") if "stdinData" in payload else b""
+            child = subprocess.run(
+                ["bash", "-c", payload["command"]], input=wire,
+                capture_output=True, timeout=10,
+            )
+            return _FakeResponse(200, {
+                "status": "completed", "returncode": child.returncode,
+                "output": child.stdout.decode("utf-8"),
+            })
+
+        monkeypatch.setattr(env, "_request", request)
+        return env.execute(command, stdin_data=body), captured
+
+    return run
+
+
+@pytest.mark.parametrize("appended", ["", "\n"])
+@pytest.mark.parametrize("body", [
+    "", "no final newline", "one\n", "three\n\n\n",
+    "Métrés 澳洲\r\n\x00\n", "'quoted' $HOME $(false) `false` \\\n",
+])
+def test_managed_modal_stdin_retains_exact_bytes(stdin_gateway, body, appended):
+    result, _ = stdin_gateway("cat", body, appended)
+    assert result == {"returncode": 0, "output": body}
+
+
+def test_managed_modal_absent_stdin_leaves_command_unchanged(stdin_gateway):
+    result, payload = stdin_gateway("printf untouched", None)
+    assert result == {"returncode": 0, "output": "untouched"}
+    assert payload["command"] == "printf untouched"
+    assert "stdinData" not in payload
+
+
+def test_managed_modal_stdin_is_shared_by_compound_command(stdin_gateway):
+    result, _ = stdin_gateway('IFS= read -r a; printf "%s|" "$a"; cat', "first\nsecond\n")
+    assert result == {"returncode": 0, "output": "first|second\n"}
+
+
+def test_managed_modal_stdin_preserves_command_failure(stdin_gateway):
+    result, _ = stdin_gateway("cat; exit 17", "exact")
+    assert result == {"returncode": 17, "output": "exact"}
+
+
+def test_managed_modal_stdin_content_stays_out_of_command(stdin_gateway):
+    body = "SYNTHETIC-CONTENT-ONLY"
+    result, payload = stdin_gateway("cat", body)
+    assert result["output"] == body
+    assert body not in payload["command"]
+    assert base64.b64decode(payload["stdinData"], validate=True) == body.encode("utf-8")
+
+
+def test_managed_modal_large_stdin_retains_sha256(stdin_gateway):
+    body = ("synthetic métré\r\n" * 16384) + "\n"
+    result, _ = stdin_gateway("sha256sum", body)
+    assert result["returncode"] == 0
+    assert result["output"].split()[0] == hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def test_managed_modal_stdin_consumer_may_exit_without_draining(stdin_gateway):
+    result, _ = stdin_gateway("head -c 1", "x" * (1024 * 1024))
+    assert result == {"returncode": 0, "output": "x"}
+
+
+@pytest.mark.parametrize("status", [0, 17])
+def test_managed_modal_stdin_consumer_may_ignore_input(stdin_gateway, status):
+    result, _ = stdin_gateway(f"exit {status}", "x" * (1024 * 1024))
+    assert result == {"returncode": status, "output": ""}
+
+
+def test_managed_modal_stdin_decode_failure_is_reported(stdin_gateway):
+    # Base64 must tolerate a transport newline, not silently ignore invalid data.
+    result, _ = stdin_gateway("cat", "exact", appended="!")
+    assert result["returncode"] != 0

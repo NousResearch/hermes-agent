@@ -21,7 +21,8 @@ import re
 
 from agent.redact import _PREFIX_SUBSTRINGS, redact_for_egress
 
-_TAIL_SCAN = 512        # how far back an open label/value can start
+_TAIL_SCAN = 512        # how far back from the end (or from an open value's start) a label can start
+_LABEL_MAX = 256        # longest label (plus separators) an open value can follow
 _BLOCK_SCAN = 16384     # how far back an open key block can start (an 8192-bit PEM is ~6.5 KB)
 _LOOKBACK = 1024        # most settled text re-redacted with each newly settled chunk
 # Continuations a still-arriving token is probed with: an opaque body (masked only when what came
@@ -46,7 +47,10 @@ _OPEN_TAIL_RE = re.compile(
     rf"|\b(?:set-)?cookie:[ \t]*(?:[^\s;]+;[ \t]*)*\S*\Z",
     re.IGNORECASE,
 )
+# The labels alone (every alternative without its ``\Z``): where an open label can start.
+_OPEN_HEAD_RE = re.compile(_OPEN_TAIL_RE.pattern.replace(r"\Z", ""), re.IGNORECASE)
 _PEM_END_RE = re.compile(r"-----END[A-Z0-9 ]*-----")
+_LINE_OPENER_RE = re.compile(r"\b(?:(?:set-)?cookie:|(?:password|pwd)[ \t]*=)", re.IGNORECASE)
 _PEM_BEGIN = "-----BEGIN"
 _PEM_HEADER_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-")  # an END line's own dashes
 # A BEGIN header still being typed, or a closed one naming a block the redactor masks (PEM and
@@ -100,6 +104,64 @@ def _probe_start(text: str, token_start: int) -> int:
     return -1 if m is None else m.start()
 
 
+def _long_token_head_may_be_secret(text: str, token_start: int) -> bool:
+    """A token past _TAIL_SCAN is probed near its end, which no longer sees how it began: a
+    ``eyJ…`` JWT or ``sk-…`` key with a long body would settle raw. Its head, with the line
+    before it, is checked as a token still arriving (the cost stays bounded by _TAIL_SCAN)."""
+    line_start = max(text.rfind("\n", 0, token_start) + 1, token_start - _TAIL_SCAN)
+    return _token_may_be_secret(text[line_start:token_start], text[token_start:token_start + _TAIL_SCAN])
+
+
+def _open_anchors(text: str, end: int) -> set[int]:
+    """Where the open region ending at ``end`` can start: the trailing token, an unclosed quote
+    on the line, a ``Cookie:`` list / ``password=`` on the line. An open value has no fixed
+    length (an STS SessionToken is 1-2 KB), so its label is looked for just before one of these,
+    not in a fixed window before ``end``, which loses the label once the value outgrows it."""
+    line_start = text.rfind("\n", 0, end) + 1
+    token_start = max(text.rfind(c, 0, end) for c in " \t\r\n") + 1
+    anchors = {token_start}
+    # A label inside the token (``?token=…``, ``--key=…``): its value starts after the last
+    # separator, not counting a value's own trailing base64 ``=`` padding.
+    body_end = len(text[token_start:end].rstrip("="))
+    sep = max(text.rfind("=", token_start, token_start + body_end), text.rfind(":", token_start, end))
+    if sep >= 0:
+        anchors.add(sep)
+    quote = max(text.rfind('"', line_start, end), text.rfind("'", line_start, end))
+    if quote >= 0:
+        anchors.add(quote)
+    if (opener := _last_line_opener(text, line_start, end)) >= 0:
+        anchors.add(opener)
+    return anchors
+
+
+def _last_line_opener(text: str, lo: int, end: int) -> int:
+    """Start of the last ``Cookie:`` list or connection-string ``password=`` in ``text[lo:end]``:
+    their values span spaces, so the trailing token does not anchor them."""
+    last = -1
+    for m in _LINE_OPENER_RE.finditer(text, lo, end):
+        last = m.start()
+    return last
+
+
+def _open_tail_start(text: str, end: int) -> int:
+    """Start of the earliest open label/value that runs to ``end``, else -1. Labels are looked
+    for within _TAIL_SCAN of ``end`` and within _TAIL_SCAN before each open-region anchor;
+    candidates there are found with the label-only pattern and confirmed with an anchored
+    match, so a tick's cost does not grow with the length of the value."""
+    m = _OPEN_TAIL_RE.search(text, max(0, end - _TAIL_SCAN), end)
+    best = m.start() if m else -1
+    tail_lo = max(0, end - _TAIL_SCAN)
+    for anchor in _open_anchors(text, end):
+        lo, hi = max(0, anchor - _TAIL_SCAN), min(anchor + 1, tail_lo)
+        while lo < hi and (head := _OPEN_HEAD_RE.search(text, lo, min(end, hi + _LABEL_MAX))) and (
+                head.start() < hi):
+            if _OPEN_TAIL_RE.match(text, head.start(), end):
+                best = head.start() if best < 0 else min(best, head.start())
+                break
+            lo = head.start() + 1
+    return best
+
+
 def settled_end(text: str) -> int:
     """Index where the text that can no longer become part of a secret ends."""
     n = len(text)
@@ -110,10 +172,11 @@ def settled_end(text: str) -> int:
     if token_start < n:
         probe_start = _probe_start(text, token_start)
         line_start = max(text.rfind("\n", 0, probe_start) + 1, probe_start - _TAIL_SCAN)
-        if probe_start < 0 or _token_may_be_secret(text[line_start:probe_start], text[probe_start:]):
+        if probe_start < 0 or _token_may_be_secret(text[line_start:probe_start], text[probe_start:]) or (
+                probe_start > token_start and _long_token_head_may_be_secret(text, token_start)):
             end = token_start
-    if m := _OPEN_TAIL_RE.search(text, max(0, n - _TAIL_SCAN)):
-        end = min(end, m.start())
+    if (start := _open_tail_start(text, n)) >= 0:
+        end = min(end, start)
     block_lo = max(0, n - _BLOCK_SCAN)
     ppk = text.rfind("Private-Lines:", block_lo)
     if ppk >= 0 and _PPK_OPEN_RE.fullmatch(text, ppk):
@@ -128,8 +191,8 @@ def settled_end(text: str) -> int:
     # ``***``), after which the value no longer redacts at all.
     while True:
         prev = end
-        if (m := _OPEN_TAIL_RE.search(text, max(0, end - _TAIL_SCAN), end)) and m.start() < end:
-            end = m.start()
+        if 0 <= (start := _open_tail_start(text, end)) < end:
+            end = start
         if (begin := _open_key_block(text, block_lo, end)) >= 0:
             end = min(end, begin)
         if end == prev:
@@ -171,6 +234,9 @@ def redact_settled(text: str, redacted_prefix: str, *, done: bool) -> tuple[str,
     if upto == settled and redacted_prefix:
         return text, settled
     start = _lookback_start(text, upto)
+    if done:
+        # A value longer than _LOOKBACK may sit across ``upto``: redact back to its line's start.
+        start = min(start, text.rfind("\n", 0, upto) + 1)
     if settled <= start:
         return text, settled
     redacted = _redact_to_fixpoint(text[start:settled])

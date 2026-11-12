@@ -1,0 +1,31 @@
+name: modelscout
+repo: https://github.com/iknowterry/modelscout
+sha: "66aa9a6d654428806edeef2725dc3e6b75de8466"
+subdir: plugins/modelscout
+title: ModelScout
+description: >-
+  Per-task model choice from the models you actually have. A pre_llm_call hook
+  shows a short card for each new task (tier, best-fit model from your keys,
+  subscriptions and live models.dev pricing, and why), then routes the work to
+  a right-sized delegate_task child, up or down tier, asks, or stays, per your
+  defaults. Bundles the modelscout skill and a /modelscout command for
+  settings and a measured savings report.
+  Disclosure: reads and writes ~/.claude/modelscout-profile.json (settings
+  shared with ModelScout on other agents) and reads the model inventory and
+  catalog JSON beside it; the savings report opens Hermes state.db and Claude
+  Code transcripts read-only. Plugin code makes no network calls and reads no
+  credentials. The bundled skill's optional discover-models.sh, run through the
+  terminal tool, reads provider API-key env vars, sends each only to its own
+  provider's list-models endpoint and fetches the public models.dev catalog.
+  No telemetry, background processes or self-updating.
+maintainer: iknowterry
+tier: community
+category: models
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/iknowterry/modelscout/blob/66aa9a6d654428806edeef2725dc3e6b75de8466/plugins/modelscout/README.md
+version: "0.3.7"
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_llm_call, subagent_start]
+  provides_middleware: []
+  requires_env: []

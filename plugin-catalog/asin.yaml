@@ -1,9 +1,9 @@
 name: asin
 title: Asin
 repo: https://github.com/asindotdev/hermes-plugin-asin
-sha: 14397b67830af4ce0a6988b828ec6d97e6fb90da
-version: "1.0.0"
-description: "Tools to search Amazon and read a product's price history and offers, through the Asin API. Disclosure — sends the tool arguments to www.asin.dev with your ASIN_API_KEY, and calls can use Asin credits. Reads the key only through Hermes's secret scope. Registers 3 tools, no hooks or middleware, writes no files, starts no processes, has no telemetry or self-updater, and uses only the Python standard library."
+sha: f9f8493400c7cbe47b43071a38c6f2011d5fa033
+version: "1.1.0"
+description: "Amazon prices for Hermes through the Asin API: search 11 Amazon stores, read a product's price history and seller offers, and keep a watchlist that Asin checks on a schedule, emailing the account owner on price drops or a target price. Disclosure — sends the tool arguments to www.asin.dev with your ASIN_API_KEY. Searches, history, known offers and the watchlist are free; live offer reads and each price check use 1 Asin credit, so a tracked product keeps using credits until it is paused or removed. The watchlist tools change data on your Asin account, and asin_stop_tracking deletes a product and its price history. Reads the key only through Hermes's secret scope. Registers 11 tools, no hooks or middleware, writes no files, starts no processes, has no telemetry or self-updater, and uses only the Python standard library."
 maintainer: asindotdev
 tier: community
 category: tools
@@ -16,6 +16,14 @@ capabilities:
     - asin_search_amazon
     - asin_price_history
     - asin_get_offers
+    - asin_read_offers
+    - asin_track_product
+    - asin_list_tracked
+    - asin_tracked_product
+    - asin_update_tracking
+    - asin_check_now
+    - asin_stop_tracking
+    - asin_account
   provides_hooks: []
   provides_middleware: []
   requires_env:

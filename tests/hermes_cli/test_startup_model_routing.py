@@ -213,7 +213,9 @@ def test_same_provider_startup_route_keeps_only_native_prefixes(monkeypatch):
     cases = (
         ("nvidia", "nvidia/nemotron-3-ultra-550b-a55b", "nvidia/nemotron-3-ultra-550b-a55b"),
         ("zai", "zai/glm-5.1", "glm-5.1"),
-        ("openai", "openai/gpt-4o", "gpt-4o"),
+        # openai is a routing aggregator, so its prefix jam returns None upstream of the
+        # guard — openai-codex is the non-aggregator prefix-strip provider instead.
+        ("openai-codex", "openai-codex/gpt-4o", "gpt-4o"),
     )
     for provider, raw, expected in cases:
         route = model_switch.resolve_startup_model_route(

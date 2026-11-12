@@ -1,7 +1,7 @@
 ---
 name: findmy
-description: "Track Apple devices/AirTags via FindMy.app on macOS."
-version: 1.0.0
+description: "Locate Apple devices/AirTags via Find My (macOS)."
+version: 2.0.0
 author: Hermes Agent
 license: MIT
 platforms: [macos]
@@ -12,120 +12,97 @@ metadata:
 
 # Find My (Apple)
 
-Track Apple devices and AirTags via the FindMy.app on macOS. Since Apple doesn't
-provide a CLI for FindMy, this skill uses AppleScript to open the app and
-screen capture to read device locations.
-
-## Prerequisites
-
-- **macOS** with Find My app and iCloud signed in
-- Devices/AirTags already registered in Find My
-- Screen Recording permission for terminal (System Settings → Privacy → Screen Recording)
-- **Optional but recommended**: Install `peekaboo` for better UI automation:
-  `brew install steipete/tap/peekaboo`
+Find My has no CLI or API. Switch tabs through the app's **View menu** with
+`osascript`, then read the list as text from the accessibility tree with
+`computer_use(action="capture", mode="ax")`. No screenshots or vision needed.
 
 ## When to Use
 
-- User asks "where is my [device/cat/keys/bag]?"
-- Tracking AirTag locations
-- Checking device locations (iPhone, iPad, Mac, AirPods)
-- Monitoring pet or item movement over time (AirTag patrol routes)
+- "Where is my [iPhone/Mac/AirPods/keys/bag]?"
+- Checking AirTag or device locations
+- Logging an owned item's location over time
 
-## Method 1: AppleScript + Screenshot (Basic)
+## Prerequisites
 
-### Open FindMy and Navigate
+- macOS with the Find My app, signed in to iCloud; devices/AirTags registered
+- **Accessibility** permission for the app running `osascript` (the terminal,
+  or Hermes). Error `-1719`/`-1728` "not allowed assistive access" means it
+  is missing.
+- `computer_use` needs cua-driver to have **Accessibility** and **Screen
+  Recording**. Check with `hermes computer-use permissions status`
+  (`hermes computer-use doctor` for detail).
+  `hermes computer-use permissions grant` may fail to register CuaDriver in
+  Screen Recording. The reliable fix: the user adds `CuaDriver.app` (path shown
+  by `doctor`, under `~/.hermes/tools/cua-driver-*/CuaDriver.app`) with **+** in
+  System Settings > Privacy & Security > Screen & System Audio Recording.
+  **A human must do this. Never click permission dialogs yourself.**
 
-```bash
-# Open Find My app
-osascript -e 'tell application "FindMy" to activate'
+## Procedure
 
-# Wait for it to load
-sleep 3
+Tell the user first: Find My comes to the front when opened and will briefly
+take over the screen.
 
-# Take a screenshot of the Find My window
-screencapture -w -o ~/.hermes/cache/scratch/findmy.png
-```
+1. Open the app and go straight to Devices (or Items, for AirTags) **before
+   any capture**. Find My reopens on the last tab used, often People:
 
-Then use `vision_analyze` to read the screenshot:
-```
-vision_analyze(image_url="~/.hermes/cache/scratch/findmy.png", question="What devices/items are shown and what are their locations?")
-```
+   ```bash
+   open -a FindMy; sleep 5
+   osascript -e 'tell application "System Events" to tell process "FindMy" to click menu item "Devices" of menu 1 of menu bar item "View" of menu bar 1'
+   sleep 3
+   ```
 
-### Switch Between Tabs
+   Use `"Items"` instead of `"Devices"` for AirTags. View menu items: People,
+   Devices, Items, Map, Zoom In, Zoom Out, Map Mode, Share My Location, Enter
+   Full Screen.
 
-```bash
-# Switch to Devices tab
-osascript -e '
-tell application "System Events"
-    tell process "FindMy"
-        click button "Devices" of toolbar 1 of window 1
-    end tell
-end tell'
+2. Read the list as text:
 
-# Switch to Items tab (AirTags)
-osascript -e '
-tell application "System Events"
-    tell process "FindMy"
-        click button "Items" of toolbar 1 of window 1
-    end tell
-end tell'
-```
+   ```
+   computer_use(action="capture", app="FindMy", mode="ax")
+   ```
 
-## Method 2: Peekaboo UI Automation (Recommended)
+   - The `AXHeading` names the current tab (Devices/Items). Confirm it before
+     reading entries.
+   - Entries are `AXStaticText` shaped
+     `<name>, [Nearby, ]<place or address> · <last seen>[ · <battery>]`, e.g.
+     `macbook, Home · 7 min. ago`,
+     `AirPods Pro, Nearby, Home · 6 min. ago`,
+     `Wallet, Nearby, Home · 23 min. ago · Quarter-Charged Battery`.
+   - Other elements are map POI pins; ignore them.
 
-If `peekaboo` is installed, use it for more reliable UI interaction:
+3. Delete only the files that capture call returned: its `screenshot_path`
+   (a `computer_use_*` file in `~/.hermes/cache/images`) and its
+   `elements_file` (an `elements_*.json` file in
+   `~/.hermes/cache/computer_use`). Never delete those directories or other
+   files in them: `~/.hermes/cache/images` also holds images users sent.
 
-```bash
-# Open Find My
-osascript -e 'tell application "FindMy" to activate'
-sleep 3
+## Don't
 
-# Capture and annotate the UI
-peekaboo see --app "FindMy" --annotate --path ~/.hermes/cache/scratch/findmy-ui.png
+- Don't click the People/Devices/Items/Me tabs (an `AXTabGroup` of
+  `AXRadioButton`s). Clicks via `computer_use` (element, background or
+  foreground) only highlight the button; the list doesn't change. Use the View
+  menu.
+- Don't use `screencapture -w`: it waits for a human to click a window.
 
-# Click on a specific device/item by element ID
-peekaboo click --on B3 --app "FindMy"
+## Tracking Over Time
 
-# Capture the detail view
-peekaboo image --app "FindMy" --path ~/.hermes/cache/scratch/findmy-detail.png
-```
+A cron job runs in the gateway, a different process from the interactive
+terminal, and may lack these permissions. Say so to the user, and have the job
+run `hermes computer-use permissions status` in that context first. Each run:
+open, switch tab via the View menu, capture in `ax` mode, log the matching
+entry's text, then delete only the files that capture call returned (its
+`computer_use_*` screenshot in `~/.hermes/cache/images` and its
+`elements_*.json` in `~/.hermes/cache/computer_use`), never the directories.
 
-Then analyze with vision:
-```
-vision_analyze(image_url="~/.hermes/cache/scratch/findmy-detail.png", question="What is the location shown for this device/item? Include address and coordinates if visible.")
-```
-
-## Workflow: Track AirTag Location Over Time
-
-For monitoring an AirTag (e.g., tracking a cat's patrol route):
-
-```bash
-# 1. Open FindMy to Items tab
-osascript -e 'tell application "FindMy" to activate'
-sleep 3
-
-# 2. Click on the AirTag item (stay on page — AirTag only updates when page is open)
-
-# 3. Periodically capture location
-while true; do
-    screencapture -w -o ~/.hermes/cache/scratch/findmy-$(date +%H%M%S).png
-    sleep 300  # Every 5 minutes
-done
-```
-
-Analyze each screenshot with vision to extract coordinates, then compile a route.
-
-## Limitations
-
-- FindMy has **no CLI or API** — must use UI automation
-- AirTags only update location while the FindMy page is actively displayed
-- Location accuracy depends on nearby Apple devices in the FindMy network
-- Screen Recording permission required for screenshots
-- AppleScript UI automation may break across macOS versions
+Unverified: older notes claim AirTags only update while their page is open.
+Don't rely on it either way.
 
 ## Rules
 
-1. Keep FindMy app in the foreground when tracking AirTags (updates stop when minimized)
-2. Use `vision_analyze` to read screenshot content — don't try to parse pixels
-3. For ongoing tracking, use a cronjob to periodically capture and log locations
-4. Respect privacy — only track devices/items the user owns
+1. **Privacy:** never capture before switching to Devices or Items. Don't read,
+   store or repeat the People tab (other people's locations) unless the user
+   explicitly asks about a person who shares location with them.
+2. Only track devices/items the user owns.
+3. Never grant permissions or click permission dialogs; ask the user.
+4. Locations come from the Find My network and can be stale; report the
+   "last seen" time with every location.

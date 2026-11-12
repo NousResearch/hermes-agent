@@ -113,6 +113,31 @@ def test_model_before_the_first_turn_commits_on_the_session_that_turn_runs(gatew
     assert first_turn.model == "new-model"
 
 
+def test_first_turn_init_runs_on_the_switched_route(gateway, monkeypatch):
+    """A fresh session has no agent: ``_init_agent()`` resolves credentials for the CLI's route, so
+    the pick must already be staged. Initializing on the OLD route aborted the switch whenever that
+    provider was exhausted (Codex 429) and left the chat on the dead provider; a failed init must
+    roll the staged route back (a failed switch is a no-op)."""
+    from cli import HermesCLI
+    cli = _cli()
+    seen = {}
+
+    def init_agent():
+        seen.update(model=cli.model, provider=cli.provider,
+                    requested=cli.requested_provider, base_url=cli.base_url)
+        return False
+    cli._init_agent = init_agent
+    monkeypatch.setattr("cli._cprint", lambda *_a, **_k: None)
+    picked = ModelSwitchResult(success=True, new_model="deepseek-flash", target_provider="deepseek",
+                               api_key="dk", base_url="https://api.deepseek.com/v1",
+                               api_mode="chat_completions")
+    assert HermesCLI._stage_and_swap_model(cli, picked, "gpt-6.1-sol") is False
+    assert seen == {"model": "deepseek-flash", "provider": "deepseek",
+                    "requested": "deepseek", "base_url": "https://api.deepseek.com/v1"}
+    assert (cli.model, cli.provider, cli.requested_provider, cli.base_url) == (
+        "old-model", "openrouter", "openrouter", "")
+
+
 def test_the_owners_refusal_is_asked_in_the_clis_model_guard_prompt():
     """Review item 2: the owner's warning is the prompt's title and body, as Ink/Desktop/ACP show it."""
     from cli import HermesCLI

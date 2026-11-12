@@ -823,11 +823,11 @@ class CLIModelSwitchMixin:
         rolled back. Returns False after printing the failure (a failed switch is a no-op).
         """
         from cli import _cprint
-        if self.agent is None and getattr(self, "_gateway_session_open", False) and not self._init_agent():
-            # Before the first turn: the stand-in built for that turn reads the gateway session's model,
-            # so the switch must commit on the session now; _init_agent printed why it could not.
-            self._confirmed_switch_warning = None
-            return False
+        # Snapshot and stage BEFORE any agent init. A fresh session has no agent yet, and
+        # _init_agent() -> _ensure_runtime_credentials() resolves credentials for self.model /
+        # self.requested_provider: initializing on the OLD route fails outright when that provider
+        # is exhausted (e.g. Codex 429), which aborted the whole switch and left the session on the
+        # dead provider (#model-picker-first-turn). Build the stand-in on the NEW route instead.
         _cli_snapshot = _runtime_fields(self)
         self.model = result.new_model
         self.provider = result.target_provider
@@ -843,6 +843,14 @@ class CLIModelSwitchMixin:
         if result.api_mode:
             self.api_mode = result.api_mode
         _resolve_cli_reasoning(self)
+        if self.agent is None and getattr(self, "_gateway_session_open", False) and not self._init_agent():
+            # Before the first turn: the stand-in built for that turn reads the gateway session's model,
+            # so the switch must commit on the session now; _init_agent printed why it could not.
+            # Roll the staged route back — a failed switch is a no-op.
+            for _k, _v in _cli_snapshot.items():
+                setattr(self, _k, _v)
+            self._confirmed_switch_warning = None
+            return False
 
         if self.agent is not None:
             try:

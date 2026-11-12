@@ -4,6 +4,8 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 
 def test_secret_source_injected_vars_are_passed(monkeypatch):
     """Vars tagged by an external secret source (Bitwarden/1Password) are
@@ -109,9 +111,10 @@ def test_secret_source_never_forwards_config_declared_provider_keys(monkeypatch)
         "providers:\n  edge:\n    base_url: http://127.0.0.1:9/v1\n    api_key_env: EDGE_KEY\n"
         "auxiliary:\n  vision:\n    provider: custom\n    key_env: VISION_KEY\n"
         "fallback_providers:\n  - provider: custom\n    model: m\n    base_url: http://127.0.0.1:9/v1\n"
-        "    key_env: FALLBACK_KEY\n",
+        "    key_env: FALLBACK_KEY\n"
+        "hooks:\n  outbound:\n    - url: https://example.invalid/hook\n      secret_env: HOOK_SECRET\n",
         encoding="utf-8")
-    declared = ["MY_LLM_KEY", "LAB_KEY", "EDGE_KEY", "VISION_KEY", "FALLBACK_KEY"]
+    declared = ["MY_LLM_KEY", "LAB_KEY", "EDGE_KEY", "VISION_KEY", "FALLBACK_KEY", "HOOK_SECRET"]
     for name in [*declared, "ALPACA_API_KEY"]:
         monkeypatch.setitem(env_loader._SECRET_SOURCES, name, "bitwarden")
     fake_env = {"PATH": "/usr/bin", "ALPACA_API_KEY": "MARKER-third-party",
@@ -135,9 +138,10 @@ def test_secret_source_never_forwards_config_env_ref_credentials(monkeypatch):
         "delegation:\n  base_url: http://127.0.0.1:9/v1\n  api_key: ${DELEGATION_KEY}\n"
         "auxiliary:\n  vision:\n    base_url: http://127.0.0.1:9/v1\n    api_key: '${env:LAB_VISION}'\n"
         "custom_providers:\n  - name: lab\n    base_url: http://127.0.0.1:9/v1\n    api_key: ${LAB_LLM}\n"
+        "platforms:\n  api_server:\n    extra:\n      key: ${INGRESS_CREDENTIAL}\n"
         "mcp_servers:\n  other:\n    command: x\n    env:\n      SERVER_TOKEN: ${SERVER_TOKEN}\n",
         encoding="utf-8")
-    referenced = ["DELEGATION_KEY", "LAB_VISION", "LAB_LLM"]
+    referenced = ["DELEGATION_KEY", "LAB_VISION", "LAB_LLM", "INGRESS_CREDENTIAL"]
     for name in [*referenced, "SERVER_TOKEN"]:
         monkeypatch.setitem(env_loader._SECRET_SOURCES, name, "command")
     fake_env = {"PATH": "/usr/bin", "SERVER_TOKEN": "MARKER-server",
@@ -191,3 +195,52 @@ def test_secret_source_never_forwards_managed_config_credential_refs(monkeypatch
 
     assert "LAB_LLM" not in result
     assert result["SERVER_TOKEN"] == "MARKER-server"
+
+
+@pytest.mark.parametrize("template", ["prefix-${LAB_FRAGMENT}", "${LAB_FRAGMENT}-suffix",
+                                      "${env:LAB_FRAGMENT}${ALPACA_API_KEY}"])
+def test_secret_source_never_forwards_embedded_credential_ref(monkeypatch, template):
+    """The loader expands every ``${VAR}`` inside a credential string, not only a whole-value one,
+    so a name embedded in one is a Hermes credential too; a third-party name stays forwarded."""
+    from hermes_cli import env_loader
+    from tools.mcp_tool_config import _build_safe_env
+
+    (Path(os.environ["HERMES_HOME"]) / "config.yaml").write_text(
+        f'model:\n  provider: custom\n  base_url: http://127.0.0.1:9/v1\n  api_key: "{template}"\n',
+        encoding="utf-8")
+    for name in ("LAB_FRAGMENT", "ALPACA_API_KEY"):
+        monkeypatch.setitem(env_loader._SECRET_SOURCES, name, "command")
+    fake_env = {"PATH": "/usr/bin", "LAB_FRAGMENT": "MARKER-fragment", "ALPACA_API_KEY": "MARKER-third-party",
+                "HERMES_HOME": os.environ["HERMES_HOME"]}
+    with patch.dict("os.environ", fake_env, clear=True):
+        result = _build_safe_env(None)
+
+    assert "LAB_FRAGMENT" not in result
+    if "ALPACA_API_KEY" not in template:
+        assert result["ALPACA_API_KEY"] == "MARKER-third-party"
+
+
+def test_secret_source_withholds_last_good_credential_while_config_is_broken(monkeypatch):
+    """A config.yaml edited into broken YAML keeps its last-known-good credentials in use, so the
+    names they were read from stay withheld instead of being released by the failed raw read."""
+    from hermes_cli import env_loader
+    from hermes_cli.config import load_config_readonly
+    from tools.mcp_tool_config import _build_safe_env
+
+    config = Path(os.environ["HERMES_HOME"]) / "config.yaml"
+    config.write_text("model:\n  provider: custom\n  base_url: http://127.0.0.1:9/v1\n"
+                      "  api_key: ${LAB_FRAGMENT}\n", encoding="utf-8")
+    for name in ("LAB_FRAGMENT", "ALPACA_API_KEY"):
+        monkeypatch.setitem(env_loader._SECRET_SOURCES, name, "command")
+    fake_env = {"PATH": "/usr/bin", "LAB_FRAGMENT": "MARKER-fragment", "ALPACA_API_KEY": "MARKER-third-party",
+                "HERMES_HOME": os.environ["HERMES_HOME"]}
+    with patch.dict("os.environ", fake_env, clear=True):
+        assert load_config_readonly()["model"]["api_key"] == "MARKER-fragment"
+        config.write_text("model: [broken\n", encoding="utf-8")
+        assert load_config_readonly()["model"]["api_key"] == "MARKER-fragment"
+        result = _build_safe_env(None)
+        explicit = _build_safe_env({"LAB_FRAGMENT": "explicit"})
+
+    assert "LAB_FRAGMENT" not in result
+    assert result["ALPACA_API_KEY"] == "MARKER-third-party"
+    assert explicit["LAB_FRAGMENT"] == "explicit"

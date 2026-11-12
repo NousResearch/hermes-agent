@@ -25,7 +25,7 @@ import { hostPathLabel, hudForcesNativeLinks, normalizeExternalUrl, openExternal
 import { hostHas } from '@/lib/host-capabilities'
 import { formatCombo } from '@/lib/keybinds/combo'
 import { isRemoteGateway } from '@/lib/media'
-import { reachablePreviewUrl } from '@/lib/preview-reach'
+import { reachablePreviewTarget, reachablePreviewUrl } from '@/lib/preview-reach'
 import { isBrowserOwnedTouch } from '@/lib/touch-interaction'
 import { openPreview } from '@/store/preview'
 
@@ -40,6 +40,12 @@ import {
   openTerminalContextMenu
 } from './store'
 import { type ContextMenuDomTarget, isWebUrl, resolveDomTarget } from './target'
+
+/** "Open in app" for a link the context menu found: the remote gateway's
+ *  loopback made reachable here, the label still the address clicked. */
+async function openUrlInApp(url: string) {
+  openPreview(await reachablePreviewTarget({ kind: 'url', label: hostPathLabel(url), source: url, url }))
+}
 
 /** Marks a surface that owns PLAIN right-clicks itself (the user-message
  *  reaction bubble). Owned targets inside it — links, images, editables,
@@ -297,7 +303,7 @@ function domSections(
             icon="globe"
             key="link-open-app"
             label={copy.link.openInApp}
-            onSelect={() => openPreview({ kind: 'url', label: hostPathLabel(linkUrl), source: linkUrl, url: linkUrl })}
+            onSelect={() => void openUrlInApp(linkUrl)}
           />
         ) : null,
         <Item
@@ -332,14 +338,7 @@ function domSections(
             icon="globe"
             key="image-open-app"
             label={copy.link.openInApp}
-            onSelect={() =>
-              openPreview({
-                kind: 'url',
-                label: hostPathLabel(target.imageUrl),
-                source: target.imageUrl,
-                url: target.imageUrl
-              })
-            }
+            onSelect={() => void openUrlInApp(target.imageUrl)}
           />
         ) : null,
         imageIsWeb ? (
@@ -501,7 +500,7 @@ function guestSections(open: Extract<OpenContextMenu, { kind: 'guest' }>, t: Tra
             icon="globe"
             key="guest-link-open-app"
             label={copy.link.openInApp}
-            onSelect={() => openPreview({ kind: 'url', label: hostPathLabel(linkUrl), source: linkUrl, url: linkUrl })}
+            onSelect={() => void openUrlInApp(linkUrl)}
           />
         ) : null,
         <Item

@@ -285,8 +285,14 @@ export function openLink(href: string, options: { native?: boolean } = {}): void
   // pulls the layout/session graph behind it. A static edge would make one
   // link helper drag that whole tree into anything that renders a link. The
   // tab lands a microtask later, which is invisible.
-  void import('@/store/preview').then(({ openPreview }) =>
-    openPreview({ kind: 'url', label: hostPathLabel(target), source: target, url: target })
+  void Promise.all([import('@/store/preview'), import('@/lib/preview-reach')]).then(
+    async ([{ openPreview }, { reachablePreviewTarget }]) =>
+      // On a remote gateway a localhost link the agent surfaced names the
+      // GATEWAY's loopback; without reach it fails, or loads whatever listens
+      // on that port here.
+      openPreview(
+        await reachablePreviewTarget({ kind: 'url', label: hostPathLabel(target), source: target, url: target })
+      )
   )
 }
 

@@ -7,6 +7,7 @@ import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
 import { Download, FolderOpen, MonitorPlay } from '@/lib/icons'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { downloadGatewayMediaFile } from '@/lib/media'
+import { reachablePreviewTarget } from '@/lib/preview-reach'
 import { previewName } from '@/lib/preview-targets'
 import { notifyError } from '@/store/notifications'
 import { $previewTabSources, closePreviewForSource, openPreview } from '@/store/preview'
@@ -161,7 +162,8 @@ export function PreviewAttachment({ target }: { target: string }) {
     setOpening(true)
 
     try {
-      const preview = await normalizeOrLocalPreviewTarget(requestTarget, requestCwd || undefined, { sessionId })
+      const normalized = await normalizeOrLocalPreviewTarget(requestTarget, requestCwd || undefined, { sessionId })
+      const preview = normalized && (await reachablePreviewTarget(normalized))
 
       if (
         !mountedRef.current ||

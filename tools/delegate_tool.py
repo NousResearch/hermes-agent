@@ -234,7 +234,7 @@ def _build_child_agent(
     # action='continue' rebuilds a finished child under its own id and session (tools/delegate_tool_continue.py).
     subagent_id: Optional[str] = None,
     session_id: Optional[str] = None,
-    expect_endpoint: Optional[tuple] = None,  # the (provider, base_url) it first ran on; a different one refuses
+    expect_endpoint: Optional[tuple] = None,  # endpoint_identity it first ran on; a different one refuses
 ):
     """Build (don't run) a child AIAgent on the main thread. override_* (from delegation config) replace parent
     inheritance so children can run on a different provider:model pair. ``profile_home`` builds (and later runs,
@@ -242,6 +242,7 @@ def _build_child_agent(
     import uuid as _uuid
     from run_agent import AIAgent
     from agent.delegation_context import delegated_child_context
+    from tools.delegate_tool_resumable import endpoint_identity
     from tools.delegate_tool_routes import delegated_profile_scope
     # Role is depth-derived: a child may delegate iff the kill switch is on and
     # depth budget remains below max_spawn_depth. The `role` arg is ignored.
@@ -285,7 +286,7 @@ def _build_child_agent(
         )
         # An inherited route re-resolves from the parent, which may have switched provider since: its transcript
         # must not continue on another backend (or send another provider's key to its endpoint).
-        if expect_endpoint is not None and (rt["provider"], rt["base_url"]) != tuple(expect_endpoint):
+        if expect_endpoint is not None and endpoint_identity(rt["provider"], rt["base_url"]) != tuple(expect_endpoint):
             raise ValueError(
                 f"Subagent '{subagent_id}' ran on provider '{expect_endpoint[0]}', and its route now resolves to "
                 f"provider '{rt['provider']}' or a different endpoint (the parent switched since), so its "
@@ -373,7 +374,8 @@ def _build_child_agent(
         child._session_init_model_config[SUBAGENT_ID_KEY] = subagent_id
     child._delegate_profile_home = profile_home  # _ChildRun.await_child runs the conversation in this scope
     child._delegate_resume = {  # for action='continue'
-        "goal": goal, "context": context, "toolsets": list(child_toolsets), "endpoint": (rt["provider"], rt["base_url"]),
+        "goal": goal, "context": context, "toolsets": list(child_toolsets),
+        "endpoint": endpoint_identity(rt["provider"], rt["base_url"]),  # a digest: the URL may carry a key
     }
     if child_pool is not None:
         child._credential_pool = child_pool

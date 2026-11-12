@@ -1,7 +1,7 @@
 name: logmine
 repo: https://github.com/rodricksz4h5/logmine
-sha: 3bc384e2fe1abb9a9d5b94dd33ebdbc98cad7aab
-version: "1.0.0"
+sha: d08fe9cc95da0a420201559c1cf23592e56cc14b
+version: "1.0.1"
 title: Logmine
 description: >-
   Exact, local intelligence over large text log files. log_summarize mines the
@@ -17,7 +17,7 @@ maintainer: rodricksz4h5
 tier: community
 category: tools
 requires_hermes: ">=0.22.0"
-docs_url: https://github.com/rodricksz4h5/logmine/tree/3bc384e2fe1abb9a9d5b94dd33ebdbc98cad7aab
+docs_url: https://github.com/rodricksz4h5/logmine/tree/d08fe9cc95da0a420201559c1cf23592e56cc14b
 capabilities:
   provides_tools:
     - log_summarize

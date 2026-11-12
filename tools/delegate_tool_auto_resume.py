@@ -63,8 +63,8 @@ def notice_line(sid: str, auto: dict[str, Any]) -> str:
             else "as soon as the gateway is back up")
     return (f"Subagent {sid} WILL resume automatically {when}, on its own conversation and worktree (at most "
             f"{MAX_AUTO_ATTEMPTS} automatic attempts). Do not re-dispatch this task: its result will arrive here. To "
-            f"cancel the automatic resume, call delegate_task(action='stop', subagent_id='{sid}'); starting new "
-            "delegated work in the same repository also cancels it.")
+            f"cancel the automatic resume, call delegate_task(action='stop', subagent_id='{sid}'); a new subagent "
+            "you start in the same repository also cancels it.")
 
 
 def boot_notice(sids: list[str], records: dict[str, dict[str, Any]]) -> str:
@@ -118,12 +118,13 @@ def _unit_row(unit_id: Any) -> Optional[dict[str, Any]]:
 
 
 def _records_since(stopped_at: float, exclude: str) -> list[dict[str, Any]]:
-    """Every OTHER record whose current run a parent (not this scheduler) started after *stopped_at*."""
+    """Every OTHER record a parent SPAWNED after *stopped_at* (a continue of another child, or this scheduler's,
+    is not new work)."""
     def read(conn):
         rows = conn.execute("SELECT subagent_id, record_json FROM resumable_subagents WHERE subagent_id != ?",
                             (exclude,)).fetchall()
         return [json.loads(raw or "{}") for _sid, raw in rows]
-    return [r for r in (_write(read) or []) if r.get("run_origin") != "auto"
+    return [r for r in (_write(read) or []) if r.get("run_origin", "spawn") == "spawn"
             and float(r.get("run_started_at") or 0) > stopped_at]
 
 
@@ -140,18 +141,22 @@ def _lineage(parent_sid: str) -> tuple[set[str], Optional[dict[str, Any]]]:
 
 
 def _repo_of(path: Any) -> Optional[str]:
-    """The repository a path belongs to (its main worktree), else the path itself."""
+    """The repository a path is in, named by its main worktree (so every isolation worktree of one repository
+    names the same one), else the path itself."""
     if not isinstance(path, str) or not path:
         return None
     from tools.delegate_tool_resumable import _worktrees_of
-    trees = _worktrees_of(path) if os.path.isdir(path) else []
+    trees = _worktrees_of(path)
     return trees[0] if trees else os.path.realpath(path)
 
 
 def _repos(record: dict[str, Any]) -> set[str]:
-    paths = [record.get("cwd"), record.get("start_cwd"), (record.get("worktree") or {}).get("path"),
-             *(record.get("pin_paths") or ())]
-    return {repo for repo in map(_repo_of, paths) if repo}
+    """Every repository a record's run started in, moved to, was isolated in or pins. An isolation worktree names
+    its repository itself (``repo_root``): a finished child's tree may already be pruned."""
+    worktree = record.get("worktree") or {}
+    paths = [record.get("cwd"), record.get("start_cwd"), worktree.get("path"), *(record.get("pin_paths") or ())]
+    repos = {repo for repo in map(_repo_of, paths) if repo}
+    return repos | ({_repo_of(worktree["repo_root"])} if worktree.get("repo_root") else set())
 
 
 def _parent_ended(row: Optional[dict[str, Any]]) -> Optional[str]:
@@ -175,8 +180,9 @@ def superseded_reason(record: dict[str, Any], parent_sid: str) -> Optional[str]:
         if not lineage & set(other.get("owners") or ()):
             continue
         mine = _repos(record) if mine is None else mine
-        if mine & _repos(other):
-            return f"its parent started subagent {other.get('subagent_id')} in the same repository after it stopped"
+        if shared := mine & _repos(other):
+            return (f"its parent started subagent {other.get('subagent_id')} in {min(shared)} after it "
+                    "stopped")
     return None
 
 

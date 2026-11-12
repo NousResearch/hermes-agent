@@ -277,7 +277,8 @@ def record_start(run: Any) -> None:
     # ``lock`` serializes the start-record retries (heartbeat thread vs the stop path) with the terminal write, so a
     # retry still waiting on the busy timeout can never land after ``record_stop`` and flip the row back to running.
     # Who started this run: a parent's spawn, a parent's continue (no automatic resume after it), the scheduler.
-    origin = getattr(child, "_delegate_run_origin", None) or "spawn"
+    origin = getattr(child, "_delegate_run_origin", None)
+    origin = origin if origin in ("continue", "auto") else "spawn"
     auto = {"auto_attempts": int(earlier.get("auto_attempts") or 0), "auto_off": earlier.get("auto_off")
             or ("the parent continued it itself" if origin == "continue" else None)}
     durable: dict[str, Any] = {"db": path, "cwd": cwd, "start_main": start_trees[0] if start_trees else None,

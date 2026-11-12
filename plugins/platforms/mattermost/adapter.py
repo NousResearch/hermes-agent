@@ -603,8 +603,12 @@ class MattermostAdapter(BasePlatformAdapter):
         chat_type = _CHANNEL_TYPE_MAP.get(data.get("channel_type", "O"), "channel")
         # The fetch spends the bot's token and disk on a sender-chosen file: only the gateway's explicit
         # True permits it. The post still dispatches so the runner applies denial/pairing.
+        # A bot account's post carries props.from_bot (a string "true" on the wire).
+        is_bot = (str((post.get("props") or {}).get("from_bot", "")).lower() == "true"
+                  or self._is_configured_bot_user(sender_id))
         file_ids = post.get("file_ids") or []
-        if file_ids and self._is_sender_authorized(sender_id, chat_type, channel_id, thread_id=thread_id) is True:
+        if file_ids and self._is_sender_authorized(sender_id, chat_type, channel_id, is_bot=is_bot,
+                                                   thread_id=thread_id) is True:
             media_urls, media_types = await self._download_attachments(file_ids)
         else:
             media_urls, media_types = [], []
@@ -618,10 +622,7 @@ class MattermostAdapter(BasePlatformAdapter):
         source = self.build_source(
             chat_id=channel_id, chat_type=chat_type,
             user_id=sender_id, user_name=data.get("sender_name", "").lstrip("@") or sender_id,
-            thread_id=thread_id, message_id=post_id,
-            # A bot account's post carries props.from_bot (a string "true" on the wire).
-            is_bot=str((post.get("props") or {}).get("from_bot", "")).lower() == "true"
-            or self._is_configured_bot_user(sender_id))
+            thread_id=thread_id, message_id=post_id, is_bot=is_bot)
         from gateway.platforms.base import resolve_channel_prompt
         await self.handle_message(MessageEvent(
             text=message_text, message_type=msg_type, source=source, raw_message=post, message_id=post_id,

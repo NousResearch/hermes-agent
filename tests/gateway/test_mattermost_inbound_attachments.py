@@ -70,10 +70,10 @@ async def mattermost(tmp_path, monkeypatch):
         events.append(event)
     adapter.handle_message = capture
 
-    async def dm(post_id, user_id, file_sizes):
+    async def dm(post_id, user_id, file_sizes, props=None):
         sizes.update(file_sizes)
         post = {"id": post_id, "user_id": user_id, "channel_id": "dm_chan", "message": "see attached",
-                "file_ids": list(file_sizes)}
+                "file_ids": list(file_sizes), "props": props or {}}
         await adapter._handle_ws_event({"event": "posted", "data": {
             "channel_type": "D", "sender_name": "@someone", "post": json.dumps(post)}})
         return events[-1]
@@ -95,6 +95,18 @@ async def test_attachments_are_fetched_only_for_authorized_senders(mattermost):
     allowed = await dm("p2", OWNER, {"owner_doc": 1024})
     assert len(allowed.media_urls) == 1
     assert Path(allowed.media_urls[0]).stat().st_size == 1024
+
+
+@pytest.mark.asyncio
+async def test_bot_admitted_by_allow_bots_keeps_its_attachments(mattermost, monkeypatch):
+    monkeypatch.setenv("MATTERMOST_ALLOW_BOTS", "all")
+    dm, hits = mattermost
+
+    event = await dm("p4", "peer_bot", {"bot_doc": 1024}, props={"from_bot": "true"})
+
+    assert event.source.is_bot
+    assert len(event.media_urls) == 1
+    assert hits
 
 
 @pytest.mark.asyncio

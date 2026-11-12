@@ -1,0 +1,21 @@
+name: perf-lab
+repo: https://github.com/Murali-lns/perf-lab
+sha: 2d818104748ef5f0c73a937ecc050d524ee1301b
+description: "Proof for speed-ups. When you ask Hermes to make code faster, Perf Lab times it before and after, fingerprints the output so a faster-but-wrong change is rejected, profiles Python with a flame graph, and enforces it with hooks: no code edits before a baseline, no finishing before a re-measure, and the plugin's own measured result appended under the reply. Disclosure: perf_bench/perf_profile run the command the agent passes, without a shell, only when it starts with an interpreter (python, node, ruby, uv run ...) and has no inline code (-c/-e); the script itself runs with your permissions, as it would in the terminal. In chats whose typed message is about speed: pre_llm_call adds a short rules note to the turn, pre_tool_call blocks write_file/patch on code files until a baseline exists (at most twice per file, then lets it through and says so), pre_verify asks for one re-measure if code changed, and transform_llm_output appends a clearly labelled Perf Lab section (it never rewrites the agent's text). A Gatekeeper switch in the pane turns the hooks off. Stores commands, timings, output fingerprints, the first 200 KB of each run's stdout, profiles and per-chat state under plugin-data/perf-lab (Forget deletes a script's data). No network calls, no telemetry, no credentials."
+maintainer: Murali-lns
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/Murali-lns/perf-lab#readme
+version: "0.1.0"
+title: Perf Lab
+screenshots:
+  - https://raw.githubusercontent.com/Murali-lns/perf-lab/2d818104748ef5f0c73a937ecc050d524ee1301b/docs/faster.png
+  - https://raw.githubusercontent.com/Murali-lns/perf-lab/2d818104748ef5f0c73a937ecc050d524ee1301b/docs/rejected.png
+  - https://raw.githubusercontent.com/Murali-lns/perf-lab/2d818104748ef5f0c73a937ecc050d524ee1301b/docs/flame-graph.png
+platforms: [linux, macos]
+capabilities:
+  provides_tools: [perf_bench, perf_profile, perf_skip]
+  provides_hooks: [pre_llm_call, pre_tool_call, post_tool_call, pre_verify, transform_llm_output]
+  provides_middleware: []
+  requires_env: []

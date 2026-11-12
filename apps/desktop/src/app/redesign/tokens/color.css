@@ -45,6 +45,8 @@
   --portal-surface-selected: var(--portal-raw-ink-5);
   /* A row under the pointer on a panel, the stage or a card: one ink step over its rest. */
   --portal-surface-row-hover: var(--portal-raw-ink-3);
+  /* Content still loading (skeleton bars, tiles and rows): one quiet ink block on any surface. */
+  --portal-surface-skeleton: var(--portal-raw-ink-8);
   /* 30px chrome buttons and the session pill (906:19469): rest, hover, pressed. */
   --portal-surface-chrome: var(--portal-raw-ink-2);
   --portal-surface-chrome-hover: var(--portal-raw-ink-5);

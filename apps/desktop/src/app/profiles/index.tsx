@@ -19,6 +19,7 @@ import { $profileColors, profileLabel, refreshProfiles } from '@/store/profile'
 import { usePortalShell } from '@/store/shell-variant'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
+import { AgentsFrameFallback } from '../overlays/page-frame-fallback'
 import {
   Panel,
   PanelAddButton,
@@ -52,7 +53,7 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
   const { search } = useLocation()
 
   return simplified && new URLSearchParams(search).get('manage') !== 'true' ? (
-    <Suspense fallback={<PageLoader />}>
+    <Suspense fallback={<AgentsFrameFallback onClose={onClose} />}>
       <AgentDirectory onClose={onClose} />
     </Suspense>
   ) : (

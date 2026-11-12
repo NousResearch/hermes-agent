@@ -80,6 +80,7 @@ import { $cronSessions, $messagingSessions, $sessions } from '@/store/session'
 import { $unconfirmedPinWrites } from '@/store/session-pin-sync'
 import { $removedSessionIds } from '@/store/session-removal'
 import { $setupGuideOnboarding } from '@/store/shell-policy'
+import { usePortalShell } from '@/store/shell-variant'
 import { runGatewayRestart } from '@/store/system-actions'
 import { requestActiveUpdate } from '@/store/updates'
 import { canOpenNewWindow, openNewWindow } from '@/store/windows'
@@ -558,6 +559,7 @@ export function CommandPalette() {
 
 function CommandPaletteBody({ onExited }: { onExited: () => void }) {
   const { t } = useI18n()
+  const portal = usePortalShell()
   const pendingPage = useStore($commandPalettePage)
   const pendingSeed = useStore($commandPaletteSeed)
   const bindings = useStore($bindings)
@@ -864,19 +866,21 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
             label: cc.nav.messaging.title,
             run: go(MESSAGING_ROUTE)
           },
+          // The redesign names destinations as its rail does; the other name still finds them.
           {
             action: 'nav.artifacts',
             icon: Package,
             id: 'nav-artifacts',
-            label: cc.nav.artifacts.title,
+            keywords: [cc.nav.artifacts.title, t.simplifiedAgents.library],
+            label: portal ? t.simplifiedAgents.library : cc.nav.artifacts.title,
             run: go(ARTIFACTS_ROUTE)
           },
           {
             action: 'nav.cron',
             icon: Clock,
             id: 'nav-cron',
-            keywords: ['schedule', 'jobs'],
-            label: t.shell.statusbar.cron,
+            keywords: ['schedule', 'jobs', t.cron.title],
+            label: portal ? t.cron.title : t.shell.statusbar.cron,
             run: go(CRON_ROUTE)
           },
           { action: 'nav.profiles', icon: Users, id: 'nav-profiles', label: t.profiles.title, run: go(PROFILES_ROUTE) },
@@ -1045,6 +1049,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
     contributedItems,
     dismissedAutoProjects,
     go,
+    portal,
     projectTree,
     selectTick,
     settingsSectionLabel,

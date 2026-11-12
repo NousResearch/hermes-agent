@@ -86,7 +86,7 @@ export function PageToolbar({
             size="icon"
             variant="ghost"
           >
-            <TitlebarIcon name={compact ? 'menu' : 'layout-sidebar-left'} />
+            <TitlebarIcon name={compact ? 'menu' : 'layout-sidebar-left-off'} />
           </Button>
         </Tip>
       )}

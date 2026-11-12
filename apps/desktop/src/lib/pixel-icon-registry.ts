@@ -7,6 +7,7 @@ import { AppWindows as PxAppWindows } from 'pixelarticons/react/AppWindows.js'
 import { Archive as PxArchive } from 'pixelarticons/react/Archive.js'
 import { ArrowBarDown as PxArrowBarDown } from 'pixelarticons/react/ArrowBarDown.js'
 import { ArrowBarLeft as PxArrowBarLeft } from 'pixelarticons/react/ArrowBarLeft.js'
+import { ArrowBarRight as PxArrowBarRight } from 'pixelarticons/react/ArrowBarRight.js'
 import { ArrowBarUp as PxArrowBarUp } from 'pixelarticons/react/ArrowBarUp.js'
 import { ArrowDown as PxArrowDown } from 'pixelarticons/react/ArrowDown.js'
 import { ArrowLeft as PxArrowLeft } from 'pixelarticons/react/ArrowLeft.js'
@@ -197,6 +198,7 @@ export const PIXEL_ICONS = {
   archive: PxArchive,
   'arrow-bar-down': PxArrowBarDown,
   'arrow-bar-left': PxArrowBarLeft,
+  'arrow-bar-right': PxArrowBarRight,
   'arrow-bar-up': PxArrowBarUp,
   'arrow-down': PxArrowDown,
   'arrow-left': PxArrowLeft,

@@ -28,6 +28,7 @@ import { $statusbarVisible } from '@/store/statusbar-prefs'
 import { ChatView } from '../chat'
 import { ChatSidebar } from '../chat/sidebar'
 import { PortalSidebar } from '../chat/sidebar/portal/portal-sidebar'
+import { type PageFrameKind, WorkspacePageFallback } from '../overlays/page-header-skeleton'
 import { ArtifactsView, CapabilitiesView, MessagingView } from '../page-views'
 import { PortalGatewayMenuPanel } from '../redesign/portal-gateway-menu-panel'
 import { TerminalPaneChrome } from '../right-sidebar/terminal/chrome'
@@ -243,9 +244,10 @@ export const ChatRoutesSurface = memo(function ChatRoutesSurface({
   // on the contribution, not a DOM marker — the `data-zone-no-header` attribute
   // that used to ride this wrapper gated a body double-click toggle that no
   // longer exists, and nothing has read it since.
-  const page = (view: ReactNode) => (
+  // A built-in page waits in its own frame; a contributed page's layout is its own business.
+  const page = (view: ReactNode, frame?: PageFrameKind) => (
     <div className="contents">
-      <Suspense fallback={null}>{view}</Suspense>
+      <Suspense fallback={frame && <WorkspacePageFallback frame={frame} />}>{view}</Suspense>
     </div>
   )
 
@@ -262,9 +264,18 @@ export const ChatRoutesSurface = memo(function ChatRoutesSurface({
 
   const pageRoutes = (
     <>
-      <Route element={page(<CapabilitiesView setStatusbarItemGroup={setStatusbarItemGroup} />)} path="capabilities" />
-      <Route element={page(<MessagingView setStatusbarItemGroup={setStatusbarItemGroup} />)} path="messaging" />
-      <Route element={page(<ArtifactsView setStatusbarItemGroup={setStatusbarItemGroup} />)} path="artifacts" />
+      <Route
+        element={page(<CapabilitiesView setStatusbarItemGroup={setStatusbarItemGroup} />, 'capabilities')}
+        path="capabilities"
+      />
+      <Route
+        element={page(<MessagingView setStatusbarItemGroup={setStatusbarItemGroup} />, 'messaging')}
+        path="messaging"
+      />
+      <Route
+        element={page(<ArtifactsView setStatusbarItemGroup={setStatusbarItemGroup} />, 'library')}
+        path="artifacts"
+      />
       <Route element={null} path="agents" />
       <Route element={null} path="command-center" />
       <Route element={null} path="cron" />

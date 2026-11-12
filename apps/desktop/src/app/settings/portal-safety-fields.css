@@ -35,6 +35,7 @@
 }
 
 .portal-safety-icon {
+  display: flex;
   grid-row: 1 / 3;
   padding: 0.5rem;
   border-radius: var(--portal-control-radius);

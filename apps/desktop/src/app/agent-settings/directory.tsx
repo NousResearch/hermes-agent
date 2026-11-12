@@ -4,7 +4,6 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router'
 
-import { PageLoader } from '@/components/page-loader'
 import { FigmaAgentIcon } from '@/components/ui/figma-agent-icon'
 import { SearchField } from '@/components/ui/search-field'
 import { useMediaQuery } from '@/hooks/use-media-query'
@@ -15,6 +14,7 @@ import { $profileColors, $profiles } from '@/store/profile'
 import { useFleetRoster } from '../chat/sidebar/use-fleet-roster'
 import { type SimplifiedAgent, useSimplifiedAgents } from '../chat/sidebar/use-simplified-agents'
 import { usePageFrameCopy } from '../overlays/page-frame-copy'
+import { AgentsFrameFallback } from '../overlays/page-frame-fallback'
 import {
   PAGE_SIDEBAR_NARROW,
   PageSidebarCaption,
@@ -122,7 +122,7 @@ export function AgentDirectory({ onClose }: { onClose: () => void }) {
 
   // Every gateway has at least its default agent, so an empty roster is still loading.
   if (!landing || target) {
-    return <PageLoader />
+    return <AgentsFrameFallback onClose={onClose} />
   }
 
   const needle = query.trim().toLocaleLowerCase()

@@ -51,7 +51,7 @@
 .catalog-featured-slide { flex: 0 0 100%; min-width: 0; scroll-snap-align: start; display: flex; }
 .catalog-featured-slide > [data-catalog-card] { flex: 1; }
 .catalog-featured-controls { display: flex; align-items: center; justify-content: center; gap: var(--capabilities-gap-sticky); padding-top: var(--capabilities-gap-sticky); }
-.catalog-featured-dots { display: flex; align-items: center; gap: 6px; }
+.catalog-featured-dots { --catalog-dot-gap: 6px; display: flex; align-items: center; gap: var(--catalog-dot-gap); }
 /* The feed's first paint (CatalogSkeleton): the slots of the hero (its one-line copy at 1280), the
    slider row's 24px controls and one shelf, so the loaded page lands on the same lines. */
 [data-catalog-skeleton] .catalog-skeleton-hero { height: 11.25rem; border-radius: var(--radius-lg); }
@@ -127,4 +127,15 @@
   [data-capabilities-v2] [data-catalog-variant=hero] .catalog-card-copy button > span {
     font-size: 1.5rem;
   }
+}
+
+/* The redesign's section heading role (Agent Overview 877, Settings 1036:7481: 15px Medium, the
+   column's own left edge), so the catalog's shelves read like every other page's sections. */
+:root[data-shell='portal'] .catalog-section-heading { padding-inline: 0; }
+:root[data-shell='portal'] .catalog-section-heading h2 { font-size: var(--portal-type-section-size); font-weight: 500; line-height: 1.1; letter-spacing: 0; }
+:root[data-shell='portal'] [data-catalog-skeleton] .catalog-skeleton-title { height: var(--portal-type-section-size); margin-block: 0; }
+/* Touch: each dot's hit area (portal-controls.css) reaches the target's height but only half the gap
+   to each neighbour, so a tap lands on the dot under the finger, never its neighbour. */
+@media (hover: none), (pointer: coarse) {
+  html[data-hermes-desktop-host='browser'][data-shell='portal'] .catalog-featured-dots > .catalog-featured-dot::after { inset-inline: calc(var(--catalog-dot-gap) / -2); }
 }

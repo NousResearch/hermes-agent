@@ -15,21 +15,37 @@ export const SettingsView = lazyView(async () => (await import('./agent-settings
 export const StarmapView = lazyView(async () => (await import('./starmap')).StarmapView)
 export const WebhooksView = lazyView(async () => (await import('./webhooks')).WebhooksView)
 
-/** The global rail's destinations (and the Agents page's nested chunks), in likely-click order. */
-const RAIL_PRELOADS: (() => Promise<unknown>)[] = [
-  ProfilesView.preload,
-  async () => (await import('./profiles')).preloadAgentDirectory(),
-  SettingsView.preload,
-  async () => (await import('./agent-settings/entry')).preloadAgentSettingsView(),
-  // The landing agent's Overview reads too, so its page paints with data, not placeholders.
-  async () => (await import('./agent-settings/overview-queries')).prefetchLandingAgentOverview(),
-  CapabilitiesView.preload,
+/** Each global rail destination's chunks (and the reads its page lays out from), keyed by rail area. */
+const RAIL_PAGE_PRELOADS: Record<string, (() => Promise<unknown>)[]> = {
+  profiles: [
+    ProfilesView.preload,
+    async () => (await import('./profiles')).preloadAgentDirectory(),
+    SettingsView.preload,
+    async () => (await import('./agent-settings/entry')).preloadAgentSettingsView(),
+    // The landing agent's Overview reads too, so its page paints with data, not placeholders.
+    async () => (await import('./agent-settings/overview-queries')).prefetchLandingAgentOverview()
+  ],
   // Capabilities and Library read lists before they can lay out; warm those too.
-  async () => (await import('./capabilities/prefetch')).prefetchCapabilitiesInventory(),
-  ArtifactsView.preload,
-  async () => (await import('./artifacts/artifacts-index')).prefetchArtifactIndex(),
-  CronView.preload
-]
+  capabilities: [
+    CapabilitiesView.preload,
+    async () => (await import('./capabilities/prefetch')).prefetchCapabilitiesInventory()
+  ],
+  artifacts: [ArtifactsView.preload, async () => (await import('./artifacts/artifacts-index')).prefetchArtifactIndex()],
+  cron: [CronView.preload],
+  settings: [SettingsView.preload]
+}
+
+/** In likely-click order. */
+const RAIL_PRELOADS = Object.values(RAIL_PAGE_PRELOADS).flat()
+
+/** Warm one rail destination now (the pointer is on its button, or focus is), so a click that lands
+ *  before the idle warm-up reached it still paints its page at once. */
+export function preloadRailPage(area: string): void {
+  for (const run of RAIL_PAGE_PRELOADS[area] ?? []) {
+    // A failed warm-up is not an error: the click that needs the page loads it again.
+    run().catch(() => undefined)
+  }
+}
 
 /**
  * Warm the rail destinations one idle slice at a time, so a click paints its page in the next

@@ -39,10 +39,15 @@
   --titlebar-control-height: var(--portal-row-chrome);
   --titlebar-icon-size: 1rem;
   --titlebar-control-gap: 0.625rem;
+  /* One status family: shared components' success inks read the redesign's online green. */
+  --ui-green: var(--portal-status-online);
 }
 
-:root.dark[data-shell='portal'] {
-  --ui-green: var(--portal-status-online);
+/* The theme writes --ui-success inline on the root (themes/context.tsx), which no root rule can
+   override; it is re-pointed one level down, where every surface (and every body-portalled one)
+   inherits it. */
+:root[data-shell='portal'] body {
+  --ui-success: var(--portal-status-online);
 }
 
 /* Pages (overlays and workspace pages) lay their body on the page canvas, not on chat panels. */

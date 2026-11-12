@@ -139,6 +139,11 @@
   border-bottom-color: var(--portal-stroke-hairline);
 }
 
+/* Menus and popovers opened from the global rail (Settings, System) share one side offset. */
+:root[data-shell='portal'] .portal-rail-popover[data-side='right'] {
+  margin-inline-start: var(--portal-rail-popover-offset);
+}
+
 /* ── Dialogs ──────────────────────────────────────────────────────────────── */
 
 :root[data-shell='portal'] [data-slot='dialog-overlay'] {
@@ -172,17 +177,34 @@
 /* A dialog taller than the window scrolls its body; the actions stay pinned to the bottom edge
    instead of scrolling away with the form (the body box owns the scroll). The closing footer takes
    over the body's bottom padding, so its plate runs to the body's edge whether the body scrolls or
-   not: a short dialog seats its buttons one padding above the edge, as a tall one does. A flush
-   body (the model picker's p-0) lays its own footer out and is left alone. */
+   not: a short dialog seats its buttons one padding above the edge, as a tall one does. The footer
+   may close the body itself or the wrappers that close it (a submit form, its fieldset), which the
+   sticky footer rides to the body's floor. A flush body (the model picker's p-0) lays its own
+   footer out and is left alone. */
 :root[data-shell='portal']
   [data-slot='dialog-content']
-  > div:not([class~='p-0']):has(> [data-slot='dialog-footer']:last-child) {
+  > div:not([class~='p-0']):has(
+    > [data-slot='dialog-footer']:last-child,
+    > :last-child > [data-slot='dialog-footer']:last-child,
+    > :last-child > :last-child > [data-slot='dialog-footer']:last-child
+  ) {
   padding-bottom: 0;
 }
 
 :root[data-shell='portal']
   [data-slot='dialog-content']
   > div:not([class~='p-0'])
+  > [data-slot='dialog-footer']:last-child,
+:root[data-shell='portal']
+  [data-slot='dialog-content']
+  > div:not([class~='p-0'])
+  > :last-child
+  > [data-slot='dialog-footer']:last-child,
+:root[data-shell='portal']
+  [data-slot='dialog-content']
+  > div:not([class~='p-0'])
+  > :last-child
+  > :last-child
   > [data-slot='dialog-footer']:last-child {
   position: sticky;
   z-index: 1;
@@ -243,10 +265,14 @@
    on its side, less a 16px gutter, and scrolling inside when its content is taller. */
 :root[data-shell='portal'] :is([data-slot='dropdown-menu-content'], [data-slot='dropdown-menu-sub-content']) {
   max-width: calc(var(--radix-dropdown-menu-content-available-width, 100vw) - 1rem);
+  max-height: calc(var(--radix-dropdown-menu-content-available-height, 100dvh) - 1rem);
+  overflow-y: auto;
 }
 
 :root[data-shell='portal'] :is([data-slot='context-menu-content'], [data-slot='context-menu-sub-content']) {
   max-width: calc(var(--radix-context-menu-content-available-width, 100vw) - 1rem);
+  max-height: calc(var(--radix-context-menu-content-available-height, 100dvh) - 1rem);
+  overflow-y: auto;
 }
 
 :root[data-shell='portal'] [data-slot='popover-content'] {
@@ -275,7 +301,13 @@
 
   /* The body fills the window and lays its blocks in a column, so the footer rests on the floor even
      when the form is short. */
-  :root[data-shell='portal'] [data-slot='dialog-content'] > div:not([class~='p-0']):has(> [data-slot='dialog-footer']) {
+  :root[data-shell='portal']
+    [data-slot='dialog-content']
+    > div:not([class~='p-0']):has(> [data-slot='dialog-footer'], > :last-child > [data-slot='dialog-footer']),
+  :root[data-shell='portal']
+    [data-slot='dialog-content']
+    > div:not([class~='p-0'])
+    > :last-child:has(> [data-slot='dialog-footer']) {
     display: flex;
     flex: 1 1 auto;
     flex-direction: column;
@@ -285,7 +317,12 @@
     min-width: 0;
   }
 
-  :root[data-shell='portal'] [data-slot='dialog-content'] > div:not([class~='p-0']) > [data-slot='dialog-footer'] {
+  :root[data-shell='portal'] [data-slot='dialog-content'] > div:not([class~='p-0']) > [data-slot='dialog-footer'],
+  :root[data-shell='portal']
+    [data-slot='dialog-content']
+    > div:not([class~='p-0'])
+    > :last-child
+    > [data-slot='dialog-footer'] {
     margin-top: auto;
   }
 

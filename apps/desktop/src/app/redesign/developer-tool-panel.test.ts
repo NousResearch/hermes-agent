@@ -2,10 +2,24 @@ import { afterEach, expect, it } from 'vitest'
 
 import { DEFAULT_TREE } from '@/app/contrib/layout-presets'
 import { allPaneIds, findGroupOfPane, group, split } from '@/components/pane-shell/tree/model'
-import { $collapsedTreeSides, $hiddenTreePanes, $layoutTree, $narrowViewport, $userPlacedPanes, isPaneVisible, revealTreePane } from '@/components/pane-shell/tree/store'
+import {
+  $collapsedTreeSides,
+  $hiddenTreePanes,
+  $layoutTree,
+  $narrowViewport,
+  $userPlacedPanes,
+  isPaneVisible,
+  revealTreePane
+} from '@/components/pane-shell/tree/store'
+import { $paneStates, setPaneWidthOverride } from '@/store/panes'
 import { $shellChoice } from '@/store/shell-variant'
 
-import { hideDeveloperToolPanel, prepareDeveloperToolPanel } from './developer-tool-panel'
+import {
+  $developerToolPanelWidth,
+  hideDeveloperToolPanel,
+  installDeveloperToolPanelWidth,
+  prepareDeveloperToolPanel
+} from './developer-tool-panel'
 
 afterEach(() => {
   $layoutTree.set(null)
@@ -65,4 +79,26 @@ it.each(['classic', 'narrow'])('keeps the %s layout unchanged', mode => {
   prepareDeveloperToolPanel('terminal')
   expect($layoutTree.get()).toBe(DEFAULT_TREE)
   expect(hideDeveloperToolPanel('terminal')).toBe(false)
+})
+
+it('folds a resize of whichever tool shows into the one width every tool panel shares', () => {
+  $shellChoice.set(true)
+  const root = document.createElement('div')
+  const stop = installDeveloperToolPanelWidth(root)
+
+  setPaneWidthOverride('terminal', 480)
+
+  expect($developerToolPanelWidth.get()).toBe(480)
+  expect($paneStates.get().terminal?.widthOverride).toBeUndefined()
+  expect(root.style.getPropertyValue('--developer-tool-panel-width')).toBe('480px')
+
+  // Classic keeps sizing each pane on its own.
+  $shellChoice.set(false)
+  setPaneWidthOverride('files', 300)
+  expect($paneStates.get().files?.widthOverride).toBe(300)
+  expect($developerToolPanelWidth.get()).toBe(480)
+
+  stop()
+  setPaneWidthOverride('files', undefined)
+  $developerToolPanelWidth.set(null)
 })

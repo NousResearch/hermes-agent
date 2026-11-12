@@ -15,6 +15,7 @@ import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { ErrorBanner } from '@/components/ui/error-state'
 import { Input } from '@/components/ui/input'
+import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
 import { ResponsiveTabs } from '@/components/ui/tab-dropdown'
 import { Tip } from '@/components/ui/tooltip'
@@ -809,7 +810,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       searchValue={query}
     >
       {!platforms ? (
-        <PageLoader label={m.loading} />
+        <MessagingLoading label={m.loading} />
       ) : (
         <div className="flex h-full min-h-0 flex-col">
           {/* Which profile's gateway this page configures (hidden for
@@ -840,6 +841,37 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
 
       {revokeDialog}
     </PageSearchShell>
+  )
+}
+
+const SKELETON_PLATFORMS = 6
+
+/** The redesign waits in the list's own shape; classic keeps its spinner. */
+function MessagingLoading({ label }: { label: string }) {
+  return usePortalShell() ? <MessagingSkeleton label={label} /> : <PageLoader label={label} />
+}
+
+/** Messaging while its platforms load (redesign): the loaded list's 36px rows on the token surfaces,
+ *  beside the empty detail, so the list lands where its placeholder stood. */
+function MessagingSkeleton({ label }: { label: string }) {
+  return (
+    <div aria-busy="true" aria-label={label} className="flex h-full min-h-0 flex-col" role="status">
+      <div className="min-h-0 flex-1">
+        <MasterDetail>
+          <ListColumn>
+            <ul aria-hidden className="space-y-1">
+              {Array.from({ length: SKELETON_PLATFORMS }, (_, index) => (
+                <li className="flex h-9 items-center gap-2 px-2" key={index}>
+                  <Skeleton className="size-6 shrink-0" />
+                  <Skeleton className="h-3.5 w-24" />
+                </li>
+              ))}
+            </ul>
+          </ListColumn>
+          <DetailColumn>{null}</DetailColumn>
+        </MasterDetail>
+      </div>
+    </div>
   )
 }
 

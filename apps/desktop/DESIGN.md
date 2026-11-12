@@ -398,6 +398,13 @@ controls below. Browser touch targets keep their larger accessibility sizing.
 Gateway menus distinguish connection from inference
 readiness. Simple mode keeps reconnect and lazy recent activity; Advanced adds
 system/restart/logs, with 28px icon controls and destructive restart styling at rest.
+A routed page waits for its code inside its own frame (`overlays/page-frame-fallback.tsx`: the
+page's panel and a header at the PageHeader geometry), never an empty window; rail buttons warm their
+page on hover and focus. A redesign confirm has one anatomy: no corner X, a bordered Cancel beside the
+solid action, and a destructive confirm opens on Cancel. The developer tool panel (Files, Terminal,
+Review, Browser) has one user-resizable width shared by every tool, never under a tool's own minimum.
+The rail's Settings menu lists the Settings page's destinations, in its order and under its names
+(`settings/redesign-navigation.ts`), with Interface mode and Documentation below a separator.
 
 ## Portal design language (the redesign)
 
@@ -553,6 +560,7 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--portal-surface-card` | `var(--portal-raw-ink-2)` | ″ | Cards of grouped rows (1036:7576, 1038:7803). |
 | `--portal-surface-selected` | `var(--portal-raw-ink-5)` | ″ | Neutral selection: list rows, nav rows (1036:7409), with --portal-stroke-selected. |
 | `--portal-surface-row-hover` | `var(--portal-raw-ink-3)` | ″ | A row under the pointer on a panel, the stage or a card: one ink step over its rest. |
+| `--portal-surface-skeleton` | `var(--portal-raw-ink-8)` | ″ | Content still loading (skeleton bars, tiles and rows): one quiet ink block on any surface. |
 | `--portal-surface-chrome` | `var(--portal-raw-ink-2)` | ″ | 30px chrome buttons and the session pill (906:19469): rest, hover, pressed. |
 | `--portal-surface-chrome-hover` | `var(--portal-raw-ink-5)` | ″ |  |
 | `--portal-surface-chrome-pressed` | `var(--portal-raw-ink-10)` | ″ |  |
@@ -611,6 +619,7 @@ The tables below are generated from the CSS; do not edit them by hand.
 |---|---|---|---|
 | `--portal-font-display` | `'Oswald', var(--dt-font-sans)` | ″ | H1, panel, dialog and drawer titles, the wordmark. |
 | `--portal-font-body` | `'Mona Sans', var(--dt-font-sans)` | ″ | Every other line of UI. |
+| `--portal-font-mono` | `var(--dt-font-mono)` | ″ | Paths, ids, code and an agent's own words (the SOUL preview, 877:4245): the theme's mono, the bundled JetBrains Mono standing in for Aeonik Fono. |
 | `--portal-type-display-xl-size` | `2.5rem` | ″ | Page H1, agent name (1036:7378). |
 | `--portal-type-display-lg-size` | `1.875rem` | ″ | Panel title, sub-page H2, dialog and drawer title (1036:7476, 1038:7797). |
 | `--portal-type-section-size` | `0.9375rem` | ″ | Section heading, stat value (1036:7481). |
@@ -632,6 +641,7 @@ The tables below are generated from the CSS; do not edit them by hand.
 |---|---|---|---|
 | `--portal-rail-width` | `3.75rem` | ″ | The global rail and the developer rail (1036:7202). |
 | `--portal-rail-reserve` | `0px` | ″ | What the rail takes from the layout: its width, none on compact, where it rides the sheet. |
+| `--portal-rail-popover-offset` | `calc( (var(--portal-rail-width) - var(--portal-row-chrome)) / 2 + var(--portal-space-tight) )` | ″ | A rail menu or popover opens one tight gap past the rail's edge, whatever the rail button's size (30px, 44px on touch): the distance from the button's end to the rail's, plus that gap. |
 | `--portal-breakpoint-medium` | `640px` | ″ | The responsive model (app/redesign/breakpoints.ts, DESIGN.md › Responsive): compact below the medium breakpoint, medium below the wide one, wide from there. A custom property cannot feed a media query, so every redesign query repeats the literal (max-width: 639.98px / 1023.98px) with a comment naming the class; these two document it. |
 | `--portal-breakpoint-wide` | `1024px` | ″ |  |
 | `--portal-sheet-width` | `min(20rem, 100vw - 3.5rem)` | ″ | Below wide the chat sidebar and page panels are sheets over the stage: the panel's width, leaving a 56px strip of scrim to tap. |
@@ -651,6 +661,7 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--portal-column-catalog` | `61.25rem` | ″ |  |
 | `--portal-column-conversation` | `40rem` | ″ |  |
 | `--portal-column-landing` | `30rem` | ″ | The landing's composer before the first message (906). |
+| `--portal-tool-panel-width` | `26.25rem` | ″ | The developer tool panel's default width (Files, Terminal, Review and Browser share one width, redesign/developer-tool-panel.ts): room for an 80-column terminal beside the conversation. |
 | `--page-content-inset` | `1rem` | ″ | Full-width pages without a panel pad their catalog column by this much on each side. |
 | `--page-content-max-width` | `calc(var(--portal-column-catalog) + 2 * var(--page-content-inset))` | ″ |  |
 | `--portal-page-end-space` | `2rem` | ″ | The space a page scroller keeps below its last row, under its bottom fade. |
@@ -748,7 +759,7 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--titlebar-control-height` | `var(--portal-row-chrome)` | ″ |  |
 | `--titlebar-icon-size` | `1rem` | ″ |  |
 | `--titlebar-control-gap` | `0.625rem` | ″ |  |
-| `--ui-green` | `var(--portal-status-online)` | ″ |  |
+| `--ui-green` | `var(--portal-status-online)` | ″ | One status family: shared components' success inks read the redesign's online green. |
 
 #### Chat sidebar (`sidebar.css`): the Variation 1 variant's own roles
 

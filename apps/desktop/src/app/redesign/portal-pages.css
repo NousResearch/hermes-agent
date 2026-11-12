@@ -6,10 +6,70 @@
    left-anchored like Capabilities and Library rather than centred in the stage. Agents and
    Schedules lay out their own panel frame. The margin comes out of the column's width, never on top
    of it, so a narrow stage never scrolls sideways. */
-:root[data-shell='portal'] [data-page-surface] .management-panel:not(.agent-management, .cron-page) {
+:root[data-shell='portal']
+  [data-page-surface]
+  .management-panel:not(.agent-management, .cron-page, .page-frame-fallback) {
   --management-panel-lead: max(0px, calc(var(--page-stage-inset) - var(--page-content-inset)));
   width: calc(100% - var(--management-panel-lead));
   margin-inline: var(--management-panel-lead) 0;
+}
+
+/* ── A page while its code loads (overlays/page-frame-fallback.tsx) ──
+   The frame every page shares: the form column at the stage inset, or past the page's sidebar panel
+   at the frame inset (as Agents, Settings and Schedules lay theirs), so the loaded page's header
+   lands exactly where the placeholder's stood. */
+[data-page-surface] .management-panel.page-frame-fallback {
+  width: 100%;
+  max-width: calc(var(--page-stage-inset) + var(--page-form-max-width) + var(--page-panel-inset));
+  margin-inline: 0;
+  padding: var(--portal-page-top) var(--page-panel-inset) 0 var(--page-stage-inset);
+}
+
+@media (min-width: 1024px) {
+  /* Wide (breakpoints.ts): below it the panel is a sheet over the page, not a column beside it. */
+  [data-page-surface] .management-panel.page-frame-fallback:has(> .page-sidebar-panel) {
+    position: relative;
+    max-width: calc(
+      var(--page-nav-width) + var(--page-panel-inset) + var(--page-form-max-width) + var(--page-panel-inset)
+    );
+    padding-inline-start: calc(var(--page-nav-width) + var(--page-panel-inset));
+  }
+}
+
+/* Loading placeholders, on every redesigned surface: the token block, never the classic accent. */
+:root[data-shell='portal'] [data-slot='skeleton'],
+.page-frame-skeleton-title,
+.page-frame-skeleton-line,
+.page-frame-skeleton-tile {
+  border-radius: var(--portal-radius-chip);
+  background-color: var(--portal-surface-skeleton);
+}
+
+.page-frame-skeleton-title {
+  width: 12rem;
+  max-width: 100%;
+  height: 1.75rem;
+  translate: none;
+  vertical-align: middle;
+}
+
+.page-frame-skeleton-line {
+  width: 20rem;
+  max-width: 100%;
+  height: 0.625rem;
+  translate: none;
+}
+
+/* The agent avatar's 56px tile (agent-management-avatar). */
+.page-frame-skeleton-tile {
+  width: 3.5rem;
+  height: 3.5rem;
+  border-radius: var(--portal-radius-card);
+}
+
+/* The tab bar's rail at its loaded height, tabs still to come. */
+.page-frame-skeleton-tabs {
+  height: var(--portal-page-tab-height);
 }
 
 /* ── Settings page heading (856:3405) ──

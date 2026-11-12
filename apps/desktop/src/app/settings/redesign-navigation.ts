@@ -1,6 +1,48 @@
+import type { Translations } from '@/i18n'
+
 import type { OverlayNavGroup, OverlayNavLink } from '../overlays/overlay-split-layout'
 
+import { SECTIONS } from './constants'
+import type { RedesignNavigationCopy } from './redesign-navigation-copy'
 import type { SettingsView } from './types'
+
+/** The redesigned global Settings destinations, in the Figma rail's order (856:1834). The page's
+ *  column and the global rail's Settings menu both list exactly these, under the same names. */
+export const REDESIGN_SETTINGS_SECTIONS = [
+  'billing',
+  'config:appearance',
+  'notifications',
+  'keybinds',
+  'gateway',
+  'sessions',
+  'about',
+  'config:advanced'
+] as const
+
+export type RedesignSettingsSection = (typeof REDESIGN_SETTINGS_SECTIONS)[number]
+
+/** Classic destinations a redesigned one gathers under it. */
+const RELATED_DESTINATIONS: Partial<Record<RedesignSettingsSection, string[]>> = { gateway: ['web-access'] }
+
+const configSectionLabel = (t: Translations, id: string) =>
+  t.settings.sections[id] ?? SECTIONS.find(section => section.id === id)?.label ?? id
+
+/** The destinations' names, one set for the column and the menu. */
+export function redesignSettingsLabels(
+  t: Translations,
+  copy: RedesignNavigationCopy
+): Record<RedesignSettingsSection, string> {
+  return {
+    billing: copy.accountPlan,
+    'config:appearance': configSectionLabel(t, 'appearance'),
+    notifications: t.settings.nav.notifications,
+    keybinds: t.settings.nav.keybinds,
+    gateway: copy.gateways,
+    sessions: copy.sessions,
+    about: copy.about,
+    'config:advanced': configSectionLabel(t, 'advanced')
+  }
+}
 
 function flattenSubpages(links: OverlayNavLink[]): OverlayNavLink[] {
   return links.flatMap(link => [
@@ -50,14 +92,13 @@ export function redesignSettingsNavigation(
     })
   }
 
-  append('billing')
-  append('config:appearance')
-  append('notifications')
-  append('keybinds')
-  append('gateway', ['web-access'])
-  append('sessions')
-  append('about')
+  for (const id of REDESIGN_SETTINGS_SECTIONS) {
+    if (id !== 'config:advanced') {
+      append(id, RELATED_DESTINATIONS[id])
+    }
+  }
 
+  // Advanced closes the column and gathers every destination the rail does not draw.
   const advanced = remaining.get('config:advanced')
   remaining.delete('config:advanced')
 
@@ -74,6 +115,7 @@ export function redesignSettingsNavigation(
       ...advanced,
       active: advanced.active || children.some(child => child.active),
       children,
+      label: labels['config:advanced'] ?? advanced.label,
       // On the column's 40px rhythm: Figma's items stack with no gap (856:2764).
       gapBefore: false
     })

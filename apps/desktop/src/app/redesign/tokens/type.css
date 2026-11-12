@@ -23,6 +23,9 @@
   --portal-font-display: 'Oswald', var(--dt-font-sans);
   /* Every other line of UI. */
   --portal-font-body: 'Mona Sans', var(--dt-font-sans);
+  /* Paths, ids, code and an agent's own words (the SOUL preview, 877:4245): the theme's mono, the
+     bundled JetBrains Mono standing in for Aeonik Fono. */
+  --portal-font-mono: var(--dt-font-mono);
 
   /* Page H1, agent name (1036:7378). */
   --portal-type-display-xl-size: 2.5rem;

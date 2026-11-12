@@ -13,6 +13,7 @@ import {
 } from '@/components/ui/dialog'
 import { useI18n } from '@/i18n'
 import { AlertTriangle } from '@/lib/icons'
+import { usePortalShell } from '@/store/shell-variant'
 
 interface ConfirmDialogProps {
   open: boolean
@@ -42,7 +43,9 @@ interface ConfirmSecondaryAction {
 // Shared confirmation dialog: opens focused on Confirm, Enter confirms (from
 // anywhere in the dialog), Esc/Cancel/backdrop dismiss. Owns the pending → done
 // → close beat and inline error, so callers pass only an async onConfirm that
-// does the work.
+// does the work. The redesign has one confirm anatomy: no corner X, a bordered
+// Cancel beside the solid action, and a destructive confirm opens on Cancel,
+// where Enter answers the focused button, so a stray Enter never destroys.
 export function ConfirmDialog({
   open,
   onClose,
@@ -59,7 +62,10 @@ export function ConfirmDialog({
   secondaryAction
 }: ConfirmDialogProps) {
   const { t } = useI18n()
+  const portal = usePortalShell()
+  const safeDefault = portal && destructive
   const confirmRef = useRef<HTMLButtonElement>(null)
+  const cancelRef = useRef<HTMLButtonElement>(null)
   const closeTimerRef = useRef<null | number>(null)
   const unmountedRef = useRef(false)
   const [status, setStatus] = useState<'done' | 'idle' | 'saving'>('idle')
@@ -146,7 +152,7 @@ export function ConfirmDialog({
         onKeyDown={event => {
           // Enter/Space confirm regardless of which button holds focus
           // (preventDefault stops a focused Cancel from swallowing it).
-          if ((event.key === 'Enter' || event.key === ' ') && !busy) {
+          if ((event.key === 'Enter' || event.key === ' ') && !busy && !safeDefault) {
             event.preventDefault()
             void run()
           }
@@ -157,8 +163,10 @@ export function ConfirmDialog({
           // sidebar row) and Enter re-triggers that instead. Radix's default
           // would take the X — confirm is the button Enter maps to.
           event.preventDefault()
-          confirmRef.current?.focus()
+          const target = safeDefault ? cancelRef : confirmRef
+          target.current?.focus()
         }}
+        showCloseButton={!portal}
       >
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
@@ -176,7 +184,13 @@ export function ConfirmDialog({
         )}
 
         <DialogFooter>
-          <Button disabled={busy} onClick={onClose} type="button" variant="ghost">
+          <Button
+            disabled={busy}
+            onClick={onClose}
+            ref={cancelRef}
+            type="button"
+            variant={portal ? 'secondary' : 'ghost'}
+          >
             {resolvedCancelLabel}
           </Button>
           {secondaryAction && (

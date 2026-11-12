@@ -111,6 +111,7 @@ import { useHudHandoff } from '../hud/handoff'
 import { ModelPickerOverlay } from '../model-picker-overlay'
 import { ModelVisibilityOverlay } from '../model-visibility-overlay'
 import { mainChatOccupied, openSession, openSessionFromPicker } from '../open-session'
+import { AgentsFrameFallback, PageFrameFallback, SettingsFrameFallback } from '../overlays/page-frame-fallback'
 import {
   AgentsView,
   CommandCenterView,
@@ -1366,7 +1367,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
         <FindBar />
 
         {settingsOpen && (
-          <Suspense fallback={null}>
+          <Suspense fallback={<SettingsFrameFallback onClose={closeOverlayToPreviousRoute} />}>
             <SettingsView
               gateway={gateway}
               onClose={closeOverlayToPreviousRoute}
@@ -1397,7 +1398,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
         )}
 
         {commandCenterOpen && (
-          <Suspense fallback={null}>
+          <Suspense fallback={<PageFrameFallback frame="page" onClose={closeOverlayToPreviousRoute} />}>
             <CommandCenterView
               initialSection={commandCenterInitialSection}
               onClose={closeOverlayToPreviousRoute}
@@ -1410,31 +1411,31 @@ export function ContribWiring({ children }: { children: ReactNode }) {
         )}
 
         {agentsOpen && (
-          <Suspense fallback={null}>
+          <Suspense fallback={<PageFrameFallback frame="page" onClose={closeOverlayToPreviousRoute} />}>
             <AgentsView onClose={closeOverlayToPreviousRoute} />
           </Suspense>
         )}
 
         {cronOpen && (
-          <Suspense fallback={null}>
+          <Suspense fallback={<PageFrameFallback frame="schedules" onClose={closeOverlayToPreviousRoute} />}>
             <CronView onClose={closeOverlayToPreviousRoute} onOpenSession={openStoredSession} />
           </Suspense>
         )}
 
         {webhooksOpen && (
-          <Suspense fallback={null}>
+          <Suspense fallback={<PageFrameFallback frame="page" onClose={closeOverlayToPreviousRoute} />}>
             <WebhooksView onClose={closeOverlayToPreviousRoute} />
           </Suspense>
         )}
 
         {profilesOpen && (
-          <Suspense fallback={null}>
+          <Suspense fallback={<AgentsFrameFallback onClose={closeOverlayToPreviousRoute} />}>
             <ProfilesView onClose={closeOverlayToPreviousRoute} />
           </Suspense>
         )}
 
         {starmapOpen && (
-          <Suspense fallback={null}>
+          <Suspense fallback={<PageFrameFallback frame="page" onClose={closeOverlayToPreviousRoute} />}>
             <StarmapView onClose={closeOverlayToPreviousRoute} />
           </Suspense>
         )}

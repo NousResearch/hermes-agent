@@ -5,6 +5,7 @@ import { PageLoader } from '@/components/page-loader'
 import { lazyView } from '@/lib/lazy-view'
 import { usePortalShell } from '@/store/shell-variant'
 
+import { PageFrameFallback } from '../overlays/page-frame-fallback'
 import { SettingsView as ClassicSettingsView } from '../settings'
 import { type ConfigSettingsDraft, ConfigSettingsDraftContext } from '../settings/config-draft'
 import type { SettingsPageProps } from '../settings/types'
@@ -56,7 +57,9 @@ function AgentSettingsRoute({ connectionId, profile, ...props }: AgentSettingsRo
   return (
     <ConfigSettingsDraftContext.Provider value={configDraft}>
       <AgentInstructionsDraftContext.Provider value={instructionsDraft}>
-        <Suspense fallback={<PageLoader />}>
+        <Suspense
+          fallback={props.classic ? <PageLoader /> : <PageFrameFallback frame="agent" onClose={props.onClose} />}
+        >
           <AgentSettingsView {...props} owner={owner} />
         </Suspense>
       </AgentInstructionsDraftContext.Provider>

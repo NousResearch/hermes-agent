@@ -236,7 +236,12 @@ function useBandMenuTool(
   return {
     expanded: navSheet ? openSheet === 'nav' : leftEdge.expanded,
     hidden,
-    icon: <TitlebarIcon name={compact ? 'menu' : 'layout-sidebar-left'} />,
+    // Folded, the redesign's button shows the glyph of what it does: expand, not collapse.
+    icon: (
+      <TitlebarIcon
+        name={compact ? 'menu' : portal && !leftEdge.open ? 'layout-sidebar-left-off' : 'layout-sidebar-left'}
+      />
+    ),
     onSelect: () => {
       triggerHaptic('tap')
 

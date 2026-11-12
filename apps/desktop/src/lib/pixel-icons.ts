@@ -300,6 +300,8 @@ export const CODICON_PIXEL: Readonly<Record<string, PixelMapping>> = {
   layout: 'layout',
   'layout-menubar': 'layout',
   'layout-sidebar-left': 'arrow-bar-left',
+  // Show a folded sidebar: the collapse glyph's mirror (906 collapsed band).
+  'layout-sidebar-left-off': 'arrow-bar-right',
   'layout-sidebar-right': 'album', // right-panel toggle (906 right rail, shell.md §9)
   'layout-statusbar': 'dock',
   lightbulb: 'lightbulb',
@@ -417,6 +419,7 @@ export const RTL_MIRRORED: ReadonlySet<PixelIconName> = new Set<PixelIconName>([
   'arrow-left',
   'arrow-right',
   'arrow-bar-left',
+  'arrow-bar-right',
   'arrow-right-box',
   'chevron-left',
   'chevron-right',

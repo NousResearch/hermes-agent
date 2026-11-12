@@ -37,6 +37,7 @@ import { gatewayLabel } from '../chat/sidebar/gateway-group-model'
 import { useSimplifiedAgents } from '../chat/sidebar/use-simplified-agents'
 import { useHermesConfigRecord } from '../hooks/use-config-record'
 import { openSession } from '../open-session'
+import { PageFrameFallback } from '../overlays/page-frame-fallback'
 import { Panel, PanelHeader } from '../overlays/panel'
 import { PageHeader, PageTabs } from '../redesign/page-header'
 import { PROFILES_ROUTE, SETTINGS_ROUTE } from '../routes'
@@ -155,7 +156,7 @@ export function AgentSettingsView(props: AgentSettingsViewProps) {
   }
 
   if (!scopeReady) {
-    return <PageLoader />
+    return props.classic ? <PageLoader /> : <PageFrameFallback frame="agent" onClose={props.onClose} />
   }
 
   async function onProfileRenamed(name: string) {
@@ -557,7 +558,7 @@ function AgentSettingsContent({
                 onSettings={settings}
                 value={value}
               />
-              <Section title={c.capabilities}>
+              <Section onOpen={() => openPanel('capabilities')} title={c.capabilities}>
                 <SettingRow
                   detail={pending(
                     tools.isError,
@@ -594,14 +595,14 @@ function AgentSettingsContent({
               <AgentChannels messaging={messaging} onOpen={() => openPanel('messaging')}>
                 <SettingRow detail={value('tts.provider')} onClick={() => settings('voice')} title={c.voice} />
               </AgentChannels>
-              <Section title={c.approvals}>
+              <Section onOpen={() => settings('safety')} title={c.approvals}>
                 <SettingRow
                   detail={value('approvals.mode')}
                   onClick={() => settings('safety', 'approvals')}
                   title={c.approvalMode}
                 />
               </Section>
-              <Section title={c.recent}>
+              <Section onOpen={() => openPanel('history')} title={c.recent}>
                 {sessionRows.length ? sessionRows : emptySessions}
                 <div className="agent-overview-footer">
                   <Button onClick={() => openPanel('history')} variant="textStrong">
@@ -716,7 +717,7 @@ function AgentChannels({ messaging, onOpen, children }: AgentChannelsProps) {
   const c = useAgentSettingsCopy()
 
   return (
-    <Section title={c.channels}>
+    <Section onOpen={onOpen} title={c.channels}>
       {(messaging.data?.platforms ?? [])
         .filter(platform => platform.id === 'telegram' || platform.id === 'discord' || platform.configured)
         .map(platform => (
@@ -733,7 +734,9 @@ function AgentChannels({ messaging, onOpen, children }: AgentChannelsProps) {
               ) : platform.configured ? (
                 c.configured
               ) : (
-                c.disconnected
+                <span className="agent-channel-status" data-tone="disconnected">
+                  {c.disconnected}
+                </span>
               )
             }
             key={platform.id}
@@ -761,7 +764,7 @@ function AgentBehavior({ config, model, value, onSettings }: AgentBehaviorProps)
   const fallbacks = getNested(config.data ?? {}, 'fallback_providers')
 
   return (
-    <Section title={c.behavior}>
+    <Section onOpen={() => onSettings('model')} title={c.behavior}>
       <SettingRow detail={model} onClick={() => onSettings('model', 'main')} title={c.model} />
       <SettingRow
         detail={

@@ -3131,8 +3131,6 @@ export const en: Translations = {
       custom: 'Custom',
       subtitle: 'Ready-made automations',
       dialogDesc: 'Fill in the details and schedule it.',
-      scheduleIt: 'Schedule it',
-      scheduling: 'Scheduling...',
       scheduled: 'Blueprint scheduled',
       loading: 'Loading blueprints...',
       failedLoad: 'Failed to load blueprints',

@@ -429,3 +429,32 @@
 :root[data-shell='portal'] .thread-timeline-tick[aria-current='location'] [data-slot='timeline-bar'] {
   background: var(--ui-text-secondary);
 }
+
+/* ── Touch (DESIGN.md › Responsive) ──
+   No hover, so a message's actions always show, as one row of 44px ghost targets at the message's
+   end edge: Copy and More under a reply, Edit and then Restore (or Stop) under a prompt. The prompt's
+   Restore leaves its desktop seat beside the bubble for the row's reserved end slot
+   (TouchUserBubble), and the reply's plates drop their fill so both rows read the same. */
+@media (hover: none), (pointer: coarse) {
+  html[data-hermes-desktop-host='browser'][data-shell='portal'] [data-slot='aui_user-bubble-tail'] {
+    inset: auto 0 0 auto;
+    height: auto;
+  }
+
+  html[data-hermes-desktop-host='browser'][data-shell='portal']
+    #root
+    [data-slot='aui_thread-content']
+    [data-slot='aui_msg-actions']
+    button[data-size][data-variant] {
+    background: transparent;
+  }
+
+  html[data-hermes-desktop-host='browser'][data-shell='portal']
+    #root
+    [data-slot='aui_thread-content']
+    :is([data-slot='aui_msg-actions'], [data-slot='aui_user-bubble-actions'])
+    button:active {
+    background: var(--portal-surface-chrome-pressed);
+    color: var(--ui-text-primary);
+  }
+}

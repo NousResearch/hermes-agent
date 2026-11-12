@@ -2,7 +2,6 @@ import './schedules.css'
 
 import type { ReactNode } from 'react'
 
-import { PageLoader } from '@/components/page-loader'
 import { ActionsContextMenu } from '@/components/ui/actions-menu'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -11,8 +10,10 @@ import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import type { AutomationBlueprint, CronJob } from '@/types/cron'
 
+import { PageHeaderSkeleton } from '../overlays/page-header-skeleton'
 import { PageSidebarCaption, PageSidebarList, PageSidebarPanel, PageSidebarRow } from '../overlays/page-sidebar'
 import { type PanelMenuItem, PanelRowMenu, renderPanelMenuItems } from '../overlays/panel'
+import { SettingsCardSkeleton } from '../settings/settings-card'
 
 import { CronEmptyPage, CronListEmpty, CronPageHeader } from './empty-page'
 import { jobState, jobTitle, STATE_DOT } from './job-state'
@@ -145,10 +146,12 @@ interface CronStageProps {
 export function CronStage({ blueprints, children, loading, onCreate, onStartFrom, totalCount }: CronStageProps) {
   const { t } = useI18n()
 
+  // Loading: the stage's own header and a list card at their loaded geometry, on the page's surfaces.
   if (loading) {
     return (
       <div className="cron-stage">
-        <PageLoader label={t.cron.loading} />
+        <PageHeaderSkeleton />
+        <SettingsCardSkeleton rows={3} />
       </div>
     )
   }

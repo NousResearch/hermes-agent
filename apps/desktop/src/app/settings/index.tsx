@@ -68,7 +68,7 @@ import {
 } from './plugin-settings'
 import { SettingsBreadcrumbContext } from './primitives'
 import { PROVIDER_VIEWS, ProvidersSettings, type ProviderView } from './providers-settings'
-import { settingsNavigationPresentation } from './redesign-navigation'
+import { redesignSettingsLabels, settingsNavigationPresentation } from './redesign-navigation'
 import { redesignNavigationCopy } from './redesign-navigation-copy'
 import { SessionsSettings } from './sessions-settings'
 import { SettingsSubpageHeader } from './subpage-navigation'
@@ -523,12 +523,13 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
     groups: displayedGroups,
     headerGroup,
     headerChild
-  } = settingsNavigationPresentation(navGroups, simplified, activeView, subpage, {
-    billing: redesignCopy.accountPlan,
-    gateway: redesignCopy.gateways,
-    sessions: redesignCopy.sessions,
-    about: redesignCopy.about
-  })
+  } = settingsNavigationPresentation(
+    navGroups,
+    simplified,
+    activeView,
+    subpage,
+    redesignSettingsLabels(t, redesignCopy)
+  )
 
   // The redesign draws these as labelled rows on Advanced (config-transfer.tsx); classic keeps its icons.
   const navFooter = simplified ? undefined : (

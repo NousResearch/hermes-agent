@@ -487,15 +487,44 @@
     min-width: var(--portal-touch-target);
   }
 
-  html[data-hermes-desktop-host='browser'][data-shell='portal'] :is([data-slot='switch'], [data-slot='checkbox']) {
+  /* Controls whose visual is smaller than the target on either axis: a tool run's summary row, the
+     sidebar's agent rows and machine status chip, the catalog carousel's dots. */
+  html[data-hermes-desktop-host='browser'][data-shell='portal']
+    :is(
+      [data-slot='switch'],
+      [data-slot='checkbox'],
+      [data-slot='disclosure-row-toggle'],
+      .portal-agent-chat,
+      .portal-machine-status,
+      .catalog-featured-dot
+    ) {
     position: relative;
   }
 
   html[data-hermes-desktop-host='browser'][data-shell='portal']
-    :is([data-slot='switch'], [data-slot='checkbox'])::after {
+    :is(
+      [data-slot='switch'],
+      [data-slot='checkbox'],
+      [data-slot='disclosure-row-toggle'],
+      .portal-agent-chat,
+      .portal-machine-status,
+      .catalog-featured-dot
+    )::after {
     content: '';
     position: absolute;
     inset: min(0px, calc((100% - var(--portal-touch-target)) / 2));
+  }
+
+  /* The status chip clips its label, which would clip its hit area too: the label truncates itself. */
+  html[data-hermes-desktop-host='browser'][data-shell='portal'] .portal-machine-status {
+    overflow: visible;
+  }
+
+  html[data-hermes-desktop-host='browser'][data-shell='portal'] .portal-machine-status > span:last-child {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   /* iOS Safari zooms into any focused field under 16px and stays zoomed. styles.css floors classic's
@@ -511,4 +540,20 @@
   html[data-hermes-desktop-host='browser'][data-shell='portal'] #root [data-slot='composer-rich-input'] {
     font-size: max(var(--portal-type-field-touch-min), var(--conversation-text-font-size));
   }
+}
+
+/* ── Status dots ──
+   One status family in the redesign (tokens/color.css: online, pending, error): every StatusDot reads
+   it, whatever classic tint its caller passed, so "connected" is the same green on the sidebar chip,
+   the gateway popover and every page. */
+:root[data-shell='portal'] [data-slot='status-dot'][data-tone='good'] {
+  background-color: var(--portal-status-online);
+}
+
+:root[data-shell='portal'] [data-slot='status-dot'][data-tone='warn'] {
+  background-color: var(--portal-status-pending);
+}
+
+:root[data-shell='portal'] [data-slot='status-dot'][data-tone='bad'] {
+  background-color: var(--portal-status-error-ink);
 }

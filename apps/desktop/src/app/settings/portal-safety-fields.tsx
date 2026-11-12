@@ -86,7 +86,9 @@ export function PortalSafetyFields({
                   type="radio"
                   value={mode}
                 />
-                <Codicon className="portal-safety-icon" name={MODE_ICONS[mode]} />
+                <span aria-hidden className="portal-safety-icon">
+                  <Codicon name={MODE_ICONS[mode]} />
+                </span>
                 <span className="portal-safety-mode-title">{copy[mode]}</span>
                 <span className="portal-safety-mode-description">{descriptions[mode]}</span>
               </label>

@@ -249,6 +249,7 @@
 .agent-instructions-preview {
   padding: 16px;
   color: var(--ui-text-secondary);
+  font-family: var(--portal-font-mono);
   font-size: 13px;
   line-height: 18px;
 }

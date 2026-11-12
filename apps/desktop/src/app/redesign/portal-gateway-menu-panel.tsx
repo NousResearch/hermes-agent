@@ -291,7 +291,10 @@ export function PortalGatewayMenuPanel({
       ) : (
         <Button
           aria-expanded={activityOpen}
-          className={cn(GATEWAY_CARD, 'min-h-[2.125rem] w-full justify-between font-medium hover:bg-[color-mix(in_srgb,var(--ui-base)_7%,transparent)]')}
+          className={cn(
+            GATEWAY_CARD,
+            'min-h-[2.125rem] w-full justify-between font-medium hover:bg-[color-mix(in_srgb,var(--ui-base)_7%,transparent)]'
+          )}
           onClick={() => setActivityOpen(value => !value)}
           size="sm"
           variant="ghost"
@@ -466,16 +469,14 @@ function StatusRow({ label, good, waiting, value }: { label: string; good: boole
       <dd
         className={cn(
           'flex items-center gap-2 text-right font-medium',
-          good ? 'text-(--ui-success)' : 'text-(--ui-text-secondary)'
+          good ? 'text-(--portal-status-online)' : 'text-(--ui-text-secondary)'
         )}
       >
         <StatusDot
           className={
-            good
-              ? 'bg-(--ui-success)'
-              : waiting
-                ? undefined
-                : 'bg-transparent ring-1 ring-[color-mix(in_srgb,var(--ui-base)_60%,transparent)] ring-inset'
+            good || waiting
+              ? undefined
+              : 'bg-transparent ring-1 ring-[color-mix(in_srgb,var(--ui-base)_60%,transparent)] ring-inset'
           }
           tone={good ? 'good' : waiting ? 'warn' : 'muted'}
         />

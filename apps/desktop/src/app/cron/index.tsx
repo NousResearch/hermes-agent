@@ -359,7 +359,6 @@ function useCronTriggerController() {
 function useSidebarJobFocus(jobs: readonly CronJob[], open: (jobId: string) => void) {
   const focusJobId = useStore($cronFocusJobId)
 
-   
   useEffect(() => {
     if (!focusJobId) {
       return
@@ -910,7 +909,15 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
 }
 
 /** The detail column with no job selected. */
-function CronDetailEmpty({ noJobs, onCreate, searching }: { noJobs: boolean; onCreate: () => void; searching: boolean }) {
+function CronDetailEmpty({
+  noJobs,
+  onCreate,
+  searching
+}: {
+  noJobs: boolean
+  onCreate: () => void
+  searching: boolean
+}) {
   const c = useI18n().t.cron
 
   // A search with no selected job: search-flavored copy is right.
@@ -1720,7 +1727,7 @@ function CronEditorDialog({
                 {t.common.cancel}
               </Button>
               <Button disabled={saving} type="submit">
-                {saving ? c.blueprints.scheduling : c.blueprints.scheduleIt}
+                {saving ? t.common.saving : c.createAction}
               </Button>
             </DialogFooter>
           </form>

@@ -46,9 +46,10 @@
   min-height: 9.125rem;
 }
 
-/* Static spectrum edge. It is the composer's focus signal too: full Figma
-   strength while the composer holds focus (its resting landing state), dimmed
-   once focus leaves, so no ring outlines the autofocused card. */
+/* Static spectrum edge. It is the composer's focus signal too: Figma's own
+   strength (906:19872 paints it at .8) while the composer holds focus (its
+   resting landing state), dimmed to half that once focus leaves, so no ring
+   outlines the autofocused card. */
 .portal-composer-edge {
   position: absolute;
   z-index: var(--portal-layer-dock);

@@ -60,11 +60,11 @@ it.each([
   expect(screen.getByRole('button', { current: 'page' }).getAttribute('aria-label')).toBe(label)
 })
 
-it('opens account settings without inventing a global profile or changing the active agent', () => {
+it('opens Account & Plan without inventing a global profile or changing the active agent', () => {
   const navigate = mount()
   fireEvent.keyDown(screen.getByRole('button', { name: 'Settings' }), { key: 'Enter' })
-  fireEvent.click(screen.getByRole('menuitem', { name: 'Accounts' }))
-  expect(navigate).toHaveBeenCalledWith(expect.objectContaining({ route: '/settings?tab=providers&pview=accounts' }))
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Account & Plan' }))
+  expect(navigate).toHaveBeenCalledWith(expect.objectContaining({ route: '/settings?tab=billing' }))
 })
 
 it('keeps existing settings sections reachable from footer submenus', async () => {

@@ -3561,8 +3561,6 @@ export const esOverrides = {
       custom: 'Personalizada',
       subtitle: 'Programaciones listas para usar',
       dialogDesc: 'Completa los detalles y prográmala.',
-      scheduleIt: 'Programar',
-      scheduling: 'Programando…',
       scheduled: 'Plantilla programada',
       loading: 'Cargando plantillas…',
       failedLoad: 'No se pudieron cargar las plantillas',

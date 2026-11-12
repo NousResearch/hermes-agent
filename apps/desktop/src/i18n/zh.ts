@@ -3028,8 +3028,6 @@ export const zhOverrides = {
       custom: '自定义',
       subtitle: '现成的计划模板',
       dialogDesc: '填写详细信息并设置自动运行时间。',
-      scheduleIt: '创建计划',
-      scheduling: '正在创建计划...',
       scheduled: '已从蓝图创建计划',
       loading: '正在加载蓝图...',
       failedLoad: '加载蓝图失败',

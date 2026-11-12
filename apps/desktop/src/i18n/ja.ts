@@ -32,7 +32,9 @@ import { simplifiedAgentsCopy } from './simplified-agents'
 
 export const jaOverrides = {
   simplifiedAgents: simplifiedAgentsCopy['ja'],
-  keybinds: { actions: { 'agents.new': '新しいエージェント（エージェントページ）', 'nav.back': '戻る', 'nav.forward': '進む' } },
+  keybinds: {
+    actions: { 'agents.new': '新しいエージェント（エージェントページ）', 'nav.back': '戻る', 'nav.forward': '進む' }
+  },
   gatewayGroupOpen: {
     opening: 'グループチャットを開いています…',
     lookupFailed: 'マシンでこのグループを検索できませんでした。もう一度お試しください。',
@@ -2119,8 +2121,6 @@ export const jaOverrides = {
       custom: 'カスタム',
       subtitle: 'すぐに使えるスケジュール',
       dialogDesc: '詳細を入力してスケジュールします。',
-      scheduleIt: 'スケジュールする',
-      scheduling: 'スケジュール中...',
       scheduled: 'ブレーンプリントをスケジュールしました',
       loading: 'ブレーンプリントを読み込み中...',
       failedLoad: 'ブレーンプリントの読み込みに失敗しました',

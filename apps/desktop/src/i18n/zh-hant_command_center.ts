@@ -599,8 +599,6 @@ export const zhHantCommandCenter = {
       custom: '自訂',
       subtitle: '現成的自動化',
       dialogDesc: '填寫詳細資訊並進行排程。',
-      scheduleIt: '建立排程',
-      scheduling: '正在建立排程...',
       scheduled: '藍圖排程已建立',
       loading: '正在載入藍圖...',
       failedLoad: '載入藍圖失敗',

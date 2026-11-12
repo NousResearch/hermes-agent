@@ -6,6 +6,11 @@
   --portal-rail-width: 3.75rem;
   /* What the rail takes from the layout: its width, none on compact, where it rides the sheet. */
   --portal-rail-reserve: var(--portal-rail-width);
+  /* A rail menu or popover opens one tight gap past the rail's edge, whatever the rail button's size
+     (30px, 44px on touch): the distance from the button's end to the rail's, plus that gap. */
+  --portal-rail-popover-offset: calc(
+    (var(--portal-rail-width) - var(--portal-row-chrome)) / 2 + var(--portal-space-tight)
+  );
 
   /* The responsive model (app/redesign/breakpoints.ts, DESIGN.md › Responsive): compact below the
      medium breakpoint, medium below the wide one, wide from there. A custom property cannot feed a
@@ -52,6 +57,9 @@
   --portal-column-conversation: 40rem;
   /* The landing's composer before the first message (906). */
   --portal-column-landing: 30rem;
+  /* The developer tool panel's default width (Files, Terminal, Review and Browser share one width,
+     redesign/developer-tool-panel.ts): room for an 80-column terminal beside the conversation. */
+  --portal-tool-panel-width: 26.25rem;
   /* Full-width pages without a panel pad their catalog column by this much on each side. */
   --page-content-inset: 1.5rem;
   --page-content-max-width: calc(var(--portal-column-catalog) + 2 * var(--page-content-inset));

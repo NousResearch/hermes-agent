@@ -3573,8 +3573,6 @@ export const deOverrides = {
       custom: 'Benutzerdefiniert',
       subtitle: 'Vorlagen für Zeitpläne',
       dialogDesc: 'Füllen Sie die Details aus und erstellen Sie den Zeitplan.',
-      scheduleIt: 'Zeitplan erstellen',
-      scheduling: 'Zeitplan wird erstellt...',
       scheduled: 'Zeitplan aus Vorlage erstellt',
       loading: 'Blueprints werden geladen...',
       failedLoad: 'Blueprints konnten nicht geladen werden',
@@ -4599,7 +4597,8 @@ export const deOverrides = {
       switchToMachine: 'Zu dieser Maschine wechseln',
       machineSettings: 'Gateways & Maschinen',
       restartTitle: 'Gateway neu starten?',
-      restartBody: 'Laufende Antworten auf dieser Maschine werden abgebrochen. Sie ist in wenigen Sekunden zurück und verbindet sich selbst neu.'
+      restartBody:
+        'Laufende Antworten auf dieser Maschine werden abgebrochen. Sie ist in wenigen Sekunden zurück und verbindet sich selbst neu.'
     },
     approvalMode: {
       title: 'Genehmigungsmodus',

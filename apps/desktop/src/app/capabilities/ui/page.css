@@ -58,10 +58,10 @@
 }
 
 /* Banner (895:14660): brand tint, 36px sparkle tile, text, one action. Figma's stroke is a 0.5px
-   brand line, which reads as a dim navy edge (measured #030390 on the 1x export), not a bright ring:
-   one device-independent hairline of the fill at that strength. */
+   brand line, which reads as a dim navy edge, not a bright ring: one device-independent hairline of
+   the brand at 60%. */
 .agent-capability-banner {
-  --agent-capability-banner-stroke: color-mix(in srgb, var(--portal-brand-fill) 60%, transparent);
+  --agent-capability-banner-stroke: var(--portal-raw-brand-60);
 
   display: flex;
   align-items: center;

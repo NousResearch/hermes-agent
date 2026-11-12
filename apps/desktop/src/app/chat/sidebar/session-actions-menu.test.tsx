@@ -3,10 +3,14 @@ import { atom } from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { refreshProjectTree } from '@/store/projects'
+import { $shellChoice } from '@/store/shell-variant'
 
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  $shellChoice.set(null)
+})
 
 // Exercises the real SessionActionsMenu end-to-end (no DropdownMenu mock) so
 // a broken asChild composition on the kebab trigger fails here — the menu
@@ -288,6 +292,8 @@ describe('SessionActionsMenu', () => {
   })
 
   it('confirms with the Enter key and cancels with Escape', async () => {
+    // Classic opens a confirm on its action; the redesign opens a destructive one on Cancel (below).
+    $shellChoice.set(false)
     const onDelete = vi.fn()
     render(
       <SessionActionsMenu onDelete={onDelete} sessionId="s1" title="My session">
@@ -327,6 +333,30 @@ describe('SessionActionsMenu', () => {
 
     expect(await screen.findByText('Session deleted')).toBeTruthy()
     expect(onDelete).toHaveBeenCalledTimes(1)
+  })
+
+  it('opens the redesign delete confirm on Cancel, so Enter keeps the session', async () => {
+    const onDelete = vi.fn()
+    render(
+      <SessionActionsMenu onDelete={onDelete} sessionId="s1" title="My session">
+        <button aria-label="Session actions" type="button">
+          ⋮
+        </button>
+      </SessionActionsMenu>
+    )
+
+    const trigger = screen.getByRole('button', { name: 'Session actions' })
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+    fireEvent.click(await screen.findByRole('menuitem', { name: /delete/i }))
+
+    const cancel = await screen.findByRole('button', { name: 'Cancel' })
+    // eslint-disable-next-line no-restricted-globals -- asserting real focus requires the live document
+    await waitFor(() => expect(document.activeElement).toBe(cancel))
+    fireEvent.keyDown(cancel, { key: 'Enter' })
+
+    expect(onDelete).not.toHaveBeenCalled()
   })
 
   it('routes the same confirm guard through the context menu', async () => {

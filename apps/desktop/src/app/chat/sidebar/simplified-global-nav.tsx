@@ -12,6 +12,7 @@ import { cn } from '@/lib/utils'
 import { recordIaAction } from '@/store/ia-metrics'
 import { $focusedSessionIsTile, $focusedStoredSessionId } from '@/store/session-focus'
 
+import { preloadRailPage } from '../../page-views'
 import {
   appViewForPath,
   ARTIFACTS_ROUTE,
@@ -122,6 +123,8 @@ export function SimplifiedGlobalNav({ onNavigate, footer }: SimplifiedGlobalNavP
                 recordIaAction(`ia.rail.${item.area}`)
                 onNavigate(item)
               }}
+              onFocus={() => preloadRailPage(item.area)}
+              onPointerEnter={() => preloadRailPage(item.area)}
               size="icon"
               variant="ghost"
             >

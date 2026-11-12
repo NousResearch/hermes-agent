@@ -3580,8 +3580,6 @@ export const frOverrides = {
       custom: 'Personnalisé',
       subtitle: "Automatismes prêts à l'emploi",
       dialogDesc: 'Remplissez les détails et planifiez-les.',
-      scheduleIt: 'Planifiez-le',
-      scheduling: 'Planification...',
       scheduled: 'Planification créée',
       loading: 'Chargement des plans...',
       failedLoad: 'Échec du chargement des plans',
@@ -4607,7 +4605,8 @@ export const frOverrides = {
       switchToMachine: 'Passer à cette machine',
       machineSettings: 'Passerelles et machines',
       restartTitle: 'Redémarrer la passerelle ?',
-      restartBody: 'Les réponses en cours sur cette machine s’arrêtent. Elle revient en quelques secondes et se reconnecte seule.'
+      restartBody:
+        'Les réponses en cours sur cette machine s’arrêtent. Elle revient en quelques secondes et se reconnecte seule.'
     },
     approvalMode: {
       title: "Mode d'approbation",

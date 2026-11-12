@@ -104,7 +104,7 @@ describe('plugin-registered automation blueprints', () => {
     // The dialog's "Start from" select names the plugin next to the title.
     expect(await screen.findByText('· teamtools')).toBeTruthy()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Schedule it' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Create schedule' }))
 
     await waitFor(() =>
       expect(hermes.instantiateAutomationBlueprint).toHaveBeenCalledWith(

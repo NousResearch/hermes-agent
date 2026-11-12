@@ -13,6 +13,7 @@ import type { CSSProperties, ReactElement, PointerEvent as ReactPointerEvent } f
 import { SessionDraftTitle } from '@/app/chat/session-draft-title'
 import { SessionStatusDot } from '@/app/chat/session-status-dot'
 import { PALETTE_AREA, type PaletteContribution, paletteToggle } from '@/app/command-palette/contrib'
+import { developerToolSizing, installDeveloperToolPanelWidth } from '@/app/redesign/developer-tool-panel'
 import { usePortalZoneHeader } from '@/app/redesign/portal-conversation-header'
 import { type StatusbarItem } from '@/app/shell/statusbar-controls'
 import { InlinePreviewDirective } from '@/components/assistant-ui/inline-preview-directive'
@@ -104,6 +105,7 @@ import {
 import { watchSessionPins } from '@/store/session-pin-sync'
 import { $botChatScopes } from '@/store/session-states'
 import { watchUnreadWriteGuard } from '@/store/session-unread-remote'
+import { $portalShell } from '@/store/shell-variant'
 import { $statusbarShown, $statusbarVisible } from '@/store/statusbar-prefs'
 import { $statusbarStripAvailable } from '@/store/statusbar-strip'
 import { isBrowserWindow, isHudWindow } from '@/store/windows'
@@ -248,7 +250,18 @@ registry.registerMany([
       uncloseable: true
     },
     render: renderWorkspacePane
-  },
+  }
+])
+
+// The developer tools (terminal, files, review). Their sizing depends on the shell: the redesign's
+// tool panel has one shared width (redesign/developer-tool-panel.ts), classic sizes each pane on its
+// own. A shell flip re-registers them in place; the render functions are shared constants, so the
+// panes keep their mounted bodies.
+const renderTerminalPane = () => <WiredPane part="terminal" />
+const renderFilesPane = () => idle(<FilesPane />)
+const renderReviewPane = () => idle(<ReviewPaneContent />)
+
+const toolPanes = (portal: boolean) => [
   {
     id: 'terminal',
     area: 'panes',
@@ -263,14 +276,16 @@ registry.registerMany([
     // its rail there). A real floor left a sliver of unusable terminal.
     data: {
       placement: 'bottom',
-      minWidth: 'var(--terminal-panel-min-width, 0px)',
+      ...(portal
+        ? developerToolSizing('var(--terminal-panel-min-width, 0px)')
+        : { minWidth: 'var(--terminal-panel-min-width, 0px)' }),
       height: '20vh',
       maxHeight: '80vh',
       lifecycleKeepAlive: true,
       tabTitle: () => <LocalizedTabTitle select={t => t.sidebar.terminal} />,
       tabTitleText: () => translateNow('sidebar.terminal')
     },
-    render: () => <WiredPane part="terminal" />
+    render: renderTerminalPane
   },
   {
     id: 'files',
@@ -282,13 +297,13 @@ registry.registerMany([
       collapsible: true,
       dock: { pane: 'workspace', pos: 'right' },
       revealAliases: ['file-browser'],
-      width: FILE_BROWSER_DEFAULT_WIDTH,
-      minWidth: FILE_BROWSER_MIN_WIDTH,
-      maxWidth: FILE_BROWSER_MAX_WIDTH,
+      ...(portal
+        ? developerToolSizing(FILE_BROWSER_MIN_WIDTH)
+        : { width: FILE_BROWSER_DEFAULT_WIDTH, minWidth: FILE_BROWSER_MIN_WIDTH, maxWidth: FILE_BROWSER_MAX_WIDTH }),
       tabTitle: () => <LocalizedTabTitle select={t => t.sidebar.files} />,
       tabTitleText: () => translateNow('sidebar.files')
     },
-    render: () => idle(<FilesPane />)
+    render: renderFilesPane
   },
   {
     id: 'review',
@@ -300,15 +315,19 @@ registry.registerMany([
       placement: 'right',
       collapsible: true,
       revealAliases: [REVIEW_PANE_ID],
-      width: FILE_BROWSER_DEFAULT_WIDTH,
-      minWidth: FILE_BROWSER_MIN_WIDTH,
-      maxWidth: FILE_BROWSER_MAX_WIDTH,
+      ...(portal
+        ? developerToolSizing(FILE_BROWSER_MIN_WIDTH)
+        : { width: FILE_BROWSER_DEFAULT_WIDTH, minWidth: FILE_BROWSER_MIN_WIDTH, maxWidth: FILE_BROWSER_MAX_WIDTH }),
       tabTitle: () => <LocalizedTabTitle select={t => t.sidebar.review} />,
       tabTitleText: () => translateNow('sidebar.review')
     },
-    render: () => idle(<ReviewPaneContent />)
+    render: renderReviewPane
   }
-])
+]
+
+registry.registerMany(toolPanes($portalShell.get()))
+$portalShell.listen(portal => registry.registerMany(toolPanes(portal)))
+installDeveloperToolPanelWidth()
 
 // ---------------------------------------------------------------------------
 // Chrome contributions. The title bar and status bar are fixed chrome outside

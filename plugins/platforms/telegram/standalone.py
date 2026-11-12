@@ -77,12 +77,18 @@ def _telegram_retry_delay(exc: Exception, attempt: int) -> float | None:
     return kinds.same_request_backoff(attempt) if kind in (kinds.UNSENT, kinds.SERVER_ERROR) else None
 
 
-async def _send_telegram_message_with_retry(bot, *, attempts: int = SAME_REQUEST_ATTEMPTS, **kwargs):
-    """``bot.send_message`` with bounded retries on transient failures."""
+async def _send_telegram_message_with_retry(bot, *, attempts: int = SAME_REQUEST_ATTEMPTS, outcome=None, **kwargs):
+    """``bot.send_message`` with bounded retries on transient failures. ``outcome`` (a
+    ``DeliveryOutcome``) records every failed try that may have posted the message (Telegram's own
+    5xx is retried, yet may follow a committed send), so a later connect failure cannot read as
+    "nothing sent"."""
+    from plugins.platforms.telegram.telegram_send_errors import may_have_delivered
     for attempt in range(attempts):
         try:
             return await bot.send_message(**kwargs)
         except Exception as exc:
+            if outcome is not None and may_have_delivered(exc):
+                outcome.ambiguous()
             delay = _telegram_retry_delay(exc, attempt)
             if delay is None or attempt >= attempts - 1:
                 raise
@@ -178,13 +184,14 @@ def _is_telegram_parse_error(error) -> bool:
     return is_entity_parse_error(error)
 
 
-async def _telegram_send_text_chunk(bot, chat_id, chunk, parse_mode, has_html, text_kwargs):
+async def _telegram_send_text_chunk(bot, chat_id, chunk, parse_mode, has_html, text_kwargs, outcome=None):
     """One text chunk with adapter-matching fallbacks: thread-not-found -> retry without
     ``message_thread_id`` (dropped from ``text_kwargs`` for later chunks too); parse failure
     -> plain text. A rejected HTML chunk (an unsupported tag beside supported ones) first
-    retries as MarkdownV2, so its Markdown still renders."""
+    retries as MarkdownV2, so its Markdown still renders. ``outcome`` sees every attempt."""
     async def send(text, mode):
-        return await _send_telegram_message_with_retry(bot, chat_id=chat_id, text=text, parse_mode=mode, **text_kwargs)
+        return await _send_telegram_message_with_retry(
+            bot, chat_id=chat_id, text=text, parse_mode=mode, outcome=outcome, **text_kwargs)
     try:
         return await send(chunk, parse_mode)
     except Exception as md_error:
@@ -357,7 +364,10 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         return {**_error(f"Telegram topic '{thread_id}' is a name, not a thread id: a direct send cannot "
                          "resolve named topics. Use telegram:<chat_id>:<numeric thread id>, or deliver "
                          "through a cron job while the gateway is running."), "retryable": True}
-    last_msg = None
+    from gateway.platforms._shared import DeliveryOutcome
+    # One record across the rich attempt, every chunk and every retry: what landed (ids) and what
+    # may have. ``last_msg`` is the final receipt for the success envelope.
+    last_msg, outcome = None, DeliveryOutcome()
     try:
         from plugins.platforms.telegram.telegram_outbound import (
             is_visually_empty, notification_kwargs, resolve_notifications_mode, send_album_standalone,
@@ -386,7 +396,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                 # ``retryable`` (nothing sent) only on the adapter's ``never_sent`` proof: a lost
                 # answer or a server error may already be in the chat.
                 never_sent = isinstance(rich.raw_response, dict) and rich.raw_response.get("never_sent") is True
-                return {**_error(f"Telegram send failed: {rich.error}"), **({"retryable": True} if never_sent else {})}
+                return outcome.failure(_error(f"Telegram send failed: {rich.error}"), never_sent=never_sent)
         # MEDIA caption rides on the bubble as its *formatted* caption; formatting can inflate a
         # raw <1024 string past Telegram's cap, so re-check in UTF-16 units.
         _cap, _ = _media_caption_split(message, media_files)
@@ -403,13 +413,16 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
             from plugins.platforms.telegram.telegram_chunking import split_formatted_mdv2
             chunks = split_formatted_mdv2(formatted, 4096, BasePlatformAdapter.truncate_message, utf16_len)
         for chunk in chunks:
-            last_msg = await _telegram_send_text_chunk(bot, int_chat_id, chunk, send_parse_mode, _has_html, text_kwargs)
+            last_msg = await _telegram_send_text_chunk(
+                bot, int_chat_id, chunk, send_parse_mode, _has_html, text_kwargs, outcome=outcome)
+            outcome.landed(getattr(last_msg, "message_id", None))
         if album := _telegram_album_paths(media_files, force_document, _tg_caption):
             result = await send_album_standalone(bot, extra or {}, chat_id, album, thread_id=thread_id, notify=notify)
             detail = result.raw_response or {}
             warnings += [_sanitize_error_text(f"Failed to send Telegram photo {path}: {err}")
                          for path, err in detail.get("failed", ())]
             if detail.get("ambiguous"):
+                outcome.ambiguous()
                 warnings.append("Telegram never confirmed a photo album; it may already be in the chat, so it was not resent")
             if not result.success and not detail.get("failed") and not detail.get("refused"):
                 warnings.append(_sanitize_error_text(f"Failed to send Telegram photo album: {result.error}"))
@@ -439,18 +452,18 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         if last_msg is None:
             return {"error": _NO_DELIVERABLE, **({"warnings": warnings} if warnings else {})}
         return _success(chat_id, warnings, **({"message_id": str(last_msg.message_id)}
-                                                          if last_msg.message_id is not None else {}))
+                                              if last_msg.message_id is not None else {}),
+                        **outcome.split_fields())
     except ImportError:
         return {"error": "python-telegram-bot not installed. Run: "
                 f"{install_hint('telegram')}", "retryable": True}
     except Exception as e:
         from plugins.platforms.telegram import telegram_send_errors as kinds
-        kind = kinds.send_error_kind(e)
-        # ``retryable`` = nothing is in the chat: no chunk landed and this request never left or
-        # was refused. Only that may be replayed (cron's reconnect queue); a lost answer, or a
-        # failure after an earlier chunk landed, would post the report twice.
-        nothing_sent = last_msg is None and kind in (kinds.REFUSED, kinds.FLOOD, kinds.UNSENT)
-        return {**_error(f"Telegram send failed: {e}"), **({"retryable": True} if nothing_sent else {})}
+        # Nothing sent (cron may replay it) only when this request never left or was refused, no
+        # receipt came back (``last_msg``: a chunk or the album) and ``outcome`` saw no earlier try
+        # that may have posted it.
+        return outcome.failure(_error(f"Telegram send failed: {e}"), never_sent=last_msg is None and (
+            kinds.send_error_kind(e) in (kinds.REFUSED, kinds.FLOOD, kinds.UNSENT)))
 
 
 async def standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False,

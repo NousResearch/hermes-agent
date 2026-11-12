@@ -4,17 +4,25 @@ import crypto from 'node:crypto'
 import { profileCollectionRoute, profileRouteSuffix } from './profile-routes'
 import { hiddenWindowsChildOptions, windowsShellCommand } from './windows-child-options'
 
-// `hermes gateway ensure` answers with a protocol verdict (ready, or `starting: deadline`) within
-// its own startup deadline: `--timeout` defaults to 60 s (hermes_cli/gateway_runtime.py
-// DEFAULT_ENSURE_TIMEOUT). The client is killed only after that deadline plus interpreter start
-// and verdict output, so a slow-but-valid cold start is never reported as "produced no result".
-const GATEWAY_ENSURE_PROTOCOL_DEADLINE_MS = 60_000
+// `hermes gateway ensure` owns the start deadline and always answers with a protocol verdict inside
+// it: DEFAULT_ENSURE_TIMEOUT (60 s, hermes_cli/gateway_runtime.py) for a start that makes no
+// progress, extended while the pending start's owner keeps accruing CPU up to MAX_ADAPTIVE_TIMEOUT
+// (300 s, hermes_cli/gateway_runtime_progress.py) — a CPU-starved multiplexed cold start connecting
+// profile after profile (#142296). The client is the backstop BEHIND that contract, never a shorter
+// deadline of its own: it must outlive the CLI's whole adaptive ceiling plus interpreter start and
+// verdict output, or it kills a start the CLI is still legitimately waiting on, discards the
+// verdict, and reports "produced no result" over a gateway that reaches READY moments later.
+// Fail-fast stays in the CLI: a wedged owner is reported at the base deadline, and an explicit
+// --timeout is hard.
+const GATEWAY_ENSURE_ADAPTIVE_CEILING_MS = 300_000
 const GATEWAY_ENSURE_CLIENT_GRACE_MS = 15_000
+/** The default kill window: the CLI's adaptive ceiling plus room to start an interpreter and print. */
+export const GATEWAY_ENSURE_CLIENT_DEADLINE_MS = GATEWAY_ENSURE_ADAPTIVE_CEILING_MS + GATEWAY_ENSURE_CLIENT_GRACE_MS
 
 /** Run one bounded `hermes ... gateway <verb>` client (`ensure` by default; `restart` for a stale owner). */
 export function runGatewayEnsure(
   backend, cwd: string, home: string, parentEnv: NodeJS.ProcessEnv = process.env,
-  { timeoutMs = GATEWAY_ENSURE_PROTOCOL_DEADLINE_MS + GATEWAY_ENSURE_CLIENT_GRACE_MS, label = 'hermes gateway ensure' }: { timeoutMs?: number; label?: string } = {}
+  { timeoutMs = GATEWAY_ENSURE_CLIENT_DEADLINE_MS, label = 'hermes gateway ensure' }: { timeoutMs?: number; label?: string } = {}
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     // The gateway this starts outlives a dev session and Desktop reaches it without an Origin

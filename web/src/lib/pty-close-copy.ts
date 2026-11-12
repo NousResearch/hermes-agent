@@ -40,7 +40,13 @@ const REJECTION_BANNERS: Record<number, PtyBanner> = {
   }
 }
 
-export function ptyRejectionBanner(code: number): PtyBanner | null {
+export function ptyRejectionBanner(code: number, reason = ''): PtyBanner | null {
+  if (code === 1011 && reason === 'PTY output capture failed') {
+    return {
+      text: "Terminal output capture failed; output may be incomplete. Check the session's effects before retrying.",
+      action: null
+    }
+  }
   return REJECTION_BANNERS[code] ?? null
 }
 

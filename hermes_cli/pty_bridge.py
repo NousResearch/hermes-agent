@@ -184,15 +184,17 @@ class PtyBridge:
             return None
         try:
             readable = self._waiter.wait(timeout)
-        except (OSError, ValueError):  # close() raced this read
-            return None
+        except (OSError, ValueError):
+            if self._closed:
+                return None
+            raise OSError("PTY output capture failed during readiness wait") from None
         if not readable:
             return b""
         try:
             data = os.read(self._fd, 65536)
         except OSError as exc:
-            # EIO on Linux = slave side closed.  EBADF = already closed.
-            if exc.errno in {errno.EIO, errno.EBADF}:
+            # EIO on Linux is the PTY slave's normal EOF convention.
+            if exc.errno == errno.EIO or self._closed:
                 return None
             # The fd is deliberately non-blocking. Readiness can disappear
             # between the readiness check and os.read() when close/output races occur.

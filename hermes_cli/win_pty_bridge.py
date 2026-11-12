@@ -99,8 +99,12 @@ class WinPtyBridge:
             if not readable:
                 return b""
             data = self._proc.read(65536)  # pywinpty returns str
-        except Exception:
+        except EOFError:
             return None
+        except Exception:  # health: allow BLE001 -- normalize backend failures without leaking backend exception text
+            if self._closed:
+                return None
+            raise OSError("PTY output capture failed during read") from None
         if not data:
             return b""  # pywinpty's placeholder for an empty ConPTY read
         if isinstance(data, bytes):

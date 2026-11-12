@@ -3,6 +3,104 @@
 import re
 from typing import Any, NamedTuple
 
+import shlex
+import time
+
+
+class ProcessEnvLogMixin:
+    def _recover_launch_capture(self, session, env, pid_path: str, result: dict) -> dict:
+        if not (result.get("output_incomplete") or result.get("capture_error")):
+            return result
+        from tools.environments.capture import OutputCaptureError, require_complete_output
+        session.capture_failed("remote launch PID read")
+        # The launch may have succeeded. Only reread its durable receipt, never launch again.
+        try:
+            recovered = env.execute(f"cat {shlex.quote(pid_path)} 2>/dev/null", timeout=5)
+            require_complete_output(recovered)
+        except Exception as exc:
+            raise OutputCaptureError(
+                "Background command may already have started; its PID could not be recovered. "
+                "Inspect its effects before considering a retry.") from exc
+        if not recovered.get("output", "").strip().isdigit():
+            raise OutputCaptureError(
+                "Background command may already have started; its PID could not be recovered. "
+                "Inspect its effects before considering a retry.")
+        return recovered
+
+    def _env_poller_loop(self, session, env, log_path: str, pid_path: str, exit_path: str):
+        """Poll durable log reads; an incomplete fetch never commits its byte offset."""
+        q = shlex.quote
+        prev_output_bytes = 0
+        while not session.exited:
+            time.sleep(2)
+            try:
+                fetched = env.execute(self._log_delta_command(
+                    q(log_path), prev_output_bytes, q(pid_path), q(exit_path)), timeout=10)
+                incomplete = self._capture_fetch_failed(session, fetched, "remote log/status read")
+                reply = None if incomplete else parse_log_delta_reply(fetched.get("output", ""))
+                if reply is not None:
+                    prev_output_bytes = self._ingest_log_reply(session, reply, prev_output_bytes)
+                    if reply.exit_code is not None:
+                        self._finish_exited(session, reply.exit_code)
+                        return
+                else:
+                    session.capture_failed("remote log framing")
+                    from tools.environments.capture import OutputCaptureError
+                    try:
+                        exit_code = fallback_exit_code(env, q(pid_path), q(exit_path))
+                    except OutputCaptureError:
+                        continue
+                    if exit_code is not None:
+                        self._finish_remote_log(session, env, log_path, prev_output_bytes, exit_code,
+                                                pid_path=pid_path, exit_path=exit_path)
+                        return
+            except Exception:  # health: allow BLE001 -- backend loss keeps existing lifecycle semantics, never exception text
+                self._finish_exited(session, -1, reason="lost", source="backend_lost")
+                return
+
+    def _finish_remote_log(self, session, env, log_path, offset, exit_code, *, pid_path, exit_path):
+        try:
+            self._fetch_log_delta(session, env, log_path, offset, pid_path=pid_path, exit_path=exit_path)
+        except Exception:  # health: allow BLE001 -- transport failure cannot overwrite an already observed child exit
+            session.capture_failed("final remote log read")
+        self._finish_exited(session, exit_code)
+
+    def _fetch_log_delta(self, session, env, log_path: str, offset: int, *, pid_path, exit_path) -> int:
+        fetched = env.execute(self._log_delta_command(
+            shlex.quote(log_path), offset, shlex.quote(pid_path), shlex.quote(exit_path)), timeout=10)
+        if self._capture_fetch_failed(session, fetched, "remote log read"):
+            return offset
+        reply = parse_log_delta_reply(fetched.get("output", ""))
+        if reply is None:
+            session.capture_failed("remote log framing")
+            return offset
+        return self._ingest_log_reply(session, reply, offset)
+
+    def _ingest_log_reply(self, session, reply, offset):
+        size, used, _, delta = reply
+        with session._lock:
+            if session.exited:
+                return offset
+            if used < offset:
+                session.output_buffer = ""
+            session._append_locked(delta)
+        if delta:
+            self._check_watch_patterns(session, delta)
+            self._emit_output(session, delta)
+        return size
+
+    def _capture_fetch_failed(self, session, result: dict, stage: str) -> bool:
+        if not (result.get("output_incomplete") or result.get("capture_error")):
+            return False
+        with session._lock:
+            changed = not session.exited and not session.capture_error
+            if changed:
+                session.capture_failed(stage)
+        if changed:
+            self._write_checkpoint()
+        return True
+
+
 _HEADER = re.compile(r"([0-9]{1,20}) ([0-9]{1,20}) (?:(run)|exit:([0-9]{0,9}))")
 
 
@@ -87,10 +185,14 @@ def fallback_exit_code(env: Any, quoted_pid_path: str, quoted_exit_path: str) ->
     ``None`` while the process looks alive, else the recorded code (-1 if none)."""
     check = env.execute(
         f"kill -0 \"$(cat {quoted_pid_path} 2>/dev/null)\" 2>/dev/null; echo $?", timeout=5)
+    from tools.environments.capture import require_complete_output
+    require_complete_output(check)
     check_output = check.get("output", "").strip()
     if not check_output or check_output.splitlines()[-1].strip() == "0":
         return None
-    exit_str = env.execute(f"cat {quoted_exit_path} 2>/dev/null", timeout=5).get("output", "").strip()
+    exited = env.execute(f"cat {quoted_exit_path} 2>/dev/null", timeout=5)
+    require_complete_output(exited)
+    exit_str = exited.get("output", "").strip()
     try:
         return int(exit_str.splitlines()[-1].strip())
     except (ValueError, IndexError):

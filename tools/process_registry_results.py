@@ -57,8 +57,10 @@ def save_completed_result(session) -> None:
     with session._lock:
         record = {key: getattr(session, key) for key in _RESULT_FIELDS}
         record["output"] = session.output_buffer[-MAX_OUTPUT_CHARS:]
+        record["capture_error"] = session.capture_error
     # Live-output opt-out must not persist raw credentials in durable receipts.
     record["output"] = redact_terminal_output(record["output"], record["command"], force=True)
+    record["capture_error"] = redact_sensitive_text(record["capture_error"], force=True)[:512]
     record["command"] = redact_sensitive_text(record["command"], code_file=True, force=True)
     directory = get_hermes_home() / "logs" / "process-results"
     try:
@@ -118,6 +120,7 @@ def load_completed_results(prefix: str = "") -> dict:
                 **{key: record[key] for key in _RESULT_FIELDS},
                 # Receipts written before processes carried a sandbox are a local activity's.
                 sandbox_key=record.get("sandbox_key", ""), exited=True, output_buffer=record["output"],
+                capture_error=record.get("capture_error", ""),
             )
             session._completion_event.set()
             results[session.id] = session

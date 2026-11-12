@@ -9,9 +9,9 @@ Resolution order:
   1. Windows: the git Package's staged bash (via facts.json) — the store
      structurally guarantees it in a bundle; no hunt.
   2. Windows: explicit override, Program Files, per-user and PortableGit,
-     then PATH —
-     minus C:\\Windows\\System32\bash.exe (the WSL launcher stub, first on PATH
-     on most machines; #116818) and WindowsApps\bash.exe (an MSIX alias that
+     registry InstallPath, then PATH —
+     minus C:\\Windows\\System32\\bash.exe (the WSL launcher stub, first on PATH
+     on most machines; #116818) and WindowsApps\\bash.exe (an MSIX alias that
      only spawns inside its package). See windows_bash_candidates().
   3. Provisioned PATH: shutil.which("bash") — the store dirs are on the
      process PATH after pm.activate() ran.
@@ -27,7 +27,7 @@ import ntpath
 import os
 import shutil
 import subprocess
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 
 from pm import paths
 from pm.lock import Facts
@@ -64,12 +64,52 @@ def _staged_bash() -> str | None:
 # MSIX execution aliases that fail with WinError 5 from an arbitrary process.
 _WINDOWS_BASH_STUB_DIRS = ("system32", "windowsapps")
 
+# The official Git for Windows installer records its install root under
+# ``SOFTWARE\Git for Windows`` (HKCU for per-user installs, HKLM for
+# machine-wide ones) no matter which drive it ran against — probing it is
+# the only fixed anchor that covers custom-drive installs.
+_GIT_FOR_WINDOWS_KEY = "SOFTWARE\\Git for Windows"
 
-def windows_bash_candidates(on_path: str | None, env: Mapping[str, str]) -> list[str]:
+
+def _registry_git_roots() -> list[str]:
+    """Git for Windows roots from the registry ``InstallPath`` value.
+
+    Reads HKCU and HKLM (both registry views) and returns the deduplicated
+    install roots, or ``[]`` off Windows / whenever anything is missing —
+    a registry failure must never affect the rest of the candidate ladder.
+    """
+    if os.name != "nt":
+        return []
+    try:
+        import winreg
+    except ImportError:  # not a Windows interpreter
+        return []
+    roots: list[str] = []
+    for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+        for view in (winreg.KEY_WOW64_64KEY, winreg.KEY_WOW64_32KEY):
+            try:
+                with winreg.OpenKey(hive, _GIT_FOR_WINDOWS_KEY, 0,
+                                    winreg.KEY_READ | view) as key:
+                    install, _ = winreg.QueryValueEx(key, "InstallPath")
+            except OSError:
+                continue
+            if install:
+                roots.append(install.rstrip("\\/"))
+    return list(dict.fromkeys(roots))
+
+
+def windows_bash_candidates(
+    on_path: str | None,
+    env: Mapping[str, str],
+    extra_roots: Sequence[str] = (),
+) -> list[str]:
     """Ordered bash.exe candidates for a Windows host, as pure data: the
     explicit override and Git for Windows roots first, then ``on_path``
     (the ``shutil.which("bash")`` result) unless it is a stub. System32
-    precedes Git on most PATHs (#116818)."""
+    precedes Git on most PATHs (#116818). *extra_roots* are additional Git
+    roots probed after the fixed locations; the production caller passes the
+    registry ``InstallPath`` hits (``_registry_git_roots``) so custom-drive
+    installer layouts are covered without hardcoding drive letters."""
     programfiles = env.get("ProgramFiles", r"C:\Program Files")
     candidates = []
     if env.get("HERMES_GIT_BASH_PATH"):
@@ -80,7 +120,9 @@ def windows_bash_candidates(on_path: str | None, env: Mapping[str, str]) -> list
     if env.get("LOCALAPPDATA"):
         roots.extend((ntpath.join(env["LOCALAPPDATA"], "hermes", "git"),
                       ntpath.join(env["LOCALAPPDATA"], "Programs", "Git")))
+    roots.extend(extra_roots)
     for root in roots:
+        root = ntpath.normpath(root)
         candidates.extend((ntpath.join(root, "bin", "bash.exe"),
                            ntpath.join(root, "usr", "bin", "bash.exe")))
     if on_path:
@@ -111,7 +153,8 @@ def bash() -> str | None:
 
     on_path = shutil.which("bash")
     if os.name == "nt":
-        return next((c for c in windows_bash_candidates(on_path, os.environ)
+        return next((c for c in windows_bash_candidates(on_path, os.environ,
+                                                        extra_roots=_registry_git_roots())
                      if os.path.isfile(c) and _bash_starts(c)), None)
     if on_path:
         return on_path

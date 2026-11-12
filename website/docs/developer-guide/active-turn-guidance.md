@@ -1,8 +1,16 @@
-# Local active turn guidance contract, version 1
+---
+title: Active-turn guidance
+description: Negotiated ACP guidance with owner-correlated incorporation receipts
+---
 
-This local extension targets ordinary in-process ACP execution on gateway base
-`79658be93ba36dc0ff5878b07b6a4c5df29dd79d`. The direct-ACP prototype is on a separate
-historical branch. Neither patch is an upstream release.
+# Active-turn guidance
+
+This opt-in ACP extension delivers literal text only to the expected active
+turn, with correlated admission and incorporation receipts. It does not replace
+`session.steer` or queued-admission controls: clients that cannot safely replay
+uncertain input need an active-only operation and a separate status lookup.
+Only ordinary in-process gateway-backed ACP turns support this contract;
+managed workers and non-ACP turns do not advertise it.
 
 ACP clients request `_meta["ai.nous/active-turn-guidance"] = {"version":1}`.
 The viewer advertises that key with `version:1`, `statusLookup:true`,
@@ -45,7 +53,9 @@ nonempty strings up to 128 chars. No prompt.submit, slash dispatch or future que
 
 `accepted_active` starts `pending_incorporation`. Actual iteration preparation
 appends accepted text as one user row in sequence order after an assistant/tool
-row, preserving the cached prefix. Only then does it become `incorporated`.
+row, preserving the cached prefix. Only then does it become `incorporated`. If native steering already added a user
+row at that boundary, guidance stays pending until another legal boundary; it
+never merges into a persisted steer row or creates consecutive user rows.
 Ordinary provider normalization may trim outer whitespace; command-like text stays
 text. Pending input closes `unconsumed_at_turn_end` or, on Stop,
 `cancelled_before_incorporation`. Neither can enter a successor. Incorporation
@@ -70,9 +80,12 @@ automatically replays input. There is no crash-durable exactly-once claim.
 Canonical tests: `tests/gateway/test_active_turn_guidance.py` uses the real
 authenticated gateway and AIAgent; `tests/acp_adapter/test_gateway_guidance.py`
 uses default stdio ACP. `guidance_gateway_fixture.py` launches an ordinary gateway
-for the companion Multica Go/HTTP/PostgreSQL tests, controlling only loopback model
-responses and lost ACP replies. It substitutes neither owner nor conversation loop.
-Multica's `docs/hermes-active-turn-guidance.md` contains the reproduction recipe.
+for external ACP consumer tests, controlling only loopback model responses and
+lost ACP replies. It substitutes neither owner nor conversation loop.
 `tests/acp_adapter/test_guidance_boundaries.py` checks auxiliary failure isolation,
 cancellation propagation and alias boundaries; `tests/gateway/test_guidance_permissions.py`
 checks independent read/control permissions on the canonical dispatcher and SQLite.
+
+`tests/agent/test_active_guidance_with_native_steer.py` exercises the real
+iteration preparation with both input sources and verifies prefix stability,
+receipt state and exactly one incorporation at the next legal boundary.

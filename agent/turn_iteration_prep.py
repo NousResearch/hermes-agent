@@ -176,12 +176,14 @@ def prepare_iteration(
     # standalone user row after the newest tool result (never smeared onto the tool row: that
     # row is already persisted append-only, so replay would diverge from the live request and
     # break the prompt cache — same contract as apply_pending_steer_to_tool_results).
-    from agent.active_turn_guidance import incorporate_active_guidance
-
-    incorporate_active_guidance(agent, messages)
     _pre_api_steer = agent._drain_pending_steer()
     if _pre_api_steer:
         _inject_steer_after_newest_tool_result(agent, messages, _pre_api_steer)
+
+    # A native steer owns its user row. Receipt-bearing guidance waits for the
+    # next legal boundary rather than creating a second consecutive user row.
+    from agent.active_turn_guidance import incorporate_active_guidance
+    incorporate_active_guidance(agent, messages)
 
     # One-shot run-budget wrap-up notice at 80% of agent.run_budget_seconds, appended to the
     # newest tool result; off with no budget.

@@ -32,6 +32,14 @@ hermes acp / hermes-acp / python -m acp_adapter
 
 Stdout is reserved for ACP JSON-RPC transport. Human-readable logs go to stderr.
 
+### Active-turn guidance
+
+The optional [active-turn guidance contract](./active-turn-guidance.md) negotiates
+owner-confirmed turn identities and incorporation receipts. The gateway-backed
+ACP adapter projects the canonical owner's state through
+`acp_adapter/gateway_guidance.py`; `gateway/session_guidance.py` owns admission and
+status. Ordinary ACP clients retain their existing prompt and queue behavior.
+
 ### Gateway terminal projection
 
 `acp_adapter/gateway_server.py` waits for the completion of the exact submitted

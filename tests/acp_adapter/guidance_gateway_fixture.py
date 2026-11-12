@@ -1,4 +1,4 @@
-"""Explicit Multica fixture: ordinary gateway owner/AIAgent, loopback model only.
+"""ACP consumer fixture: ordinary gateway owner/AIAgent, loopback model only.
 
 Fault injection is limited to a lost ACP admission response and model barriers.
 Neither the execution owner nor its conversation loop is replaced.

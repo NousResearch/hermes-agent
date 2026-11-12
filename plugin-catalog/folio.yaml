@@ -1,0 +1,36 @@
+name: folio
+repo: https://github.com/okyssta/hermes-folio
+sha: "b101110c32b47b7c427204dfce19710d7f400c75"
+description: >-
+  Hermes gets a library of the user's own documents. Folio indexes PDF, DOCX,
+  PPTX, XLSX, HTML, Markdown and source files locally and answers with the file,
+  the page and the exact sentence instead of a paraphrase: seven tools search the
+  library, open a page, prove that a quotation really appears where the agent
+  says it does, report what was added or revised since a date, and format
+  citations. Documents are content-hashed, so a revised contract keeps its old
+  text and a desktop page renders the real page with the matching sentence boxed.
+  Disclosure — reads the documents inside folders the user adds and stores their
+  extracted text (API keys, tokens, private-key blocks and card numbers redacted
+  by default) in one SQLite file under the profile's plugin-data directory; a
+  background thread re-scans those folders on a timer; it makes no network calls,
+  reads no credential files, and never writes to the user's documents.
+maintainer: okyssta
+tier: community
+category: tools
+title: Folio — every claim, a page
+requires_hermes: ">=0.22.0"
+version: "1.0.0"
+docs_url: https://github.com/okyssta/hermes-folio#readme
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools:
+    - folio_search
+    - folio_open
+    - folio_verify
+    - folio_changes
+    - folio_bibliography
+    - folio_index
+    - folio_forget
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

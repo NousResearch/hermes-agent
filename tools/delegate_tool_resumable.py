@@ -13,6 +13,7 @@ resumption is NOT done here: ``resume_mode`` / ``next_attempt_at`` are what a sc
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -206,6 +207,13 @@ def _note_repo(baselines: dict[str, list[str]], start_main: Optional[str], cwd: 
 
 
 # ── run lifecycle ──────────────────────────────────────────────────────────
+def endpoint_identity(provider: Any, base_url: Any) -> tuple[Any, Optional[str]]:
+    """``(provider, sha256 of the exact base_url)``: what a continue compares to refuse a changed backend. The URL
+    itself is never stored (it can carry a key in its query or userinfo); the real one is re-resolved from the
+    task's route at continue. Exact bytes, so any change to the URL still refuses."""
+    return provider, (hashlib.sha256(str(base_url).encode("utf-8")).hexdigest() if base_url is not None else None)
+
+
 def _owner_identity() -> dict[str, Any]:
     from gateway.status import get_process_start_time
     started = get_process_start_time(os.getpid())

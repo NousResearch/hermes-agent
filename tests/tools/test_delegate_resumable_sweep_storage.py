@@ -95,3 +95,32 @@ def test_a_pin_taken_while_the_archive_snapshot_ran_keeps_the_tree(tmp_path):
         worktree_ops._prune_stale_worktrees(str(repo), 24)
 
     assert (resumed / "work.txt").read_text() == "unsaved child work"
+
+
+def test_the_record_keeps_no_endpoint_credential_and_still_refuses_a_changed_endpoint():
+    from tools.delegate_tool import delegate_task
+    secret_url = "https://user:FIXTURE_PASS@llm.invalid/v1?api_key=FIXTURE_SECRET"
+    model = _FailingModel(resets_at=time.time() + 3600)
+    parent = _parent()
+    parent.provider, parent.base_url = "custom", secret_url
+    with patch("run_agent.AIAgent", side_effect=model):
+        out = json.loads(delegate_task(tasks=[{"goal": "write the parser"}], background=True, parent_agent=parent))
+        _completion(out["delegation_id"])
+        sid = out["subagent_ids"][0]
+        assert model.builds[0]["base_url"] == secret_url
+        with sqlite3.connect(parent._session_db.db_path) as conn:  # health: allow HX015 -- temp-home store
+            raw = conn.execute("SELECT record_json FROM resumable_subagents WHERE subagent_id=?", (sid,)).fetchone()[0]
+        assert "FIXTURE" not in raw and "llm.invalid" not in raw, raw
+
+        _forget_process_state()  # a restart: only the durable record is left
+        parent.base_url = "https://user:FIXTURE_PASS@llm.invalid/v1?api_key=ROTATED"
+        refused = json.loads(delegate_task(action="continue", subagent_id=sid, message="go on", background=True,
+                                           parent_agent=parent))
+        assert "different endpoint" in refused.get("error", ""), refused
+
+        parent.base_url = secret_url
+        cont = json.loads(delegate_task(action="continue", subagent_id=sid, message="go on", background=True,
+                                        parent_agent=parent))
+        assert cont.get("status") == "dispatched", cont
+        _completion(cont["delegation_id"])
+    assert model.builds[-1]["base_url"] == secret_url  # the real URL comes back from the route, not the record

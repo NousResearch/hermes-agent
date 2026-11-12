@@ -100,10 +100,28 @@ def _looks_like_int(value: Optional[str]) -> bool:
         return False
 
 
+def _result_field(result: Any, name: str, default: Any = None) -> Any:
+    """``name`` off a SendResult object or a plain result dict (adapters return either)."""
+    return result.get(name, default) if isinstance(result, dict) else getattr(result, name, default)
+
+
 def _send_result_error(result: Any) -> Optional[str]:
     """Error string of a failed SendResult object / plain result dict ("" if none), or None on success."""
-    get = result.get if isinstance(result, dict) else (lambda name, default=None: getattr(result, name, default))
-    return None if get("success", True) is not False else str(get("error") or "")
+    return None if _result_field(result, "success", True) is not False else str(_result_field(result, "error") or "")
+
+
+class DeliverySendError(RuntimeError):
+    """A send the platform refused, carrying the adapter's own ``SendResult.retryable`` verdict.
+
+    Raising a bare RuntimeError with only the error string loses the retryable bit: two rejections
+    with the SAME wording can differ (Telegram's "Not connected" is retryable while the bot client
+    rebuilds, permanent when the fatal is not). Downstream redelivery gates (cron's ledger queue)
+    must not re-derive that verdict from the string, so it rides the exception.
+    """
+
+    def __init__(self, message: str, *, retryable: bool = False):
+        super().__init__(message)
+        self.send_retryable = retryable
 
 
 @dataclass
@@ -342,5 +360,7 @@ class DeliveryRouter:
             from gateway.platforms.base import BasePlatformAdapter
             if BasePlatformAdapter._is_partial_delivery(result):
                 raise PartialDeliveryError(error, result)
-            raise RuntimeError(error or f"{target.platform.value} delivery failed")
+            raise DeliverySendError(
+                error or f"{target.platform.value} delivery failed",
+                retryable=_result_field(result, "retryable") is True)
         return result

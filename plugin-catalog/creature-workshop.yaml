@@ -1,0 +1,29 @@
+# Catalog entry for NousResearch/hermes-agent: plugin-catalog/creature-workshop.yaml
+# Pinned to the plugin's current commit; bump sha and version together.
+name: creature-workshop
+repo: https://github.com/creature-workshop/creature-workshop-plugin
+sha: 1d2a6ef3e24744d7a1bde748caf9418ca6e592a6
+title: Creature Workshop
+description: "Manage your project's development lifecycle all in one place: your project.\n\nThe development lifecycle's grown more and more complex over the years. It's getting tougher and tougher to get truly polished features over the line into production. And with agentic development, the complexity is ramping more than ever.\n\nCreature Workshop offers a one-stop shop right in your project to manage your project's entire development lifecycle, one piece at a time as it becomes relevant to you. From initial tooling setup, environment handling, and issue intake, to review, merge, testing, build, deployment, documentation, and monitoring, your project's devops should let you focus on your features instead of on the headache of pipelines or on ticking all the boxes for project readiness and change reporting. Disclosure — in a project the user lists in the approved_projects setting (empty by default; added from Settings → Plugins or the pane's Approve button, never by the agent), the workshop_* tools and the terminal pre-check run that repository's own .envrc and shell/ops scripts on the host outside the terminal sandbox, with no per-call approval and a minimal environment (PATH, HOME, locale, terminal, XDG dirs plus any names in ops_env_passthrough); workshop_install can install the project's declared tools, which may use the system package manager via sudo; the pane's Explain and set-up buttons send the repository's README opening, top-level file names and matching source lines (secrets redacted) to a Hermes auxiliary model that defaults to free Nous Portal models with free OpenRouter models as fallback."
+maintainer: jerrod-storm
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+version: "0.1.0-dev.24"
+docs_url: https://github.com/creature-workshop/creature-workshop-plugin/blob/main/README.md
+platforms:
+  - linux
+  - macos
+capabilities:
+  provides_tools:
+    - workshop_project
+    - workshop_install
+    - workshop_test
+    - workshop_lint
+  provides_hooks:
+    - pre_tool_call
+    - pre_llm_call
+    - post_compaction
+    - subagent_start
+  provides_middleware: []
+  requires_env: []

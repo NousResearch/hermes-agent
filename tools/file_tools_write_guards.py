@@ -308,13 +308,10 @@ def _request_protected_instruction_approval(reasons: list[str], task_id: str = "
         return blocked.format(why=_APPROVAL_UNAVAILABLE)
 
     # Gateway surface: block on the button round-trip when a notify callback
-    # is registered for this session. One-operation only — no scope buttons.
+    # is registered for this session, or a background child's lease carries one
+    # past its parent turn (#133514). One-operation only — no scope buttons.
     session_key = get_current_session_key()
-    try:
-        with _approval._lock:
-            notify_cb = _approval._gateway_notify_cbs.get(session_key)
-    except Exception:
-        notify_cb = None
+    notify_cb = _approval._gateway_notify_cb(session_key)
 
     if notify_cb is not None:
         approval_data = {

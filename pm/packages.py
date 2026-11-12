@@ -1394,10 +1394,12 @@ _release_digest_cache: dict[tuple, dict] = {}
 
 @register
 class LlamaCppCuda(LlamaCpp):
-    """CUDA 13.4 everywhere upstream builds it: 13.x drivers run any 13.x
-    runtime (minor-version compatibility), and 13.4 is the only line upstream
-    ships for win-arm64. Linux archives first appeared after b10964, and
-    upstream dropped win-cuda-13.3 at the same time.
+    """One CUDA 13 line everywhere upstream builds it, the only line upstream ships for
+    win-arm64: 13.4 through b12167, and 13.5 from b12170, after upstream's release workflow
+    moved (ggml-org/llama.cpp 3ed7284f2). A 13.x driver loads either runtime, but a GPU the
+    build carries no native code for (Turing, A100, Hopper, GB200/GB300) compiles the kernels
+    at load and needs a driver at least as new as the toolkit. Linux archives first appeared
+    after b10964, and upstream dropped win-cuda-13.3 at the same time.
 
     The engine archive carries no CUDA libraries (end users have no toolkit),
     so each target pins a second cudart archive too."""
@@ -1405,22 +1407,27 @@ class LlamaCppCuda(LlamaCpp):
     name = "llamacpp-cuda"
     backend = "cuda"
     assets = {
-        "win32-x64": "win-cuda-13.4-x64",
-        "win32-arm64": "win-cuda-13.4-arm64",
-        "linux-x64": "ubuntu-cuda-13.4-x64",
-        "linux-arm64": "ubuntu-cuda-13.4-arm64",
+        "win32-x64": "win-cuda-{toolkit}-x64",
+        "win32-arm64": "win-cuda-{toolkit}-arm64",
+        "linux-x64": "ubuntu-cuda-{toolkit}-x64",
+        "linux-arm64": "ubuntu-cuda-{toolkit}-arm64",
     }
+    # b12167's release notes name 13.5 files; the archives attached to it are 13.4 builds.
+    _FIRST_CUDA_13_5 = 12170
 
     def _asset_names(self, version: str, target: str) -> list[str]:
-        # Upstream names the Windows cudart zip without the build tag and the
-        # Linux one with it.
-        infix = self.assets[target]
+        # An engine installed before the package manager is adopted by the archive names of its
+        # own tag, so an older version keeps the toolkit upstream built it with. Upstream names
+        # the Windows cudart zip without the build tag and the Linux one with it.
+        toolkit = "13.5" if int(version) >= self._FIRST_CUDA_13_5 else "13.4"
+        infix = self.assets[target].format(toolkit=toolkit)
+        ext = "zip" if target.startswith("win32") else "tar.gz"
         cudart = (
             f"cudart-llama-bin-{infix}.zip"
             if target.startswith("win32")
             else f"cudart-llama-b{version}-bin-{infix}.tar.gz"
         )
-        return super()._asset_names(version, target) + [cudart]
+        return [f"llama-b{version}-bin-{infix}.{ext}", cudart]
 
     def stage(self, store: Store, staged: Path, version: str, target: str) -> None:
         """The Linux cudart tarball unpacks into its own top-level dir, but the

@@ -5,6 +5,7 @@ import pytest
 
 from gateway.platforms.event import MessageEvent
 from gateway.relay.adapter import RelayAdapter
+from gateway.relay.media import RelayMediaClient
 from gateway.session_envelope import _media_clause
 
 
@@ -16,6 +17,7 @@ async def test_localization_filters_flags_with_attachments(download, flags, tmp_
     local = str(tmp_path / "kept.txt")
     client = AsyncMock()
     client.download_with_name.side_effect = [None, (local, "downloaded.txt"), None]
+    client.is_relay_media_url = RelayMediaClient("https://connector.example", "gw1", "sec").is_relay_media_url
     adapter._get_media_client = lambda: client if download else None
     urls = ["https://connector.example/relay/media/dead", "https://example.com/kept.txt",
             "https://example.com/public.txt"]

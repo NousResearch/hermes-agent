@@ -118,16 +118,22 @@ def _is_sensitive_path(path: Path) -> bool:
     return any(part.lower() in _SENSITIVE_MANAGED_DIR_NAMES for part in path.parts)
 
 
-def _link_chain(start: Path) -> list[Path]:
-    """Every path a leaf symlink chain passes through after *start* (bounded like the kernel's loop limit)."""
+_LINK_CHAIN_MAX_HOPS = 40  # the kernel's symlink loop limit
+
+
+def _link_chain(start: Path) -> Optional[list[Path]]:
+    """Every path a leaf symlink chain passes through after *start*, or None past the hop bound.
+
+    Each hop is listed raw and with its parent canonicalized: ``d/srv.json`` with ``d -> mcp-tokens``
+    only names the credential dir once ``d`` is resolved."""
     hops, current = [], start
-    for _ in range(40):
+    for _ in range(_LINK_CHAIN_MAX_HOPS):
         try:
             current = Path(os.path.dirname(current), os.readlink(current))
         except OSError:
-            break
-        hops.append(current)
-    return hops
+            return hops
+        hops += (current, Path(os.path.realpath(current.parent), current.name))
+    return None
 
 
 def _refuse_sensitive_write(target: Path, requested: str, root: Optional[Path] = None) -> None:
@@ -148,7 +154,7 @@ def _refuse_sensitive_write(target: Path, requested: str, root: Optional[Path] =
     if not anchor.is_absolute():
         anchor = root / anchor if root is not None else None
     hops = _link_chain(anchor) if anchor is not None else []
-    if any(_is_sensitive_path(p) for p in (Path(requested), target, Path(os.path.realpath(target)), *hops)):
+    if hops is None or any(_is_sensitive_path(p) for p in (Path(requested), target, Path(os.path.realpath(target)), *hops)):
         raise HTTPException(status_code=403, detail="Writing sensitive files is not allowed")
 
 

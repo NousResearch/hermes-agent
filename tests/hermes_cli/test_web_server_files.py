@@ -1048,3 +1048,39 @@ def test_managed_writes_refuse_a_credential_name_mid_link_chain(forced_files_cli
     plain = root / "plain-alias.txt"  # an ordinary chain is still writable
     plain.symlink_to(store)
     assert _refused_writes(client, plain) == (200, 200)
+
+
+@pytest.mark.require_symlinks
+def test_managed_writes_refuse_a_credential_dir_behind_a_symlinked_parent(forced_files_client):
+    """``alias2.txt -> d/srv.json`` with ``d -> mcp-tokens``: the hop's raw text names ``d``, not the
+    credential dir, so each hop is also checked with its parent directory canonicalized."""
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+    store = root / "token-store"
+    store.write_text("TOKEN=1\n")
+    (root / "mcp-tokens").mkdir()
+    (root / "mcp-tokens" / "srv.json").symlink_to("../token-store")
+    (root / "d").symlink_to("mcp-tokens", target_is_directory=True)
+    alias = root / "alias2.txt"
+    alias.symlink_to("d/srv.json")
+
+    for target in (alias, "alias2.txt"):
+        assert _refused_writes(client, target) == (403, 403), repr(target)
+    assert store.read_text() == "TOKEN=1\n"
+
+
+@pytest.mark.require_symlinks
+def test_managed_writes_refuse_a_link_chain_past_the_hop_bound(forced_files_client):
+    """A chain longer than the 40-hop bound cannot be fully checked, so it is refused."""
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+    store = root / "plain-store"
+    store.write_text("safe\n")
+    previous = store
+    for i in range(45):
+        link = root / f"hop{i}.txt"
+        link.symlink_to(previous.name)
+        previous = link
+
+    assert _refused_writes(client, previous) == (403, 403)
+    assert store.read_text() == "safe\n"

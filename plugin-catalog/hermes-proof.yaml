@@ -1,7 +1,7 @@
 name: hermes-proof
 title: HermesProof
 repo: https://github.com/CodedAccorn/hermes-proof
-sha: e9ac4c3c5f0c64b61e57f63ff2900b7a210bdf68
+sha: 216afb3c1f75be3d4351399f7c4d814f23bb8e77
 description: Deterministically verify agent task outcomes and persist auditable evidence reports.
 maintainer: CodedAccorn
 tier: community

@@ -4011,7 +4011,6 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         # Otherwise it lands in _pending_messages as a follow-up turn and the answer is
         # discarded.  Same shape as the /approve deadlock fix (PR #4926): agent thread
         # blocked on Event.wait, message must reach the resolver before being a new turn.
-        # See #4926.
         if not cmd and event.allow_gateway_control:
             try:
                 from tools import clarify_gateway as _clarify_mod
@@ -4021,8 +4020,9 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
                 _has_text_clarify = False
             if _has_text_clarify:
                 logger.debug("[%s] Routing message to clarify text-intercept for %s", self.name, session_key)
+                from gateway.platforms.inline_turn_typing import dispatch_clarify_bypass
                 try:
-                    await self._dispatch_inline_reply(event)
+                    await dispatch_clarify_bypass(self, event, session_key)
                 except Exception as e:
                     logger.error("[%s] Clarify text-intercept dispatch failed: %s", self.name, e, exc_info=True)
                 return

@@ -9,6 +9,7 @@ import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { promisify } from 'node:util'
 
 import { isFallbackCommit } from './bundle-skew'
 import { removeBundleCliLinks } from './cli-provision'
@@ -39,7 +40,8 @@ export interface PayloadCopyHost {
   log: (line: string) => void
   progress?: BootProgress
   freeBytes?: (dir: string) => Promise<number>
-  liveExecutables?: () => Promise<string[]>
+  /** Paths live processes run from or hold open (/proc/<pid>/exe and /proc/<pid>/fd). */
+  livePaths?: () => Promise<string[]>
   isAlive?: (pid: number) => boolean
   pid?: number
 }
@@ -207,11 +209,19 @@ async function statfsFree(dir: string): Promise<number> {
   return stats.bavail * stats.bsize
 }
 
-async function procExecutables(): Promise<string[]> {
+async function procHeldPaths(): Promise<string[]> {
   const pids: string[] = (await fs.promises.readdir('/proc')).filter(name => /^\d+$/.test(name))
-  const exes: string[] = await Promise.all(pids.map(pid => fs.promises.readlink(`/proc/${pid}/exe`).catch(() => '')))
 
-  return exes.filter(Boolean)
+  const held: string[][] = await Promise.all(
+    pids.map(async (pid): Promise<string[]> => {
+      const fds: string[] = await fs.promises.readdir(`/proc/${pid}/fd`).catch((): string[] => [])
+      const links: string[] = [`/proc/${pid}/exe`, ...fds.map(fd => `/proc/${pid}/fd/${fd}`)]
+
+      return Promise.all(links.map(link => fs.promises.readlink(link).catch(() => '')))
+    })
+  )
+
+  return held.flat().filter(Boolean)
 }
 
 function pidAlive(pid: number): boolean {
@@ -236,11 +246,40 @@ async function lastUsed(build: string): Promise<number> {
   return (await fs.promises.stat(path.join(build, MARKER)).catch(() => null))?.mtimeMs ?? 0
 }
 
+const openFd = promisify(fs.open)
+const heldCopies = new Map<string, number>()
+
+/**
+ * Hold this build's marker open for the life of the process, then check it is still complete. An
+ * open Desktop runs Electron from its mount, so until its gateway starts nothing under the copy shows
+ * in /proc/<pid>/exe; the open marker is what tells another launch's cleanup the copy is in use.
+ */
+async function holdPayloadCopy(build: string, key: string): Promise<boolean> {
+  const fd: number | null = await openFd(path.join(build, MARKER), 'r').catch(() => null)
+
+  if (fd === null || !(await markedComplete(build, key))) {
+    if (fd !== null) {
+      fs.close(fd, () => undefined)
+    }
+
+    return false
+  }
+
+  const previous: number | undefined = heldCopies.get(build)
+  heldCopies.set(build, fd)
+
+  if (previous !== undefined) {
+    fs.close(previous, () => undefined)
+  }
+
+  return true
+}
+
 const gib = (bytes: number): string => (bytes / 1024 ** 3).toFixed(1)
 
 /**
- * Remove copies of other builds that no running process executes from, and partial copies whose
- * writer died. `keepPrevious` keeps the most recently used other build so switching between two
+ * Remove copies of other builds that no live process runs from or holds open (an open Desktop holds
+ * its own; see holdPayloadCopy), and partial copies whose writer died. `keepPrevious` keeps the most recently used other build so switching between two
  * installed AppImages does not copy the payload again on every switch.
  */
 export async function collectStalePayloadCopies(
@@ -249,7 +288,7 @@ export async function collectStalePayloadCopies(
 ): Promise<string[]> {
   const { root, key } = host.plan
   const alive = host.isAlive ?? pidAlive
-  const exes: string[] = await (host.liveExecutables ?? procExecutables)()
+  const held: string[] = await (host.livePaths ?? procHeldPaths)()
   const doomed: string[] = []
   const builds: { dir: string; used: number }[] = []
 
@@ -276,8 +315,8 @@ export async function collectStalePayloadCopies(
   for (const { dir } of builds.slice(keepPrevious ? 1 : 0)) {
     const real: string = await fs.promises.realpath(dir)
 
-    if (exes.some(exe => exe.startsWith(`${real}${path.sep}`))) {
-      host.log(`[payload] keeping ${dir}: a running process executes from it`)
+    if (held.some(used => used.startsWith(`${real}${path.sep}`))) {
+      host.log(`[payload] keeping ${dir}: a running process uses it`)
 
       continue
     }
@@ -348,7 +387,7 @@ export async function preparePayloadCopy(host: PayloadCopyHost): Promise<string 
   const { root, key } = host.plan
   const build: string = path.join(root, key)
 
-  if (await markedComplete(build, key)) {
+  if (await holdPayloadCopy(build, key)) {
     const now = new Date()
     await fs.promises.utimes(path.join(build, MARKER), now, now).catch(() => undefined)
 
@@ -364,6 +403,10 @@ export async function preparePayloadCopy(host: PayloadCopyHost): Promise<string 
 
     await fs.promises.mkdir(partial, { recursive: true })
     await copyBuild(host, build, partial)
+
+    if (!(await holdPayloadCopy(build, key))) {
+      throw new Error(`${build} was removed as soon as it was copied`)
+    }
 
     return build
   } catch (error) {
@@ -401,21 +444,45 @@ export async function runnablePayloadResources(host: RunnableResourcesHost): Pro
   return build
 }
 
-let runnable: Promise<string> | null = null
+export type StablePayloadResources = (log: (line: string) => void, progress?: BootProgress) => Promise<string>
 
-/** Single-flight for the process: the first caller's progress reporter sees the one-time copy. */
-export function stablePayloadResources(log: (line: string) => void, progress?: BootProgress): Promise<string> {
-  runnable ??= runnablePayloadResources({
-    platform: process.platform,
-    env: process.env,
-    home: os.homedir(),
-    resourcesPath: process.resourcesPath,
-    stamp: INSTALL_STAMP,
-    readMountinfo: () => fs.promises.readFile('/proc/self/mountinfo', 'utf8'),
-    binDir: path.join(os.homedir(), '.local', 'bin'),
-    log,
-    progress
-  })
+/**
+ * Single-flight for the process: the first caller's progress reporter sees the one-time copy. A copy
+ * that is gone by a later call (removed by hand, or by a cleanup that ran before this launch held it)
+ * is prepared again instead of handed out.
+ */
+export function createStablePayloadResources(
+  hostFor: (log: (line: string) => void, progress?: BootProgress) => RunnableResourcesHost
+): StablePayloadResources {
+  let runnable: Promise<string> | null = null
 
-  return runnable
+  return async (log, progress) => {
+    const host: RunnableResourcesHost = hostFor(log, progress)
+    const pending: Promise<string> = (runnable ??= runnablePayloadResources(host))
+    const resources: string = await pending
+
+    if (resources === host.resourcesPath || (await markedComplete(resources, path.basename(resources)))) {
+      return resources
+    }
+
+    log(`[payload] ${resources} is gone; preparing this build's copy again`)
+
+    if (runnable === pending) {
+      runnable = null
+    }
+
+    return (runnable ??= runnablePayloadResources(host))
+  }
 }
+
+export const stablePayloadResources: StablePayloadResources = createStablePayloadResources((log, progress) => ({
+  platform: process.platform,
+  env: process.env,
+  home: os.homedir(),
+  resourcesPath: process.resourcesPath,
+  stamp: INSTALL_STAMP,
+  readMountinfo: () => fs.promises.readFile('/proc/self/mountinfo', 'utf8'),
+  binDir: path.join(os.homedir(), '.local', 'bin'),
+  log,
+  progress
+}))

@@ -7,6 +7,7 @@ vi.mock('@/hermes', () => ({
 
 import { saveHermesConfig } from '@/hermes'
 import { isVoiceStopCommand } from '@/lib/voice-stop-word'
+import { denyStorageWrites } from '@/test/jsdom'
 
 import {
   $bargeInEnabled,
@@ -26,13 +27,7 @@ it('keeps the desktop toggle local across config refreshes', async () => {
       localStorage.clear()
       vi.resetModules()
       const prefs = await import('./voice-prefs')
-      const write = vi.spyOn(localStorage, 'setItem')
-
-      if (fails) {
-        write.mockImplementation(() => {
-          throw new DOMException('Full', 'QuotaExceededError')
-        })
-      }
+      const restoreStorage = fails ? denyStorageWrites(new DOMException('Full', 'QuotaExceededError')) : null
 
       vi.mocked(saveHermesConfig).mockClear()
 
@@ -43,7 +38,7 @@ it('keeps the desktop toggle local across config refreshes', async () => {
         expect(saveHermesConfig).not.toHaveBeenCalled()
         expect(localStorage.getItem('hermes.desktop.autoSpeakReplies')).toBe(fails ? null : String(enabled))
       } finally {
-        write.mockRestore()
+        restoreStorage?.()
       }
     }
   }
@@ -55,13 +50,7 @@ it('migrates the legacy preference once, not on every refresh', async () => {
       localStorage.clear()
       vi.resetModules()
       const prefs = await import('./voice-prefs')
-      const write = vi.spyOn(localStorage, 'setItem')
-
-      if (fails) {
-        write.mockImplementation(() => {
-          throw new DOMException('Denied', 'SecurityError')
-        })
-      }
+      const restoreStorage = fails ? denyStorageWrites(new DOMException('Denied', 'SecurityError')) : null
 
       try {
         prefs.applyAutoSpeakFromConfig(null)
@@ -71,7 +60,7 @@ it('migrates the legacy preference once, not on every refresh', async () => {
         expect(prefs.$autoSpeakReplies.get()).toBe(enabled)
         expect(localStorage.getItem('hermes.desktop.autoSpeakReplies')).toBe(fails ? null : String(enabled))
       } finally {
-        write.mockRestore()
+        restoreStorage?.()
       }
     }
   }

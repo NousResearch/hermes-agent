@@ -1,8 +1,7 @@
 name: on-air
 repo: https://github.com/HomunculusLabs/hermes-on-air
 sha: d40b6ef97e34cd5bd89e8434cad2538a3c1080c3
-description: AI stream co-host with guarded chat, captions, optional voice, private
-  rehearsal, and operator controls.
+description: "AI stream co-host with guarded chat, captions, optional voice, private rehearsal, and operator controls. Disclosure — Runs loopback-only servers (OBS overlay, token-protected operator desk, private-show API) and, when you start a stage, a separate `hermes gateway run` process in a dedicated stage Hermes home it creates; reads public Twitch chat anonymously from irc.chat.twitch.tv; `hermes onair scene` downloads three.js and three-vrm from registry.npmjs.org (sha256-pinned); optional semantic assist (off by default) sends each queued draft, recent public chat and your show policy to api.typesafe.ai when set to `jev`."
 maintainer: HomunculusLabs
 tier: community
 category: platform

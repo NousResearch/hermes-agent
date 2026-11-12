@@ -116,7 +116,9 @@ def test_continue_runs_the_finished_child_on_its_transcript_route_and_toolsets()
     turn = model.turns[1]
     assert turn["message"] == "now add tests for it"
     assert [(m["role"], m["content"]) for m in turn["history"]] == [
-        ("user", "write the parser"), ("assistant", "done: write the parser")]
+        # The first turn is main's brief (context first, a cacheable prefix); the follow-up goes out bare.
+        ("user", "CONTEXT:\nrepo at /src\n\nTASK:\nwrite the parser"),
+        ("assistant", "done: CONTEXT:\nrepo at /src\n\nTASK:\nwrite the parser")]
     assert "done: now add tests for it" in json.dumps(done)
     stored = parent._session_db.get_messages_as_conversation(turn["session_id"])
     assert [m["content"] for m in stored][-2:] == ["now add tests for it", "done: now add tests for it"]
@@ -244,7 +246,8 @@ def test_profile_routed_child_continues_inside_its_profile_scope(tmp_path, monke
     again = model.builds[1]
     assert again["home"] == str(coder) and model.turns[1]["home"] == str(coder)
     assert (again["model"], again["api_key"]) == ("coder-model", "coder-key")
-    assert [m["content"] for m in model.turns[1]["history"]] == ["work as coder", "done: work as coder"]
+    brief = "CONTEXT:\nrepo at /src\n\nTASK:\nwork as coder"
+    assert [m["content"] for m in model.turns[1]["history"]] == [brief, f"done: {brief}"]
 
 
 @pytest.mark.parametrize("background", [False, True], ids=["synchronous", "sync-fallback"])

@@ -27,6 +27,10 @@ EFFORT_LADDER: tuple[str, ...] = ("none", "minimal", "low", "medium", "high", "x
 #: Widest OpenAI-compatible wire vocabulary (OpenRouter, Nous Portal).
 OPENAI_COMPAT_WIRE_EFFORTS: tuple[str, ...] = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
 
+#: Google's ``generativelanguage.googleapis.com/v1beta/openai`` shim accepts exactly these and answers
+#: HTTP 400 "Invalid reasoning_effort" for Hermes' ``xhigh``/``max`` extensions.
+GOOGLE_OPENAI_COMPAT_EFFORTS: tuple[str, ...] = ("none", "minimal", "low", "medium", "high")
+
 #: OpenAI/Codex Responses per model generation (live-verified): ``minimal`` is rejected by
 #: both (clamps to low); ``max`` is gpt-5.6 / gpt-6-tier only (legacy = 5.5 and older).
 CODEX_GPT56_EFFORTS: tuple[str, ...] = ("none", "low", "medium", "high", "xhigh", "max")

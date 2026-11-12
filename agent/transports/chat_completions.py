@@ -12,7 +12,8 @@ from typing import Any
 from urllib.parse import urlparse
 
 from agent.reasoning_effort import (
-    GEMINI4_THINKING_LEVELS, KIMI_K3_EFFORTS, KIMI_K3_OVERRIDES, OPENAI_COMPAT_WIRE_EFFORTS, clamp_effort,
+    GEMINI4_THINKING_LEVELS, GOOGLE_OPENAI_COMPAT_EFFORTS, KIMI_K3_EFFORTS, KIMI_K3_OVERRIDES,
+    OPENAI_COMPAT_WIRE_EFFORTS, clamp_effort,
     clamp_reasoning_config, kimi_supported_efforts, requested_effort, tokenhub_effort,
 )
 from agent.message_metadata import DATA_USE, MESSAGE_UID, data_use_requirement
@@ -408,8 +409,31 @@ def _base_kwargs(model: str, sanitized: list, tools: Any, params: dict, profile:
     return api_kwargs
 
 
+def _clamp_google_openai_compat_effort(api_kwargs: dict[str, Any], base_url: Any) -> None:
+    """Clamp every effort field bound for Google's OpenAI-compat shim onto what it accepts.
+
+    The shim answers HTTP 400 "Invalid reasoning_effort" for ``xhigh``/``max``, so a global
+    ``agent.reasoning_effort: max`` made every Gemini model unusable through it. The effort can
+    come from a provider profile (``custom`` emits top-level ``reasoning_effort``), the legacy
+    path (``extra_body.reasoning``) or ``request_overrides``. Clamping here, on the shared tail,
+    covers all of them. The clamp only weakens (``clamp_effort``), and unknown names pass through.
+    """
+    if not _is_gemini_openai_compat_base_url(base_url):
+        return
+    if isinstance(api_kwargs.get("reasoning_effort"), str):
+        api_kwargs["reasoning_effort"] = clamp_effort(api_kwargs["reasoning_effort"], GOOGLE_OPENAI_COMPAT_EFFORTS)
+    extra_body = api_kwargs.get("extra_body")
+    reasoning = extra_body.get("reasoning") if isinstance(extra_body, dict) else None
+    if isinstance(reasoning, dict) and isinstance(reasoning.get("effort"), str):
+        effort = clamp_effort(reasoning["effort"], GOOGLE_OPENAI_COMPAT_EFFORTS)
+        if effort != reasoning["effort"]:
+            # Overrides can be reused by later requests to other providers.
+            api_kwargs["extra_body"] = {**extra_body, "reasoning": {**reasoning, "effort": effort}}
+
+
 def _finish_kwargs(api_kwargs: dict[str, Any], sanitized: list, params: dict, *, supports_prompt_cache_key: bool) -> dict[str, Any]:
-    """Tail shared by both build paths: content-addressed prompt_cache_key, then return."""
+    """Tail shared by both build paths: wire-effort clamps, content-addressed prompt_cache_key, then return."""
+    _clamp_google_openai_compat_effort(api_kwargs, params.get("base_url"))
     _add_prompt_cache_key(
         api_kwargs, messages=sanitized, tools=api_kwargs.get("tools"), supports_prompt_cache_key=supports_prompt_cache_key,
         session_id=params.get("session_id"), cache_scope_id=params.get("cache_scope_id"),

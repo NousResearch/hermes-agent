@@ -1372,7 +1372,7 @@ def _prepare_checkout_for_update(
     # A local terminal answers "keep local changes?" before anything moves (declining discards,
     # so nothing is stashed); a no-op update never asks. Forks stay unscoped: the upstream sync
     # lands on a ref fetched only later.
-    prompt_for_restore = not assume_yes and (gateway_mode or (sys.stdin.isatty() and sys.stdout.isatty()))
+    prompt_for_restore = not gateway_mode and not assume_yes and sys.stdin.isatty() and sys.stdout.isatty()
     ask_first = prompt_for_restore and not gateway_mode and (
         (not release_tag and not in_place_update and current_branch != branch)
         or _target_would_move_head(git_cmd, _m().PROJECT_ROOT, target_ref))

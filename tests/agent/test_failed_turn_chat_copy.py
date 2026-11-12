@@ -223,3 +223,17 @@ def test_model_caused_codes_stay_on_the_provider_layer_and_runtime_codes_on_gate
               for c in ("truncated", "empty_response", "invalid_response", "session_busy", "loop_error")}
     assert layers["truncated"] == layers["empty_response"] == layers["invalid_response"] == LAYER_PROVIDER
     assert layers["session_busy"] == layers["loop_error"] == LAYER_GATEWAY
+
+
+def test_max_iterations_no_summary_copy_names_a_real_config_key():
+    """The copy's escape hatch must be a key Hermes actually reads: ``agent.max_turns`` is the
+    per-turn cap (resolve_turn_limit); a ``max_iterations`` entry is written-but-ignored, so
+    the old advice silently changed nothing (#132073)."""
+    from agent.turn_failure_copy import site_copy
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+    copy = site_copy("max_iterations_no_summary", limit=7)
+
+    assert "agent.max_turns" in copy
+    assert "max_iterations" not in copy
+    assert "max_turns" in DEFAULT_CONFIG["agent"]

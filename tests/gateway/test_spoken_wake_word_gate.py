@@ -623,3 +623,36 @@ async def test_a_threaded_reply_stop_never_waits_on_an_earlier_voice_check(tmp_p
     finally:
         release.set()
 
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("other", [{"mimeType": "application/pdf"}, {"mimeType": "image/png"}])
+async def test_a_bluebubbles_memo_beside_a_file_sends_only_its_audio_to_stt_and_the_turn(tmp_path, monkeypatch, other):
+    """A group envelope with a voice memo and a PDF or photo: only the memo enters gate STT, and the
+    admitted turn still transcribes it (the file beside it never demotes it to an audio attachment)."""
+    import asyncio
+    import json
+    from gateway.run_inbound import GatewayInboundMixin
+    from plugins.platforms.bluebubbles.adapter import BlueBubblesAdapter
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = BlueBubblesAdapter(PlatformConfig(enabled=True, extra={
+        "server_url": "http://localhost:1234", "password": "secret", "require_mention": True,
+        "mention_patterns": PATTERNS, "voice_mention_patterns": True, "send_read_receipts": False}))
+    clip, doc = tmp_path / "memo.ogg", tmp_path / "file.bin"
+    clip.write_bytes(OGG)
+    doc.write_bytes(b"%PDF-1.4")
+    adapter._download_attachment = AsyncMock(side_effect=lambda guid, _att: str(clip if guid == "a1" else doc))
+    adapter.handle_message = AsyncMock()
+    body = json.dumps({"type": "new-message", "data": {
+        "guid": "m1", "text": "", "handle": {"address": "+15555550100"}, "isFromMe": False, "isGroup": True,
+        "chats": [{"guid": "iMessage;+;group-chat"}],
+        "attachments": [{"guid": "a1", "mimeType": "audio/ogg"}, {"guid": "d1", **other}]}}).encode()
+    request = SimpleNamespace(query={"password": "secret"}, headers={}, read=AsyncMock(return_value=body))
+    transcribe, calls = _stt("hermes, look at this")
+    with patch("tools.transcription_tools.transcribe_audio", side_effect=transcribe):
+        await adapter._handle_webhook(request)
+        await asyncio.sleep(0)
+
+    assert calls == [str(clip)]
+    event = adapter.handle_message.await_args.args[0]
+    _images, stt_paths, _audio_files, _videos = GatewayInboundMixin._classify_inbound_media(event, False)
+    assert stt_paths == [str(clip)]

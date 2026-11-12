@@ -1,0 +1,20 @@
+name: tradytics
+title: Tradytics
+repo: https://github.com/tradytics/skills
+sha: "c94cc8b85f044502d391958cd409de2560202677"
+version: "1.0.5"
+description: "Tradytics market data in Hermes through Tradytics' hosted MCP server (Streamable HTTP at https://tradytics.com/mcp, OAuth 2.1 sign-in with dynamic client registration and PKCE, no keys in config): live and historical options flow, dealer positioning and volatility, ranked dark pool prints, quotes and price history, fundamentals, SEC filings, insider, institutional and Congress trades, earnings and economic calendars, a full-market screener, Kalshi and Polymarket odds, Tradytics signals and the AI Fund. Bundles the tradytics skill, which teaches the agent every endpoint of the Tradytics REST API with its parameters and fields. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure: every tool call goes to Tradytics' hosted server (tradytics.com), signed in as the user through Tradytics' OAuth page; the tool list is served by that server at run time, so the pinned commit doesn't cover it. Every tool only reads. Tool results enter the session context and so reach the user's model provider. Hermes stores and refreshes the OAuth tokens. OAuth must be enabled with `hermes mcp add tradytics --url https://tradytics.com/mcp --auth oauth --connect-timeout 300`; the bundled mcp.json alone yields 401."
+maintainer: tradytics
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://tradytics.com/docs/mcp
+readme: true
+platforms: []
+known_issues:
+  - "Sign in once after installing: hermes mcp add tradytics --url https://tradytics.com/mcp --auth oauth --connect-timeout 300"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

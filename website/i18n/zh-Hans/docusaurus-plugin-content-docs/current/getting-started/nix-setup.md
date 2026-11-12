@@ -731,7 +731,7 @@ services.hermes-agent.settings.plugins.enabled = [
 
 该 flake 提供包含 `dev` 依赖组的可编辑 Python 环境，解释器主/次版本来自 PM 锁文件。
 `HERMES_PYTHON` 指向该解释器，不会把 Python 依赖安装到仓库内的 `.venv`。
-shell 还提供 Node.js 和运行时工具。npm hook 根据输入变更刷新 JS workspaces。
+shell 还提供 Node.js 和运行时工具。pnpm hook 根据输入变更刷新 JS workspaces。
 
 ```bash
 cd hermes-agent
@@ -748,8 +748,23 @@ hermes chat
 ```bash
 cd hermes-agent
 direnv allow    # 仅需一次
-# Nix 复用已构建的 Python 环境，npm hook 检查 JS 输入。
+# Nix 复用已构建的 Python 环境，pnpm hook 检查 JS 输入。
 ```
+
+### 更新 pnpm 锁文件
+
+flake 从一个 fixed-output pnpm store 构建所有 JavaScript 界面，其哈希保存在
+`nix/pnpm-deps-hash`。`pnpm-lock.yaml` 中新增、删除或重新解析某个包会改变这个哈希，
+在更新之前所有前端构建都会因哈希不匹配而失败。`hermes pm update --pnpm`、普通的
+`pnpm install` 和 `nix develop` 的 shell hook 只重写锁文件，不更新哈希。在仓库目录中运行：
+
+```bash
+nix run .#update-pnpm-lockfile
+```
+
+它会根据 manifest 更新 `pnpm-lock.yaml`，重新构建 `.#pnpm-deps` 以获取新哈希，写入
+`nix/pnpm-deps-hash`，并构建 `.#tui`、`.#web`、`.#webapp` 和 `.#desktop`。没有 Nix 时，
+复制 `nix` CI workflow 中 `pnpm-deps-hash` 任务输出的哈希。
 
 ### Flake 检查
 

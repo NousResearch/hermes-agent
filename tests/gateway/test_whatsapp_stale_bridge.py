@@ -60,6 +60,7 @@ def _make_adapter(bridge_script: str = "/tmp/test-bridge.js",
     adapter._session_path = Path(os.path.abspath(os.path.expanduser(str(session_path))))
     adapter._foreign_bridge_session = None  # mirror __init__; harness builds via __new__
     adapter._bridge_probe_timed_out = False
+    adapter._bridge_holder_unproven = False
     adapter._bridge_log_fh = None
     adapter._bridge_log = None
     adapter._bridge_process = None
@@ -82,27 +83,53 @@ def _make_adapter(bridge_script: str = "/tmp/test-bridge.js",
     return adapter
 
 
-def _mock_health(json_data, raise_on=None):
-    """Mock aiohttp.ClientSession whose GET returns 200 + *json_data*; ``raise_on`` "headers"/"body" times out that phase."""
-    mock_resp = MagicMock()
-    mock_resp.status = 200
-    mock_resp.json = AsyncMock(return_value=json_data, side_effect=asyncio.TimeoutError if raise_on == "body" else None)
+def _mock_health(json_data, raise_on=None, *, knows_token=True, reflects_bearer=False):
+    """Mock aiohttp.ClientSession for the challenge-first probe: ``GET /auth-proof`` answers an HMAC over the request's
+    challenge with the session's token (``knows_token``) or, for an impostor, with whatever bearer the request disclosed
+    (``reflects_bearer``) or nothing; ``GET /health`` returns 200 + *json_data*. ``raise_on`` "headers"/"body" times
+    out that phase. The factory exposes ``.requests`` = every ``(url, headers)`` the adapter sent."""
+    from plugins.platforms.whatsapp.adapter import _bridge_auth_proof
+
+    requests: list = []
+
+    def _get(url, **kwargs):
+        headers = kwargs.get("headers") or {}
+        requests.append((url, headers))
+        if raise_on == "headers":
+            raise TimeoutError
+        if url.endswith("/auth-proof"):
+            challenge = headers.get("X-Hermes-Bridge-Challenge", "")
+            token = _TEST_TOKEN if knows_token else headers.get("Authorization", "").removeprefix("Bearer ")
+            payload = {"authProof": _bridge_auth_proof(token, challenge)} if token else {}
+        else:
+            payload = json_data
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value=payload, side_effect=asyncio.TimeoutError if raise_on == "body" else None)
+        return _AsyncCM(mock_resp)
+
     mock_session = MagicMock()
-    mock_session.get = MagicMock(
-        return_value=_AsyncCM(mock_resp), side_effect=asyncio.TimeoutError if raise_on == "headers" else None)
+    mock_session.get = MagicMock(side_effect=_get)
     mock_session.close = AsyncMock()
-    return MagicMock(return_value=_AsyncCM(mock_session))
+    factory = MagicMock(return_value=_AsyncCM(mock_session))
+    factory.requests = requests
+    return factory
+
+
+_TEST_TOKEN = "test-bridge-token-with-enough-entropy-0123456789"
 
 
 def _setup_bridge_dir(tmp_path: Path) -> Path:
-    """Create a real bridge dir with bridge.js + package.json + creds."""
+    """Create a real bridge dir with bridge.js + bridge_auth.js + package.json + creds + this session's token."""
     bridge_dir = tmp_path / "whatsapp-bridge"
     bridge_dir.mkdir()
     (bridge_dir / "bridge.js").write_text("// current bridge code\n", encoding="utf-8")
+    (bridge_dir / "bridge_auth.js").write_text("// current auth code\n", encoding="utf-8")
     (bridge_dir / "package.json").write_text('{"name": "bridge"}\n', encoding="utf-8")
     session_path = tmp_path / "session"
     session_path.mkdir()
     (session_path / "creds.json").write_text("{}", encoding="utf-8")
+    (session_path / ".bridge-token").write_text(_TEST_TOKEN, encoding="utf-8")
     return bridge_dir
 
 
@@ -124,7 +151,7 @@ class TestStaleBridgeHandshake:
 
     @pytest.mark.asyncio
     async def test_restarts_bridge_when_read_receipt_config_changed(self, tmp_path):
-        from plugins.platforms.whatsapp.adapter import _file_content_hash
+        from plugins.platforms.whatsapp.adapter import _bridge_source_hash
 
         bridge_dir = _setup_bridge_dir(tmp_path)
         _fresh_node_modules(bridge_dir)
@@ -133,7 +160,7 @@ class TestStaleBridgeHandshake:
             session_path=tmp_path / "session",
         )
         adapter._send_read_receipts = True
-        disk_hash = _file_content_hash(bridge_dir / "bridge.js")
+        disk_hash = _bridge_source_hash(bridge_dir / "bridge.js")
         mock_client = _mock_health(
             {
                 "status": "connected",
@@ -171,7 +198,7 @@ class TestStaleBridgeHandshake:
         """Two profiles default to one bridge_port; only this profile's own session may be adopted. Another profile's
         bridge is never killed, even while it reports ``disconnected`` (startup, reconnect, QR wait), and neither is a
         port holder that gives no /health answer, which proves no ownership."""
-        from plugins.platforms.whatsapp.adapter import _file_content_hash
+        from plugins.platforms.whatsapp.adapter import _bridge_source_hash
 
         bridge_dir = _setup_bridge_dir(tmp_path)
         _fresh_node_modules(bridge_dir)
@@ -183,7 +210,7 @@ class TestStaleBridgeHandshake:
         mock_client = _mock_health(
             {
                 "status": status,
-                "scriptHash": _file_content_hash(bridge_dir / "bridge.js"),
+                "scriptHash": _bridge_source_hash(bridge_dir / "bridge.js"),
                 "sendReadReceipts": False,
                 "session": str(reported),
             },
@@ -216,6 +243,104 @@ class TestStaleBridgeHandshake:
             assert "bridge_port" in adapter._fatal_error_message
         if fatal == "whatsapp_bridge_foreign_session":
             assert str(reported) in adapter._fatal_error_message
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("impostor", ["silent", "reflects-bearer"])
+    async def test_listener_without_the_session_token_is_never_adopted_and_never_learns_it(self, tmp_path, impostor):
+        """#83395: a local process that bound the port first and mirrors /health (scriptHash is derivable from the
+        shipped source) must neither be adopted nor be handed the bearer. The adapter's first request carries only a
+        challenge; a listener that cannot HMAC it with the session token is replaced, and every request it ever saw
+        was credential-free."""
+        from plugins.platforms.whatsapp.adapter import _bridge_source_hash
+
+        bridge_dir = _setup_bridge_dir(tmp_path)
+        _fresh_node_modules(bridge_dir)
+        adapter = _make_adapter(bridge_script=str(bridge_dir / "bridge.js"), session_path=tmp_path / "session")
+        mock_client = _mock_health(
+            {"status": "connected", "scriptHash": _bridge_source_hash(bridge_dir / "bridge.js"),
+             "sendReadReceipts": False, "session": str(tmp_path / "session")},
+            knows_token=False, reflects_bearer=(impostor == "reflects-bearer"),
+        )
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 1
+        mock_proc.returncode = 1
+
+        with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
+             patch("aiohttp.ClientSession", mock_client), \
+             patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock), \
+             patch("plugins.platforms.whatsapp.adapter._kill_stale_bridge_by_pidfile"), \
+             patch("plugins.platforms.whatsapp.adapter._kill_port_process"), \
+             patch("plugins.platforms.whatsapp.adapter.spawn_owned", return_value=mock_proc) as mock_popen, \
+             patch.object(adapter, "_acquire_platform_lock", return_value=True, create=True):
+            assert await adapter.connect() is False  # not adopted; the replacement bridge "died" (mock) → False
+
+        mock_popen.assert_called_once()
+        # The fresh bridge gets a fresh token (persisted for cron), so whatever the impostor saw is already dead.
+        spawned_token = mock_popen.call_args.kwargs["env"]["HERMES_WHATSAPP_BRIDGE_TOKEN"]
+        assert spawned_token != _TEST_TOKEN and len(spawned_token) >= 32
+        assert (tmp_path / "session" / ".bridge-token").read_text(encoding="utf-8") == spawned_token
+        assert all("Authorization" not in headers for _url, headers in mock_client.requests), mock_client.requests
+        assert [url.rsplit("/", 1)[1] for url, _ in mock_client.requests] == ["auth-proof"] * len(mock_client.requests)
+
+    @pytest.mark.asyncio
+    async def test_other_profiles_bridge_that_cannot_prove_our_token_is_left_running(self, tmp_path):
+        """Each profile's bridge holds its own token, so another profile's live bridge on the shared default port fails
+        this session's proof. It must be reported, never killed by port and never replaced."""
+        from plugins.platforms.whatsapp.adapter import _bridge_source_hash
+
+        bridge_dir = _setup_bridge_dir(tmp_path)
+        _fresh_node_modules(bridge_dir)
+        adapter = _make_adapter(bridge_script=str(bridge_dir / "bridge.js"), session_path=tmp_path / "session")
+        mock_client = _mock_health(
+            {"status": "connected", "scriptHash": _bridge_source_hash(bridge_dir / "bridge.js"),
+             "sendReadReceipts": False, "session": str(tmp_path / "other-profile-session")},
+            knows_token=False,
+        )
+
+        with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
+             patch("aiohttp.ClientSession", mock_client), \
+             patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock), \
+             patch("plugins.platforms.whatsapp.adapter._kill_stale_bridge_by_pidfile") as mock_kill_pidfile, \
+             patch("plugins.platforms.whatsapp.adapter._kill_port_process") as mock_kill_port, \
+             patch("plugins.platforms.whatsapp.adapter._port_listener_pids", return_value=[4242]), \
+             patch("plugins.platforms.whatsapp.adapter.spawn_owned", return_value=MagicMock()) as mock_popen, \
+             patch.object(adapter, "_acquire_platform_lock", return_value=True, create=True):
+            assert await adapter.connect() is False
+
+        mock_kill_port.assert_not_called()
+        mock_popen.assert_not_called()
+        mock_kill_pidfile.assert_called_once()  # our own stale bridge may still be reaped, by identity only
+        assert adapter._fatal_error_code == "whatsapp_bridge_foreign_session"
+        assert adapter._fatal_error_retryable is False
+        assert f"nothing on port {adapter._bridge_port} was stopped" in adapter._fatal_error_message
+        assert all("Authorization" not in headers for _url, headers in mock_client.requests)
+        assert (tmp_path / "session" / ".bridge-token").read_text(encoding="utf-8") == _TEST_TOKEN  # no spawn, no rotation
+
+    @pytest.mark.asyncio
+    async def test_adopted_bridge_is_driven_with_the_bearer(self, tmp_path):
+        """A healthy own-session bridge that proves the token is adopted and every later request to it is authenticated."""
+        from plugins.platforms.whatsapp.adapter import _bridge_source_hash
+
+        bridge_dir = _setup_bridge_dir(tmp_path)
+        _fresh_node_modules(bridge_dir)
+        adapter = _make_adapter(bridge_script=str(bridge_dir / "bridge.js"), session_path=tmp_path / "session")
+        mock_client = _mock_health(
+            {"status": "connected", "scriptHash": _bridge_source_hash(bridge_dir / "bridge.js"),
+             "sendReadReceipts": False, "session": str(tmp_path / "session")})
+
+        with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
+             patch("aiohttp.ClientSession", mock_client), \
+             patch("plugins.platforms.whatsapp.adapter.asyncio.create_task"), \
+             patch("plugins.platforms.whatsapp.adapter.spawn_owned") as mock_popen, \
+             patch.object(adapter, "_acquire_platform_lock", return_value=True, create=True):
+            assert await adapter.connect() is True
+
+        mock_popen.assert_not_called()
+        probe, health = mock_client.requests
+        assert probe[0].endswith("/auth-proof") and "Authorization" not in probe[1]
+        assert health[0].endswith("/health") and health[1]["Authorization"] == f"Bearer {_TEST_TOKEN}"
+        # The long-lived session (send/edit/poll) carries the bearer as a default header.
+        assert mock_client.call_args.kwargs["headers"] == {"Authorization": f"Bearer {_TEST_TOKEN}"}
 
 
 class TestDepRefreshStamp:

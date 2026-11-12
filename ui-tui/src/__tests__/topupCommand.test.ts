@@ -1,8 +1,8 @@
+import type { BillingStateResponse } from '@hermes/shared/gateway-types'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { getOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import { topupCommands } from '../app/slash/commands/topup.js'
-import type { BillingStateResponse } from '../gatewayTypes.js'
 import { t } from '../i18n/runtime.js'
 
 vi.mock('../lib/openExternalUrl.js', () => ({

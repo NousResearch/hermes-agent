@@ -82,7 +82,8 @@ def cmd_set_journal_mode(args) -> int:
     # timeout=0: any opener that appeared between the scan and the flip makes the pragma fail with
     # 'database is locked' instead of sneaking the switch between a writer's transactions.
     try:
-        conn = sqlite3.connect(str(db_path), timeout=0.0, isolation_level=None)
+        from hermes_cli.sqlite_safe_read import connect_tracked
+        conn = connect_tracked(str(db_path), timeout=0.0, isolation_level=None, tracking_path=db_path)
     except (OSError, sqlite3.Error) as exc:
         print(f"✗ Cannot open {db_path}: {exc}")
         return 1

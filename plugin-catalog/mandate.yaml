@@ -1,0 +1,22 @@
+name: mandate
+repo: https://github.com/JoeProAI/mandate
+sha: 4313f6196b6b8f0ccf35fd3bf499182d7814a7bf
+subdir: ""
+description: Learned least-privilege for cron jobs. Observes what a job does, proposes an argument-level mandate, and after human approval blocks out-of-mandate tool calls.
+maintainer: JoeProAI
+tier: community
+category: automation
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/JoeProAI/mandate#readme
+version: "0.1.0"
+readme: true
+platforms: [linux, macos]
+title: Mandate
+known_issues:
+  - "Enforces only for cron runs and chat sessions bound with /mandate scope; other interactive sessions are not affected."
+  - "Commands that hide their intent (bash -c, eval, python -c, pipes into sh) are blocked unless allowed verbatim."
+capabilities:
+  provides_tools: [mandate_status]
+  provides_hooks: [pre_tool_call, post_tool_call]
+  provides_middleware: []
+  requires_env: []

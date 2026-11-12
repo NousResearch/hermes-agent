@@ -8,7 +8,7 @@
  * therefore performs the same dial → commit → re-home the statusbar switcher
  * does, against a real backend — not a stub.
  *
- * Prerequisite: `npm run build` must have been run so dist/ exists, and the
+ * Prerequisite: `pnpm run build` must have been run so dist/ exists, and the
  * repo's Python venv (`.venv`) must exist for both backends.
  */
 

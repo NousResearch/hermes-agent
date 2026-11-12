@@ -117,9 +117,7 @@ def classify_jobs(api_jobs: list[dict]) -> tuple[dict[str, str], list[str], dict
     job_urls: dict[str, str] = {}
 
     for job in api_jobs:
-        name = job.get("name", "unknown")
-        if job.get("_workflow_name"):
-            name = f"{job['_workflow_name']} / {name}"
+        name = _display_name(job)
         if name in _INFRA_JOBS:
             continue
         status = job.get("status", "")
@@ -137,6 +135,34 @@ def classify_jobs(api_jobs: list[dict]) -> tuple[dict[str, str], list[str], dict
         # else: unknown status → skip
 
     return completed, pending, job_urls
+
+
+def _display_name(job: dict) -> str:
+    name = job.get("name", "unknown")
+    return f"{job['_workflow_name']} / {name}" if job.get("_workflow_name") else name
+
+
+def split_failed_steps(
+    api_jobs: list[dict], completed: dict[str, str], job_urls: dict[str, str],
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Report each failed step of a failed job as its own entry, for the comment only.
+
+    One job can run several checks as steps (repo-guards.yml, lint.yml). An entry per red step
+    names the check, and lets a review status whose ``source`` is in the step name cover it. A
+    failed job with no failed step (a timeout) keeps its own entry.
+    """
+    entries, urls = dict(completed), dict(job_urls)
+    for job in api_jobs:
+        name = _display_name(job)
+        red = [s.get("name", "") for s in job.get("steps") or [] if s.get("conclusion") == "failure"]
+        if entries.get(name) != "failure" or not red:
+            continue
+        del entries[name]
+        for step in red:
+            entries[f"{name} / {step}"] = "failure"
+            if name in job_urls:
+                urls[f"{name} / {step}"] = job_urls[name]
+    return entries, urls
 
 
 # ---------------------------------------------------------------------------
@@ -616,8 +642,9 @@ def run(
         all_done = not pending and runs_completed
         current_commit_info = _commit_info_for_state(commit_info, pending=not all_done)
 
+        by_check, check_urls = split_failed_steps(jobs, completed, job_urls)
         body = build_comment_body(
-            asm, completed, pending, run_url, job_urls,
+            asm, by_check, pending, run_url, check_urls,
             merged_json,
             current_commit_info,
             waiting=not runs_completed,

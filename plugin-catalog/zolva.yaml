@@ -1,0 +1,30 @@
+name: zolva
+title: Zolva
+repo: https://github.com/zolvaagent/hermes-zolva
+sha: 17516f666abcc422f0302bae7be3ca2d9f6d2139
+description: >-
+  Read Zolva's trading agents on Robinhood Chain (tokenized US stocks and ETFs, ETH and BTC, and
+  Lighter perps) through Zolva's hosted MCP server (Streamable HTTP, no sign-in, no API key):
+  published agents with their return against simply holding the same markets, every hourly buy,
+  sell, short, cover or hold with the agent's own reason, market prices and recent trades. Two
+  skills are bundled: zolva-agents for questions, and zolva-trade-watch, an hourly cron job that
+  sends an agent's new trades to the user's chat and stays silent otherwise. Portable Agent Plugins
+  v1 package (plugin.json + mcp.json + skills/), configuration and Markdown only. Disclosure:
+  hosted-only connector with no local code; every tool call goes to Zolva's MCP server at
+  zolvaagent.app/mcp (60 requests a minute per IP). All five tools are read only and annotated
+  readOnlyHint; none signs, sends, spends or reads a key, and the package marks the server
+  untrusted. The data is paper trading (virtual money at real prices), not investment advice. Tool
+  results enter the session context and so reach the user's model provider. The tool list comes
+  from Zolva's server at run time, so the pinned commit doesn't cover it.
+maintainer: zolvaagent
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://zolvaagent.app/docs/mcp
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

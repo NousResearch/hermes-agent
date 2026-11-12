@@ -1,0 +1,21 @@
+name: hermes-issue-orchestrator
+repo: https://github.com/krantikaridev/hermes-issue-orchestrator
+sha: "9996a56a4dbdcf2bcd56f31f6940425b205af8da"
+description: "GitHub issues as Hermes's task queue - claim, post progress with token counts, and hand off. Disclosure — Posts public comments to the GitHub repository you configure using your token, including an automatic progress comment with token counts after each turn that holds a claimed issue (turn off with `progress_enabled: false`; the model's reply text is included only when `progress_include_reply` is on), and its tools can label, assign, close and reassign issues there without a Hermes approval prompt."
+maintainer: krantikaridev
+tier: community
+category: automation
+requires_hermes: ">=0.22.0"
+version: "0.1.0"
+readme: true
+title: Hermes Issue Orchestrator
+capabilities:
+  provides_tools:
+    - issue_claim
+    - issue_comment_progress
+    - issue_handoff
+  provides_hooks:
+    - post_llm_call
+    - post_api_request
+  provides_middleware: []
+  requires_env: []

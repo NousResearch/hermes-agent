@@ -1,0 +1,29 @@
+name: tap-proof
+title: Tap Proof
+repo: https://github.com/ladyFaye1998/hermes-tap-proof
+sha: f1de5b62d7a8100fb0a71110eb20cdd660018934
+description: >-
+  Find the exact CSS viewport widths where a control on a local web page
+  loses its center hit. Tap Proof reports the blocking element and saves
+  boundary screenshots and a receipt. Replay the same check after a fix.
+  Disclosure — launches a bounded Node subprocess and headless Edge,
+  requests same-origin resources over loopback HTTP, and writes receipts
+  and witness PNGs to the active profile's plugin data. The tool returns
+  the saved paths.
+maintainer: ladyFaye1998
+tier: community
+category: tools
+requires_hermes: ">=0.23.1"
+docs_url: https://github.com/ladyFaye1998/hermes-tap-proof#readme
+version: "0.1.0"
+readme: true
+platforms: [windows]
+known_issues:
+  - Requires a local Windows Hermes backend, Microsoft Edge, Node.js 20+, and a manual npm ci in the installed plugin's browser directory.
+  - Measures the target center at one viewport height and page state. A check covers up to 800 integer CSS widths.
+  - Requires a same-origin loopback HTTP page. Redirects and cross-origin resources are unsupported.
+capabilities:
+  provides_tools: [tap_proof]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

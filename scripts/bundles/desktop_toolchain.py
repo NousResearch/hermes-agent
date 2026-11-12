@@ -32,6 +32,7 @@ def bootstrap_environment(source: Path, work: Path, cache: Path,
              "HERMES_PYTHON_SRC_ROOT", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME",
              "UV_CACHE_DIR", "NPM_CONFIG_CACHE", "NPM_EXECPATH", "NPM_NODE_EXECPATH",
              "NPM_CONFIG_USERCONFIG", "NPM_CONFIG_GLOBALCONFIG", "NPM_CONFIG_PREFIX",
+             "PNPM_CONFIG_STORE_DIR", "PNPM_CONFIG_CACHE_DIR", "PNPM_CONFIG_STATE_DIR",
              "PYTHONUTF8", "PYTHONDONTWRITEBYTECODE", "CARGO_HOME", "RUSTUP_HOME", "CARGO_TARGET_DIR"}
     result = {key: value for key, value in env.items() if key.upper() not in _INSTALL_ENV | owned}
     canonical = {key.upper(): value for key, value in env.items()}
@@ -58,7 +59,10 @@ def bootstrap_environment(source: Path, work: Path, cache: Path,
         # vcpkg's default binary cache is under LOCALAPPDATA, which moved into the
         # job-local home above; keep its archives in the transported native domain.
         "VCPKG_DEFAULT_BINARY_CACHE": str(cache / "native/vcpkg-archives"),
-        "npm_config_cache": str(cache / "npm"),
+        # Only the package store is reusable; pnpm's metadata cache and state stay
+        # in the job-local XDG directories above.
+        "pnpm_config_store_dir": str(cache / "pnpm/store"),
+        # pnpm reads registry and auth from npm's user config.
         "npm_config_userconfig": os.devnull,
         "PYTHONUTF8": "1", "PYTHONDONTWRITEBYTECODE": "1",
     })
@@ -115,7 +119,7 @@ def prepare_tools(source: Path, work: Path, cache: Path,
         # python-build-standalone's sysconfig names its absent build-host tools.
         prepared.setdefault("AR", "/usr/bin/ar")
         prepared.setdefault("CC", "clang")
-    for name in ("uv", "npm"):
+    for name in ("uv", "pnpm"):
         pm.ensure(name, explicit=True)
     binaries = {}
     for name in ("python", "node"):
@@ -123,7 +127,7 @@ def prepare_tools(source: Path, work: Path, cache: Path,
         if installed is None or installed.binary is None or not installed.binary.is_file():
             raise FileNotFoundError(f"PM did not prepare a native {name} executable")
         binaries[name] = installed.binary
-    prepared = pm.env_for("python", "npm", base_env=prepared)
+    prepared = pm.env_for("python", "pnpm", base_env=prepared)
     uv_cache = native_cache_path(cache, prepared)
     if os.name == "nt":
         uv_cache = short_alias(uv_cache, work / "uv")

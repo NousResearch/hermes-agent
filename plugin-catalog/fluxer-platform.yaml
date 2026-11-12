@@ -1,16 +1,20 @@
 name: fluxer-platform
 repo: https://github.com/elkimek/hermes-fluxer-plugin
-sha: 6d2ef9767d0a0811a3ae26a76290b9b1e4636d4c
-description: Fluxer gateway adapter for Hermes Agent. Native Fluxer integration using Fluxer's bot REST
-  API for outbound messages, Gateway WebSocket events for inbound dispatches, message edits, agent-requested
-  reactions, pins, reply references, media delivery, and channel-directory enumeration. Component button
+sha: f7765e0fd334432dc625adcc4b4435c943df77ed
+version: "0.6.0"
+description: "Fluxer messaging with reliable replies, attachments, rich cards, read-only guild tools, and opt-in threads and experimental voice. Connects to Fluxer and configured speech services; optional voice runs background Python processes and reads configured local context and session data. Disclosure — Reads Hermes's own session store (state.db, read-only) to name Fluxer threads after session titles; its four model tools read Fluxer channel messages, search results, guild members and the guild audit log through the configured Fluxer API (api.fluxer.app or FLUXER_BASE_URL), limited to the home guild unless FLUXER_TOOL_SCOPE=global. Optional voice (off by default) runs background Python processes, reads a configured context file and session database, runs a user-configured local speech-to-text command through the shell, and sends voice audio and reply text to the speech services you configure: api.x.ai, api.groq.com, api.elevenlabs.io, or a Kokoro endpoint you set (FLUXER_VOICE_KOKORO_URL)."
 maintainer: elkimek
 tier: community
 category: platform
 docs_url: https://github.com/elkimek/hermes-fluxer-plugin#readme
 capabilities:
-  provides_tools: []
-  provides_hooks: []
+  provides_tools:
+    - flux_recall
+    - flux_search
+    - flux_members
+    - flux_audit
+  provides_hooks:
+    - pre_command
   provides_middleware: []
   requires_env:
-  - name
+    - FLUXER_BOT_TOKEN

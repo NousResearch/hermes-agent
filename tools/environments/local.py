@@ -247,18 +247,29 @@ def _inject_session_context_env(env: dict) -> None:
     Cross-session leak guard: the vars' last-writer-wins ``os.environ`` mirror may
     belong to another turn on a concurrent multi-session host, so once the session
     context is engaged ContextVars are authoritative — a bound value (incl. "") wins
-    and an _UNSET var is STRIPPED, not inherited. An unengaged CLI keeps the mirror."""
+    and an _UNSET var is STRIPPED, not inherited. An unengaged CLI keeps the mirror.
+    Then the plugins' values for the child's own session (``ctx.register_session_env``), minus
+    every name :func:`_scrub_credentials` strips (Tier 1, incl. backend ``strip_env_keys``, and
+    Tier 2), so a value never puts back a credential the scrub removed; ``None`` unsets a name."""
     try:
-        from gateway.session_context import _UNSET, _VAR_MAP, session_context_engaged
+        from gateway.session_context import (
+            _UNSET, _VAR_MAP, _bound_session_value, session_context_engaged)
     except Exception:
         return
     _engaged = session_context_engaged()
-    for var_name, var in _VAR_MAP.items():
-        value = var.get()
+    for var_name in _VAR_MAP:
+        value = _bound_session_value(var_name)
         if value is not _UNSET:
             env[var_name] = "" if value is None else str(value)
         elif _engaged:
             env.pop(var_name, None)
+    from hermes_cli.plugins_session_env import resolve_session_env
+    if plugin_env := resolve_session_env(env.get("HERMES_SESSION_ID", "")):
+        for name, value in _scrub_credentials(plugin_env, inherit_credentials=False).items():
+            if value is None:
+                env.pop(name, None)
+            else:
+                env[name] = value
 
 
 def _filter_secret_env(
@@ -1060,6 +1071,11 @@ class LocalEnvironment(BaseEnvironment):
             name for name in merged
             if isinstance(name, str) and _matches_terminal_first_party_prefix(name)))
 
+    def _snapshot_excluded_passthrough_names(self) -> tuple[str, ...]:
+        """Plus the plugins' session env names: each command gets its own session's values."""
+        from hermes_cli.plugins_session_env import session_env_names
+        return tuple(sorted({*super()._snapshot_excluded_passthrough_names(), *session_env_names()}))
+
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict | None = None, persistent: bool = True):
         super().__init__(cwd=_resolve_local_initial_cwd(cwd), timeout=timeout, env=env, persist_env=persistent)
         self.init_session()
@@ -1155,15 +1171,15 @@ class LocalEnvironment(BaseEnvironment):
             # The command dies with this process however it dies: a SIGKILLed / OOM-killed host left a
             # running `npm run dev` or `sleep` on init. Released once the wait returns (see below).
             own_process_groups([proc.pid])
-            proc._hermes_owned_pgid = proc.pid
-            with contextlib.suppress(ProcessLookupError):
-                proc._hermes_pgid = os.getpgid(proc.pid)
-                # Record the group leader's start-time fingerprint so _kill_process can
-                # detect PID/PGID recycling before signalling the group (#43044). The
-                # psutil fallback in get_process_start_time captures a baseline on every
-                # platform, macOS included.
-                from gateway.status import get_process_start_time
-                proc._hermes_pgid_start = get_process_start_time(proc.pid)
+            # start_new_session: the group is the leader's pid by construction (a getpgid read-back
+            # fails on macOS once a fast `cmd &` wrapper has exited, losing the group).
+            proc._hermes_owned_pgid = proc._hermes_pgid = proc.pid
+            # Record the group leader's start-time fingerprint so _kill_process can
+            # detect PID/PGID recycling before signalling the group (#43044). The
+            # psutil fallback in get_process_start_time captures a baseline on every
+            # platform, macOS included.
+            from gateway.status import get_process_start_time
+            proc._hermes_pgid_start = get_process_start_time(proc.pid)
         if stdin_data is not None:
             _pipe_stdin(proc, stdin_data)
         return proc
@@ -1179,6 +1195,23 @@ class LocalEnvironment(BaseEnvironment):
             if (owned_pgid := getattr(proc, "_hermes_owned_pgid", None)) is not None:
                 proc._hermes_owned_pgid = None
                 release_process_groups([owned_pgid])
+
+    def _spawn_long_lived(self, argv: list[str], child_env: dict | None) -> subprocess.Popen:
+        """A long-lived process on this host: the same run environment as a command, owned so it and
+        its group die with Hermes however Hermes dies (``spawn_owned``), stdin/stdout as byte pipes.
+        ``_stop_long_lived`` kills the group and releases it."""
+        from hermes_cli.process_identity import spawn_owned
+        proc = spawn_owned(  # windows-footgun: ok — argv list, no shell; group kill gated on _IS_WINDOWS
+            list(argv), purpose="long-lived environment process",
+            env=_make_run_env({**self.env, **(child_env or {})}), cwd=self.cwd,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            **({"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}))
+        if not _IS_WINDOWS:
+            # spawn_owned starts a new session, so the group is the leader's pid by construction.
+            # Never read back with getpgid: a leader that already exited (a fast `cmd &; exit`) has
+            # no pgid on macOS, and the stop could then never reach the descendants it left behind.
+            proc._hermes_pgid = proc._hermes_owned_pgid = proc.pid
+        return proc
 
     def _kill_process(self, proc):
         """Kill the entire process group (all children)."""
@@ -1222,7 +1255,9 @@ class LocalEnvironment(BaseEnvironment):
 
     def cleanup(self):
         """Clean up temp files, including orphaned atomic-write snapshots
-        (``snap.tmp.<bashpid>``) a failed/interrupted mv could leave behind."""
+        (``snap.tmp.<bashpid>``) a failed/interrupted mv could leave behind, after stopping every
+        long-lived process this environment started."""
+        self.stop_all_processes()
         # See #38249.
         import glob
         try:

@@ -1,0 +1,10 @@
+name: adapt
+repo: https://github.com/OpeyemiMoses/adapt
+sha: 756956b06031fc73e98cc46675efe2413c94d87e
+description: "Persistent memory infrastructure layer for AI agents with episodic, semantic, procedural, and working memory, hybrid retrieval, and knowledge graph evolution."
+maintainer: Opeyemi Moses
+category: memory
+tier: community
+version: "0.1.0"
+requires_hermes: ">=0.20.0"
+readme: true

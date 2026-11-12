@@ -615,26 +615,31 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                     # is split again below. A plain first send would let the adapter split it and
                     # adopt only the LAST chunk as the preview; the next seal then overwrites that
                     # chunk with the head of the whole remainder (duplicated + lost text, #25349).
-                    await self._seal_overflow_heads(final=tick.got_done)
+                    sent_heads = await self._seal_overflow_heads(final=tick.got_done)
                     # Overflow split.  Native streaming bypasses this: the adapter
                     # truncates against the stream protocol's own limit.
                     if not self._use_native_streaming and self._first_send_overflows():
                         if await self._split_first_send(tick):
                             return
-                        if self._first_send_overflows():
-                            # A head send failed: keep the full text for the fallback final, and
-                            # skip the boundary reset below that would clear it. Still yield: the
-                            # buffer stays over the debounce threshold, so `continue` alone re-enters
-                            # the split on every pass and spins the loop without ever sleeping.
-                            self._signal_flush(tick.flush_event)
-                            await asyncio.sleep(0.05)
-                            continue
+                        sent_heads = True
+                    # Each sealed or split head awaited a send: /stop or /new may have landed.
+                    if sent_heads and self._turn_reset():
+                        await self._abandon_native_stream()
+                        return
+                    if not self._use_native_streaming and self._first_send_overflows():
+                        # A head send failed: keep the full text for the fallback final, and
+                        # skip the boundary reset below that would clear it. Still yield: the
+                        # buffer stays over the debounce threshold, so `continue` alone re-enters
+                        # the split on every pass and spins the loop without ever sleeping.
+                        self._signal_flush(tick.flush_event)
+                        await asyncio.sleep(0.05)
+                        continue
                     # The split tail goes out now, so a commentary or tool boundary drained in
                     # this tick still lands after it instead of being dropped.
                     await self._push_update(tick)
                     # /stop or /new may invalidate the turn while adapter I/O is awaited.
                     # Never retry a refused final send for the dead generation.
-                    if not self._run_still_current():
+                    if self._turn_reset():
                         await self._abandon_native_stream()
                         return
 
@@ -844,6 +849,8 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         reply_to = self._initial_reply_to_id
         heads_delivered = len(chunks) > 1
         for index, chunk in enumerate(chunks[:-1]):
+            if index and self._turn_reset():
+                return False  # /stop or /new landed during the previous head's send: run() exits
             new_id = await self._send_new_chunk(chunk, reply_to, final=tick.got_done, first=index == 0)
             if new_id == "__partial__":
                 # The first head landed in part: edits are over, got_done sends only the unseen tail.
@@ -872,6 +879,8 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         self._message_created_ts = None
         self._last_sent_text = ""
         self._last_edit_time = time.monotonic()
+        if len(chunks) > 1 and self._turn_reset():
+            return False  # a head was sent: run() abandons the dead turn instead of the tail
         if tick.got_done:
             tail_delivered = (not self._accumulated
                               or await self._send_or_edit(self._accumulated, finalize=True))
@@ -892,11 +901,15 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
     def _first_send_overflows(self) -> bool:
         return self._message_id is None and self._overflows()
 
-    async def _seal_overflow_heads(self, *, final: bool = False) -> None:
-        """Existing message overflowing: seal it with the head, start a new message for the rest."""
+    async def _seal_overflow_heads(self, *, final: bool = False) -> bool:
+        """Existing message overflowing: seal it with the head, start a new message for the rest.
+        True when a head was sent; stops once /stop or /new invalidated the turn mid-seal."""
         if final and self._ceiling_final_cut():
-            return  # the final edit would pass the reply's message cap: it goes out as a file
+            return False  # the final edit would pass the reply's message cap: it goes out as a file
+        sent = False
         while self._overflows() and self._message_id is not None and self._edit_supported:
+            if sent and self._turn_reset():
+                break
             cp_budget = _custom_unit_to_cp(self._accumulated, self._safe_limit, self._len_fn)
             split_at = self._accumulated.rfind("\n", 0, cp_budget)
             if split_at < cp_budget // 2:
@@ -908,12 +921,14 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             # rich-text pass now.  is_turn_final=False: a split head is not the
             # answer, so fresh-final must not mark the turn delivered on it.
             ok = await self._send_or_edit(chunk, finalize=True, is_turn_final=False)
+            sent = True
             if self._fallback_final_send or not ok:
                 break  # keep the full text intact for the fallback final send
             self._accumulated = self._accumulated[split_at:].lstrip("\n")
             self._message_id = None
             self._last_sent_text = ""
             self._turn_split_delivery = True
+        return sent
 
     async def _push_update(self, tick: _Tick) -> None:
         """Send/edit this tick's visible text (cursor-suffixed unless finalizing)."""

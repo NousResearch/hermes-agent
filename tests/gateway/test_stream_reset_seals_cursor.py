@@ -113,3 +113,36 @@ async def test_reset_while_the_final_edit_is_refused_sends_no_fallback_after_new
 
     assert sends == ["the dead turn's" + CURSOR], sends
     assert consumer.final_response_sent is False
+
+
+@pytest.mark.asyncio
+async def test_a_reset_during_an_overflow_head_send_sends_no_more_chunks():
+    """/new lands while the first head of a long answer is being sent: nothing more goes out."""
+    state = {"current": True, "after_reset": 0}
+
+    class _Adapter:
+        MAX_MESSAGE_LENGTH = 4096
+        SUPPORTS_MESSAGE_EDITING = True
+
+        def __init__(self):
+            self._next = 100
+
+        async def send(self, chat_id, content, reply_to=None, metadata=None):
+            if not state["current"]:
+                state["after_reset"] += 1
+            state["current"] = False  # the reset lands while this send is in flight
+            self._next += 1
+            return SimpleNamespace(success=True, message_id=str(self._next), raw_response=None)
+
+        async def edit_message(self, chat_id, message_id, content, *, finalize=False, metadata=None):
+            return SimpleNamespace(success=True, message_id=message_id, raw_response=None)
+
+    consumer = GatewayStreamConsumer(
+        _Adapter(), "-100123", run_still_current=lambda: state["current"],
+        config=StreamConsumerConfig(cursor=" ▉", edit_interval=0.01, buffer_threshold=1))
+    consumer.on_delta("word " * 2000)
+    consumer.finish()
+    await asyncio.wait_for(consumer.run(), 10)
+
+    assert state["after_reset"] == 0
+    assert consumer.final_response_sent is False

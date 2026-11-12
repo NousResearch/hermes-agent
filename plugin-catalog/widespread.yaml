@@ -2,17 +2,11 @@ name: widespread
 repo: https://github.com/TerexitariusStomp/hermes-browser
 subdir: src/plugins/widespread
 sha: a3436f05b37ca6f20c15630d191ea7966700ceab
-description: Earn verified-work bounties on the widespread protocol —
-  discover funded markets across every forge, claim one, ship a signed
-  dg-ship-1 attestation, watch the adjudicator, collect the payout. The
-  earning-side counterpart to payment plugins: wide_* tools let an agent
-  get paid for work it can prove, and the payer side (post a bounty,
-  accept a claim) is approval-gated by the human. Plain HTTPS to the live
-  bridge — no browser, no runtime dependency.
+description: "Earn verified-work bounties on the widespread protocol — discover funded markets across every forge, claim one, ship a signed dg-ship-1 attestation, watch the adjudicator, collect the payout. The earning-side counterpart to payment plugins: wide_* tools let an agent get paid for work it can prove, and the payer side (post a bounty, accept a claim) is approval-gated by the human. Plain HTTPS to the live bridge — no browser, no runtime dependency. Disclosure — sends claims, signed work attestations (commit SHAs, optional proof items) and bounty posts to the widespread bridge (widespread-bridge.widespread.workers.dev) and forge (code.widespread.fyi), overridable with WIDE_BRIDGE / WIDE_FORGE; keeps an Ed25519 agent signing seed (mode 0600) and a claim ledger under the profile's plugin-data/widespread; wide_post (model-chosen amount) and wide_accept (releases a payout) wait for your approval, and an \"always\" answer for wide_post covers later posts in the same amount band (up to $10, up to $100, over $100) while one for wide_accept covers every later accept."
 maintainer: TerexitariusStomp
 tier: community
 category: platform
-requires_hermes: ">=0.20"
+requires_hermes: ">=0.20.0"
 version: "0.1.0"
 docs_url: https://github.com/TerexitariusStomp/hermes-browser#readme
 platforms: [linux, macos, windows]

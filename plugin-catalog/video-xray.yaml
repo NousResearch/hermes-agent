@@ -12,7 +12,7 @@ tagline: >-
 
 # --- where to fetch (MUST be pinned) ---
 repo: https://github.com/LuuMoss/video-xray
-sha: 2da64e0784db15d00f929a71716d297717fe6691
+sha: e2a50d5c034aa117b47653483661e85a1abc6246
 
 # --- human copy (plain block scalars; the security disclosure is REQUIRED) ---
 description: >-
@@ -21,9 +21,9 @@ description: >-
   (local llama.cpp/Strata or cloud), timestamped dialogue from R2T2, Whisper, or any
   OpenAI-compatible cloud ASR, and a frame gallery of the key moments inside the job
   detail. Exports the report as Markdown or as a MiniMax-H3 integrated multimodal
-  description prompt. Ships the R2T2 engine worker source plus an optional Whisper
-  worker; the heavy R2T2 runtime binaries are user-supplied, nothing else is
-  downloaded. Spawns ffmpeg/ffprobe and local ASR worker subprocesses; network calls
+  description prompt. Ships the R2T2 engine worker source (the same code the panel
+  uses); the heavy R2T2 runtime binaries and any Whisper models are
+  user-supplied, nothing else is downloaded. Spawns ffmpeg/ffprobe and local ASR worker subprocesses; network calls
   go only to the user's own configured inference and cloud-ASR endpoints, never to
   third-party services; background analysis jobs run as worker threads tracked in a
   local job ledger. The panel is pure @hermes/plugin-sdk React and user-visible text
@@ -34,8 +34,8 @@ category: desktop            # drives the default platform/toolset behavior
 
 # --- discovery ---
 homepage: https://github.com/LuuMoss/video-xray
-docs_url: https://github.com/LuuMoss/video-xray/blob/2da64e0784db15d00f929a71716d297717fe6691/README.md
-version: 0.2.0               # the release pinned by the commit above (GitHub Release v0.2.0)
+docs_url: https://github.com/LuuMoss/video-xray/blob/v0.2.1/README.md
+version: 0.2.1               # the release pinned by the commit above (GitHub Release v0.2.1)
 requires_hermes: ">=0.22.1"  # composer contribution points (COMPOSER_AREAS)
 platforms: [windows]         # end-to-end verified on Windows only; the R2T2 runtime is Windows-first
 tags: [video, asr, transcription, vision, analysis, gallery, export, desktop-panel]
@@ -53,11 +53,11 @@ trust: community             # community-maintained
 hidden: false
 
 # --- official site showcase (optional; pinned to the same commit) ---
-image: https://raw.githubusercontent.com/LuuMoss/video-xray/2da64e0784db15d00f929a71716d297717fe6691/docs/screenshots/banner.png
+image: https://raw.githubusercontent.com/LuuMoss/video-xray/v0.2.1/docs/screenshots/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/LuuMoss/video-xray/2da64e0784db15d00f929a71716d297717fe6691/docs/screenshots/01-analysis-panel.png
-  - https://raw.githubusercontent.com/LuuMoss/video-xray/2da64e0784db15d00f929a71716d297717fe6691/docs/screenshots/03-params-dialog.png
-  - https://raw.githubusercontent.com/LuuMoss/video-xray/2da64e0784db15d00f929a71716d297717fe6691/docs/screenshots/11-gallery-frames-strip.png
-  - https://raw.githubusercontent.com/LuuMoss/video-xray/2da64e0784db15d00f929a71716d297717fe6691/docs/screenshots/10-asr-settings-dialog.png
-  - https://raw.githubusercontent.com/LuuMoss/video-xray/2da64e0784db15d00f929a71716d297717fe6691/docs/screenshots/04-job-detail.png
-  - https://raw.githubusercontent.com/LuuMoss/video-xray/2da64e0784db15d00f929a71716d297717fe6691/docs/screenshots/07-report-md.png
+  - https://raw.githubusercontent.com/LuuMoss/video-xray/v0.2.1/docs/screenshots/01-analysis-panel.png
+  - https://raw.githubusercontent.com/LuuMoss/video-xray/v0.2.1/docs/screenshots/03-params-dialog.png
+  - https://raw.githubusercontent.com/LuuMoss/video-xray/v0.2.1/docs/screenshots/11-gallery-frames-strip.png
+  - https://raw.githubusercontent.com/LuuMoss/video-xray/v0.2.1/docs/screenshots/10-asr-settings-dialog.png
+  - https://raw.githubusercontent.com/LuuMoss/video-xray/v0.2.1/docs/screenshots/04-job-detail.png
+  - https://raw.githubusercontent.com/LuuMoss/video-xray/v0.2.1/docs/screenshots/07-report-md.png

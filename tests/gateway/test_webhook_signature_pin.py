@@ -1,4 +1,5 @@
 """Per-route ``signature`` pin: a captured body-only MAC cannot be relabelled under another header family (#84265)."""
+import base64
 import hashlib
 import hmac
 import time
@@ -34,6 +35,12 @@ def _mac(data: bytes) -> str:
 def _v2_headers() -> dict:
     ts = str(int(time.time()))
     return {"X-Webhook-Signature-V2": _mac(ts.encode() + b"." + BODY), "X-Webhook-Timestamp": ts}
+
+
+def _standard_headers() -> dict:
+    msg_id, ts = "msg_1", str(int(time.time()))
+    digest = hmac.new(SECRET.encode(), f"{msg_id}.{ts}.".encode() + BODY, hashlib.sha256).digest()
+    return {"webhook-id": msg_id, "webhook-timestamp": ts, "webhook-signature": "v1," + base64.b64encode(digest).decode()}
 
 
 # A captured V1 ``X-Webhook-Signature`` value re-presented under the other body-only header families.
@@ -83,3 +90,19 @@ async def test_unknown_signature_pin_fails_closed():
     with pytest.raises(ValueError, match="signature"):
         adapter._validate_route("r", adapter._routes["r"])
     assert await _post(adapter, {"X-Hub-Signature-256": "sha256=" + _mac(BODY)}, "gh") == 403
+
+
+# Each supported header family, correctly signed with the route secret, and the families each pin admits.
+_FAMILY_HEADERS = {
+    "v2": _v2_headers, "standard": _standard_headers, "linear": lambda: {"Linear-Signature": _mac(BODY)},
+    "github": lambda: {"X-Hub-Signature-256": "sha256=" + _mac(BODY)}, "gitlab": lambda: {"X-Gitlab-Token": SECRET}}
+_PIN_ADMITS = {"generic": {"v2", "standard"}, "github": {"github"}, "gitlab": {"gitlab", "standard"},
+               "linear": {"linear"}}
+
+
+@pytest.mark.parametrize("family", sorted(_FAMILY_HEADERS))
+@pytest.mark.parametrize("pin", sorted(_PIN_ADMITS))
+@pytest.mark.asyncio
+async def test_each_pin_admits_only_its_own_families(pin, family):
+    expected = 202 if family in _PIN_ADMITS[pin] else 401
+    assert await _post(_adapter({"signature": pin}), _FAMILY_HEADERS[family](), f"{pin}-{family}") == expected

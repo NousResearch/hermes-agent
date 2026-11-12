@@ -76,6 +76,13 @@ def test_provider_pin_is_kept_and_test_signs_with_the_provider_scheme(monkeypatc
     assert _adapter_accepts(route, req)
 
 
+@pytest.mark.parametrize("pin", ["generic", "github", "gitlab", "linear"])
+def test_webhook_test_signs_so_the_pinned_route_accepts_it(monkeypatch, pin):
+    webhook_command(_args(signature=pin))
+    route = _load_subscriptions()["hook"]
+    assert _adapter_accepts(route, _send_test(monkeypatch, "hook"))
+
+
 def test_update_of_pre_pin_route_stays_unpinned(monkeypatch):
     """A route created before pins existed may be a GitHub/Linear sender: updating it must not pin it
     to generic and start rejecting that provider."""

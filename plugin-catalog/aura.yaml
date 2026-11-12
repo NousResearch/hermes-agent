@@ -1,6 +1,6 @@
 name: aura
 repo: https://github.com/KeyArgo/hermes-aura
-sha: ec666f78aad746c6a251a0853013bf1d31f17530
+sha: 3fc709ac0e3acc2ea1bf767fec4a814c2105adaf
 title: Aura
 description: 'A film behind your work, and an app that breathes with your audio: a docked film pane for YouTube videos, playlists and direct MP4/WebM beside the chat, and a MilkDrop-compatible visualiser (140 presets) driven by what the machine is already playing, with agent moods for thinking, tools, approvals, errors and streaming. Disclosure: audio comes from system loopback only, never the microphone, and is analysed in memory, never recorded or uploaded. Films are fetched from the URLs the user chooses; keyless search reads YouTube public results pages and caches them for five minutes. No account, no telemetry, no self-updater. Audio capture is tested on Linux (PipeWire/PulseAudio) and Windows 11 (WASAPI loopback via soundcard, a Windows-only python_dependency).'
 maintainer: KeyArgo
@@ -8,9 +8,11 @@ tier: community
 category: desktop
 requires_hermes: ">=0.22.5"
 version: "1.0.0"
-docs_url: https://github.com/KeyArgo/hermes-aura/blob/ec666f78aad746c6a251a0853013bf1d31f17530/README.md
+docs_url: https://github.com/KeyArgo/hermes-aura/blob/3fc709ac0e3acc2ea1bf767fec4a814c2105adaf/README.md
 screenshots:
-  - https://raw.githubusercontent.com/KeyArgo/hermes-aura/ec666f78aad746c6a251a0853013bf1d31f17530/docs/img/aura-visualiser.jpg
+  - https://raw.githubusercontent.com/KeyArgo/hermes-aura/3fc709ac0e3acc2ea1bf767fec4a814c2105adaf/assets/visualiser-tokamak-witchery.jpg
+  - https://raw.githubusercontent.com/KeyArgo/hermes-aura/3fc709ac0e3acc2ea1bf767fec4a814c2105adaf/assets/visualiser-spiral-movement.jpg
+  - https://raw.githubusercontent.com/KeyArgo/hermes-aura/3fc709ac0e3acc2ea1bf767fec4a814c2105adaf/assets/visualiser-skylight.jpg
 platforms: []
 known_issues:
   - macOS audio capture needs a virtual audio device (such as BlackHole).

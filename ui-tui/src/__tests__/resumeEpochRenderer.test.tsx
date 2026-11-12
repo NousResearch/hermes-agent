@@ -117,9 +117,8 @@ it('detaches the prior canonical subscription only after the replacement attache
   resetUiState()
   const pending: Array<{ method: string; params: any; resolve: (value: any) => void }> = []
 
-  const request = vi.fn((method: string, params: any) => method === 'setup.status'
-    ? Promise.resolve({ provider_configured: true })
-    : new Promise(resolve => pending.push({ method, params, resolve })))
+  const request = vi.fn((method: string, params: any) =>
+    new Promise(resolve => pending.push({ method, params, resolve })))
 
   let lifecycle!: ReturnType<typeof useSessionLifecycle>
 

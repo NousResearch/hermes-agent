@@ -165,7 +165,7 @@ class TestBrowserPassthroughPattern:
 
 class TestDelegatedChildMarker:
     def test_delegated_child_context_scrubs_parent_kanban_keys_and_sets_marker(self):
-        from agent.delegation_context import delegated_child_context
+        from hermes_agent.agent.delegation_context import delegated_child_context
 
         with patch.dict(
             os.environ,

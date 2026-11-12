@@ -10,9 +10,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from agent import relay_runtime
+from hermes_agent.agent import relay_runtime
 from hermes_agent.hermes_state import SessionDB
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 class _DB:
@@ -98,8 +98,8 @@ def test_run_conversation_acquires_then_reloads_latest_tip(monkeypatch, signal):
 
     db.acquire_session_turn_lease = acquire_with_wait
 
-    monkeypatch.setattr("agent.conversation_loop.run_conversation", fake_run)
-    monkeypatch.setattr("agent.relay_cwd.resolve_relay_scope_cwds", resolve_relay_cwds)
+    monkeypatch.setattr("hermes_agent.agent.conversation_loop.run_conversation", fake_run)
+    monkeypatch.setattr("hermes_agent.agent.relay_cwd.resolve_relay_scope_cwds", resolve_relay_cwds)
     result = AIAgent.run_conversation(
         agent,
         "new message",
@@ -154,7 +154,7 @@ def test_run_conversation_acquires_lease_when_session_probe_raises(monkeypatch):
         observed["session_id"] = _agent.session_id
         return {"final_response": "ok", "messages": history, "failed": False}
 
-    monkeypatch.setattr("agent.conversation_loop.run_conversation", fake_run)
+    monkeypatch.setattr("hermes_agent.agent.conversation_loop.run_conversation", fake_run)
     result = AIAgent.run_conversation(
         agent,
         "new message",
@@ -195,7 +195,7 @@ def test_waited_admission_uses_the_row_read_after_the_lease(
     monkeypatch, row_after, reload_rows, expect_reload,
 ):
     """After a contended wait, the row state read under the lease decides reload and row flag."""
-    from agent.session_persistence import _PERSIST_AFTER_ADMISSION_INTERRUPT
+    from hermes_agent.agent.session_persistence import _PERSIST_AFTER_ADMISSION_INTERRUPT
 
     db = _DB()
 
@@ -222,7 +222,7 @@ def test_waited_admission_uses_the_row_read_after_the_lease(
         observed["row_known"] = _agent._session_db_created
         return {"final_response": "ok", "messages": history, "failed": False}
 
-    monkeypatch.setattr("agent.conversation_loop.run_conversation", fake_run)
+    monkeypatch.setattr("hermes_agent.agent.conversation_loop.run_conversation", fake_run)
     carried = {"role": "user", "content": "carried", _PERSIST_AFTER_ADMISSION_INTERRUPT: True}
     seed = [{"role": "user", "content": "caller history"}, carried]
     AIAgent.run_conversation(agent, "work", conversation_history=seed)
@@ -255,7 +255,7 @@ def test_first_turn_on_fresh_session_serializes_a_second_writer(tmp_path, monkey
             observed["history"] = [m.get("content") for m in history]
         return {"final_response": "ok", "messages": history, "failed": False}
 
-    monkeypatch.setattr("agent.conversation_loop.run_conversation", fake_run)
+    monkeypatch.setattr("hermes_agent.agent.conversation_loop.run_conversation", fake_run)
     agent_a = _agent_with_db(db_a, session_id="client-id", platform="api_server")
     agent_a._session_db_created = False
     agent_b = _agent_with_db(db_b, session_id="client-id", platform="api_server")
@@ -311,7 +311,7 @@ def test_run_conversation_lease_timeout_returns_resend_notice(monkeypatch):
     def boom(*_args, **_kwargs):
         raise AssertionError("turn must not start without a lease")
 
-    monkeypatch.setattr("agent.conversation_loop.run_conversation", boom)
+    monkeypatch.setattr("hermes_agent.agent.conversation_loop.run_conversation", boom)
     result = AIAgent.run_conversation(
         agent,
         "new message",
@@ -345,7 +345,7 @@ def test_run_conversation_lease_wait_honors_interrupt(monkeypatch):
     def boom(*_args, **_kwargs):
         raise AssertionError("turn must not start when lease wait is aborted")
 
-    monkeypatch.setattr("agent.conversation_loop.run_conversation", boom)
+    monkeypatch.setattr("hermes_agent.agent.conversation_loop.run_conversation", boom)
     result = AIAgent.run_conversation(
         agent,
         "[Monday 12:00] new message",
@@ -434,7 +434,7 @@ def test_run_conversation_second_turn_after_lease_wait_abort(monkeypatch):
     def fake_run(_agent, _message, _system, history, *_args, **_kwargs):
         return {"final_response": "ok", "messages": history, "failed": False}
 
-    monkeypatch.setattr("agent.conversation_loop.run_conversation", fake_run)
+    monkeypatch.setattr("hermes_agent.agent.conversation_loop.run_conversation", fake_run)
     first = AIAgent.run_conversation(
         agent,
         "new message",
@@ -472,7 +472,7 @@ def test_carried_input_survives_waited_reload_on_follow_up_turn(monkeypatch):
         observed["history"] = history
         return {"final_response": "ok", "messages": history, "failed": False}
 
-    monkeypatch.setattr("agent.conversation_loop.run_conversation", fake_run)
+    monkeypatch.setattr("hermes_agent.agent.conversation_loop.run_conversation", fake_run)
     first = AIAgent.run_conversation(
         agent, "original", conversation_history=[{"role": "user", "content": "stale"}]
     )
@@ -523,7 +523,7 @@ def test_run_conversation_interrupts_when_lease_refresh_lost(monkeypatch):
             time.sleep(0.01)
         raise AssertionError("refresh loss did not interrupt the turn")
 
-    monkeypatch.setattr("agent.conversation_loop.run_conversation", fake_run)
+    monkeypatch.setattr("hermes_agent.agent.conversation_loop.run_conversation", fake_run)
 
     result = AIAgent.run_conversation(
         agent,
@@ -569,7 +569,7 @@ def test_run_conversation_interrupts_when_lease_refresh_errors(monkeypatch):
             time.sleep(0.01)
         raise AssertionError("refresh error did not interrupt the turn")
 
-    monkeypatch.setattr("agent.conversation_loop.run_conversation", fake_run)
+    monkeypatch.setattr("hermes_agent.agent.conversation_loop.run_conversation", fake_run)
 
     result = AIAgent.run_conversation(
         agent,
@@ -618,7 +618,7 @@ def test_refresh_error_after_loop_completion_does_not_poison_next_turn(monkeypat
         time.sleep(0.05)
         return original_finish(turn, outcome=outcome)
 
-    monkeypatch.setattr("agent.conversation_loop.run_conversation", fake_run)
+    monkeypatch.setattr("hermes_agent.agent.conversation_loop.run_conversation", fake_run)
     monkeypatch.setattr(
         relay_runtime.SESSION_COORDINATOR,
         "finish_logical_calls",
@@ -670,7 +670,7 @@ def test_late_refresh_miss_after_release_does_not_interrupt(monkeypatch):
         time.sleep(0.03)
         return {"final_response": "ok", "messages": history, "failed": False}
 
-    monkeypatch.setattr("agent.conversation_loop.run_conversation", fake_run)
+    monkeypatch.setattr("hermes_agent.agent.conversation_loop.run_conversation", fake_run)
     result = AIAgent.run_conversation(
         agent,
         "new message",
@@ -727,7 +727,7 @@ def test_run_conversation_exposes_holder_for_fenced_flush(monkeypatch):
         captured["flush_ok"] = ok
         return {"final_response": "done", "messages": history, "failed": False}
 
-    monkeypatch.setattr("agent.conversation_loop.run_conversation", fake_run)
+    monkeypatch.setattr("hermes_agent.agent.conversation_loop.run_conversation", fake_run)
     result = AIAgent.run_conversation(
         agent,
         "new message",

@@ -207,7 +207,7 @@ class TestSamplingPath:
                                    inputSchema={"type": "object", "properties": {"q": {"description": TAGGED}}})])
         # capture the messages passed to call_llm (imported inside _build_llm_call, so patch first)
         captured = {}
-        import agent.auxiliary_client as aux
+        import hermes_agent.agent.auxiliary_client as aux
         orig = aux.call_llm
         aux.call_llm = lambda **kw: captured.update(kw)
         try:

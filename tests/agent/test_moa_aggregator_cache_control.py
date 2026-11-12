@@ -26,9 +26,9 @@ def captured_calls(monkeypatch):
         calls.append(kwargs)
         return _response()
 
-    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+    monkeypatch.setattr("hermes_agent.agent.moa_loop.call_llm", fake_call_llm)
     monkeypatch.setattr(
-        "agent.moa_loop._run_references_parallel",
+        "hermes_agent.agent.moa_loop._run_references_parallel",
         lambda *a, **k: [("advisor-a", "advice from a", None)],
     )
     return calls
@@ -44,7 +44,7 @@ def test_aggregator_synthesis_unmarked_on_native_anthropic_route(
     """The synthesis prompt embeds this call's reference outputs, so no later call reads
     it back: even on a cache-honoring slot it carries no cache_control (a marker would
     only pay a cache write)."""
-    from agent import moa_loop
+    from hermes_agent.agent import moa_loop
 
     monkeypatch.setattr(
         moa_loop,
@@ -74,7 +74,7 @@ def test_aggregator_synthesis_untouched_on_non_caching_route(
 ):
     """A non-cache-honoring aggregator slot (plain OpenAI) must not be
     decorated — proves the guard doesn't over-fire."""
-    from agent import moa_loop
+    from hermes_agent.agent import moa_loop
 
     monkeypatch.setattr(
         moa_loop,
@@ -100,7 +100,7 @@ def test_aggregator_synthesis_untouched_on_non_caching_route(
 
 
 def test_prepared_aggregator_plans_tools_without_decorating_prepared_state(monkeypatch):
-    from agent import moa_loop
+    from hermes_agent.agent import moa_loop
 
     calls = []
     monkeypatch.setattr(moa_loop, "call_llm", lambda **kwargs: calls.append(kwargs) or _response())

@@ -6,7 +6,7 @@ wire builder discards them anyway
 (#102374; the durable twin lives in tests/hermes_state/test_append_messages_batch.py).
 """
 
-from agent.context_compressor import (
+from hermes_agent.agent.context_compressor import (
     _STALE_REPLAY_PRUNE_KEYS,
     _prune_stale_reasoning_replay,
 )
@@ -84,7 +84,7 @@ class TestInterimMergePreservesCheckpoints:
     drop checkpoints when overwriting a visually-duplicate interim message."""
 
     def test_prior_checkpoint_survives_overwrite(self):
-        from agent.native_compaction import merge_interim_reasoning_items
+        from hermes_agent.agent.native_compaction import merge_interim_reasoning_items
 
         prior = [_compaction(), _reasoning("rs_old")]
         newer = [_reasoning("rs_new")]
@@ -94,7 +94,7 @@ class TestInterimMergePreservesCheckpoints:
         assert _reasoning("rs_old") not in merged  # newer reasoning wins
 
     def test_newer_checkpoint_wins_outright(self):
-        from agent.native_compaction import merge_interim_reasoning_items
+        from hermes_agent.agent.native_compaction import merge_interim_reasoning_items
 
         prior = [{"type": "compaction", "encrypted_content": "old-ckpt"}]
         newer = [{"type": "compaction", "encrypted_content": "new-ckpt"}, _reasoning("rs_new")]
@@ -102,14 +102,14 @@ class TestInterimMergePreservesCheckpoints:
         assert merged == newer
 
     def test_no_prior_checkpoint_is_plain_overwrite(self):
-        from agent.native_compaction import merge_interim_reasoning_items
+        from hermes_agent.agent.native_compaction import merge_interim_reasoning_items
 
         assert merge_interim_reasoning_items(
             [_reasoning("rs_old")], [_reasoning("rs_new")]
         ) == [_reasoning("rs_new")]
 
     def test_non_list_inputs_are_safe(self):
-        from agent.native_compaction import merge_interim_reasoning_items
+        from hermes_agent.agent.native_compaction import merge_interim_reasoning_items
 
         assert merge_interim_reasoning_items(None, None) == []
         assert merge_interim_reasoning_items(None, [_reasoning("r")]) == [_reasoning("r")]
@@ -169,8 +169,8 @@ class TestShadowedCheckpointsArePruned:
     def test_compress_retains_exactly_the_checkpoints_the_wire_builder_keeps(self):
         """Through the production entry point: ``ContextCompressor.compress()`` hands back a
         transcript whose checkpoints are exactly those ``prune_pre_checkpoint_items`` would keep."""
-        from agent.context_compressor import ContextCompressor
-        from agent.native_compaction import prune_pre_checkpoint_items
+        from hermes_agent.agent.context_compressor import ContextCompressor
+        from hermes_agent.agent.native_compaction import prune_pre_checkpoint_items
 
         cc = ContextCompressor(
             model="test-model", threshold_percent=0.75, protect_first_n=1, protect_last_n=12,

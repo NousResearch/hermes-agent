@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable, List, Optional
 
-from agent.session_activity import AwakeIdleMeter
+from hermes_agent.agent.session_activity import AwakeIdleMeter
 
 
 @dataclass

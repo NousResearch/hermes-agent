@@ -113,7 +113,7 @@ class TestReasoningCommand:
 
     @pytest.mark.asyncio
     async def test_reasoning_status_scope_follows_this_sessions_override(self, tmp_path, monkeypatch):
-        from agent.i18n import t
+        from hermes_agent.agent.i18n import t
 
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir()
@@ -180,9 +180,9 @@ class TestReasoningCommand:
                 "api_key": "test-key",
             },
         )
-        fake_run_agent = types.ModuleType("run_agent")
+        fake_run_agent = types.ModuleType("hermes_agent.run_agent")
         fake_run_agent.AIAgent = _CapturingAgent
-        monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+        monkeypatch.setitem(sys.modules, "hermes_agent.run_agent", fake_run_agent)
 
         _CapturingAgent.last_init = None
         runner = _make_runner()

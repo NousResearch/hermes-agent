@@ -12,7 +12,7 @@ import io
 import logging
 from typing import Any, Callable, Dict, Optional
 
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 
 logger = logging.getLogger("hermes_agent.gateway.platforms.google_chat")
 

@@ -145,7 +145,7 @@ def _assert_not_delegated_child_mutation(path: str | Path | None = None) -> None
     *path* is the board DB / metadata root being mutated; ``None`` means the
     lineage's own board (``kanban_home()``).
     """
-    from agent.delegation_context import kanban_path_is_fenced
+    from hermes_agent.agent.delegation_context import kanban_path_is_fenced
 
     if kanban_path_is_fenced(kanban_home() if path is None else path):
         raise PermissionError("delegate_task child contexts cannot mutate Kanban tasks or boards")
@@ -528,12 +528,12 @@ def _explicit_board_intent_pinned() -> bool:
     ``HERMES_KANBAN_TASK``) and delegated children / descendants (the
     ``HERMES_DELEGATED_CHILD_CONTEXT`` marker). The pins ARE the "workers
     physically cannot see other boards" isolation (5ec6baa), and
-    ``agent.delegation_context.kanban_path_is_fenced`` checks the pinned path /
+    ``hermes_agent.agent.delegation_context.kanban_path_is_fenced`` checks the pinned path /
     fenced root — an explicit board that resolved elsewhere would also escape
     that fence."""
     if _PIN_FIRST_BOARD_RESOLUTION.get():
         return True
-    from agent.delegation_context import explicit_board_intent_is_pinned
+    from hermes_agent.agent.delegation_context import explicit_board_intent_is_pinned
     return explicit_board_intent_is_pinned()
 
 
@@ -2338,7 +2338,7 @@ def release_stale_claims(
     more than ``DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS`` (1h), the worker has been making no observable
     progress and we reclaim anyway — even if ``_pid_alive`` is still true. This catches the
     wedged-in-a-logic-loop case where the process is technically running but accomplishing nothing.
-    ``_touch_activity`` (run_agent.py) bridges chunk-level liveness into ``last_heartbeat_at`` via #31752,
+    ``_touch_activity`` (hermes_agent/run_agent.py) bridges chunk-level liveness into ``last_heartbeat_at`` via #31752,
     so any genuinely active worker keeps its heartbeat fresh as a side effect of normal API traffic.
     ``enforce_max_runtime`` and ``detect_crashed_workers`` remain the upper bounds for genuinely wedged or
     dead workers.
@@ -3244,7 +3244,7 @@ def _route_block(
 def redact_review_value(value: Any) -> Any:
     """Redact secrets at the domain boundary for durable review handoffs."""
     if isinstance(value, str):
-        from agent.redact import redact_sensitive_text
+        from hermes_agent.agent.redact import redact_sensitive_text
 
         return redact_sensitive_text(value, force=True)
     if isinstance(value, dict):

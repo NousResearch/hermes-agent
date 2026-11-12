@@ -7,7 +7,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from agent.subagent_lifecycle import (
+from hermes_agent.agent.subagent_lifecycle import (
     SubagentLaunchRequest,
     SubagentLifecycleError,
     SubagentLifecycleService,
@@ -170,7 +170,7 @@ def test_public_lifecycle_runs_host_aggregation(monkeypatch):
 
 
 def test_agent_turn_binds_and_clears_lifecycle_parent(monkeypatch):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     agent = AIAgent.__new__(AIAgent)
     observed = []
@@ -179,7 +179,7 @@ def test_agent_turn_binds_and_clears_lifecycle_parent(monkeypatch):
         observed.append(get_active_subagent_parent())
         return {"final_response": "ok"}
 
-    monkeypatch.setattr("agent.conversation_loop.run_conversation", run_conversation)
+    monkeypatch.setattr("hermes_agent.agent.conversation_loop.run_conversation", run_conversation)
 
     assert agent.run_conversation("hello") == {"final_response": "ok"}
     assert observed == [agent]
@@ -188,7 +188,7 @@ def test_agent_turn_binds_and_clears_lifecycle_parent(monkeypatch):
 
 @pytest.fixture
 def steer_lifecycle(monkeypatch):
-    from agent.subagent_lifecycle import _REGISTRY
+    from hermes_agent.agent.subagent_lifecycle import _REGISTRY
     from hermes_agent.tools.delegate_tool_registry import _register_subagent, _unregister_subagent
 
     child = FakeChild("sa-steer-contract")
@@ -317,7 +317,7 @@ def test_routing_request_provider_wins_without_mixing_bundles(routing_lifecycle,
 
 @pytest.mark.parametrize("per_launch", [False, True])
 def test_routing_unknown_provider_refuses_before_registration(routing_lifecycle, per_launch):
-    from agent.subagent_lifecycle import _REGISTRY
+    from hermes_agent.agent.subagent_lifecycle import _REGISTRY
 
     service, build, config, resolve = routing_lifecycle
     resolve.side_effect = ValueError("Unknown provider fixture-missing")

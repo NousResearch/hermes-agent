@@ -47,7 +47,7 @@ def test_live_bot_chat_completion_empties_marker_only_for_successful_turns(monke
 def test_bot_chat_receipt_still_names_the_saved_row_when_a_trailing_marker_is_dropped(monkeypatch):
     """The delivered copy drops the marker; the stored row keeps it, and the receipt must
     still bind this turn to that row."""
-    from agent.context_compressor import _DB_PERSISTED_MARKER
+    from hermes_agent.agent.context_compressor import _DB_PERSISTED_MARKER
     monkeypatch.setattr(srv, "_get_usage", lambda _agent: {})
     monkeypatch.setattr(srv, "render_message", lambda _text, _cols: None)
     monkeypatch.setattr(srv, "_clear_inflight_turn", lambda _session: None)

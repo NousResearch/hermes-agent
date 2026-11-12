@@ -73,9 +73,9 @@ def _drop_reload_targets():
 def _module_isolation():
     """Save/restore sys.modules entries this file reloads.
 
-    Without this, reloaded copies of agent.image_routing & friends leak
+    Without this, reloaded copies of hermes_agent.agent.image_routing & friends leak
     into sys.modules after the test, splitting module identity for any
-    later test that patches ``agent.image_routing.*`` while holding
+    later test that patches ``hermes_agent.agent.image_routing.*`` while holding
     function refs from the original module (issue #61597).
     """
     saved = {name: mod for name, mod in sys.modules.items()
@@ -95,7 +95,7 @@ def _seed_models_dev(monkeypatch, registry: dict) -> None:
 
     Capability verdicts come from models.dev; left unseeded, the test read whatever models.dev
     served live, and offline every model was "capability unknown"."""
-    from agent import models_dev
+    from hermes_agent.agent import models_dev
 
     monkeypatch.setattr(models_dev, "_models_dev_cache", registry)
     monkeypatch.setattr(models_dev, "_models_dev_cache_time", float("inf"))
@@ -119,7 +119,7 @@ auxiliary:
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
         _fresh_modules()
 
-        from agent.auxiliary_client import _resolve_task_provider_model
+        from hermes_agent.agent.auxiliary_client import _resolve_task_provider_model
         provider, model, base_url, _key, _mode = _resolve_task_provider_model("vision")
         assert provider == "custom"
         assert model == "gpt-4o-mini"
@@ -140,7 +140,7 @@ auxiliary:
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
         _fresh_modules()
 
-        from agent.auxiliary_client import _resolve_task_provider_model
+        from hermes_agent.agent.auxiliary_client import _resolve_task_provider_model
         provider, _model, base_url, _key, _mode = _resolve_task_provider_model("vision")
         assert provider == "custom"
         assert base_url == "https://my-proxy.example.com/v1"
@@ -156,7 +156,7 @@ auxiliary:
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
         _fresh_modules()
 
-        from agent.auxiliary_client import resolve_vision_provider_client
+        from hermes_agent.agent.auxiliary_client import resolve_vision_provider_client
         from urllib.parse import urlparse
         _provider, client, model = resolve_vision_provider_client()
         assert client is not None, "openai alias should produce a usable client"
@@ -194,7 +194,7 @@ model:
         }}}})
         _fresh_modules()
 
-        from agent.auxiliary_client import resolve_vision_provider_client
+        from hermes_agent.agent.auxiliary_client import resolve_vision_provider_client
         provider, client, _model = resolve_vision_provider_client(provider="auto")
         assert client is None, (
             f"Vision auto-detect must skip text-only main {provider!r} when "
@@ -217,7 +217,7 @@ model:
         }}}})
         _fresh_modules()
 
-        from agent.auxiliary_client import resolve_vision_provider_client
+        from hermes_agent.agent.auxiliary_client import resolve_vision_provider_client
         provider, client, _model = resolve_vision_provider_client(provider="auto")
         assert client is not None
         assert provider == "anthropic"
@@ -229,7 +229,7 @@ model:
         cataloged as text-only are skipped.
         """
         _fresh_modules()
-        from agent.auxiliary_client import _main_model_supports_vision
+        from hermes_agent.agent.auxiliary_client import _main_model_supports_vision
         # Bogus provider/model — capability lookup returns None → permissive.
         assert _main_model_supports_vision("nonexistent-provider", "nonexistent-model") is True
 

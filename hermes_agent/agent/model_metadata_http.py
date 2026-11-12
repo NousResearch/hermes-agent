@@ -8,7 +8,7 @@ TOTAL_DEADLINE_S = 15.0
 
 
 def resolve_verify(base_url: str = ""):
-    from agent.ssl_verify import resolve_httpx_verify
+    from hermes_agent.agent.ssl_verify import resolve_httpx_verify
 
     settings = {}
     if base_url:
@@ -28,7 +28,7 @@ def resolve_verify(base_url: str = ""):
 @contextmanager
 def stream(url: str, *, headers=None, params=None, timeout=10.0, verify=None):
     import httpx
-    from agent.deadline import DeadlineExpired, run_bounded_sync
+    from hermes_agent.agent.deadline import DeadlineExpired, run_bounded_sync
     from hermes_cli.urllib_security import url_origin
 
     origin = url_origin(url)

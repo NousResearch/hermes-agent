@@ -14,7 +14,7 @@ _CHARTED_SIGNAL_MIN_CONTRAST = 4.5
 
 
 def _build_payload() -> dict[str, Any]:
-    from agent.learning_graph import build_learning_graph
+    from hermes_agent.agent.learning_graph import build_learning_graph
 
     return build_learning_graph()
 
@@ -33,13 +33,13 @@ def _primary_hex() -> str:
 
 @lru_cache(maxsize=1)
 def _palette() -> dict[str, str]:
-    from agent.learning_graph_render import derive_palette
+    from hermes_agent.agent.learning_graph_render import derive_palette
 
     return derive_palette(_primary_hex(), dark=True)
 
 
 def _fade(base: Optional[str], alpha: float) -> Optional[str]:
-    from agent.learning_graph_render import hex_to_rgb, mix_rgb, rgb_to_hex
+    from hermes_agent.agent.learning_graph_render import hex_to_rgb, mix_rgb, rgb_to_hex
 
     if not base:
         return None
@@ -71,7 +71,7 @@ def _ensure_contrast(color: Optional[str], background: str, minimum: float) -> O
     """Lift a foreground toward the readable pole until it clears ``minimum``."""
     if not color:
         return None
-    from agent.learning_graph_render import hex_to_rgb, mix_rgb, rgb_to_hex
+    from hermes_agent.agent.learning_graph_render import hex_to_rgb, mix_rgb, rgb_to_hex
 
     foreground_rgb = hex_to_rgb(color)
     background_rgb = hex_to_rgb(background)
@@ -116,7 +116,7 @@ def _frame_renderable(payload, *, cols, rows, reveal, color):
     from rich.console import Group
     from rich.text import Text
 
-    from agent import learning_graph_render as render
+    from hermes_agent.agent import learning_graph_render as render
 
     legend = render.build_legend(payload)
     categories = render.category_legend(payload)
@@ -259,7 +259,7 @@ def _clamp(v: float, lo: float, hi: float) -> float:
 
 
 def _cmd_list(args: argparse.Namespace) -> int:
-    from agent.learning_graph_render import format_date
+    from hermes_agent.agent.learning_graph_render import format_date
 
     console = _console(color=not bool(getattr(args, "no_color", False)), force=bool(getattr(args, "force_color", False)))
     nodes = sorted(_build_payload().get("nodes", []), key=lambda n: n.get("timestamp") or 0)
@@ -275,7 +275,7 @@ def _cmd_list(args: argparse.Namespace) -> int:
 
 def _lookup_node(node_id: str) -> Optional[dict]:
     """Resolve a node id via ``node_detail``; print the failure and return None when missing."""
-    from agent.learning_mutations import node_detail
+    from hermes_agent.agent.learning_mutations import node_detail
 
     detail = node_detail(node_id)
     if not detail.get("ok"):
@@ -285,7 +285,7 @@ def _lookup_node(node_id: str) -> Optional[dict]:
 
 
 def _cmd_delete(args: argparse.Namespace) -> int:
-    from agent.learning_mutations import delete_node
+    from hermes_agent.agent.learning_mutations import delete_node
 
     detail = _lookup_node(args.node)
     if detail is None:
@@ -304,7 +304,7 @@ def _cmd_delete(args: argparse.Namespace) -> int:
 
 
 def _cmd_edit(args: argparse.Namespace) -> int:
-    from agent.learning_mutations import edit_node
+    from hermes_agent.agent.learning_mutations import edit_node
 
     detail = _lookup_node(args.node)
     if detail is None:

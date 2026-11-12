@@ -93,7 +93,7 @@ def test_routed_pairing_grant_mirror_stays_in_profile_scope(tmp_path, monkeypatc
     #77490). Outside multiplex the legacy os.environ publish is unchanged."""
     import os
 
-    from agent import secret_scope as ss
+    from hermes_agent.agent import secret_scope as ss
     from hermes_agent.gateway.pairing import _sync_allowlist_add
     from hermes_agent.gateway.run import _profile_runtime_scope
     from hermes_cli.config import save_env_value
@@ -140,7 +140,7 @@ def test_allowlist_env_read_never_borrows_on_scope_failure(tmp_path, monkeypatch
 
     import pytest
 
-    from agent import secret_scope as ss
+    from hermes_agent.agent import secret_scope as ss
     from hermes_agent.gateway import pairing
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
@@ -175,7 +175,7 @@ def test_allowlist_sync_does_not_persist_foreign_allowlist(tmp_path, monkeypatch
 
     import pytest
 
-    from agent import secret_scope as ss
+    from hermes_agent.agent import secret_scope as ss
     from hermes_agent.gateway import pairing
 
     root = tmp_path / ".hermes"
@@ -206,7 +206,7 @@ def test_allowlist_scoped_miss_configures_nothing(tmp_path, monkeypatch):
     """
     import os
 
-    from agent import secret_scope as ss
+    from hermes_agent.agent import secret_scope as ss
     from hermes_agent.gateway import pairing
     from hermes_agent.gateway.run import _profile_runtime_scope
 

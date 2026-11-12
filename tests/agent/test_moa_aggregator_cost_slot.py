@@ -51,12 +51,12 @@ moa:
 def test_create_populates_last_aggregator_slot(moa_config, monkeypatch):
     """After a create() turn, last_aggregator_slot carries the REAL aggregator
     model/provider — not the virtual preset name."""
-    from agent.moa_loop import MoAChatCompletions
+    from hermes_agent.agent.moa_loop import MoAChatCompletions
 
     def fake_call_llm(**kwargs):
         return _response("acted" if kwargs.get("task") != "moa_reference" else "advice")
 
-    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+    monkeypatch.setattr("hermes_agent.agent.moa_loop.call_llm", fake_call_llm)
 
     facade = MoAChatCompletions("closed")
     # Slot is unset before any turn runs.

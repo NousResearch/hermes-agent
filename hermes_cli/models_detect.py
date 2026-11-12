@@ -89,7 +89,7 @@ def provider_has_credentials(provider: str) -> bool:
         status = get_auth_status(pid) or {}
         if status.get("logged_in") or status.get("configured"):
             return True
-        from agent.credential_pool import load_pool
+        from hermes_agent.agent.credential_pool import load_pool
 
         pool = load_pool(pid)
         return bool(pool.has_credentials() and pool.has_available())

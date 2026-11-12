@@ -1,6 +1,6 @@
 import pytest
 
-from agent.errors import MoAPresetNotFoundError
+from hermes_agent.agent.errors import MoAPresetNotFoundError
 from hermes_cli.moa_config import (
     DEFAULT_MOA_AGGREGATOR,
     DEFAULT_MOA_PRESET_NAME,
@@ -89,7 +89,7 @@ def test_resolve_missing_moa_preset_has_actionable_error():
 
 
 def test_missing_moa_preset_is_non_retryable():
-    from agent.error_classifier import FailoverReason, classify_api_error
+    from hermes_agent.agent.error_classifier import FailoverReason, classify_api_error
 
     result = classify_api_error(
         MoAPresetNotFoundError("MoA preset 'old' was not found"),

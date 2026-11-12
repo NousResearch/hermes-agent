@@ -4,9 +4,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.turn_iteration_prep import apply_retry_restarts
-from agent.turn_retry_state import TurnRetryState
-from agent.turn_truncation import _retry_truncated_tool_call
+from hermes_agent.agent.turn_iteration_prep import apply_retry_restarts
+from hermes_agent.agent.turn_retry_state import TurnRetryState
+from hermes_agent.agent.turn_truncation import _retry_truncated_tool_call
 
 
 def _agent(max_tokens, requested_cap, **extra):

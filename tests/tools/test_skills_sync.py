@@ -237,7 +237,7 @@ class TestExternalDirsIndexing:
         ext_dir = self._setup_external(tmp_path)
 
         with self._patches(bundled, skills_dir, manifest_file):
-            with patch("agent.skill_utils.get_external_skills_dirs", return_value=[ext_dir]):
+            with patch("hermes_agent.agent.skill_utils.get_external_skills_dirs", return_value=[ext_dir]):
                 result = sync_skills(quiet=True)
                 manifest = _read_manifest()
 
@@ -257,7 +257,7 @@ class TestExternalDirsIndexing:
         manifest_file = skills_dir / ".bundled_manifest"
 
         with self._patches(bundled, skills_dir, manifest_file):
-            with patch("agent.skill_utils.get_external_skills_dirs", return_value=[]):
+            with patch("hermes_agent.agent.skill_utils.get_external_skills_dirs", return_value=[]):
                 result = sync_skills(quiet=True)
 
         assert "clair-qa" in result["copied"]

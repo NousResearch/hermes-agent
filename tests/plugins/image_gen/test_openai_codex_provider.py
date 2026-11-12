@@ -57,7 +57,7 @@ def codex_backend(monkeypatch):
     and lets a test swap the response via ``state["respond"]``."""
     # Seed the auth.json token below the credential/base resolver so generate() exercises the real
     # (token, base_url) binding; no pool present.
-    from agent import auxiliary_client
+    from hermes_agent.agent import auxiliary_client
     monkeypatch.setattr(auxiliary_client, "_select_pool_entry", lambda provider, model=None: (False, None))
     monkeypatch.setattr(auxiliary_client, "_read_codex_singleton_token", lambda: "codex-token")
     state = {"requests": [], "respond": None}
@@ -149,8 +149,8 @@ class TestGenerate:
     def test_profile_scope_routes_each_request_without_borrowing_process_override(
         self, provider, codex_backend, monkeypatch,
     ):
-        from agent import secret_scope
-        from agent.secret_scope import reset_secret_scope, set_secret_scope
+        from hermes_agent.agent import secret_scope
+        from hermes_agent.agent.secret_scope import reset_secret_scope, set_secret_scope
 
         monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
         monkeypatch.setenv("HERMES_CODEX_BASE_URL", "https://other-profile.example.test/codex")
@@ -185,7 +185,7 @@ class TestGenerate:
         assert request.url.host == "images.example.test"
 
     def test_returns_auth_error_without_codex_token(self, provider, monkeypatch):
-        from agent import auxiliary_client
+        from hermes_agent.agent import auxiliary_client
         monkeypatch.setattr(auxiliary_client, "_select_pool_entry", lambda provider, model=None: (False, None))
         monkeypatch.setattr(auxiliary_client, "_read_codex_singleton_token", lambda: None)
         result = provider.generate("a cat")

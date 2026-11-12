@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from agent.think_scrubber import THINK_TAG_NAMES
+from hermes_agent.agent.think_scrubber import THINK_TAG_NAMES
 from hermes_agent.gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 
 

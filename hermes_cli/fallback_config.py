@@ -40,7 +40,7 @@ def resolve_entry_api_key(entry: dict[str, Any] | None) -> str | None:
 
     Mirrors the custom-provider convention (``api_key_env`` accepted as alias); None when neither
     yields a value so ``resolve_runtime_provider`` falls through to standard credential resolution.
-    ``key_env`` goes through ``agent.secret_scope.get_secret``, not raw ``os.getenv``: in a
+    ``key_env`` goes through ``hermes_agent.agent.secret_scope.get_secret``, not raw ``os.getenv``: in a
     multiplexed gateway a bare env read ignores the active profile's scope and can return another
     profile's credential.
     """
@@ -49,7 +49,7 @@ def resolve_entry_api_key(entry: dict[str, Any] | None) -> str | None:
     if inline := str(entry.get("api_key") or "").strip():
         return inline
     if key_env := str(entry.get("key_env") or entry.get("api_key_env") or "").strip():
-        from agent.secret_scope import get_secret
+        from hermes_agent.agent.secret_scope import get_secret
         return (get_secret(key_env) or "").strip() or None
     return None
 

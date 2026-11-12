@@ -36,7 +36,7 @@ def _stub(platform, runner, label):
 @pytest.fixture
 def mux(tmp_path, monkeypatch):
     """Default home allows user 777; profile ``ops`` is a shared-bot satellite; ``team_b`` owns a bot."""
-    from agent import secret_scope
+    from hermes_agent.agent import secret_scope
     from hermes_agent.gateway.run import GatewayRunner
 
     home = tmp_path / "hh"
@@ -85,7 +85,7 @@ def test_shared_bot_route_does_not_hijack_dedicated_secondary_bot(mux):
 def test_secondary_busy_followup_authorized_against_its_own_allowlist(mux):
     """The busy-session handler of a secondary adapter must run under that profile's scope, so its
     owner (absent from the default allowlist) is admitted (#103717)."""
-    from agent import secret_scope
+    from hermes_agent.agent import secret_scope
 
     seen = {}
 

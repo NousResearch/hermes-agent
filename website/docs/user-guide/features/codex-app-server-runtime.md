@@ -429,7 +429,7 @@ Codex's built-in toolset covers shell/file ops/patches but doesn't have web sear
 ```toml
 [mcp_servers.hermes-tools]
 command = "/path/to/python"
-args = ["-m", "agent.transports.hermes_tools_mcp_server"]
+args = ["-m", "hermes_agent.agent.transports.hermes_tools_mcp_server"]
 env = { HERMES_HOME = "/your/.hermes", PYTHONPATH = "...", HERMES_QUIET = "1" }
 startup_timeout_sec = 30.0
 tool_timeout_sec = 600.0

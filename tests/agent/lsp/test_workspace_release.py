@@ -12,10 +12,10 @@ from pathlib import Path
 
 import pytest
 
-import agent.lsp
-from agent.lsp.manager import LSPService
-from agent.lsp.servers import SERVERS, ServerContext, ServerDef, SpawnSpec
-from agent.lsp.workspace import clear_cache
+import hermes_agent.agent.lsp
+from hermes_agent.agent.lsp.manager import LSPService
+from hermes_agent.agent.lsp.servers import SERVERS, ServerContext, ServerDef, SpawnSpec
+from hermes_agent.agent.lsp.workspace import clear_cache
 
 MOCK_SERVER = str(Path(__file__).parent / "_mock_lsp_server.py")
 
@@ -148,7 +148,7 @@ def test_workspace_removal_releases_only_its_language_servers(entry, mock_pyrigh
     gone, kept, remove = entry(project, tmp_path, monkeypatch)
     gone_s, kept_s = str(gone.resolve()), str(kept.resolve())
     svc = _service()
-    monkeypatch.setattr(agent.lsp, "_service", svc)  # the process-wide singleton the removal paths reach
+    monkeypatch.setattr(hermes_agent.agent.lsp, "_service", svc)  # the process-wide singleton the removal paths reach
     try:
         svc.snapshot_baseline(str(gone / "x.py"))
         assert svc.get_diagnostics_sync(str(gone / "x.py"), delta=False)

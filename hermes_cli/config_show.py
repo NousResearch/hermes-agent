@@ -148,7 +148,7 @@ def _show_aux_overrides(config: dict[str, Any]) -> None:
 
 def _show_skill_settings() -> None:
     try:
-        from agent.skill_utils import discover_all_skill_config_vars, resolve_skill_config_values
+        from hermes_agent.agent.skill_utils import discover_all_skill_config_vars, resolve_skill_config_values
         skill_vars = discover_all_skill_config_vars()
         if not skill_vars:
             return

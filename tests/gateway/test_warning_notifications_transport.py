@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from agent.status_output import StatusOutputMixin
+from hermes_agent.agent.status_output import StatusOutputMixin
 from hermes_agent.gateway.config import Platform, PlatformConfig
 from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 from hermes_agent.gateway.relay.adapter import RelayAdapter

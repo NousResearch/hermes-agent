@@ -123,7 +123,7 @@ def test_identity_resolves_back_through_named_lookup(monkeypatch):
 
 def test_named_lookup_does_not_read_an_unmatched_providers_secret(monkeypatch):
     """Provider identity scans must not touch credentials belonging to preceding entries."""
-    from agent.secret_scope import is_multiplex_active, set_multiplex_active
+    from hermes_agent.agent.secret_scope import is_multiplex_active, set_multiplex_active
 
     monkeypatch.delenv("HERMES_CUSTOM_ALPHA_API_KEY", raising=False)
     monkeypatch.setattr(

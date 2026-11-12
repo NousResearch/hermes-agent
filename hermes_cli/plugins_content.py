@@ -37,7 +37,7 @@ def register_skill(
     listed by ``skills_list`` and in the system prompt's ``<available_skills>`` while the plugin
     is enabled. Not copied into ``~/.hermes/skills/``. Raises ``ValueError`` (``':'``/invalid
     chars) or ``FileNotFoundError``."""
-    from agent.skill_utils import _NAMESPACE_RE
+    from hermes_agent.agent.skill_utils import _NAMESPACE_RE
     from hermes_cli.plugins_manifest import _portable_slug
     if ":" in name:
         raise ValueError(f"Skill name '{name}' must not contain ':' (the namespace is derived from the "

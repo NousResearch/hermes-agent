@@ -2,20 +2,20 @@
 window, and a ``(pinned)`` label wherever the window is rendered (#66168)."""
 import logging
 
-from agent import context_pin
-from agent.context_pin import context_pin_suffix, is_context_pinned, warn_once_on_pin_disagreement
+from hermes_agent.agent import context_pin
+from hermes_agent.agent.context_pin import context_pin_suffix, is_context_pinned, warn_once_on_pin_disagreement
 
 
 def test_pin_disagreement_warns_once_and_keeps_pin(monkeypatch, caplog):
     monkeypatch.setattr(context_pin, "_warned_pins", set())
     monkeypatch.setattr(context_pin, "advertised_context_length", lambda model, base_url="": 200_000)
-    with caplog.at_level(logging.WARNING, logger="agent.context_pin"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.agent.context_pin"):
         assert warn_once_on_pin_disagreement("claude-sonnet-4", "", 999_000) is True
         # Second session start in the same process: silent.
         assert warn_once_on_pin_disagreement("claude-sonnet-4", "", 999_000) is False
         # Control: a pin that matches the advertised window is not a disagreement.
         assert warn_once_on_pin_disagreement("claude-sonnet-4", "", 200_000) is False
-    warnings = [r for r in caplog.records if r.name == "agent.context_pin" and r.levelno >= logging.WARNING]
+    warnings = [r for r in caplog.records if r.name == "hermes_agent.agent.context_pin" and r.levelno >= logging.WARNING]
     assert len(warnings) == 1
 
 

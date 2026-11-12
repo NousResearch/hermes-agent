@@ -16,9 +16,9 @@ import os
 import queue
 import threading
 import time
-from agent.i18n import t
-from agent.session_activity import format_iteration_progress
-from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, FAILED_TURN_NOTICE, PARTIAL_FAILED_TURN_NOTICE
+from hermes_agent.agent.i18n import t
+from hermes_agent.agent.session_activity import format_iteration_progress
+from hermes_agent.agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, FAILED_TURN_NOTICE, PARTIAL_FAILED_TURN_NOTICE
 from contextlib import nullcontext, suppress
 from contextvars import copy_context
 from hermes_agent.gateway.bot_peer_notices import automatic_notices_allowed
@@ -64,7 +64,7 @@ def _tool_call_logger() -> logging.Logger:
     with _tool_call_logger_lock:
         if not tool_logger.handlers:
             from logging.handlers import RotatingFileHandler
-            from agent.redact import RedactingFormatter
+            from hermes_agent.agent.redact import RedactingFormatter
             from hermes_agent.gateway.run import _hermes_home
 
             log_dir = _hermes_home / "logs"
@@ -458,7 +458,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
 
     def _resolve_turn_toolsets(self, user_config: dict, source: SessionSource, platform_key: str):
         """``(enabled_toolsets, disabled_toolsets)`` for an agent run on ``source``."""
-        from agent.skill_utils import parse_config_string_list
+        from hermes_agent.agent.skill_utils import parse_config_string_list
         enabled = self._resolve_enabled_toolsets_for_source(user_config, source, platform_key)
         disabled = parse_config_string_list((user_config.get("agent") or {}).get("disabled_toolsets")) or None
         return enabled, disabled
@@ -574,7 +574,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         turns (authenticated with ITS scoped key) to the default profile's proxy. Same fallback shape as
         the key — only ``UnscopedSecretError`` (the unscoped default-profile path) reads the env."""
         from hermes_agent.gateway.run import _load_gateway_config
-        from agent.secret_scope import UnscopedSecretError, get_secret
+        from hermes_agent.agent.secret_scope import UnscopedSecretError, get_secret
         try:
             url = (get_secret("GATEWAY_PROXY_URL") or "").strip()
         except UnscopedSecretError:
@@ -691,7 +691,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         # multiplexes), and an unscoped single-profile process reads os.environ inside get_secret.
         # Any get_secret() error propagates rather than degrading to the ambient key, which may hold
         # another profile's credential.
-        from agent.secret_scope import get_secret_str
+        from hermes_agent.agent.secret_scope import get_secret_str
 
         proxy_key = get_secret_str("GATEWAY_PROXY_KEY").strip()
 
@@ -854,7 +854,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
             _gateway_platform_value, _has_platform_display_override, _load_gateway_config,
             _platform_config_key,
         )
-        from agent.secret_scope import get_secret
+        from hermes_agent.agent.secret_scope import get_secret
         from hermes_agent.gateway.display_config import resolve_display_setting, resolve_tool_progress
         from hermes_agent.gateway.status_phrases import choose_status_phrase, resolve_status_phrase_catalog
         from hermes_agent.gateway.session_policy import policy_for_source, policy_turn_toolsets
@@ -872,7 +872,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
             ("set_friendly_tool_labels", "friendly_tool_labels", True, bool),
         ):
             with suppress(Exception):
-                from agent import display as _agent_display
+                from hermes_agent.agent import display as _agent_display
                 _val = resolve_display_setting(user_config, platform_key, _setting, _default)
                 getattr(_agent_display, _setter)(_cast(_val))
 
@@ -2127,7 +2127,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
                 captured['result'] = result
             return result
 
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         disp = await asyncio.to_thread(self._run_agent_display_settings, source)  # auth lock + config I/O; scope rides the copied context
         if scheduled_heartbeat:

@@ -156,7 +156,7 @@ class TestCredentialPoolEndpoints:
         The endpoint must mirror `hermes auth remove`: clean up the backing
         source and suppress (provider, source).
         """
-        from agent.credential_pool import load_pool
+        from hermes_agent.agent.credential_pool import load_pool
         from hermes_cli.auth import is_source_suppressed
         from hermes_cli.config import save_env_value
 
@@ -185,7 +185,7 @@ class TestCredentialPoolEndpoints:
         provider so a user who deleted a credential and re-adds one isn't
         silently blocked from env re-seeding.
         """
-        from agent.credential_pool import load_pool
+        from hermes_agent.agent.credential_pool import load_pool
         from hermes_cli.auth import is_source_suppressed
         from hermes_cli.config import save_env_value
 

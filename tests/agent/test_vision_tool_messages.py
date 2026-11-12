@@ -19,7 +19,7 @@ from unittest.mock import MagicMock, patch
 
 def _make_agent(provider="openrouter", model="gpt-4o"):
     """Create a minimal AIAgent mock with provider/model attributes."""
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     agent = MagicMock(spec=AIAgent)
     agent.provider = provider
     agent.model = model

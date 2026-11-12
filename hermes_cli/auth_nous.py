@@ -172,7 +172,7 @@ def _scoped_operator_override(*names: str) -> Optional[str]:
     spent against the production hosts. One WARNING per lost-scope event names the override; the
     downstream "ignoring invalid portal_base_url" line never says which caller lost its scope.
     """
-    from agent.secret_scope import UnscopedSecretError, get_secret
+    from hermes_agent.agent.secret_scope import UnscopedSecretError, get_secret
     try:
         for name in names:
             value = get_secret(name)
@@ -721,7 +721,7 @@ def _refresh_access_token(
     # instead of forcing a re-login.
     mitigated = response.headers.get("x-vercel-mitigated") if response.status_code in {403, 429} else None
     if mitigated:
-        from agent.retry_utils import parse_retry_after_seconds
+        from hermes_agent.agent.retry_utils import parse_retry_after_seconds
         raise AuthError(
             f"Nous Portal's edge firewall challenged the token refresh (HTTP {response.status_code}, "
             f"x-vercel-mitigated={mitigated}). Credentials kept; try again shortly.",
@@ -945,7 +945,7 @@ def persist_nous_credentials(creds: dict[str, Any], *, label: Optional[str] = No
     it.
     """
     from hermes_cli.auth import _save_active_provider_state, _write_shared_nous_state
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
     state = dict(creds)
     if label and str(label).strip():
         state["label"] = str(label).strip()
@@ -958,7 +958,7 @@ def persist_nous_credentials(creds: dict[str, Any], *, label: Optional[str] = No
 def _sync_nous_pool_from_auth_store() -> None:
     """Best-effort pool reseed after providers.nous changes; never fail login."""
     try:
-        from agent.credential_pool import load_pool
+        from hermes_agent.agent.credential_pool import load_pool
         load_pool("nous")
     except Exception as exc:
         logger.debug("Failed to sync Nous credential pool from auth store: %s", exc)
@@ -1244,7 +1244,7 @@ def _snapshot_nous_pool_status() -> dict[str, Any]:
     """
     from hermes_cli.auth import _parse_iso_timestamp
     try:
-        from agent.credential_pool import load_pool
+        from hermes_agent.agent.credential_pool import load_pool
         pool = load_pool("nous")
         # A guest's row is not a Portal login: without its trial stamp in auth.json it runs nothing.
         entries = [e for e in pool.entries() if getattr(e, "auth_method", None) != "anonymous"] if (
@@ -1425,7 +1425,7 @@ def _pool_first_oauth_status(
     """
     from hermes_cli.auth import _auth_file_path
     try:
-        from agent.credential_pool import load_pool
+        from hermes_agent.agent.credential_pool import load_pool
         pool = load_pool(provider_id)
         if pool and pool.has_credentials():
             entry = pool.peek()

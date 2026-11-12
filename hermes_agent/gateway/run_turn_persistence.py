@@ -11,11 +11,11 @@ import os
 import queue
 import threading
 import time
-from agent.i18n import t
-from agent.turn_failure_copy import (
+from hermes_agent.agent.i18n import t
+from hermes_agent.agent.turn_failure_copy import (
     FAILED_TURN_DISPLAY_KIND, FAILED_TURN_NOTICE, OPEN_TURN_TAIL_ROLES, PARTIAL_FAILED_TURN_NOTICE,
 )
-from agent.session_activity import format_iteration_progress
+from hermes_agent.agent.session_activity import format_iteration_progress
 from contextlib import nullcontext, suppress
 from contextvars import copy_context
 from hermes_agent.gateway.bot_peer_notices import automatic_notices_allowed
@@ -147,14 +147,14 @@ class GatewayTurnPersistenceMixin:
             )
 
         # "(empty)" = the model produced no visible content after exhausting all retries. One
-        # text with the CLI explainer and the desktop (agent/turn_explainers.py) so the user
+        # text with the CLI explainer and the desktop (hermes_agent/agent/turn_explainers.py) so the user
         # reads the same words on every surface.
         if not automatic_notices_allowed(source) and (response == "(empty)" or agent_result.get("failed")):
             # A failed or empty turn's text is runtime failure copy, never the model's answer: a bot
             # peer would take it as a message to answer (#137027).
             response = ""
         if response == "(empty)" and not _intentional_silence:
-            from agent.turn_explainers import EMPTY_RESPONSE_EXPLANATION
+            from hermes_agent.agent.turn_explainers import EMPTY_RESPONSE_EXPLANATION
 
             _model = str(agent_result.get("model") or "").strip() or t("gateway.errors.empty_response_model_label")
             response = t("gateway.shared.warn_passthrough", error=EMPTY_RESPONSE_EXPLANATION.format(model=_model))
@@ -309,8 +309,8 @@ class GatewayTurnPersistenceMixin:
         except Exception as e:
             logger.debug("Watch queue drain error: %s", e)
 
-    # One owner for the boundary copy (agent/turn_failure_copy.py): the core closer in
-    # agent/conversation_loop.py writes the same row on the paths that never reach this layer.
+    # One owner for the boundary copy (hermes_agent/agent/turn_failure_copy.py): the core closer in
+    # hermes_agent/agent/conversation_loop.py writes the same row on the paths that never reach this layer.
 
     def _hmwa_add_failed_turn_notice(self, response, notice):
         """Make failed-turn delivery explicit without replacing the provider-specific guidance."""
@@ -518,7 +518,7 @@ class GatewayTurnPersistenceMixin:
         # the DB write here to prevent the duplicate-write bug (#860 / #42039). This holds for the codex
         # app-server runtime too: although it early-returns and bypasses conversation_loop's per-step
         # flushes, it flushes its own projected assistant/tool messages before returning and reports
-        # agent_persisted=True (see agent/codex_runtime.py). Reading the flag (default = self._session_db is
+        # agent_persisted=True (see hermes_agent/agent/codex_runtime.py). Reading the flag (default = self._session_db is
         # not None) keeps the persistence contract explicit and lets any future non-persisting runtime opt
         # into a gateway-side write by returning False.
         agent_persisted = agent_result.get("agent_persisted", self._session_db is not None)
@@ -630,7 +630,7 @@ class GatewayTurnPersistenceMixin:
         errors), so only evict on a confirmed retention and warn otherwise — a silently-failed
         un-stick leaves the chat locked, and that is the one outcome worth a visible signal.
         """
-        from agent.turn_failure_copy import CONTENT_REFUSED_NOTICE
+        from hermes_agent.agent.turn_failure_copy import CONTENT_REFUSED_NOTICE
         try:
             outcome = await self.async_session_store.retain_refused_turn_for_display(
                 sid, notice=CONTENT_REFUSED_NOTICE, boundary_row_id=boundary_row_id)
@@ -653,7 +653,7 @@ class GatewayTurnPersistenceMixin:
         Every other reply is returned unchanged."""
         if not (agent_result.get("usage_window_message") and response):
             return response
-        from agent.plan_limits import chat_refusal_wording
+        from hermes_agent.agent.plan_limits import chat_refusal_wording
         return chat_refusal_wording(response, agent_result.get("failure_resets_at"))
 
     async def _deliver_turn_response_then_limit_offer(
@@ -772,7 +772,7 @@ class GatewayTurnPersistenceMixin:
         _hint_key = self._STATUS_HINTS.get(status_code)
         status_hint = t(_hint_key) if _hint_key and status_code != 401 else ""
         if status_code == 401:
-            from agent.turn_failure_copy import relogin_command_hint
+            from hermes_agent.agent.turn_failure_copy import relogin_command_hint
 
             _turn_agent = getattr(self._session_state(session_key).turn, "agent", None)
             status_hint = t(_hint_key, relogin=relogin_command_hint(getattr(_turn_agent, "provider", None)))
@@ -800,7 +800,7 @@ class GatewayTurnPersistenceMixin:
             return None
         if getattr(e, "reason", None) == "launch_credentials_unavailable":
             # The session's own route key is gone or changed: /retry repeats it, /new is the way out.
-            from agent.turn_failure_copy import launch_credentials_copy
+            from hermes_agent.agent.turn_failure_copy import launch_credentials_copy
             return record_unexecuted_failure(launch_credentials_copy(e), 'launch_credentials_unavailable')
         # A local client (CLI, TUI, Desktop) is the operator at this host: its result carries the
         # real cause, so its details line is not the chat apology with the log pointer cut off.

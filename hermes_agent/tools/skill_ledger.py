@@ -28,7 +28,7 @@ from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
 
-# Snapshot-id shape of agent.curator_backup (duplicated to avoid importing the backup stack).
+# Snapshot-id shape of hermes_agent.agent.curator_backup (duplicated to avoid importing the backup stack).
 _BACKUP_ID_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z(-\d{2})?$")
 # ".archive/<name>-YYYYMMDDHHMMSS" collision suffix added by archive_skill.
 _ARCHIVE_TS_SUFFIX_RE = re.compile(r"^(.+)-\d{14}$")
@@ -42,7 +42,7 @@ _NON_PACKAGE_TOPS = {".curator_backups", ".hub", ".archive", ".locks"}
 # Transient/regeneratable local artifacts that must never be swept into a
 # snapshot, no matter how deep they sit under the skill dir — a stray venv or
 # node_modules turns a multi-KB ledger capture into gigabytes of blobs (#107539).
-# agent.curator_backup applies the same set to the whole-tree tarball.
+# hermes_agent.agent.curator_backup applies the same set to the whole-tree tarball.
 TRANSIENT_DIRS = frozenset({
     ".venv", "venv", "env", ".env",
     "node_modules", "__pycache__",
@@ -568,7 +568,7 @@ def _validate_entry_paths(entry: dict[str, Any]) -> Optional[str]:
 
 def rollback_entry(entry_id: str) -> tuple[bool, str]:
     """Restore the before-state of mutation *entry_id*. Fail-closed (mirrors
-    agent/curator_backup.rollback): every before-blob must exist BEFORE any change, and a
+    hermes_agent/agent/curator_backup.rollback): every before-blob must exist BEFORE any change, and a
     pre-rollback safety entry of every touched path's CURRENT state is appended first.
 
     1. 2. See #63366.

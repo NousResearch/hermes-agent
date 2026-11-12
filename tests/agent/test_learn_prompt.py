@@ -1,12 +1,12 @@
 """Tests for /learn — open-ended skill distillation.
 
-Covers the shared prompt builder (agent.learn_prompt.build_learn_prompt) and
+Covers the shared prompt builder (hermes_agent.agent.learn_prompt.build_learn_prompt) and
 the slash-command registry wiring. /learn has no engine and no model tool: it
 builds a standards-guided prompt that the live agent runs as a normal turn, so
 these are the load-bearing behavior contracts.
 """
 
-from agent.learn_prompt import build_learn_prompt
+from hermes_agent.agent.learn_prompt import build_learn_prompt
 
 
 class TestBuildLearnPrompt:

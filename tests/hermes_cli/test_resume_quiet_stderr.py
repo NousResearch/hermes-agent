@@ -17,7 +17,7 @@ import pytest
 
 
 from cli import HermesCLI
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 
 
 def _make_cli(quiet=False, session_id="20260524_111111_xyz", db=None):

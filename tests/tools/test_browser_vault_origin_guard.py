@@ -16,8 +16,8 @@ from unittest.mock import patch
 
 import pytest
 
-from agent.vault_backends.local import LocalLoginBackend
-from agent.vault_store import VaultStore, normalize_origin
+from hermes_agent.agent.vault_backends.local import LocalLoginBackend
+from hermes_agent.agent.vault_store import VaultStore, normalize_origin
 
 _PASSWORD = "dummy-password-7"
 _OTP_SEED = "JBSWY3DPEHPK3PXP"  # base32 test seed, not a real account
@@ -83,17 +83,17 @@ class _RecordingBackend(LocalLoginBackend):
 
 @pytest.fixture()
 def vault(tmp_path):
-    from agent import redact
-    from agent.vault_backends import unlock as unlock_mod
+    from hermes_agent.agent import redact
+    from hermes_agent.agent.vault_backends import unlock as unlock_mod
 
     store = VaultStore(base_dir=tmp_path / "vault")
     backend = _RecordingBackend()
     asked: list[str] = []
     unlock_mod.set_code_prompt_callback(lambda site, hint: asked.append(site) or "000000")
     try:
-        with patch("agent.vault_store.get_vault_store", return_value=store), \
-             patch("agent.vault_backends.backend_for_handle", return_value=backend), \
-             patch("agent.vault_backends.unlock.can_prompt_here", return_value=True):
+        with patch("hermes_agent.agent.vault_store.get_vault_store", return_value=store), \
+             patch("hermes_agent.agent.vault_backends.backend_for_handle", return_value=backend), \
+             patch("hermes_agent.agent.vault_backends.unlock.can_prompt_here", return_value=True):
             yield store, backend, asked
     finally:
         unlock_mod.set_code_prompt_callback(None)
@@ -193,7 +193,7 @@ class TestFill:
     def test_save_login_fill_is_refused_when_the_page_left_the_saved_origin(self, vault):
         """save_login stores the login for the page it read, then fills through the same guard: a page that
         navigated away while the user was typing gets nothing."""
-        from agent.vault_backends import unlock as unlock_mod
+        from hermes_agent.agent.vault_backends import unlock as unlock_mod
         from hermes_agent.tools import browser_vault_tool
 
         store, backend, _ = vault

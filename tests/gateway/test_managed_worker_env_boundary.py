@@ -19,7 +19,7 @@ def test_secondary_profile_worker_gets_no_launch_credentials(tmp_path, monkeypat
         monkeypatch.setenv(key, value)
     from hermes_cli import env_loader
     monkeypatch.setitem(env_loader._SECRET_SOURCES, "VAULT_ONLY_TOKEN", "bitwarden")
-    from agent import secret_scope
+    from hermes_agent.agent import secret_scope
     from hermes_agent.gateway.session_managed_worker import _worker_env
     secret_scope.set_multiplex_active(multiplex)
     try:
@@ -47,7 +47,7 @@ def test_launch_profile_worker_keeps_env_only_tool_credentials_under_multiplex(t
     monkeypatch.setenv("HERMES_HOME", str(launch))
     monkeypatch.setenv("FIRECRAWL_API_KEY", "ENVONLY-fc")
     monkeypatch.setenv("AUXILIARY_VISION_API_KEY", "ENVONLY-aux")
-    from agent.secret_scope import get_secret, set_multiplex_active
+    from hermes_agent.agent.secret_scope import get_secret, set_multiplex_active
     from hermes_agent.gateway.session_managed_worker import _worker_env
     from hermes_agent.tui_gateway.launch_profile_policy import activate_multi_profile_hosting, launch_profile_runtime_scope
     activate_multi_profile_hosting()
@@ -66,7 +66,7 @@ def test_launch_profile_worker_keeps_env_only_tool_credentials_under_multiplex(t
 
 @pytest.mark.parametrize("bad", ["../../../../escape", "x/../../y", "..\\..\\win", "C:\\evil", ""])
 def test_outbox_dir_only_names_paths_inside_worker_outboxes(tmp_path, bad):
-    from agent.managed_worker import outbox_dir
+    from hermes_agent.agent.managed_worker import outbox_dir
     assert outbox_dir(tmp_path, "admission-worker:" + "ab" * 16).parent == tmp_path / "worker-outboxes"
     with pytest.raises(ValueError):
         outbox_dir(tmp_path, "admission-worker:" + bad if bad else bad)

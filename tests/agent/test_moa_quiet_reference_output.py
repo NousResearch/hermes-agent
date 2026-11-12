@@ -9,11 +9,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.moa_loop import build_moa_facade
+from hermes_agent.agent.moa_loop import build_moa_facade
 
 
 def _facade(agent):
-    with patch("agent.moa_loop.MoAClient") as client_cls:
+    with patch("hermes_agent.agent.moa_loop.MoAClient") as client_cls:
         build_moa_facade(agent, "default")
     return client_cls.call_args.kwargs["reference_callback"]
 

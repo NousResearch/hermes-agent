@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from agent.transports.chat_completions import ChatCompletionsTransport
+from hermes_agent.agent.transports.chat_completions import ChatCompletionsTransport
 
 
 def _make_response(*, model_extra, extra_content_missing=True):

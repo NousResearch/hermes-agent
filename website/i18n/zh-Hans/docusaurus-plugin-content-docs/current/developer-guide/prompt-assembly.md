@@ -20,8 +20,8 @@ Hermes 刻意将以下内容分离：
 
 主要文件：
 
-- `run_agent.py`
-- `agent/prompt_builder.py`
+- `hermes_agent/run_agent.py`
+- `hermes_agent/agent/prompt_builder.py`
 - `hermes_agent/tools/memory_tool.py`
 
 ## 已缓存的系统 prompt 层
@@ -121,7 +121,7 @@ renderable inside a terminal.
 `SOUL.md` 位于 `~/.hermes/SOUL.md`，作为 agent 的身份标识——系统 prompt 的第一个部分。`prompt_builder.py` 中的加载逻辑如下：
 
 ```python
-# From agent/prompt_builder.py (simplified)
+# From hermes_agent/agent/prompt_builder.py (simplified)
 def load_soul_md() -> Optional[str]:
     soul_path = get_hermes_home() / "SOUL.md"
     if not soul_path.exists():
@@ -154,7 +154,7 @@ stakes demand it, not by default.
 `build_context_files_prompt()` 使用**优先级系统**——只加载一种项目上下文类型（先匹配先赢）：
 
 ```python
-# From agent/prompt_builder.py (simplified)
+# From hermes_agent/agent/prompt_builder.py (simplified)
 def build_context_files_prompt(cwd=None, skip_soul=False):
     cwd_path = Path(cwd).resolve()
 
@@ -218,10 +218,10 @@ def build_context_files_prompt(cwd=None, skip_soul=False):
 
 ## 上下文文件
 
-`agent/prompt_builder.py` 使用**优先级系统**扫描并清理项目上下文文件——只加载一种类型（先匹配先赢）：
+`hermes_agent/agent/prompt_builder.py` 使用**优先级系统**扫描并清理项目上下文文件——只加载一种类型（先匹配先赢）：
 
 1. `.hermes.md` / `HERMES.md`（向上遍历至 git 根目录）
-2. `AGENTS.md`（启动时的 CWD；子目录在会话期间通过 `agent/subdirectory_hints.py` 逐步发现）
+2. `AGENTS.md`（启动时的 CWD；子目录在会话期间通过 `hermes_agent/agent/subdirectory_hints.py` 逐步发现）
 3. `CLAUDE.md`（仅 CWD）
 4. `.cursorrules` / `.cursor/rules/*.mdc`（仅 CWD）
 
@@ -235,7 +235,7 @@ def build_context_files_prompt(cwd=None, skip_soul=False):
 
 ## 支持的 prompt 自定义入口
 
-大多数用户应将 `agent/prompt_builder.py` 视为实现代码，而非配置入口。推荐的自定义路径是修改 Hermes 已加载的 prompt 输入，而非直接编辑 Python 模板。
+大多数用户应将 `hermes_agent/agent/prompt_builder.py` 视为实现代码，而非配置入口。推荐的自定义路径是修改 Hermes 已加载的 prompt 输入，而非直接编辑 Python 模板。
 
 ### 优先使用这些入口
 
@@ -248,7 +248,7 @@ def build_context_files_prompt(cwd=None, skip_soul=False):
 
 ### 何时应编辑代码
 
-仅当你刻意维护一个 fork 或向上游贡献行为变更时，才编辑 `agent/prompt_builder.py`。该文件为每个会话组装 prompt 管道、缓存边界和注入顺序。直接编辑该文件是全局产品变更，而非针对单个用户的 prompt 自定义。
+仅当你刻意维护一个 fork 或向上游贡献行为变更时，才编辑 `hermes_agent/agent/prompt_builder.py`。该文件为每个会话组装 prompt 管道、缓存边界和注入顺序。直接编辑该文件是全局产品变更，而非针对单个用户的 prompt 自定义。
 
 换言之：
 

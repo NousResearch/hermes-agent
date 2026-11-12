@@ -22,7 +22,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 DEFAULT_BASE = "https://api.openai.com/v1"
 LOCAL_BASE = "http://127.0.0.1:39080"
@@ -46,7 +46,7 @@ def _make_agent(*, provider="openai-api", base_url=DEFAULT_BASE, api_key="sk-old
 def env(monkeypatch):
     """Dict-driven stand-in for the .env/os.environ resolution chain."""
     values = {}
-    import agent.credential_pool as cp
+    import hermes_agent.agent.credential_pool as cp
 
     monkeypatch.setattr(
         cp, "get_env_prefer_dotenv", lambda key: values.get(key, "")
@@ -139,7 +139,7 @@ class TestLeavesNonEnvStateAlone:
             a._credential_pool_entry_id = "entry-for-sk-new"
 
         monkeypatch.setattr(
-            "agent.agent_runtime_helpers.sync_credential_pool_entry_id",
+            "hermes_agent.agent.agent_runtime_helpers.sync_credential_pool_entry_id",
             fake_sync,
         )
 

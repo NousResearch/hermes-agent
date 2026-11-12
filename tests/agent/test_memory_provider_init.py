@@ -28,7 +28,7 @@ class RecordingMemoryProvider:
 def test_shutdown_memory_provider_is_idempotent():
     from unittest.mock import MagicMock
 
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     manager = MagicMock()
     agent = object.__new__(AIAgent)
@@ -51,12 +51,12 @@ def test_blank_memory_provider_stays_opt_out():
         patch("hermes_cli.config.load_config", return_value=cfg), patch("hermes_cli.config.load_config_readonly", return_value=cfg),
         patch("hermes_cli.config.save_config") as save_config,
         patch("plugins.memory.load_memory_provider") as load_memory_provider,
-        patch("agent.model_metadata.get_model_context_length", return_value=204_800),
+        patch("hermes_agent.agent.model_metadata.get_model_context_length", return_value=204_800),
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
     ):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key-1234567890",
@@ -74,7 +74,7 @@ def test_blank_memory_provider_stays_opt_out():
 def test_close_shuts_down_memory_provider():
     from unittest.mock import MagicMock
 
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     agent = object.__new__(AIAgent)
     agent._memory_manager = MagicMock()
@@ -94,12 +94,12 @@ def test_aiagent_forwards_user_id_alt_to_memory_provider():
     with (
         patch("hermes_cli.config.load_config", return_value=cfg), patch("hermes_cli.config.load_config_readonly", return_value=cfg),
         patch("plugins.memory.load_memory_provider", return_value=provider),
-        patch("agent.model_metadata.get_model_context_length", return_value=204_800),
+        patch("hermes_agent.agent.model_metadata.get_model_context_length", return_value=204_800),
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
     ):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key-1234567890",
@@ -142,7 +142,7 @@ def test_core_tool_names_rejected_from_memory_routing_table():
     table nor be advertised via get_all_tool_schemas, so it can never hijack
     dispatch. The non-conflicting tool is preserved.
     """
-    from agent.memory_manager import MemoryManager
+    from hermes_agent.agent.memory_manager import MemoryManager
 
     mm = MemoryManager()
     mm.add_provider(CoreShadowProvider())
@@ -178,12 +178,12 @@ def test_aiagent_reuses_handed_in_memory_manager_without_reinitializing():
     with (
         patch("hermes_cli.config.load_config", return_value=cfg), patch("hermes_cli.config.load_config_readonly", return_value=cfg),
         patch("plugins.memory.load_memory_provider", return_value=provider) as load_memory_provider,
-        patch("agent.model_metadata.get_model_context_length", return_value=204_800),
+        patch("hermes_agent.agent.model_metadata.get_model_context_length", return_value=204_800),
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
     ):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         first = AIAgent(**common)
         manager = first._memory_manager

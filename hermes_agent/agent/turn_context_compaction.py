@@ -5,7 +5,7 @@ Three passes, in order: idle-triggered compaction (opt-in, wall-clock gap), pref
 context compression (token threshold), and the uncompressed-session overflow-warning
 re-arm. ``run_turn_start_compaction`` mutates ``agent`` exactly as the inline prologue
 did and returns a ``CompactionOutcome``. Predicates/estimators that tests patch on
-``agent.turn_context`` are imported lazily through that module so patches intercept."""
+``hermes_agent.agent.turn_context`` are imported lazily through that module so patches intercept."""
 
 from __future__ import annotations
 
@@ -14,13 +14,13 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from agent.context_engine import automatic_compaction_status_message
-from agent.conversation_compression import (
+from hermes_agent.agent.context_engine import automatic_compaction_status_message
+from hermes_agent.agent.conversation_compression import (
     IDLE_COMPACTION_STATUS_TEMPLATE, PREFLIGHT_COMPRESSION_STATUS_TEMPLATE,
     compression_skipped_due_to_lock, conversation_history_after_compression,
 )
 
-logger = logging.getLogger("agent.turn_context")
+logger = logging.getLogger("hermes_agent.agent.turn_context")
 
 
 @dataclass
@@ -116,7 +116,7 @@ def _refund_api_call(agent: Any, api_call_count: int) -> int:
 def _reanchor(agent: Any, messages: list[Any], user_message: Any) -> int:
     """Compaction rebuilt ``messages``: re-anchor this turn's user index so the
     api_content stamp, injection site and persist-override row hit the same dict."""
-    from agent.turn_context import reanchor_current_turn_user_idx
+    from hermes_agent.agent.turn_context import reanchor_current_turn_user_idx
 
     idx = reanchor_current_turn_user_idx(messages, user_message)
     agent._persist_user_message_idx = idx
@@ -147,7 +147,7 @@ def _idle_compaction(
 ) -> None:
     """Idle-triggered compaction (opt-in; ``idle_compact_after_seconds``): fires on the
     wall-clock gap since ``_last_activity_ts``; a cheap gap check gates the estimate."""
-    from agent import turn_context as _tc
+    from hermes_agent.agent import turn_context as _tc
 
     messages = out.messages
     _idle_after = getattr(agent, "compression_idle_compact_after_seconds", 0)
@@ -233,7 +233,7 @@ def _preflight_compression(
 ) -> None:
     """Preflight context compression; the cheap pre-check gates the full estimate
     (see ``_should_run_preflight_estimate`` for the OR semantics)."""
-    from agent import turn_context as _tc
+    from hermes_agent.agent import turn_context as _tc
 
     agent._turn_received_provider_response = False
     agent._turn_preflight_display_snapshot = None
@@ -315,7 +315,7 @@ def _preflight_compression(
         # Managed local runtime: growing the window beats compressing (ladder order;
         # same seam as _maybe_grow_local_window in the loop).
         try:
-            from agent.conversation_loop import _maybe_grow_local_window
+            from hermes_agent.agent.conversation_loop import _maybe_grow_local_window
 
             _grown = _maybe_grow_local_window(agent, _compressor, _preflight_tokens)
         except Exception:
@@ -355,7 +355,7 @@ def _run_preflight_passes(
 ) -> None:
     """Threshold-triggered preflight passes (honor ``compression.max_attempts`` like
     the loop's sites, default 3)."""
-    from agent import turn_context as _tc
+    from hermes_agent.agent import turn_context as _tc
 
     out.compressed = True
     # Compression is actually running — reset the dedup so a future blocked turn can
@@ -481,7 +481,7 @@ def _rearm_uncompressed_overflow_warn(
 ) -> None:
     """Uncompressed session guard: the warning fires from the loop's pre-API site;
     here we only RE-ARM the dedup once back under the window."""
-    from agent import turn_context as _tc
+    from hermes_agent.agent import turn_context as _tc
 
     _ctx_len = getattr(getattr(agent, "context_compressor", None), "context_length", None)
     if not (isinstance(_ctx_len, int) and _ctx_len > 0):

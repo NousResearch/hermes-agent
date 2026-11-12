@@ -1,4 +1,4 @@
-"""Unit tests for run_agent.py (AIAgent).
+"""Unit tests for hermes_agent/run_agent.py (AIAgent).
 
 Tests cover pure functions, state/structure methods, and conversation loop
 pieces. The OpenAI client and tool loading are mocked so no network calls
@@ -17,13 +17,13 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from agent.codex_responses_adapter import _normalize_codex_response
+from hermes_agent.agent.codex_responses_adapter import _normalize_codex_response
 
-import run_agent
-from run_agent import AIAgent
-from agent.error_classifier import FailoverReason
-from agent.memory_manager import MemoryManager
-from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
+from hermes_agent import run_agent
+from hermes_agent.run_agent import AIAgent
+from hermes_agent.agent.error_classifier import FailoverReason
+from hermes_agent.agent.memory_manager import MemoryManager
+from hermes_agent.agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 from hermes_agent.tui_gateway import server as tui_server
 
 
@@ -48,7 +48,7 @@ def _make_tool_defs(*names: str) -> list:
 
 
 def test_is_destructive_command_treats_cp_as_mutating():
-    from agent.tool_dispatch_helpers import _is_destructive_command
+    from hermes_agent.agent.tool_dispatch_helpers import _is_destructive_command
     assert _is_destructive_command("cp .env.local .env") is True
 
 
@@ -71,7 +71,7 @@ def agent():
             "hermes_agent.model_tools.get_tool_definitions", return_value=_make_tool_defs("web_search")
         ),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
     ):
         a = AIAgent(
             api_key="test-key-1234567890",
@@ -199,7 +199,7 @@ def test_malformed_memory_config_still_builds_default_store():
             return_value=_make_tool_defs("memory"),
         ),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(
             api_key="test-k...7890",
@@ -226,7 +226,7 @@ def agent_with_memory_tool():
             return_value=_make_tool_defs("web_search", "memory"),
         ),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
     ):
         a = AIAgent(
             api_key="test-k...7890",
@@ -263,7 +263,7 @@ def test_aiagent_reuses_existing_errors_log_handler():
                 return_value=_make_tool_defs("web_search"),
             ),
             patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-            patch("agent.process_bootstrap.OpenAI"),
+            patch("hermes_agent.agent.process_bootstrap.OpenAI"),
         ):
             AIAgent(
                 api_key="test-k...7890",
@@ -302,7 +302,7 @@ class TestProviderModelNormalization:
                 "hermes_agent.model_tools.get_tool_definitions", return_value=_make_tool_defs("web_search")
             ),
             patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-            patch("agent.process_bootstrap.OpenAI"),
+            patch("hermes_agent.agent.process_bootstrap.OpenAI"),
         ):
             agent = AIAgent(
                 model="zai/glm-5.1",
@@ -485,7 +485,7 @@ class TestSessionFilenameSafety:
         # The sanitizer is the chokepoint: every session-ID-derived artifact
         # path goes through it, so it must always yield a single, traversal-free
         # path segment while leaving legitimate IDs untouched.
-        from agent.session_persistence import _safe_session_filename_component as f
+        from hermes_agent.agent.session_persistence import _safe_session_filename_component as f
         for raw in ("../../etc/passwd", "/abs/path", "..\\win\\trav", "a/b/c"):
             out = f(raw)
             assert "/" not in out and "\\" not in out and ".." not in out, out
@@ -529,7 +529,7 @@ class TestInit:
         with (
             patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
             patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-            patch("agent.anthropic_adapter._anthropic_sdk") as mock_anthropic,
+            patch("hermes_agent.agent.anthropic_adapter._anthropic_sdk") as mock_anthropic,
         ):
             agent = AIAgent(
                 api_key="test-key-1234567890",
@@ -546,7 +546,7 @@ class TestInit:
         with (
             patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
             patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-            patch("agent.process_bootstrap.OpenAI"),
+            patch("hermes_agent.agent.process_bootstrap.OpenAI"),
         ):
             with pytest.warns(DeprecationWarning, match="tool_delay"):
                 AIAgent(
@@ -563,7 +563,7 @@ class TestInit:
         with (
             patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
             patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-            patch("agent.process_bootstrap.OpenAI"),
+            patch("hermes_agent.agent.process_bootstrap.OpenAI"),
         ):
             a = AIAgent(
                 api_key="test-k...7890",
@@ -580,7 +580,7 @@ class TestInit:
         with (
             patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
             patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-            patch("agent.process_bootstrap.OpenAI"),
+            patch("hermes_agent.agent.process_bootstrap.OpenAI"),
         ):
             a = AIAgent(
                 api_key="test-key-1234567890",
@@ -598,7 +598,7 @@ class TestInit:
         with (
             patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
             patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-            patch("agent.anthropic_adapter._anthropic_sdk"),
+            patch("hermes_agent.agent.anthropic_adapter._anthropic_sdk"),
         ):
             a = AIAgent(
                 api_key="test-key-1234567890",
@@ -615,7 +615,7 @@ class TestInit:
         with (
             patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
             patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-            patch("agent.process_bootstrap.OpenAI"),
+            patch("hermes_agent.agent.process_bootstrap.OpenAI"),
             patch("hermes_cli.config.load_config", return_value={}), patch("hermes_cli.config.load_config_readonly", return_value={}),
         ):
             a = AIAgent(
@@ -637,7 +637,7 @@ class TestInit:
         with (
             patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
             patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-            patch("agent.process_bootstrap.OpenAI"),
+            patch("hermes_agent.agent.process_bootstrap.OpenAI"),
             patch(
                 "hermes_cli.config.load_config",
                 return_value={"prompt_caching": {"cache_ttl": falsy_value}},
@@ -665,7 +665,7 @@ class TestInit:
         with (
             patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
             patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-            patch("agent.process_bootstrap.OpenAI"),
+            patch("hermes_agent.agent.process_bootstrap.OpenAI"),
             patch(
                 "hermes_cli.config.load_config",
                 return_value={"prompt_caching": {"cache_ttl": False}},
@@ -696,7 +696,7 @@ class TestInit:
         with (
             patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
             patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-            patch("agent.process_bootstrap.OpenAI"),
+            patch("hermes_agent.agent.process_bootstrap.OpenAI"),
             patch(
                 "hermes_cli.config.load_config",
                 return_value={"model": {"max_tokens": 4096}},
@@ -750,7 +750,7 @@ class TestHydrateTodoStore:
             {"role": "tool", "tool_call_id": "c1", "content": json.dumps({"todos": todos, "revision": 3})},
         ]
 
-        with patch("run_agent._set_interrupt"), patch("agent.interrupt_control._set_interrupt"):
+        with patch("hermes_agent.run_agent._set_interrupt"), patch("hermes_agent.agent.interrupt_control._set_interrupt"):
             agent._hydrate_todo_store(history)
 
         assert agent._todo_store.snapshot() == {"todos": todos, "revision": 3}
@@ -762,7 +762,7 @@ class TestHydrateTodoStore:
             {"role": "user", "content": "hello"},
             {"role": "assistant", "content": "hi"},
         ]
-        with patch("run_agent._set_interrupt"), patch("agent.interrupt_control._set_interrupt"):
+        with patch("hermes_agent.run_agent._set_interrupt"), patch("hermes_agent.agent.interrupt_control._set_interrupt"):
             agent._hydrate_todo_store(history)
         assert not agent._todo_store.has_items()
 
@@ -787,7 +787,7 @@ class TestHydrateTodoStore:
             },
         ]
 
-        with patch("run_agent._set_interrupt"), patch("agent.interrupt_control._set_interrupt"):
+        with patch("hermes_agent.run_agent._set_interrupt"), patch("hermes_agent.agent.interrupt_control._set_interrupt"):
             agent._hydrate_todo_store(history)
 
         assert agent._todo_store.snapshot()["revision"] == 5
@@ -810,7 +810,7 @@ class TestHydrateTodoStore:
             },
         ]
 
-        with patch("run_agent._set_interrupt"), patch("agent.interrupt_control._set_interrupt"):
+        with patch("hermes_agent.run_agent._set_interrupt"), patch("hermes_agent.agent.interrupt_control._set_interrupt"):
             agent._hydrate_todo_store(history)
 
         assert agent._todo_store.snapshot()["revision"] == 2
@@ -826,8 +826,8 @@ class TestBuildSystemPrompt:
         with (
             patch("hermes_agent.model_tools.get_tool_definitions", return_value=_make_tool_defs("terminal")),
             patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-            patch("agent.process_bootstrap.OpenAI"),
-            patch("agent.prompt_builder.load_soul_md", return_value="SOUL IDENTITY"),
+            patch("hermes_agent.agent.process_bootstrap.OpenAI"),
+            patch("hermes_agent.agent.prompt_builder.load_soul_md", return_value="SOUL IDENTITY"),
         ):
             agent = AIAgent(
                 api_key="test-k...7890",
@@ -846,7 +846,7 @@ class TestBuildSystemPrompt:
     def test_memory_guidance_when_memory_tool_loaded(self, agent_with_memory_tool):
         agent_with_memory_tool._memory_enabled = True
         prompt = agent_with_memory_tool._build_system_prompt()
-        from agent.prompt_builder import build_memory_guidance
+        from hermes_agent.agent.prompt_builder import build_memory_guidance
         assert build_memory_guidance(True, True, skill_manage_available=False) in prompt
 
     def test_no_memory_guidance_when_both_builtin_stores_disabled(
@@ -859,7 +859,7 @@ class TestBuildSystemPrompt:
         available" — telling the model to save facts there is a dead
         instruction paid for on every API call.
         """
-        from agent.prompt_builder import MEMORY_GUIDANCE, USER_PROFILE_GUIDANCE
+        from hermes_agent.agent.prompt_builder import MEMORY_GUIDANCE, USER_PROFILE_GUIDANCE
 
         agent_with_memory_tool._memory_enabled = False
         agent_with_memory_tool._user_profile_enabled = False
@@ -876,13 +876,13 @@ class TestBuildSystemPrompt:
         MEMORY.md store that does not exist in this configuration, so the
         profile-specific block is injected instead.
         """
-        from agent.prompt_builder import MEMORY_GUIDANCE
+        from hermes_agent.agent.prompt_builder import MEMORY_GUIDANCE
 
         agent_with_memory_tool._memory_enabled = False
         agent_with_memory_tool._user_profile_enabled = True
         prompt = agent_with_memory_tool._build_system_prompt()
         assert MEMORY_GUIDANCE not in prompt
-        from agent.prompt_builder import build_memory_guidance
+        from hermes_agent.agent.prompt_builder import build_memory_guidance
         assert build_memory_guidance(False, True, skill_manage_available=False) in prompt
 
 
@@ -959,8 +959,8 @@ class TestBuildSystemPrompt:
                 side_effect=AssertionError("should not re-check toolset requirements"),
             ),
             patch("hermes_agent.model_tools.get_toolset_for_tool", create=True, side_effect=toolset_map.get),
-            patch("agent.prompt_builder.build_skills_system_prompt", return_value="SKILLS_PROMPT") as mock_skills,
-            patch("agent.process_bootstrap.OpenAI"),
+            patch("hermes_agent.agent.prompt_builder.build_skills_system_prompt", return_value="SKILLS_PROMPT") as mock_skills,
+            patch("hermes_agent.agent.process_bootstrap.OpenAI"),
         ):
             agent = AIAgent(
                 api_key="test-k...7890",
@@ -983,11 +983,11 @@ class TestToolUseEnforcementConfig:
 
     def test_no_tools_never_injects(self):
         """Even with enforcement=true, no injection when agent has no tools."""
-        from agent.prompt_builder import TOOL_USE_ENFORCEMENT_GUIDANCE
+        from hermes_agent.agent.prompt_builder import TOOL_USE_ENFORCEMENT_GUIDANCE
         with (
             patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
             patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-            patch("agent.process_bootstrap.OpenAI"),
+            patch("hermes_agent.agent.process_bootstrap.OpenAI"),
             patch(
                 "hermes_cli.config.load_config",
                 return_value={"agent": {"tool_use_enforcement": True}},
@@ -1023,7 +1023,7 @@ class TestExecutionGuidanceConfig:
                 return_value=_make_tool_defs("terminal", "web_search"),
             ),
             patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-            patch("agent.process_bootstrap.OpenAI"),
+            patch("hermes_agent.agent.process_bootstrap.OpenAI"),
             patch(
                 "hermes_cli.config.load_config",
                 return_value={"agent": agent_cfg},
@@ -1045,21 +1045,21 @@ class TestExecutionGuidanceConfig:
 
 
     def test_config_false_suppresses(self):
-        from agent.prompt_builder import OPENAI_MODEL_EXECUTION_GUIDANCE
+        from hermes_agent.agent.prompt_builder import OPENAI_MODEL_EXECUTION_GUIDANCE
         agent = self._make_agent(
             model="deepseek/deepseek-v4-pro", execution_guidance=False
         )
         assert OPENAI_MODEL_EXECUTION_GUIDANCE not in agent._build_system_prompt()
 
     def test_config_list_matches(self):
-        from agent.prompt_builder import OPENAI_MODEL_EXECUTION_GUIDANCE
+        from hermes_agent.agent.prompt_builder import OPENAI_MODEL_EXECUTION_GUIDANCE
         agent = self._make_agent(
             model="moonshotai/kimi-k3", execution_guidance=["kimi"]
         )
         assert OPENAI_MODEL_EXECUTION_GUIDANCE in agent._build_system_prompt()
 
     def test_config_list_non_match_suppresses(self):
-        from agent.prompt_builder import OPENAI_MODEL_EXECUTION_GUIDANCE
+        from hermes_agent.agent.prompt_builder import OPENAI_MODEL_EXECUTION_GUIDANCE
         agent = self._make_agent(
             model="openai/gpt-4.1", execution_guidance=["kimi"]
         )
@@ -1084,7 +1084,7 @@ class TestTaskCompletionGuidance:
                 return_value=_make_tool_defs("terminal", "web_search"),
             ),
             patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-            patch("agent.process_bootstrap.OpenAI"),
+            patch("hermes_agent.agent.process_bootstrap.OpenAI"),
             patch(
                 "hermes_cli.config.load_config",
                 return_value={"agent": agent_cfg},
@@ -1107,7 +1107,7 @@ class TestTaskCompletionGuidance:
     def test_default_injects_for_claude(self):
         """The block must reach Claude by default — that's the
         primary motivating model family."""
-        from agent.prompt_builder import TASK_COMPLETION_GUIDANCE
+        from hermes_agent.agent.prompt_builder import TASK_COMPLETION_GUIDANCE
         agent = self._make_agent(model="anthropic/claude-opus-4.8")
         prompt = agent._build_system_prompt()
         assert TASK_COMPLETION_GUIDANCE in prompt
@@ -1117,11 +1117,11 @@ class TestTaskCompletionGuidance:
         """Same gate as tool_use_enforcement — no tools means no guidance.
         The guidance refers to ``tool calls`` and ``tool output``; without
         tools it would be advice for a capability the agent doesn't have."""
-        from agent.prompt_builder import TASK_COMPLETION_GUIDANCE
+        from hermes_agent.agent.prompt_builder import TASK_COMPLETION_GUIDANCE
         with (
             patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
             patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-            patch("agent.process_bootstrap.OpenAI"),
+            patch("hermes_agent.agent.process_bootstrap.OpenAI"),
             patch(
                 "hermes_cli.config.load_config",
                 return_value={"agent": {"task_completion_guidance": True}},
@@ -1156,7 +1156,7 @@ class TestEnvironmentProbeIntegration:
                 return_value=_make_tool_defs("terminal"),
             ),
             patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-            patch("agent.process_bootstrap.OpenAI"),
+            patch("hermes_agent.agent.process_bootstrap.OpenAI"),
             patch(
                 "hermes_cli.config.load_config",
                 return_value={"agent": {"environment_probe": environment_probe}},
@@ -1239,7 +1239,7 @@ class TestBuildApiKwargs:
         assert kwargs["messages"] is messages
 
     def test_explicit_request_local_tools_reach_native_transport(self, agent, monkeypatch):
-        from agent.prompt_caching import build_prompt_cache_plan
+        from hermes_agent.agent.prompt_caching import build_prompt_cache_plan
 
         canonical_tools = [
             {
@@ -1402,7 +1402,7 @@ class TestBuildAssistantMessage:
         agent.context_compressor.note_native_compaction_checkpoint = MagicMock()
         self._enable_native_compaction(agent)
 
-        from agent.usage_anchor import capture_usage_anchor, set_usage_anchor
+        from hermes_agent.agent.usage_anchor import capture_usage_anchor, set_usage_anchor
 
         history = [{"role": "user", "content": "before compaction"}]
         set_usage_anchor(agent, capture_usage_anchor(255_000, 100, history), turn_base=True)
@@ -1519,7 +1519,7 @@ class TestExecuteToolCalls:
         messages = []
         with (
             patch("hermes_agent.model_tools.handle_function_call", return_value="ok") as mock_hfc,
-            patch("agent.tool_executor.time.sleep") as mock_sleep,
+            patch("hermes_agent.agent.tool_executor.time.sleep") as mock_sleep,
         ):
             agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
         assert mock_hfc.call_count == 2
@@ -1575,7 +1575,7 @@ class TestExecuteToolCalls:
             lambda hook_name, **kwargs: hook_calls.append((hook_name, kwargs)) or [],
         )
 
-        with patch("run_agent._set_interrupt"), patch("agent.interrupt_control._set_interrupt"):
+        with patch("hermes_agent.run_agent._set_interrupt"), patch("hermes_agent.agent.interrupt_control._set_interrupt"):
             agent.interrupt()
 
         agent._execute_tool_calls(mock_msg, messages, "task-1")
@@ -1706,7 +1706,7 @@ class TestExecuteToolCalls:
         captured = io.StringIO()
         agent._print_fn = lambda *args, **kw: print(*args, file=captured, **kw)
 
-        with patch("run_agent.time.sleep", return_value=None):
+        with patch("hermes_agent.run_agent.time.sleep", return_value=None):
             result = agent.run_conversation("hello")
 
         assert result["completed"] is True
@@ -2066,7 +2066,7 @@ class TestConcurrentToolExecution:
 
 
     def test_managed_tool_pipeline_rejects_second_dispatch(self, agent, monkeypatch):
-        from agent import relay_tools, tool_executor
+        from hermes_agent.agent import relay_tools, tool_executor
 
         dispatched = []
         duplicate_errors = []
@@ -2117,7 +2117,7 @@ class TestConcurrentToolExecution:
         agent,
         monkeypatch,
     ):
-        from agent import relay_tools, tool_executor
+        from hermes_agent.agent import relay_tools, tool_executor
 
         dispatched = []
         results = []
@@ -2202,7 +2202,7 @@ class TestAgentRuntimePostHookOwnershipSync:
         tool_name,
         tool_args,
     ):
-        from agent.agent_runtime_helpers import AGENT_RUNTIME_POST_HOOK_TOOL_NAMES
+        from hermes_agent.agent.agent_runtime_helpers import AGENT_RUNTIME_POST_HOOK_TOOL_NAMES
 
         hook_calls = []
         monkeypatch.setattr(
@@ -2372,7 +2372,7 @@ class TestParallelScopePathNormalization:
 
 
     def test_should_parallelize_tool_batch_rejects_same_file_with_mixed_path_spellings(self, tmp_path, monkeypatch):
-        from agent.tool_dispatch_helpers import _should_parallelize_tool_batch
+        from hermes_agent.agent.tool_dispatch_helpers import _should_parallelize_tool_batch
         monkeypatch.chdir(tmp_path)
         tc1 = _mock_tool_call(name="write_file", arguments='{"path":"notes.txt","content":"one"}', call_id="c1")
         tc2 = _mock_tool_call(name="write_file", arguments=f'{{"path":"{tmp_path / "notes.txt"}","content":"two"}}', call_id="c2")
@@ -2385,14 +2385,14 @@ class TestMcpParallelToolBatch:
 
     def test_mcp_tools_default_sequential(self):
         """MCP tools without supports_parallel_tool_calls are sequential."""
-        from agent.tool_dispatch_helpers import _should_parallelize_tool_batch
+        from hermes_agent.agent.tool_dispatch_helpers import _should_parallelize_tool_batch
         tc1 = _mock_tool_call(name="mcp__github__list_repos", arguments='{"org":"openai"}', call_id="c1")
         tc2 = _mock_tool_call(name="mcp__github__search_code", arguments='{"q":"test"}', call_id="c2")
         assert not _should_parallelize_tool_batch([tc1, tc2])
 
     def test_mcp_tools_parallel_when_server_opted_in(self):
         """MCP tools from a parallel-safe server can run concurrently."""
-        from agent.tool_dispatch_helpers import _should_parallelize_tool_batch
+        from hermes_agent.agent.tool_dispatch_helpers import _should_parallelize_tool_batch
         from hermes_agent.tools.mcp_tool import _mcp_tool_server_names, _parallel_safe_servers, _lock
         with _lock:
             _parallel_safe_servers.add("github")
@@ -2469,8 +2469,8 @@ class TestHandleMaxIterations:
             worker.join(12)
 
     def test_interrupted_summary_ends_turn_interrupted_and_keeps_pending_message(self, agent, monkeypatch):
-        from agent.context_compressor import MAX_ITERATIONS_SUMMARY_REQUEST
-        from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
+        from hermes_agent.agent.context_compressor import MAX_ITERATIONS_SUMMARY_REQUEST
+        from hermes_agent.agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 
         agent._cached_system_prompt = "You are helpful."
         agent._use_prompt_caching = False
@@ -2541,8 +2541,8 @@ class TestHandleMaxIterations:
             return callback(request)
 
         with (
-            patch("agent.relay_llm.execute_current", side_effect=execute_current),
-            patch("agent.relay_llm.complete_logical_call") as complete_logical,
+            patch("hermes_agent.agent.relay_llm.execute_current", side_effect=execute_current),
+            patch("hermes_agent.agent.relay_llm.complete_logical_call") as complete_logical,
         ):
             result = agent._handle_max_iterations(
                 [{"role": "user", "content": "do stuff"}],
@@ -2601,7 +2601,7 @@ class TestHandleMaxIterations:
         agent.client.chat.completions.create.side_effect = Exception("API down")
         agent._cached_system_prompt = "You are helpful."
         messages = [{"role": "user", "content": "do stuff"}]
-        with patch("agent.relay_llm.complete_logical_call") as complete_logical:
+        with patch("hermes_agent.agent.relay_llm.complete_logical_call") as complete_logical:
             result = agent._handle_max_iterations(messages, 60)
         assert isinstance(result, str)
         # Plain what-now for the user; the raw exception stays in the log, not the reply.
@@ -2674,7 +2674,7 @@ class TestHandleMaxIterations:
         ]
         agent._cached_system_prompt = "You are helpful."
 
-        with caplog.at_level(logging.WARNING, logger="agent.chat_completion_helpers"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.agent.chat_completion_helpers"):
             result = agent._handle_max_iterations(
                 [{"role": "user", "content": "do stuff"}], 60,
             )
@@ -3059,9 +3059,9 @@ class TestRunConversation:
         start_error = RuntimeError("task metrics start failed")
 
         with (
-            patch("agent.relay_runtime.SESSION_COORDINATOR", coordinator),
+            patch("hermes_agent.agent.relay_runtime.SESSION_COORDINATOR", coordinator),
             patch(
-                "agent.relay_runtime.current_profile_key",
+                "hermes_agent.agent.relay_runtime.current_profile_key",
                 return_value="/profile",
             ),
             patch(
@@ -3071,7 +3071,7 @@ class TestRunConversation:
             patch(
                 "hermes_cli.observability.relay_shared_metrics.finish_task_run"
             ) as finish_task_run,
-            patch("agent.conversation_loop.run_conversation") as run_conversation,
+            patch("hermes_agent.agent.conversation_loop.run_conversation") as run_conversation,
         ):
             with pytest.raises(RuntimeError) as caught:
                 agent.run_conversation("hello", task_id="task-1")
@@ -3186,7 +3186,7 @@ class TestRunConversation:
             patch.object(agent, "_try_activate_fallback", side_effect=_fake_activate) as mock_try_activate_fallback,
             patch.object(agent, "_invoke_api_request_error_hook", side_effect=lambda **kw: hook_events.append(kw)),
             patch(
-                "agent.relay_llm.complete_logical_call",
+                "hermes_agent.agent.relay_llm.complete_logical_call",
                 side_effect=lambda request_id, *, outcome: logical_completions.append(
                     (request_id, outcome)
                 ),
@@ -3219,7 +3219,7 @@ class TestRunConversation:
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
-            caplog.at_level(logging.WARNING, logger="agent.conversation_loop"),
+            caplog.at_level(logging.WARNING, logger="hermes_agent.agent.conversation_loop"),
         ):
             result = agent.run_conversation("Call ps -aux")
 
@@ -3295,7 +3295,7 @@ class TestRunConversation:
         assert all("assistant_message" in c["response"] for c in post_request_calls)
 
     def test_terminal_task_closes_logical_calls_before_metrics_scope(self, agent):
-        from agent import relay_runtime
+        from hermes_agent.agent import relay_runtime
 
         order = []
         failed_result = {
@@ -3308,7 +3308,7 @@ class TestRunConversation:
 
         with (
             patch(
-                "agent.conversation_loop.run_conversation",
+                "hermes_agent.agent.conversation_loop.run_conversation",
                 return_value=failed_result,
             ),
             patch(
@@ -3402,8 +3402,8 @@ class TestRunConversation:
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
-            patch("run_agent._set_interrupt"),
-            patch("agent.interrupt_control._set_interrupt"),
+            patch("hermes_agent.run_agent._set_interrupt"),
+            patch("hermes_agent.agent.interrupt_control._set_interrupt"),
             patch.object(
                 agent, "_interruptible_api_call", side_effect=interrupt_side_effect
             ),
@@ -3591,7 +3591,7 @@ class TestRunConversation:
         agent.client.chat.completions.create.side_effect = _create
         monkeypatch.setattr(agent, "_build_api_kwargs", _build_api_kwargs)
         monkeypatch.setattr(
-            "agent.retry_utils.jittered_backoff",
+            "hermes_agent.agent.retry_utils.jittered_backoff",
             lambda *args, **kwargs: 0.0,
         )
 
@@ -3695,7 +3695,7 @@ class TestRunConversation:
         empty_resp = _mock_response(content=None, finish_reason="stop")
         agent.client.chat.completions.create.side_effect = [empty_resp, empty_resp]
 
-        from agent import retry_utils as _retry_utils
+        from hermes_agent.agent import retry_utils as _retry_utils
 
         # Make backoff return 10.0 seconds
         monkeypatch.setattr(_retry_utils, "jittered_backoff", lambda *a, **k: 10.0)
@@ -3733,15 +3733,15 @@ class TestRunConversation:
         ok_resp = _mock_response(content="Final ok response.", finish_reason="stop")
         agent.client.chat.completions.create.side_effect = [empty_resp, ok_resp]
 
-        from agent import conversation_loop as _conv_loop
-        from agent import retry_utils as _retry_utils
+        from hermes_agent.agent import conversation_loop as _conv_loop
+        from hermes_agent.agent import retry_utils as _retry_utils
 
         monkeypatch.setattr(_retry_utils, "jittered_backoff", lambda *a, **k: 7.5)
 
         # Fake clock: the retry loop gates on real time.time() < sleep_end, so
         # a no-op sleep alone busy-spins 7.5 wall-clock seconds. Advance a fake
         # clock by each sleep amount instead (established pattern:
-        # test_session_activity_persist.py patches run_agent.time.time).
+        # test_session_activity_persist.py patches hermes_agent.run_agent.time.time).
         clock = {"t": time.time()}
         monkeypatch.setattr(_conv_loop.time, "time", lambda: clock["t"])
 
@@ -4221,7 +4221,7 @@ class TestRunConversation:
 
         with (
             patch.object(agent, "_compress_context") as mock_compress,
-            patch("agent.turn_overflow.time.sleep"),
+            patch("hermes_agent.agent.turn_overflow.time.sleep"),
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
@@ -5049,8 +5049,8 @@ class TestHookPayloadSanitizesSimpleNamespace:
     The non-OpenAI providers (Bedrock, Codex responses, the auxiliary client,
     and the chat-completion stream stub) build their response / message /
     tool_call objects as ``types.SimpleNamespace`` — see
-    ``agent/bedrock_adapter.py``, ``agent/codex_responses_adapter.py``, and
-    ``agent/auxiliary_client.py``. Those raw objects are handed straight to
+    ``hermes_agent/agent/bedrock_adapter.py``, ``hermes_agent/agent/codex_responses_adapter.py``, and
+    ``hermes_agent/agent/auxiliary_client.py``. Those raw objects are handed straight to
     ``_api_response_payload_for_hook`` for the ``post_api_request`` hook, so the
     crash silently killed observability hooks for every one of those providers
     (the call sites swallow the exception with ``except Exception: pass``).
@@ -5062,8 +5062,8 @@ class TestHookPayloadSanitizesSimpleNamespace:
         assert result == {"id": "call_1", "value": 42, "nested": {"name": "x"}}
 
     def test_api_response_payload_for_hook_normalizes_simplenamespace_tool_calls(self, agent):
-        # Shape mirrors agent/bedrock_adapter.py::normalize_converse_response and
-        # agent/codex_responses_adapter.py — raw SDK objects are SimpleNamespace.
+        # Shape mirrors hermes_agent/agent/bedrock_adapter.py::normalize_converse_response and
+        # hermes_agent/agent/codex_responses_adapter.py — raw SDK objects are SimpleNamespace.
         tool_call = SimpleNamespace(
             id="call_1",
             type="function",
@@ -5126,16 +5126,16 @@ class TestRetryExhaustion:
             usage=None,
         )
         agent.client.chat.completions.create.return_value = bad_resp
-        # The conversation loop was extracted out of run_agent.py; the retry
-        # paths import jittered_backoff lazily from agent.retry_utils — patch
+        # The conversation loop was extracted out of hermes_agent/run_agent.py; the retry
+        # paths import jittered_backoff lazily from hermes_agent.agent.retry_utils — patch
         # all of them so the retry waits don't burn 18+ seconds of real wall-clock time here.
-        from agent import conversation_loop as _conv_loop
-        from agent import retry_utils as _retry_utils
+        from hermes_agent.agent import conversation_loop as _conv_loop
+        from hermes_agent.agent import retry_utils as _retry_utils
         with (
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
-            patch("run_agent.time", self._make_fast_time_mock()),
+            patch("hermes_agent.run_agent.time", self._make_fast_time_mock()),
             patch.object(_conv_loop, "time", self._make_fast_time_mock()),
             patch.object(_retry_utils, "jittered_backoff", lambda *a, **k: 0.0),
         ):
@@ -5161,19 +5161,19 @@ class TestRetryExhaustion:
             relay_attempts.append(kwargs)
             return callback(request)
 
-        from agent import conversation_loop as _conv_loop
-        from agent import retry_utils as _retry_utils
+        from hermes_agent.agent import conversation_loop as _conv_loop
+        from hermes_agent.agent import retry_utils as _retry_utils
 
         with (
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
-            patch("run_agent.time", self._make_fast_time_mock()),
+            patch("hermes_agent.run_agent.time", self._make_fast_time_mock()),
             patch.object(_conv_loop, "time", self._make_fast_time_mock()),
             patch.object(_retry_utils, "jittered_backoff", lambda *a, **k: 0.0),
-            patch("agent.relay_llm.execute", side_effect=execute),
+            patch("hermes_agent.agent.relay_llm.execute", side_effect=execute),
             patch(
-                "agent.relay_llm.complete_logical_call",
+                "hermes_agent.agent.relay_llm.complete_logical_call",
                 side_effect=lambda request_id, *, outcome: logical_completions.append(
                     (request_id, outcome)
                 ),
@@ -5247,7 +5247,7 @@ class TestRetryExhaustion:
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
-            patch("run_agent.time", self._make_fast_time_mock()),
+            patch("hermes_agent.run_agent.time", self._make_fast_time_mock()),
         ):
             result = agent.run_conversation("hello")
         # Must surface the real error, not UnboundLocalError
@@ -5347,7 +5347,7 @@ class TestNousCredentialRefresh:
 
         monkeypatch.setattr(agent, "_retire_shared_openai_client", _spy_retire)
 
-        with patch("agent.process_bootstrap.OpenAI", side_effect=_fake_openai):
+        with patch("hermes_agent.agent.process_bootstrap.OpenAI", side_effect=_fake_openai):
             ok = agent._try_refresh_nous_client_credentials(force=True)
 
         assert ok is True
@@ -5584,7 +5584,7 @@ class TestSafeWriter:
 
     def test_write_delegates_normally(self):
         """When stdout is healthy, _SafeWriter is transparent."""
-        from agent.process_bootstrap import _SafeWriter
+        from hermes_agent.agent.process_bootstrap import _SafeWriter
         from io import StringIO
         inner = StringIO()
         writer = _SafeWriter(inner)
@@ -5595,7 +5595,7 @@ class TestSafeWriter:
     def test_installed_in_run_conversation(self, agent):
         """run_conversation installs _SafeWriter on stdio."""
         import sys
-        from agent.process_bootstrap import _SafeWriter
+        from hermes_agent.agent.process_bootstrap import _SafeWriter
         resp = _mock_response(content="Done", finish_reason="stop")
         agent.client.chat.completions.create.return_value = resp
         original_stdout = sys.stdout
@@ -5630,7 +5630,7 @@ class TestBuildApiKwargsAnthropicMaxTokens:
         agent.max_tokens = 4096
         agent.reasoning_config = None
 
-        with patch("agent.anthropic_adapter.build_anthropic_kwargs") as mock_build:
+        with patch("hermes_agent.agent.anthropic_adapter.build_anthropic_kwargs") as mock_build:
             mock_build.return_value = {"model": "claude-sonnet-4-20250514", "messages": [], "max_tokens": 4096}
             agent._build_api_kwargs([{"role": "user", "content": "test"}])
             _, kwargs = mock_build.call_args
@@ -5657,7 +5657,7 @@ class TestAnthropicImageFallback:
 
         with (
             patch("hermes_agent.tools.vision_tools.vision_analyze_tool", new=AsyncMock(return_value=json.dumps({"success": True, "analysis": "A cat sitting on a chair."}))),
-            patch("agent.anthropic_adapter.build_anthropic_kwargs") as mock_build,
+            patch("hermes_agent.agent.anthropic_adapter.build_anthropic_kwargs") as mock_build,
         ):
             mock_build.return_value = {"model": "claude-sonnet-4-20250514", "messages": [], "max_tokens": 4096}
             agent._build_api_kwargs(api_messages)
@@ -5697,7 +5697,7 @@ class TestAnthropicImageFallback:
         mock_vision = AsyncMock(return_value=json.dumps({"success": True, "analysis": "A small test image."}))
         with (
             patch("hermes_agent.tools.vision_tools.vision_analyze_tool", new=mock_vision),
-            patch("agent.anthropic_adapter.build_anthropic_kwargs") as mock_build,
+            patch("hermes_agent.agent.anthropic_adapter.build_anthropic_kwargs") as mock_build,
         ):
             mock_build.return_value = {"model": "claude-sonnet-4-20250514", "messages": [], "max_tokens": 4096}
             agent._build_api_kwargs(api_messages)
@@ -5719,9 +5719,9 @@ class TestFallbackAnthropicProvider:
         mock_client.api_key = "sk-ant-api03-test"
 
         with (
-            patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)),
-            patch("agent.anthropic_adapter.build_anthropic_client") as mock_build,
-            patch("agent.anthropic_credentials.resolve_anthropic_token", return_value=None),
+            patch("hermes_agent.agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)),
+            patch("hermes_agent.agent.anthropic_adapter.build_anthropic_client") as mock_build,
+            patch("hermes_agent.agent.anthropic_credentials.resolve_anthropic_token", return_value=None),
         ):
             mock_build.return_value = MagicMock()
             result = agent._try_activate_fallback()
@@ -5742,9 +5742,9 @@ class TestFallbackAnthropicProvider:
         mock_client.api_key = "sk-ant-api03-test"
 
         with (
-            patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)),
-            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
-            patch("agent.anthropic_credentials.resolve_anthropic_token", return_value=None),
+            patch("hermes_agent.agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)),
+            patch("hermes_agent.agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+            patch("hermes_agent.agent.anthropic_credentials.resolve_anthropic_token", return_value=None),
         ):
             agent._try_activate_fallback()
 
@@ -5796,7 +5796,7 @@ class TestAnthropicBaseUrlPassthrough:
         with (
             patch("hermes_agent.model_tools.get_tool_definitions", return_value=_make_tool_defs("web_search")),
             patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-            patch("agent.anthropic_adapter.build_anthropic_client") as mock_build,
+            patch("hermes_agent.agent.anthropic_adapter.build_anthropic_client") as mock_build,
         ):
             mock_build.return_value = MagicMock()
             AIAgent(
@@ -5817,7 +5817,7 @@ class TestAnthropicCredentialRefresh:
         with (
             patch("hermes_agent.model_tools.get_tool_definitions", return_value=_make_tool_defs("web_search")),
             patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-            patch("agent.anthropic_adapter.build_anthropic_client") as mock_build,
+            patch("hermes_agent.agent.anthropic_adapter.build_anthropic_client") as mock_build,
         ):
             old_client = MagicMock()
             new_client = MagicMock()
@@ -5837,8 +5837,8 @@ class TestAnthropicCredentialRefresh:
         agent.provider = "anthropic"
 
         with (
-            patch("agent.anthropic_credentials.resolve_anthropic_token", return_value="sk-ant-oat01-fresh-token"),
-            patch("agent.anthropic_adapter.build_anthropic_client", return_value=new_client) as rebuild,
+            patch("hermes_agent.agent.anthropic_credentials.resolve_anthropic_token", return_value="sk-ant-oat01-fresh-token"),
+            patch("hermes_agent.agent.anthropic_adapter.build_anthropic_client", return_value=new_client) as rebuild,
         ):
             assert agent._try_refresh_anthropic_client_credentials() is True
 
@@ -5854,7 +5854,7 @@ class TestAnthropicCredentialRefresh:
         with (
             patch("hermes_agent.model_tools.get_tool_definitions", return_value=_make_tool_defs("web_search")),
             patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+            patch("hermes_agent.agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
         ):
             agent = AIAgent(
                 api_key="sk-ant-oat01-current-token",
@@ -5884,7 +5884,7 @@ class TestAnthropicCredentialRefresh:
         with (
             patch("hermes_agent.model_tools.get_tool_definitions", return_value=_make_tool_defs("web_search")),
             patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+            patch("hermes_agent.agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
         ):
             agent = AIAgent(
                 api_key="sk-ant-oat01-current-token",
@@ -6078,8 +6078,8 @@ class TestStreamingApiCall:
         import httpx
         from openai import OpenAI, Stream
         from openai.types.chat import ChatCompletionChunk
-        from agent.chat_completion_helpers import ProviderStreamError
-        from agent.error_classifier import PROVIDER_STREAM_NON_JSON_ERROR_CODE
+        from hermes_agent.agent.chat_completion_helpers import ProviderStreamError
+        from hermes_agent.agent.error_classifier import PROVIDER_STREAM_NON_JSON_ERROR_CODE
 
         provider_message = (
             "request validation failed: unsupported reasoning_effort"
@@ -6123,7 +6123,7 @@ class TestStreamingApiCall:
         import httpx
         from openai import OpenAI, Stream
         from openai.types.chat import ChatCompletionChunk
-        from agent.chat_completion_helpers import ProviderStreamError
+        from hermes_agent.agent.chat_completion_helpers import ProviderStreamError
 
         secret = "sk-" + ("a" * 48)
         request = httpx.Request(
@@ -6140,7 +6140,7 @@ class TestStreamingApiCall:
         )
         agent.stream_delta_callback = MagicMock()
 
-        with patch("agent.redact._REDACT_ENABLED", False):
+        with patch("hermes_agent.agent.redact._REDACT_ENABLED", False):
             with OpenAI(api_key="test-key", max_retries=0) as sdk_client:
                 stream = Stream(
                     cast_to=ChatCompletionChunk,
@@ -6237,8 +6237,8 @@ class TestStreamingApiCall:
         agent._persist_session = lambda *args, **kwargs: None
         agent._save_trajectory = lambda *args, **kwargs: None
 
-        import agent.conversation_loop as _conversation_loop
-        import agent.retry_utils as _retry_utils
+        import hermes_agent.agent.conversation_loop as _conversation_loop
+        import hermes_agent.agent.retry_utils as _retry_utils
 
         with (
             patch.object(_retry_utils, "jittered_backoff", return_value=0.0),
@@ -6509,7 +6509,7 @@ class TestAnthropicInterruptHandler:
         """
         import time
         from unittest.mock import MagicMock
-        from agent.chat_completion_helpers import interruptible_api_call
+        from hermes_agent.agent.chat_completion_helpers import interruptible_api_call
 
         agent.api_mode = "anthropic_messages"
         agent._interrupt_requested = False
@@ -6583,7 +6583,7 @@ class TestEmptySSEFrameTurnRecovery:
         warnings = []
         agent.status_callback = lambda kind, message: warnings.append((kind, message))
 
-        with patch("run_agent.time.sleep", return_value=None):
+        with patch("hermes_agent.run_agent.time.sleep", return_value=None):
             result = agent.run_conversation("hello")
 
         assert result["completed"] is True
@@ -6812,9 +6812,9 @@ class TestOAuthFlagAfterCredentialRefresh:
         agent._is_anthropic_oauth = False
 
         with (
-            patch("agent.anthropic_credentials.resolve_anthropic_token",
+            patch("hermes_agent.agent.anthropic_credentials.resolve_anthropic_token",
                   return_value="sk-ant-setup-oauth-token"),
-            patch("agent.anthropic_adapter.build_anthropic_client",
+            patch("hermes_agent.agent.anthropic_adapter.build_anthropic_client",
                   return_value=MagicMock()),
         ):
             result = agent._try_refresh_anthropic_client_credentials()
@@ -6831,9 +6831,9 @@ class TestOAuthFlagAfterCredentialRefresh:
         agent._is_anthropic_oauth = True
 
         with (
-            patch("agent.anthropic_credentials.resolve_anthropic_token",
+            patch("hermes_agent.agent.anthropic_credentials.resolve_anthropic_token",
                   return_value="sk-ant-api03-new-key"),
-            patch("agent.anthropic_adapter.build_anthropic_client",
+            patch("hermes_agent.agent.anthropic_adapter.build_anthropic_client",
                   return_value=MagicMock()),
         ):
             result = agent._try_refresh_anthropic_client_credentials()
@@ -6856,11 +6856,11 @@ class TestFallbackSetsOAuthFlag:
         mock_client.api_key = "sk-ant-setup-oauth-token"
 
         with (
-            patch("agent.auxiliary_client.resolve_provider_client",
+            patch("hermes_agent.agent.auxiliary_client.resolve_provider_client",
                   return_value=(mock_client, None)),
-            patch("agent.anthropic_adapter.build_anthropic_client",
+            patch("hermes_agent.agent.anthropic_adapter.build_anthropic_client",
                   return_value=MagicMock()),
-            patch("agent.anthropic_credentials.resolve_anthropic_token",
+            patch("hermes_agent.agent.anthropic_credentials.resolve_anthropic_token",
                   return_value=None),
         ):
             result = agent._try_activate_fallback()
@@ -6879,11 +6879,11 @@ class TestFallbackSetsOAuthFlag:
         mock_client.api_key = "sk-ant-api03-regular-key"
 
         with (
-            patch("agent.auxiliary_client.resolve_provider_client",
+            patch("hermes_agent.agent.auxiliary_client.resolve_provider_client",
                   return_value=(mock_client, None)),
-            patch("agent.anthropic_adapter.build_anthropic_client",
+            patch("hermes_agent.agent.anthropic_adapter.build_anthropic_client",
                   return_value=MagicMock()),
-            patch("agent.anthropic_credentials.resolve_anthropic_token",
+            patch("hermes_agent.agent.anthropic_credentials.resolve_anthropic_token",
                   return_value=None),
         ):
             result = agent._try_activate_fallback()
@@ -6900,7 +6900,7 @@ class TestMemoryContextSanitization:
         """Helper-level: a string with an embedded memory-context block is
         cleaned to just the surrounding text.  Used by build_memory_context_block
         (input-validation) and by plugins on their own backend boundary."""
-        from agent.memory_context import sanitize_context
+        from hermes_agent.agent.memory_context import sanitize_context
         user_text = "how is the honcho working"
         injected = (
             user_text + "\n\n"

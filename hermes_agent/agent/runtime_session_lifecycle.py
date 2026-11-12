@@ -66,7 +66,7 @@ class RuntimeSessionLifecycleMixin:
         self._session(session_id)
         return self._apply('session.api_content', {'content': content, 'api_content': api_content})['value']
 
-    # The turn prologue's row-addressed backfills (agent/turn_context.py) for a user row another
+    # The turn prologue's row-addressed backfills (hermes_agent/agent/turn_context.py) for a user row another
     # writer materialized first (in-place preflight compaction, an early flush, a submit-time row).
     def set_message_api_content(self, session_id, row_id, content, api_content):
         self._session(session_id)

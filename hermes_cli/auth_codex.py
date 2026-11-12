@@ -40,14 +40,14 @@ _NO_CREDENTIALS_MSG = "No Codex credentials stored. Run `{relogin}` to authentic
 
 
 def _codex_relogin_command() -> str:
-    from agent.turn_failure_copy import oauth_relogin_command
+    from hermes_agent.agent.turn_failure_copy import oauth_relogin_command
 
     return oauth_relogin_command("openai-codex")
 
 
 def _parse_retry_after_seconds(headers: Any) -> Optional[int]:
     """Best-effort parse of a ``Retry-After`` header into whole seconds."""
-    from agent.retry_utils import parse_retry_after_seconds
+    from hermes_agent.agent.retry_utils import parse_retry_after_seconds
     seconds = parse_retry_after_seconds(headers)
     return None if seconds is None else int(seconds)
 
@@ -88,7 +88,7 @@ def _codex_pool_route_base_url(entry_base_url: Optional[str] = "") -> str:
         logger.debug("Codex pool route base resolution failed", exc_info=True)
         # Profile-scoped override only (never the raw process env: a multiplexed sibling's gateway).
         with suppress(Exception):
-            from agent.secret_scope import get_secret_str
+            from hermes_agent.agent.secret_scope import get_secret_str
             base = _stripped(get_secret_str("HERMES_CODEX_BASE_URL", "")).rstrip("/") or base
         return base or DEFAULT_CODEX_BASE_URL
 
@@ -227,8 +227,8 @@ def _recover_codex_tokens_from_cli(
     Desktop/CLI login into another ChatGPT workspace must not replace it silently, and a concurrent
     explicit re-auth must not be overwritten, so the save is a compare-and-swap under the store lock.
     """
-    from agent.credential_pool import _codex_principal_identity
-    from agent.credential_sources import adopt_external_logins_enabled
+    from hermes_agent.agent.credential_pool import _codex_principal_identity
+    from hermes_agent.agent.credential_sources import adopt_external_logins_enabled
     from hermes_cli.auth import _import_codex_cli_tokens, _provider_state_transaction, _save_codex_tokens
     if not adopt_external_logins_enabled():
         return None
@@ -426,7 +426,7 @@ def _codex_http_client(**kwargs: Any) -> httpx.Client:
     # trust_env client below raise InvalidURL at construction (#118159) — sanitize before building it.
     client = httpx.Client(event_hooks={"response": [_cap_codex_response_body]}, **kwargs)
     with suppress(Exception):
-        from agent.process_bootstrap import enable_happy_eyeballs_on_client
+        from hermes_agent.agent.process_bootstrap import enable_happy_eyeballs_on_client
         enable_happy_eyeballs_on_client(client)
     return client
 
@@ -640,7 +640,7 @@ def resolve_codex_runtime_credentials(
         pool_token, pool_base = _pool_codex_credential()
         if pool_token and force_refresh and not read_only:
             # Pool-only setup: a forced refresh must rotate the pool entry, not resend its token.
-            from agent.credential_pool import load_pool
+            from hermes_agent.agent.credential_pool import load_pool
             refreshed = load_pool("openai-codex").try_refresh_matching(api_key_hint=pool_token)
             pool_token = refreshed.runtime_api_key if refreshed is not None else ""
         if pool_token:
@@ -757,7 +757,7 @@ def _probe_codex_quota_restored(
     result: Optional[bool] = None
     try:
         # Account/residency headers from the JWT (required for some account shapes).
-        from agent.codex_headers import codex_account_headers
+        from hermes_agent.agent.codex_headers import codex_account_headers
         headers = {
             "Authorization": f"Bearer {token}", "Accept": "application/json",
             "User-Agent": "codex-cli", **codex_account_headers(token)}
@@ -858,7 +858,7 @@ def clear_codex_pool_quota_cooldowns(access_token: Optional[str] = None) -> int:
     rate-limited entry does (a redeemed banked reset restores the whole account; a still-exhausted
     entry just re-freezes with fresh metadata on its next 429).
     """
-    from agent.credential_pool import _borrowed_single_use_pool_root, _profile_owns_pool_provider
+    from hermes_agent.agent.credential_pool import _borrowed_single_use_pool_root, _profile_owns_pool_provider
     from hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store
     cleared = 0
     try:
@@ -892,7 +892,7 @@ def _codex_pool_rate_limit_status() -> Optional[dict[str, Any]]:
     Reads through ``read_credential_pool`` so a named profile with no Codex rows of its own sees
     the global-root pool (the per-provider fallback every other pool read uses)."""
     from hermes_cli.auth import _nonempty_str, read_credential_pool
-    from agent.credential_pool import _parse_absolute_timestamp
+    from hermes_agent.agent.credential_pool import _parse_absolute_timestamp
     try:
         now = time.time()
         for entry in _codex_pool_dicts(read_credential_pool("openai-codex")):
@@ -926,7 +926,7 @@ def _pool_codex_credential() -> tuple[str, str]:
 
     Fallback for ``resolve_codex_runtime_credentials`` when the singleton has no creds; reads
     through ``read_credential_pool`` so a profile inherits the global-root pool (#34143)."""
-    from agent.credential_pool import _parse_absolute_timestamp
+    from hermes_agent.agent.credential_pool import _parse_absolute_timestamp
     from hermes_cli.auth import _nonempty_str, read_credential_pool
     try:
         for entry in _codex_pool_dicts(read_credential_pool("openai-codex")):

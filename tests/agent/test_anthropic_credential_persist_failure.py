@@ -33,9 +33,9 @@ import time
 
 import pytest
 
-from agent import anthropic_credentials as AA
-from agent.anthropic_credentials import CredentialPersistError
-from agent.credential_pool import (
+from hermes_agent.agent import anthropic_credentials as AA
+from hermes_agent.agent.anthropic_credentials import CredentialPersistError
+from hermes_agent.agent.credential_pool import (
     AUTH_TYPE_OAUTH,
     CREDENTIAL_PERSIST_FAILED_REASON,
     STATUS_DEAD,

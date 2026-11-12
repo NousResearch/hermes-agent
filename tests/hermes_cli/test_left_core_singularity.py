@@ -103,8 +103,8 @@ def test_a_singularity_home_gets_the_plugin_once(tmp_path):
 
 
 def test_the_backend_name_is_free_for_the_plugin(monkeypatch):
-    from agent import terminal_env_registry as reg
-    from agent.terminal_env_provider import TerminalEnvironmentProvider
+    from hermes_agent.agent import terminal_env_registry as reg
+    from hermes_agent.agent.terminal_env_provider import TerminalEnvironmentProvider
 
     class _Stand(TerminalEnvironmentProvider):
         name = "singularity"

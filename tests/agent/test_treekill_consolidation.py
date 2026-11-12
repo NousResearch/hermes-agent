@@ -1,17 +1,17 @@
-"""#85125 Phase 4d — site-local tree-kills delegate to agent.deadline.
+"""#85125 Phase 4d — site-local tree-kills delegate to hermes_agent.agent.deadline.
 
 Each migrated wrapper keeps its caller-facing contract (signature, all
 failures swallowed, ``None`` return) while routing the actual tree
-termination through :func:`agent.deadline.kill_process_tree`:
+termination through :func:`hermes_agent.agent.deadline.kill_process_tree`:
 
 * ``hermes_cli._subprocess_compat.kill_process_tree(proc)`` — also consumed
-  by ``agent.shell_hooks`` by name; falls back to
+  by ``hermes_agent.agent.shell_hooks`` by name; falls back to
   ``_legacy_kill_process_tree`` when delegation fails.
 * ``hermes_agent.tools.code_execution_tool._kill_process_group(proc, escalate=...)`` —
   SIGTERM tree first, then (escalate) bounded wait + SIGKILL tree.
 
 Plus one real end-to-end probe: a setsid'd grandchild must die through the
-compat wrapper (i.e. the psutil descendant sweep in agent.deadline is
+compat wrapper (i.e. the psutil descendant sweep in hermes_agent.agent.deadline is
 actually reached from the delegating call site).
 """
 
@@ -24,7 +24,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import agent.deadline as deadline_mod
+import hermes_agent.agent.deadline as deadline_mod
 
 
 class _FakeProc:

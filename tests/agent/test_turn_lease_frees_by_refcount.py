@@ -11,8 +11,8 @@ import gc
 import threading
 import weakref
 
-from agent.periodic_scheduler import schedule
-from agent.turn_facade_lease import DurableTurnLease
+from hermes_agent.agent.periodic_scheduler import schedule
+from hermes_agent.agent.turn_facade_lease import DurableTurnLease
 
 
 class _Db:

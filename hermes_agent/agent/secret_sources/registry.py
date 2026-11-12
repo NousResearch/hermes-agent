@@ -20,8 +20,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, MutableMapping, Optional
 
-from agent.provider_registry import ProviderRegistry, exact_key
-from agent.secret_sources.base import (
+from hermes_agent.agent.provider_registry import ProviderRegistry, exact_key
+from hermes_agent.agent.secret_sources.base import (
     SECRET_SOURCE_API_VERSION, ErrorKind, FetchResult, SecretSource, is_valid_env_name,
     reset_source_environment, set_source_environment,
 )

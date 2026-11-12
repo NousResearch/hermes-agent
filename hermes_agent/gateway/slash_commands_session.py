@@ -15,8 +15,8 @@ import os
 import shlex
 from typing import Optional, Union
 
-from agent.i18n import t
-from agent.turn_context import extract_api_content_sidecar
+from hermes_agent.agent.i18n import t
+from hermes_agent.agent.turn_context import extract_api_content_sidecar
 from hermes_agent.gateway.config import Platform
 from hermes_agent.gateway.platforms.base import EphemeralReply
 from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
@@ -59,7 +59,7 @@ def _manual_compression_reply_lines(summary: dict, compressor, focus_topic) -> l
         lines.append(summary["note"])
     summary_err = getattr(compressor, "_last_summary_error", None)
     if summary_err:
-        from agent.redact import redact_sensitive_text
+        from hermes_agent.agent.redact import redact_sensitive_text
         summary_err = redact_sensitive_text(summary_err, force=True)
     aux_fail_model = getattr(compressor, "_last_aux_model_failure_model", None)
     if getattr(compressor, "_last_compress_aborted", False):
@@ -72,7 +72,7 @@ def _manual_compression_reply_lines(summary: dict, compressor, focus_topic) -> l
 
 def _compress_preview_reply(history, partial: bool, keep_last, focus_topic, agg_note: str) -> str:
     """``/compress --preview``: report what WOULD be compressed — no agent, no writes."""
-    from agent.model_metadata import estimate_request_tokens_rough
+    from hermes_agent.agent.model_metadata import estimate_request_tokens_rough
     from hermes_cli.partial_compress import summarize_compress_preview
 
     pv_msgs = [{"role": m.get("role"), "content": m.get("content")} for m in history
@@ -453,7 +453,7 @@ class GatewaySessionCommandsMixin:
         """Handle /retry command - re-send the last user message."""
         # The canonical projection skips bookkeeping rows (role=user + display_kind) and pure
         # handoffs while still recognizing a real ask embedded in a compaction carrier.
-        from agent.context_compressor import (
+        from hermes_agent.agent.context_compressor import (
             history_before_user_originated_turn, retryable_user_text, split_user_originated_turn,
             user_originated_turn_view)
 
@@ -719,7 +719,7 @@ class GatewaySessionCommandsMixin:
     async def _handle_compress_command_inner(self, event: MessageEvent) -> str:
         """Handle /compress -- manually compress conversation context; ``/compress <focus>`` tells
         the summariser what to preserve. Flags/positional forms are parsed by the shared core."""
-        from agent.conversation_compression_manual import MIN_MESSAGES, parse_compress_args
+        from hermes_agent.agent.conversation_compression_manual import MIN_MESSAGES, parse_compress_args
 
         source = event.source
         session_entry = await self.async_session_store.get_or_create_session(source)
@@ -743,8 +743,8 @@ class GatewaySessionCommandsMixin:
 
     async def _run_manual_compression(self, source, session_entry, history: list, request) -> str:
         """Build a temporary agent, run the shared compress core, persist, and describe the outcome."""
-        from agent.conversation_compression import finalize_context_engine_compression_notification
-        from agent.conversation_compression_manual import compress_now, render_compress_result
+        from hermes_agent.agent.conversation_compression import finalize_context_engine_compression_notification
+        from hermes_agent.agent.conversation_compression_manual import compress_now, render_compress_result
         from hermes_agent.gateway.run import _platform_config_key
 
         session_key = self._session_key_for_source(source)
@@ -794,7 +794,7 @@ class GatewaySessionCommandsMixin:
 
     async def _build_manual_compression_agent(self, session_id: str, model, runtime_kwargs: dict):
         """Build the throwaway AIAgent that performs a manual /compress rewrite of *session_id*."""
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         from hermes_agent.gateway.run import _GATEWAY_HYGIENE_PLATFORM, _seed_hygiene_system_prompt
         from hermes_cli.config import load_config as _load_cfg
         from utils import is_truthy_value as _is_truthy

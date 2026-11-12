@@ -24,9 +24,9 @@ from hermes_agent.gateway.platforms.base_image_sniff import _looks_like_image
 from hermes_agent.gateway.platforms.base_media_flags import pad_inline_flags
 from hermes_agent.gateway.platforms.session_model import _SessionModelSettingsMixin
 from utils import normalize_proxy_url, unlink_files_older_than
-from agent.i18n import t
-from agent.retry_utils import jittered_backoff
-from agent.proxy_bypass import first_proxy_env_value, should_bypass_proxy as _should_bypass_proxy
+from hermes_agent.agent.i18n import t
+from hermes_agent.agent.retry_utils import jittered_backoff
+from hermes_agent.agent.proxy_bypass import first_proxy_env_value, should_bypass_proxy as _should_bypass_proxy
 
 logger = logging.getLogger(__name__)
 
@@ -449,10 +449,10 @@ from hermes_cli.home_data_layout import SECRET_CACHE_STORES
 from hermes_agent.gateway.session import SessionSource, build_session_key
 from hermes_agent.gateway.session_transcript import TranscriptReadError
 from hermes_constants import CONNECTOR_DOWNLOADS_SUBDIR, get_default_hermes_root, get_hermes_dir, get_hermes_home
-from agent.provider_media import GENERATED_SUBDIR, MEDIA_CACHE_MAX_AGE_HOURS
+from hermes_agent.agent.provider_media import GENERATED_SUBDIR, MEDIA_CACHE_MAX_AGE_HOURS
 
 if TYPE_CHECKING:
-    from agent.display import ToolPreview
+    from hermes_agent.agent.display import ToolPreview
 
 
 GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE = (
@@ -776,7 +776,7 @@ def _sqlite_files(name: str) -> tuple[str, ...]:
 
 # Credential stores at the HERMES_HOME root, denied per-file so skills/, logs/ and agent-written
 # files stay deliverable (cache subdirs are allowlisted BEFORE this). A superset of the
-# agent/file_safety.py read+write denies so exfil never trails the read guard. google_token.json's mtime bumps every turn (defeats the
+# hermes_agent/agent/file_safety.py read+write denies so exfil never trails the read guard. google_token.json's mtime bumps every turn (defeats the
 # recency window); pairing/, mcp-tokens/ (live OAuth tokens) and webapp/ (the Webapp's credential) are whole trees.
 _ROOT_CREDENTIAL_PATHS = (
     ".env", "auth.json", "auth.lock", "credentials", "config.yaml", ".anthropic_oauth.json",
@@ -2000,7 +2000,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         from hermes_agent.gateway.stream_events import ToolCallChunk
         if not isinstance(event, ToolCallChunk):
             return None
-        from agent.display import get_tool_emoji, prepare_tool_preview, verbose_tool_args_text
+        from hermes_agent.agent.display import get_tool_emoji, prepare_tool_preview, verbose_tool_args_text
         emoji, tool = get_tool_emoji(event.tool_name, default='⚙️'), event.tool_name
         if mode == "verbose" and event.args:
             args_str = verbose_tool_args_text(event.args, preview_max_len, self.supports_code_blocks)

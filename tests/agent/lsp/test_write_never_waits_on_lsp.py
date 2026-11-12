@@ -13,8 +13,8 @@ import time
 
 import pytest
 
-from agent.lsp import deferred
-from agent.lsp.manager import LSPService
+from hermes_agent.agent.lsp import deferred
+from hermes_agent.agent.lsp.manager import LSPService
 from hermes_agent.model_tools import handle_function_call
 from tests.agent.lsp.test_service import _install_mock_server
 from tests.waiting import wait_until
@@ -40,7 +40,7 @@ def mock_workspace(monkeypatch, tmp_path):
         next(gen)
         svc = LSPService(enabled=True, wait_mode="document", wait_timeout=_WAIT, install_strategy="manual",
                          trusted_workspaces=[str(repo)])
-        monkeypatch.setattr("agent.lsp.get_service", lambda: svc)
+        monkeypatch.setattr("hermes_agent.agent.lsp.get_service", lambda: svc)
         created.append((svc, gen, gate))
         return repo, gate
     yield install
@@ -100,7 +100,7 @@ def test_late_verdict_reaches_the_model_before_the_turn_ends(mock_workspace, mon
     model as a new message, continuing the turn."""
     from types import SimpleNamespace
 
-    from agent.turn_stop_gates import apply_stop_gates
+    from hermes_agent.agent.turn_stop_gates import apply_stop_gates
 
     monkeypatch.setenv("HERMES_VERIFY_ON_STOP", "0")
     repo, gate = mock_workspace("by_content")
@@ -147,7 +147,7 @@ def test_each_session_is_checked_on_the_bytes_it_wrote(mock_workspace):
     gate.touch()  # the server answers at once; the LSP loop itself is held below
     target = repo / "e.py"
     target.write_text("x = 1\n", encoding="utf-8")
-    from agent.lsp import get_service
+    from hermes_agent.agent.lsp import get_service
     svc = get_service()
     held, release = threading.Event(), threading.Event()
 

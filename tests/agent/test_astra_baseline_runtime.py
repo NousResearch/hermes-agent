@@ -16,11 +16,11 @@ def _chatgpt_oauth_token() -> str:
 def test_explicit_astra_resolves_and_uses_official_responses(monkeypatch, tmp_path):
     """A fresh profile resolves metadata and routes the official endpoint without live I/O."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda *args, **kwargs: {})
-    monkeypatch.setattr("agent.process_bootstrap.OpenAI", lambda **_kwargs: SimpleNamespace())
+    monkeypatch.setattr("hermes_agent.agent.models_dev.fetch_models_dev", lambda *args, **kwargs: {})
+    monkeypatch.setattr("hermes_agent.agent.process_bootstrap.OpenAI", lambda **_kwargs: SimpleNamespace())
     monkeypatch.setattr("hermes_agent.model_tools.get_tool_definitions", lambda *args, **kwargs: [])
 
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     agent = AIAgent(
         model="gpt-6-astra",
@@ -34,7 +34,7 @@ def test_explicit_astra_resolves_and_uses_official_responses(monkeypatch, tmp_pa
     )
 
     assert agent.api_mode == "codex_responses"
-    from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS
+    from hermes_agent.agent.model_metadata import DEFAULT_CONTEXT_LENGTHS
 
     assert agent.context_compressor.context_length == DEFAULT_CONTEXT_LENGTHS["gpt-6-astra"]
     kwargs = agent._get_transport().build_kwargs(
@@ -50,7 +50,7 @@ def test_explicit_astra_resolves_and_uses_official_responses(monkeypatch, tmp_pa
 
 def test_astra_codex_oauth_fallback_uses_backend_context_limit():
     """OAuth keeps the Codex backend's 272K fallback; direct API metadata remains 1.05M."""
-    from agent.model_metadata import (
+    from hermes_agent.agent.model_metadata import (
         DEFAULT_CONTEXT_LENGTHS,
         _resolve_codex_oauth_context_length_with_source,
     )
@@ -63,9 +63,9 @@ def test_astra_codex_oauth_fallback_uses_backend_context_limit():
 @pytest.mark.parametrize("advertised,expected", [(272_000, 900_000), (200_000, 200_000), (1_050_000, 1_050_000)])
 def test_astra_900k_opt_in_preserves_live_limits_and_wire_contract(monkeypatch, tmp_path, advertised, expected):
     """Only the known stale advertisement is lifted; the alias never reaches the wire."""
-    from agent import model_metadata as metadata
-    from agent.reasoning_effort import CODEX_ASTRA_EFFORTS, codex_supported_efforts
-    from agent.transports.codex import ResponsesApiTransport
+    from hermes_agent.agent import model_metadata as metadata
+    from hermes_agent.agent.reasoning_effort import CODEX_ASTRA_EFFORTS, codex_supported_efforts
+    from hermes_agent.agent.transports.codex import ResponsesApiTransport
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(metadata, "_codex_oauth_context_cache", {})

@@ -92,7 +92,7 @@ def test_generate_xai_tts_sends_auxiliary_rewriter_output_to_api(
     monkeypatch.setenv("XAI_API_KEY", "test-xai-key")
     monkeypatch.setattr("requests.post", fake_post)
     monkeypatch.setattr(
-        "agent.auxiliary_client.call_llm", lambda *a, **kw: fake_response
+        "hermes_agent.agent.auxiliary_client.call_llm", lambda *a, **kw: fake_response
     )
 
     out = tmp_path / "out.mp3"
@@ -187,7 +187,7 @@ def test_generate_xai_tts_prefers_explicit_api_key_over_oauth(tmp_path, monkeypa
             return entry
 
     monkeypatch.setattr(
-        "agent.credential_pool.load_pool",
+        "hermes_agent.agent.credential_pool.load_pool",
         lambda provider_id: _FakePool() if provider_id == "xai-oauth" else None,
     )
     monkeypatch.delenv("XAI_API_KEY", raising=False)
@@ -216,7 +216,7 @@ def test_auto_speech_tags_calls_auxiliary_rewriter_with_tts_audio_tags_task():
         choices=[SimpleNamespace(message=SimpleNamespace(content="[warmly] Hi."))]
     )
 
-    with patch("agent.auxiliary_client.call_llm", return_value=response) as mock_call:
+    with patch("hermes_agent.agent.auxiliary_client.call_llm", return_value=response) as mock_call:
         result = _apply_xai_auto_speech_tags(
             "Bonjour Monsieur Talbot. Ceci est un test de réponse vocale."
         )
@@ -257,7 +257,7 @@ def test_auto_speech_tags_strips_markdown_fences_from_rewriter_output():
         choices=[SimpleNamespace(message=SimpleNamespace(content=fenced))]
     )
 
-    with patch("agent.auxiliary_client.call_llm", return_value=response):
+    with patch("hermes_agent.agent.auxiliary_client.call_llm", return_value=response):
         result = _apply_xai_auto_speech_tags(
             "Bonjour Monsieur Talbot. Ceci est un test de réponse vocale."
         )

@@ -60,8 +60,8 @@ def _section(config: dict, key: str) -> dict:
 
 def _registered_backends() -> list[dict[str, Any]]:
     """``default`` plus every plugin-registered backend of the active profile, with availability."""
-    from agent.delegation_backends import list_backends
-    from agent.delegation_registry import DEFAULT_BACKEND as builtin
+    from hermes_agent.agent.delegation_backends import list_backends
+    from hermes_agent.agent.delegation_registry import DEFAULT_BACKEND as builtin
     from hermes_cli.plugins import discover_plugins
 
     discover_plugins()  # idempotent; a plugin enabled after boot loads on the next scan
@@ -95,7 +95,7 @@ async def get_delegation_routing(profile: Optional[str] = None):
     (``blocked_reason``, ``None`` when it runs: core fails closed, so subagents are refused until it is fixed), the registered
     backends, both route blocks and the profiles a profile route may name."""
     def _read():
-        from agent.delegation_registry import backend_status, configured_backend
+        from hermes_agent.agent.delegation_registry import backend_status, configured_backend
         with _profile_scope(profile):
             delegation = _mapping(load_config(), "delegation")
             backends = _registered_backends()
@@ -123,7 +123,7 @@ async def select_delegation_backend(body: DelegationBackendSelect, profile: Opti
     name = (body.backend or "").strip().lower() or DEFAULT_BACKEND
 
     def _run():
-        from agent.delegation_backends import set_global_backend
+        from hermes_agent.agent.delegation_backends import set_global_backend
         from hermes_cli.plugins import discover_plugins
         with config_write_scope(body.profile or profile):
             discover_plugins()
@@ -152,8 +152,8 @@ def _check_default(default: Optional[str], names: list[str], what: str) -> Optio
 
 def _clean_model_option(index: int, entry: dict, stored: dict[str, dict],
                         declared: tuple[str, ...] = ()) -> dict[str, Any]:
-    from agent.delegation_provider import ROUTE_KEYS
-    from agent.fast_mode import STATIC_TIERS, parse_exact_service_tier
+    from hermes_agent.agent.delegation_provider import ROUTE_KEYS
+    from hermes_agent.agent.fast_mode import STATIC_TIERS, parse_exact_service_tier
     from hermes_constants import VALID_REASONING_EFFORTS, parse_reasoning_effort
 
     row: dict[str, Any] = {key: _text(entry, key) for key in _OPTION_TEXT_KEYS if _text(entry, key)}

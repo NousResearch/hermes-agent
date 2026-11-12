@@ -292,7 +292,7 @@ nc 127.0.0.1 4444
 ### Tests
 See Recipe 3. The wrapper captures subprocess output, so run pytest directly for interactive pdb.
 
-### `run_agent.py` / CLI — one-shot
+### `hermes_agent/run_agent.py` / CLI — one-shot
 In the prepared debug checkout, add `breakpoint()` near the suspect line, then
 run `python hermes`. Control returns to your terminal at the pause point.
 

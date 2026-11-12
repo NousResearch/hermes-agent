@@ -173,7 +173,7 @@ def test_focus_mode_coding_posture_gets_the_tool(monkeypatch):
     """An engineer pinned to the coding posture still sees their accounts."""
     from pathlib import Path
 
-    from agent.coding_context import coding_selection
+    from hermes_agent.agent.coding_context import coding_selection
 
     repo = Path(__file__).resolve().parents[2]
     monkeypatch.chdir(repo)

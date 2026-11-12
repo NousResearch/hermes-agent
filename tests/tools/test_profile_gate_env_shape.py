@@ -20,7 +20,7 @@ def test_operator_allowlist_shaped_vars_are_not_gates_but_platform_gates_are():
 def test_routed_no_agent_script_env_keeps_operator_allowlist_and_drops_platform_gate(tmp_path, monkeypatch):
     """The cron ``no_agent`` spawn seam: a child built for ANOTHER profile drops Hermes gates but
     keeps the operator's script data, whatever its name looks like."""
-    from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
+    from hermes_agent.agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     launch = tmp_path / ".hermes"

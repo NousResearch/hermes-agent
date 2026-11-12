@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from agent.conversation_compression import CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE
+from hermes_agent.agent.conversation_compression import CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE
 from hermes_agent.gateway.config import Platform
 from hermes_agent.gateway.session import build_session_key
 from tests.gateway.test_handoff_thread_session_key import _handoff_destination

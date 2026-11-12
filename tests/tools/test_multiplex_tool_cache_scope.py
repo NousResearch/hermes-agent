@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 import hermes_yaml as yaml
 
-from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
+from hermes_agent.agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
 
@@ -65,9 +65,9 @@ def test_home_keyed_caches_serve_each_profile_its_own_config(tmp_path, monkeypat
     (a / "cache" / "image_token_costs.json").write_text(json.dumps({"m@gw.example": 1000}), encoding="utf-8")
     (b / "cache" / "image_token_costs.json").write_text(json.dumps({"m@gw.example": 3000}), encoding="utf-8")
 
-    import agent.auxiliary_client as ac
-    import agent.image_token_cost as itc
-    from agent import models_dev
+    import hermes_agent.agent.auxiliary_client as ac
+    import hermes_agent.agent.image_token_cost as itc
+    from hermes_agent.agent import models_dev
     import hermes_agent.tools.computer_use.tool as cu
     from hermes_agent.tools import mcp_tool_loop
 
@@ -104,7 +104,7 @@ def test_endpoint_model_catalog_memo_is_keyed_by_credential(two_homes, monkeypat
     key must not be served to B from the in-memory memo (the disk memo already lives per home)."""
     from contextlib import contextmanager
     import httpx
-    import agent.model_metadata as mm
+    import hermes_agent.agent.model_metadata as mm
 
     a, b = two_homes
     mm._endpoint_model_metadata_cache.clear()

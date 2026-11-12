@@ -26,12 +26,12 @@ class TestAnthropicPoolExhaustedFallsBackToEnv:
         """pool=(True, None) but a valid env token exists → client is built."""
         monkeypatch.setenv("ANTHROPIC_TOKEN", "«redacted:sk-…»-oauth-token")
         with patch(
-            "agent.auxiliary_client._select_pool_entry", return_value=(True, None)
+            "hermes_agent.agent.auxiliary_client._select_pool_entry", return_value=(True, None)
         ), patch(
-            "agent.anthropic_adapter.build_anthropic_client"
+            "hermes_agent.agent.anthropic_adapter.build_anthropic_client"
         ) as mock_build:
             mock_build.return_value = MagicMock()
-            from agent.auxiliary_client import _try_anthropic, AnthropicAuxiliaryClient
+            from hermes_agent.agent.auxiliary_client import _try_anthropic, AnthropicAuxiliaryClient
 
             client, model = _try_anthropic()
 
@@ -50,11 +50,11 @@ class TestAnthropicPoolExhaustedFallsBackToEnv:
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
         with patch(
-            "agent.auxiliary_client._select_pool_entry", return_value=(True, None)
+            "hermes_agent.agent.auxiliary_client._select_pool_entry", return_value=(True, None)
         ), patch(
-            "agent.anthropic_credentials.resolve_anthropic_token", return_value=None
+            "hermes_agent.agent.anthropic_credentials.resolve_anthropic_token", return_value=None
         ):
-            from agent.auxiliary_client import _try_anthropic
+            from hermes_agent.agent.auxiliary_client import _try_anthropic
 
             client, model = _try_anthropic()
 
@@ -72,11 +72,11 @@ class TestAnthropicPoolExhaustedFallsBackToEnv:
             return MagicMock()
 
         with patch(
-            "agent.auxiliary_client._select_pool_entry", return_value=(True, None)
+            "hermes_agent.agent.auxiliary_client._select_pool_entry", return_value=(True, None)
         ), patch(
-            "agent.anthropic_adapter.build_anthropic_client", side_effect=_fake_build
+            "hermes_agent.agent.anthropic_adapter.build_anthropic_client", side_effect=_fake_build
         ):
-            from agent.auxiliary_client import _try_anthropic
+            from hermes_agent.agent.auxiliary_client import _try_anthropic
 
             client, _model = _try_anthropic()
 

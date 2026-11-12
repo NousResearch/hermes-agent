@@ -18,7 +18,7 @@ from pathlib import Path
 
 class TestExecutionGuidanceText:
     def test_full_text_when_toolset_has_every_named_tool_or_is_unknown(self):
-        from agent.prompt_builder import OPENAI_MODEL_EXECUTION_GUIDANCE, execution_guidance_text
+        from hermes_agent.agent.prompt_builder import OPENAI_MODEL_EXECUTION_GUIDANCE, execution_guidance_text
         assert execution_guidance_text(None) == OPENAI_MODEL_EXECUTION_GUIDANCE
         assert execution_guidance_text(
             {"terminal", "execute_code", "read_file", "search_files"}
@@ -27,7 +27,7 @@ class TestExecutionGuidanceText:
     def test_lean_toolset_is_not_told_to_use_absent_tools(self):
         # #106506: a toolset with none of terminal/execute_code/read_file/search_files must not be told to
         # reach for them (GPT models then refused plain arithmetic as "prohibited mental computation").
-        from agent.prompt_builder import execution_guidance_text
+        from hermes_agent.agent.prompt_builder import execution_guidance_text
         text = execution_guidance_text({"memory"})
         mandatory = text.split("<mandatory_tool_use>")[1].split("</mandatory_tool_use>")[0]
         for tool in ("terminal", "execute_code", "read_file", "search_files", "Arithmetic"):
@@ -38,7 +38,7 @@ class TestExecutionGuidanceText:
 
 class TestCodingBriefTodoGating:
     def _brief(self, valid_tool_names):
-        from agent.coding_context import CODING_PROFILE, RuntimeMode
+        from hermes_agent.agent.coding_context import CODING_PROFILE, RuntimeMode
         mode = RuntimeMode(
             profile=CODING_PROFILE, surface="cli", cwd=Path.cwd(),
         )
@@ -63,7 +63,7 @@ class TestCodingBriefTodoGating:
 
 class TestEssentialSkillsUndisableable:
     def test_agent_side_reader_strips_essential(self, monkeypatch, tmp_path):
-        import agent.skill_utils as su
+        import hermes_agent.agent.skill_utils as su
         cfg = tmp_path / "config.yaml"
         cfg.write_text(
             "skills:\n  disabled:\n    - hermes-agent\n    - some-other-skill\n",

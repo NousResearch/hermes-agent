@@ -1,4 +1,4 @@
-"""Tests for ``agent.skill_commands.reload_skills``.
+"""Tests for ``hermes_agent.agent.skill_commands.reload_skills``.
 
 Covers the helper that powers ``/reload-skills`` (CLI + gateway slash command).
 The helper rescans the skills directory and returns a diff of what changed.
@@ -51,7 +51,7 @@ def hermes_home(monkeypatch):
     # Import lazily (inside fixture) so the modules are already resident,
     # then redirect their captured paths at the new temp dir.
     import hermes_agent.tools.skills_tool as _st
-    import agent.skill_commands as _sc
+    import hermes_agent.agent.skill_commands as _sc
 
     monkeypatch.setattr(_st, "HERMES_HOME", home, raising=False)
     monkeypatch.setattr(_st, "SKILLS_DIR", home / "skills", raising=False)
@@ -64,12 +64,12 @@ def hermes_home(monkeypatch):
 
 
 class TestReloadSkillsHelper:
-    """``agent.skill_commands.reload_skills``."""
+    """``hermes_agent.agent.skill_commands.reload_skills``."""
 
 
 
     def test_detects_removed_skill_carries_description(self, hermes_home):
-        from agent.skill_commands import reload_skills
+        from hermes_agent.agent.skill_commands import reload_skills
 
         skill_dir = _write_skill(hermes_home / "skills", "demo", "soon to be gone")
         # First reload: demo present
@@ -95,8 +95,8 @@ class TestReloadSkillsHelper:
         mention them for the model to use them — so reloading them should
         preserve prefix caching.
         """
-        from agent.prompt_builder import _skills_prompt_snapshot_path
-        from agent.skill_commands import reload_skills
+        from hermes_agent.agent.prompt_builder import _skills_prompt_snapshot_path
+        from hermes_agent.agent.skill_commands import reload_skills
 
         snapshot = _skills_prompt_snapshot_path()
         snapshot.parent.mkdir(parents=True, exist_ok=True)

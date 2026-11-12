@@ -57,7 +57,7 @@ def retry_recovered_local_server(agent) -> bool:
     endless retries; across turns, a local server that crashed or fell behind and has since
     recovered gets the user's next message instead of an instant error. The router answers
     ``/health`` even while its model is stuck, so one more stale attempt shuts the breaker again."""
-    from agent.chat_completion_helpers import _stale_streak
+    from hermes_agent.agent.chat_completion_helpers import _stale_streak
 
     giveup, streak = stale_giveup(), _stale_streak(agent)
     if giveup <= 0 or streak < giveup or not _streams_llamacpp(agent) or not _local_server_answers(agent):
@@ -75,7 +75,7 @@ def _managed_local_load_notice(agent, api_kwargs: dict) -> Optional[str]:
         base = str(getattr(agent, "base_url", "") or "")
         if not base:
             return None
-        from agent.chat_completion_helpers import estimate_request_context_tokens
+        from hermes_agent.agent.chat_completion_helpers import estimate_request_context_tokens
         from hermes_cli.local_runtime.load_progress import get_loading_progress, get_prefill_progress
         from hermes_cli.local_runtime.supervisor import state_path
         state = json.loads(state_path().read_text(encoding="utf-8-sig"))

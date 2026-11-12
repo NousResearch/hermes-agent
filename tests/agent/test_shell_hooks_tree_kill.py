@@ -21,7 +21,7 @@ import time
 
 import pytest
 
-from agent.shell_hooks import ShellHookSpec, _spawn
+from hermes_agent.agent.shell_hooks import ShellHookSpec, _spawn
 
 pytestmark = pytest.mark.platforms("posix")  # POSIX process-group semantics
 

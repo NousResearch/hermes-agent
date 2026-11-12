@@ -10,10 +10,10 @@ import httpx
 import openai
 import pytest
 
-from agent.auxiliary_client import _try_openrouter, async_call_llm, call_llm
-from agent.credential_pool import CredentialPool, PooledCredential as Key
-from agent.error_classifier import FailoverReason
-from agent.errors import InvalidProviderResponseError
+from hermes_agent.agent.auxiliary_client import _try_openrouter, async_call_llm, call_llm
+from hermes_agent.agent.credential_pool import CredentialPool, PooledCredential as Key
+from hermes_agent.agent.error_classifier import FailoverReason
+from hermes_agent.agent.errors import InvalidProviderResponseError
 
 _REQ = httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions")
 _MESSAGES = [{"role": "user", "content": "hi"}]
@@ -51,23 +51,23 @@ def run_ladder(error, *, provider="openrouter", retries=1, is_async=False, fallb
     fallback = MagicMock(base_url="https://api.example.com/v1")
     fallback.chat.completions.create = create(side_effect=fallback_error, return_value=_ok())
     marks, rotations, refreshes = [], [], []
-    recovery = (patch("agent.auxiliary_client.load_pool", lambda _p: pool) if pool is not None else
-                patch("agent.auxiliary_client._recover_provider_pool", side_effect=lambda _p, e, **_k: rotations.append(e)))
+    recovery = (patch("hermes_agent.agent.auxiliary_client.load_pool", lambda _p: pool) if pool is not None else
+                patch("hermes_agent.agent.auxiliary_client._recover_provider_pool", side_effect=lambda _p, e, **_k: rotations.append(e)))
     with (
         recovery,
-        patch("agent.auxiliary_client._resolve_task_provider_model", return_value=(provider, "m", None, None, None)),
-        patch("agent.auxiliary_client._get_cached_client", return_value=(primary, "m")),
-        patch("agent.auxiliary_client._validate_llm_response", side_effect=lambda resp, _task, **_kw: resp),
-        patch("agent.auxiliary_client._transient_retry_count", return_value=retries),
-        patch("agent.auxiliary_client._TRANSIENT_RETRY_BACKOFF_BASE", 0.0),
-        patch("agent.auxiliary_client._recoverable_pool_provider", return_value=pool.provider if pool else "openrouter"),
-        patch("agent.auxiliary_client._mark_provider_unhealthy", side_effect=lambda *a, **kw: marks.append(a)),
-        patch("agent.auxiliary_client._try_configured_fallback_chain", return_value=(None, None, "")),
-        patch("agent.auxiliary_client._try_main_fallback_chain", return_value=(None, None, "")),
-        patch("agent.auxiliary_client._try_payment_fallback", return_value=(fallback, "fb", "fallback")),
-        patch("agent.auxiliary_client._try_main_agent_model_fallback", return_value=(fallback, "fb", "fallback")),
-        patch("agent.auxiliary_rate_limit_backoff.rate_limit_wait", return_value=0.0),
-        patch("agent.auxiliary_client._refresh_provider_credentials",
+        patch("hermes_agent.agent.auxiliary_client._resolve_task_provider_model", return_value=(provider, "m", None, None, None)),
+        patch("hermes_agent.agent.auxiliary_client._get_cached_client", return_value=(primary, "m")),
+        patch("hermes_agent.agent.auxiliary_client._validate_llm_response", side_effect=lambda resp, _task, **_kw: resp),
+        patch("hermes_agent.agent.auxiliary_client._transient_retry_count", return_value=retries),
+        patch("hermes_agent.agent.auxiliary_client._TRANSIENT_RETRY_BACKOFF_BASE", 0.0),
+        patch("hermes_agent.agent.auxiliary_client._recoverable_pool_provider", return_value=pool.provider if pool else "openrouter"),
+        patch("hermes_agent.agent.auxiliary_client._mark_provider_unhealthy", side_effect=lambda *a, **kw: marks.append(a)),
+        patch("hermes_agent.agent.auxiliary_client._try_configured_fallback_chain", return_value=(None, None, "")),
+        patch("hermes_agent.agent.auxiliary_client._try_main_fallback_chain", return_value=(None, None, "")),
+        patch("hermes_agent.agent.auxiliary_client._try_payment_fallback", return_value=(fallback, "fb", "fallback")),
+        patch("hermes_agent.agent.auxiliary_client._try_main_agent_model_fallback", return_value=(fallback, "fb", "fallback")),
+        patch("hermes_agent.agent.auxiliary_rate_limit_backoff.rate_limit_wait", return_value=0.0),
+        patch("hermes_agent.agent.auxiliary_client._refresh_provider_credentials",
               side_effect=lambda slug, **_kw: refreshes.append(slug) or True),
     ):
         try:
@@ -87,7 +87,7 @@ def run_ladder(error, *, provider="openrouter", retries=1, is_async=False, fallb
 
 def _gemini_prompt_block():
     """The native Gemini adapter's error for a 200 answer carrying ``promptFeedback.blockReason``."""
-    from agent.gemini_native_adapter import raise_on_prompt_block
+    from hermes_agent.agent.gemini_native_adapter import raise_on_prompt_block
 
     try:
         raise_on_prompt_block({"promptFeedback": {"blockReason": "SAFETY"}})
@@ -172,9 +172,9 @@ COMPRESSION_BEHAVIOUR = [
 
 @pytest.mark.parametrize("case,error,aborted", COMPRESSION_BEHAVIOUR, ids=[c[0] for c in COMPRESSION_BEHAVIOUR])
 def test_compression_behaviour(case, error, aborted):
-    from agent.context_compressor import ContextCompressor
+    from hermes_agent.agent.context_compressor import ContextCompressor
 
-    with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+    with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000):
         compressor = ContextCompressor(model="gemini-2.5-flash", provider="gemini", quiet_mode=True, protect_first_n=2,
                                        protect_last_n=2, abort_on_summary_failure=False)
     msgs = [{"role": "user" if i % 2 == 0 else "assistant", "content": f"msg {i}"} for i in range(12)]
@@ -198,7 +198,7 @@ POOL_BENCH = [
 
 @pytest.mark.parametrize("case,error,provider,keys,bench", POOL_BENCH, ids=[c[0] for c in POOL_BENCH])
 def test_pool_bench(case, error, provider, keys, bench):
-    from agent.credential_pool import _exhausted_until
+    from hermes_agent.agent.credential_pool import _exhausted_until
 
     pool = CredentialPool(provider, [Key(provider, f"k{i}", f"k{i}", "api_key", i, "manual", f"sk-{i}" if i else "sk-primary")
                                      for i in range(keys)])
@@ -234,7 +234,7 @@ def test_each_failed_request_is_classified_once(monkeypatch, is_async, stream):
     """The primary, its same-provider retry and the fallback candidate fail: one hook call per failed request."""
     seen = []
     monkeypatch.setattr("hermes_cli.plugins.get_plugin_error_classification", lambda **kw: seen.append(kw["error"]))
-    with patch("agent.auxiliary_client._aux_progress_active", return_value=stream):
+    with patch("hermes_agent.agent.auxiliary_client._aux_progress_active", return_value=stream):
         outcome = run_ladder([sdk(503, "down"), sdk(503, "down")], is_async=is_async,
                              fallback_error=[sdk(404, "model not found"), sdk(404, "model not found")])
     assert len(set(map(id, seen))) == len(seen) == outcome.attempts + outcome.fallback_attempts
@@ -262,7 +262,7 @@ def test_opencode_go_upstream_throttle_keeps_the_key_on_an_unnamed_route(monkeyp
     """A ``custom`` or untagged auto route at the main runtime's OpenCode Go host: the one classification per request
     is made on opencode-go, so Go's per-model upstream 429 rotates no key and the call falls back."""
     from hermes_agent import model_tools  # registers the bundled provider profiles
-    from agent import auxiliary_client as aux
+    from hermes_agent.agent import auxiliary_client as aux
 
     seen, real_pool_provider = [], aux._recoverable_pool_provider
     monkeypatch.setattr("hermes_cli.plugins.get_plugin_error_classification", lambda **kw: seen.append(kw["error"]))
@@ -276,7 +276,7 @@ def test_opencode_go_upstream_throttle_keeps_the_key_on_an_unnamed_route(monkeyp
     runtime = {"provider": "opencode-go", "base_url": go_url}
 
     def call():  # the real host resolution, from the main runtime
-        with patch("agent.auxiliary_client._recoverable_pool_provider", real_pool_provider):
+        with patch("hermes_agent.agent.auxiliary_client._recoverable_pool_provider", real_pool_provider):
             if is_async:
                 return asyncio.run(async_call_llm(messages=_MESSAGES, main_runtime=runtime))
             return call_llm(messages=_MESSAGES, main_runtime=runtime)
@@ -310,7 +310,7 @@ def test_a_custom_zen_endpoint_is_not_classified_as_the_main_runtimes_go(is_asyn
 
     zen = _wire(handle, key="sk-zen", url=zen_url, is_async=is_async)
     runtime = {"provider": "opencode-go", "base_url": go_url, "api_key": "sk-go"}
-    with patch("agent.auxiliary_rate_limit_backoff.rate_limit_wait", return_value=0.0):
+    with patch("hermes_agent.agent.auxiliary_rate_limit_backoff.rate_limit_wait", return_value=0.0):
         assert _routed_call([zen] * 2, provider="custom", is_async=is_async, main_runtime=runtime) == "ok"
     assert sent == [httpx.URL(zen_url).path + "/chat/completions"] * 2
 
@@ -318,7 +318,7 @@ def test_a_custom_zen_endpoint_is_not_classified_as_the_main_runtimes_go(is_asyn
 @pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
 def test_a_custom_zen_endpoints_payment_error_benches_that_endpoint_not_go(is_async):
     """The same Zen endpoint under a Go session answers 402: the endpoint that sent it is benched, Go stays eligible."""
-    from agent import auxiliary_client as aux
+    from hermes_agent.agent import auxiliary_client as aux
 
     health, zen_url = {}, "https://opencode.ai/zen/v1"
     zen = _wire(lambda r: httpx.Response(402, json={"error": {"message": "Insufficient Balance"}}, request=r),
@@ -341,7 +341,7 @@ def test_observers_see_the_providers_own_error_when_its_stream_was_judged(monkey
     seen = []
     PluginContext(PluginManifest(name="aux-observer", source="user"), manager).register_hook(
         "post_auxiliary_call", lambda **kw: seen.append(kw["error_type"]))
-    with patch("agent.auxiliary_client._aux_progress_active", return_value=True):
+    with patch("hermes_agent.agent.auxiliary_client._aux_progress_active", return_value=True):
         run_ladder([sdk(503, "down"), sdk(503, "down")], is_async=is_async,
                    fallback_error=[sdk(404, "model not found"), sdk(404, "model not found")])
     assert set(seen) == {"InternalServerError", "NotFoundError"}
@@ -364,7 +364,7 @@ def test_streamed_attempt_is_judged_by_the_routes_provider_profile(monkeypatch, 
 
     hook = lambda *_a, **_k: {"reason": "server_error", "retryable": False, "should_fallback": True}
     monkeypatch.setattr(providers, "get_provider_profile", lambda name: SimpleNamespace(classify_api_error=hook))
-    with patch("agent.auxiliary_client._aux_progress_active", return_value=True):
+    with patch("hermes_agent.agent.auxiliary_client._aux_progress_active", return_value=True):
         outcome = run_ladder(sdk(400, "custom hiccup"), is_async=is_async)
     assert (outcome.attempts, outcome.fell_back) == (1, True)  # no non-streaming resend before recovery
 
@@ -374,7 +374,7 @@ def test_streamed_certificate_failure_is_not_resent_non_streaming(is_async):
     import ssl
 
     error = ssl.SSLCertVerificationError(1, "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed")
-    with patch("agent.auxiliary_client._aux_progress_active", return_value=True):
+    with patch("hermes_agent.agent.auxiliary_client._aux_progress_active", return_value=True):
         outcome = run_ladder(error, is_async=is_async)
     assert (outcome.attempts, outcome.fell_back) == (1, True)  # one doomed connection, then the next provider
 
@@ -405,7 +405,7 @@ def test_opencode_go_candidate_classifies_on_its_concrete_provider(monkeypatch, 
     profile: the upstream throttle quarantines the candidate without rotating its key. A discovered candidate keeps
     the route label ``api-key`` as its effective provider and names Go in its backend tag."""
     from hermes_agent import model_tools  # registers the bundled provider profiles
-    from agent import auxiliary_error_policy as aux_errors
+    from hermes_agent.agent import auxiliary_error_policy as aux_errors
 
     seen, real = [], aux_errors.classify_api_error
     monkeypatch.setattr(aux_errors, "classify_api_error", lambda exc, **kw: seen.append(
@@ -419,15 +419,15 @@ def test_opencode_go_candidate_classifies_on_its_concrete_provider(monkeypatch, 
     primary = MagicMock(base_url="https://openrouter.ai/api/v1", api_key="sk-primary")
     primary.chat.completions.create = (AsyncMock if is_async else MagicMock)(side_effect=sdk(503, "down"))
     with (
-        patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("openrouter", "m", None, None, None)),
-        patch("agent.auxiliary_client._get_cached_client", return_value=(primary, "m")),
-        patch("agent.auxiliary_client._openai_http_client_kwargs",
+        patch("hermes_agent.agent.auxiliary_client._resolve_task_provider_model", return_value=("openrouter", "m", None, None, None)),
+        patch("hermes_agent.agent.auxiliary_client._get_cached_client", return_value=(primary, "m")),
+        patch("hermes_agent.agent.auxiliary_client._openai_http_client_kwargs",
               return_value={"http_client": httpx.AsyncClient(transport=transport)}),
-        patch("agent.auxiliary_client._transient_retry_count", return_value=0),
-        patch("agent.auxiliary_client._recoverable_pool_provider", return_value=None),
-        patch("agent.auxiliary_client._try_configured_fallback_chain", return_value=(go, "go-model", "auto")),
-        patch("agent.auxiliary_client._try_main_agent_model_fallback", return_value=(None, None, "")),
-        patch("agent.auxiliary_client._mark_provider_unhealthy"),
+        patch("hermes_agent.agent.auxiliary_client._transient_retry_count", return_value=0),
+        patch("hermes_agent.agent.auxiliary_client._recoverable_pool_provider", return_value=None),
+        patch("hermes_agent.agent.auxiliary_client._try_configured_fallback_chain", return_value=(go, "go-model", "auto")),
+        patch("hermes_agent.agent.auxiliary_client._try_main_agent_model_fallback", return_value=(None, None, "")),
+        patch("hermes_agent.agent.auxiliary_client._mark_provider_unhealthy"),
         pytest.raises(openai.APIError),
     ):
         if is_async:
@@ -442,7 +442,7 @@ def test_discovered_api_key_client_classifies_on_its_concrete_provider(monkeypat
     """Auto discovery's API-key step builds the OpenCode Go client itself (no hand-set tag): its upstream
     throttle is judged on Go's profile, not under the route label "api-key", so the key is not rotated."""
     from hermes_agent import model_tools  # registers the bundled provider profiles
-    from agent import auxiliary_client as aux, auxiliary_error_policy as aux_errors
+    from hermes_agent.agent import auxiliary_client as aux, auxiliary_error_policy as aux_errors
 
     seen, real = [], aux_errors.classify_api_error
     monkeypatch.setattr(aux_errors, "classify_api_error", lambda exc, **kw: seen.append(
@@ -454,15 +454,15 @@ def test_discovered_api_key_client_classifies_on_its_concrete_provider(monkeypat
     none = lambda *_a, **_k: (None, None)
     with (
         patch.multiple(aux, _try_openrouter=none, _try_nous=none, _try_custom_endpoint=none),
-        patch("agent.auxiliary_client._openai_http_client_kwargs", lambda _url, async_mode=False: {
+        patch("hermes_agent.agent.auxiliary_client._openai_http_client_kwargs", lambda _url, async_mode=False: {
             "http_client": (httpx.AsyncClient if async_mode else httpx.Client)(transport=transport)}),
-        patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("auto", None, None, None, None)),
-        patch("agent.auxiliary_client._transient_retry_count", return_value=0),
-        patch("agent.auxiliary_client._try_configured_fallback_chain", return_value=(None, None, "")),
-        patch("agent.auxiliary_client._try_main_fallback_chain", return_value=(None, None, "")),
-        patch("agent.auxiliary_client._try_payment_fallback", return_value=(None, None, "")),
-        patch("agent.auxiliary_client._try_main_agent_model_fallback", return_value=(None, None, "")),
-        patch("agent.auxiliary_client._mark_provider_unhealthy"),
+        patch("hermes_agent.agent.auxiliary_client._resolve_task_provider_model", return_value=("auto", None, None, None, None)),
+        patch("hermes_agent.agent.auxiliary_client._transient_retry_count", return_value=0),
+        patch("hermes_agent.agent.auxiliary_client._try_configured_fallback_chain", return_value=(None, None, "")),
+        patch("hermes_agent.agent.auxiliary_client._try_main_fallback_chain", return_value=(None, None, "")),
+        patch("hermes_agent.agent.auxiliary_client._try_payment_fallback", return_value=(None, None, "")),
+        patch("hermes_agent.agent.auxiliary_client._try_main_agent_model_fallback", return_value=(None, None, "")),
+        patch("hermes_agent.agent.auxiliary_client._mark_provider_unhealthy"),
         pytest.raises(openai.APIError),
     ):
         if is_async:
@@ -486,23 +486,23 @@ def test_refreshed_nous_stream_error_falls_back():
     fallback = MagicMock(base_url="https://api.example.com/v1")
     fallback.chat.completions.create = MagicMock(return_value=_ok())
     with (
-        patch("agent.auxiliary_client._aux_progress_active", return_value=True),
-        patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("nous", "m", None, None, None)),
-        patch("agent.auxiliary_client._get_cached_client", return_value=(primary, "m")),
-        patch("agent.auxiliary_client._refresh_nous_auxiliary_client", return_value=(refreshed, "m2")),
-        patch("agent.auxiliary_client._refresh_nous_recommended_model", return_value=None),
-        patch("agent.auxiliary_client._transient_retry_count", return_value=0),
-        patch("agent.auxiliary_client._recoverable_pool_provider", return_value=None),
-        patch("agent.auxiliary_client._mark_provider_unhealthy"),
-        patch("agent.auxiliary_client._try_configured_fallback_chain", return_value=(None, None, "")),
-        patch("agent.auxiliary_client._try_main_agent_model_fallback", return_value=(fallback, "fb", "fallback")),
+        patch("hermes_agent.agent.auxiliary_client._aux_progress_active", return_value=True),
+        patch("hermes_agent.agent.auxiliary_client._resolve_task_provider_model", return_value=("nous", "m", None, None, None)),
+        patch("hermes_agent.agent.auxiliary_client._get_cached_client", return_value=(primary, "m")),
+        patch("hermes_agent.agent.auxiliary_client._refresh_nous_auxiliary_client", return_value=(refreshed, "m2")),
+        patch("hermes_agent.agent.auxiliary_client._refresh_nous_recommended_model", return_value=None),
+        patch("hermes_agent.agent.auxiliary_client._transient_retry_count", return_value=0),
+        patch("hermes_agent.agent.auxiliary_client._recoverable_pool_provider", return_value=None),
+        patch("hermes_agent.agent.auxiliary_client._mark_provider_unhealthy"),
+        patch("hermes_agent.agent.auxiliary_client._try_configured_fallback_chain", return_value=(None, None, "")),
+        patch("hermes_agent.agent.auxiliary_client._try_main_agent_model_fallback", return_value=(fallback, "fb", "fallback")),
     ):
         assert call_llm(task="title_generation", messages=_MESSAGES).choices[0].message.content == "fallback"
 
 
 @pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
 def test_refreshed_nous_client_under_auto_classifies_as_nous(monkeypatch, is_async):
-    from agent import auxiliary_client as aux
+    from hermes_agent.agent import auxiliary_client as aux
 
     seen = []
     monkeypatch.setattr("hermes_cli.plugins.get_plugin_error_classification", lambda **kw: seen.append(kw["provider"]))
@@ -513,7 +513,7 @@ def test_refreshed_nous_client_under_auto_classifies_as_nous(monkeypatch, is_asy
 
 
 def test_invalid_answer_classifies_as_incomplete_response():
-    from agent.error_classifier import classify_api_error
+    from hermes_agent.agent.error_classifier import classify_api_error
 
     assert classify_api_error(InvalidProviderResponseError("x")).reason is FailoverReason.incomplete_response
 
@@ -521,41 +521,41 @@ def test_invalid_answer_classifies_as_incomplete_response():
 def test_tls_certificate_failure_keeps_compressions_session_preserving_abort():
     import ssl
 
-    from agent.context_compressor import ContextCompressor
+    from hermes_agent.agent.context_compressor import ContextCompressor
 
-    with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+    with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000):
         compressor = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2,
                                        abort_on_summary_failure=False)
     msgs = [{"role": "user" if i % 2 == 0 else "assistant", "content": f"msg {i}"} for i in range(12)]
     error = ssl.SSLCertVerificationError(1, "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed")
-    with patch("agent.context_compressor.call_llm", side_effect=error):
+    with patch("hermes_agent.agent.context_compressor.call_llm", side_effect=error):
         assert compressor.compress(msgs, current_tokens=999999, force=True) == msgs
     assert compressor._last_summary_network_failure and compressor._last_compress_aborted
 
 
 def test_relay_connection_reset_502_keeps_compressions_session_preserving_abort():
-    from agent.context_compressor import ContextCompressor
+    from hermes_agent.agent.context_compressor import ContextCompressor
 
-    with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+    with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000):
         compressor = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2,
                                        abort_on_summary_failure=False)
     msgs = [{"role": "user" if i % 2 == 0 else "assistant", "content": f"msg {i}"} for i in range(12)]
-    with patch("agent.context_compressor.call_llm", side_effect=sdk(502, "upstream: connection reset by peer")):
+    with patch("hermes_agent.agent.context_compressor.call_llm", side_effect=sdk(502, "upstream: connection reset by peer")):
         assert compressor.compress(msgs, current_tokens=999999, force=True) == msgs
     assert compressor._last_summary_network_failure
 
 
 def test_pinned_custom_provider_entitlement_benches_only_the_model():
-    from agent.auxiliary_client import _recover_provider_pool
-    from agent.auxiliary_error_policy import classify_attempt
+    from hermes_agent.agent.auxiliary_client import _recover_provider_pool
+    from hermes_agent.agent.auxiliary_error_policy import classify_attempt
 
     error = sdk(400, "model kimi-k2 is not supported for this account")
     pool = MagicMock()
-    with patch("agent.auxiliary_client.pool_for_aux_provider", return_value=pool):
+    with patch("hermes_agent.agent.auxiliary_client.pool_for_aux_provider", return_value=pool):
         _recover_provider_pool("custom:relay", error, verdict=classify_attempt(error, "custom:relay", model="kimi-k2"))
     assert pool.mark_exhausted_and_rotate.call_args.kwargs["model"] == "kimi-k2"
     key = Key("openrouter", "k1", "k1", "api_key", 0, "manual", "sk-or", model_cooldowns={"openai/gpt-gated": 9e9})
-    with patch("agent.auxiliary_client.load_pool", lambda _p: CredentialPool("openrouter", [key])):  # sibling models keep the key
+    with patch("hermes_agent.agent.auxiliary_client.load_pool", lambda _p: CredentialPool("openrouter", [key])):  # sibling models keep the key
         assert [_try_openrouter(model=m)[0] is None for m in ("gpt-ok", "gpt-gated")] == [False, True]
 
 
@@ -563,7 +563,7 @@ def test_pinned_custom_provider_entitlement_benches_only_the_model():
 def test_a_key_cooled_down_for_the_model_is_not_peeked_after_a_sibling_selected_it(monkeypatch, is_async):
     """k0 is refused for gpt-gated and still current after serving gpt-ok: a gpt-gated aux call peeks k1 and sends
     its one request with k1."""
-    from agent import auxiliary_client as aux
+    from hermes_agent.agent import auxiliary_client as aux
 
     keys = [Key("openrouter", "k0", "k0", "api_key", 0, "manual", "cooled-key",
                 model_cooldowns={"openai/gpt-gated": 9e9}),
@@ -576,10 +576,10 @@ def test_a_key_cooled_down_for_the_model_is_not_peeked_after_a_sibling_selected_
         {"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}]}
     transport = httpx.MockTransport(lambda r: sent.append(r.headers["authorization"]) or httpx.Response(200, json=ok))
     monkeypatch.setattr(aux, "_client_cache", {})
-    with (patch("agent.auxiliary_client.load_pool", lambda _p: pool),
-          patch("agent.auxiliary_client._openai_http_client_kwargs", lambda _url, async_mode=False: {
+    with (patch("hermes_agent.agent.auxiliary_client.load_pool", lambda _p: pool),
+          patch("hermes_agent.agent.auxiliary_client._openai_http_client_kwargs", lambda _url, async_mode=False: {
               "http_client": (httpx.AsyncClient if async_mode else httpx.Client)(transport=transport)}),
-          patch("agent.auxiliary_client._validate_llm_response", side_effect=lambda resp, _task, **_kw: resp)):
+          patch("hermes_agent.agent.auxiliary_client._validate_llm_response", side_effect=lambda resp, _task, **_kw: resp)):
         call = (async_call_llm if is_async else call_llm)(provider="openrouter", model="openai/gpt-gated",
                                                           messages=_MESSAGES)
         asyncio.run(call) if is_async else call
@@ -589,23 +589,23 @@ def test_a_key_cooled_down_for_the_model_is_not_peeked_after_a_sibling_selected_
 def test_model_entitlement_cooldown_keeps_the_key_for_its_other_models():
     """A ChatGPT account refused one Codex model (#71970), or an Anthropic key one Claude model, still serves aux
     calls on its other models."""
-    from agent.auxiliary_client import _build_codex_client, resolve_provider_client
+    from hermes_agent.agent.auxiliary_client import _build_codex_client, resolve_provider_client
 
     key = Key("openai-codex", "k1", "k1", "api_key", 0, "manual", "tok", model_cooldowns={"gpt-5.5-pro": 9e9})
-    with (patch("agent.auxiliary_client.load_pool", lambda _p: CredentialPool("openai-codex", [key])),
-          patch("agent.auxiliary_client._read_codex_singleton_token", return_value=None)):
+    with (patch("hermes_agent.agent.auxiliary_client.load_pool", lambda _p: CredentialPool("openai-codex", [key])),
+          patch("hermes_agent.agent.auxiliary_client._read_codex_singleton_token", return_value=None)):
         assert [_build_codex_client(m)[0] is None for m in ("gpt-5.4-mini", "gpt-5.5-pro")] == [False, True]
         assert [resolve_provider_client("openai-codex", model=m, raw_codex=True)[0] is None
                 for m in ("gpt-5.4-mini", "gpt-5.5-pro")] == [False, True]
     key = Key("anthropic", "k1", "k1", "api_key", 0, "manual", "sk-ant-api", model_cooldowns={"claude-opus-4-6": 9e9})
-    with (patch("agent.auxiliary_client.load_pool", lambda _p: CredentialPool("anthropic", [key])),
-          patch("agent.anthropic_credentials.resolve_anthropic_token", return_value=None)):
+    with (patch("hermes_agent.agent.auxiliary_client.load_pool", lambda _p: CredentialPool("anthropic", [key])),
+          patch("hermes_agent.agent.anthropic_credentials.resolve_anthropic_token", return_value=None)):
         assert [resolve_provider_client("anthropic", model=m)[0] is None
                 for m in ("claude-haiku-4-5", "claude-opus-4-6")] == [False, True]
 
 
 def test_missing_model_on_a_candidate_hides_only_that_model(monkeypatch):
-    from agent import auxiliary_client as aux
+    from hermes_agent.agent import auxiliary_client as aux
 
     monkeypatch.setattr(aux, "_aux_unhealthy_until", {})
     monkeypatch.setattr(aux, "_aux_unhealthy_reason", {})
@@ -625,7 +625,7 @@ def test_a_rebuilt_retry_is_classified_on_the_request_it_sent():  # e.g. a fast-
     models, clients = [], [MagicMock(base_url="https://openrouter.ai/api/v1", **{"chat.completions.create.side_effect": sdk(
         400, f"model {model} is not supported for this account")}) for model in ("kimi-k2", "glm-5")]
     with patch.multiple(
-        "agent.auxiliary_client", _resolve_task_provider_model=lambda *_a: ("openrouter", "kimi-k2", None, None, None),
+        "hermes_agent.agent.auxiliary_client", _resolve_task_provider_model=lambda *_a: ("openrouter", "kimi-k2", None, None, None),
         _get_cached_client=lambda *_a, **_k: (clients[0], "kimi-k2"), _prepare_same_provider_retry=lambda **_k: (
             clients[1], {"model": "glm-5"}), _recover_provider_pool=lambda _p, _e, **kw: models.append(kw["verdict"].model) or True,
     ), pytest.raises(openai.APIError):
@@ -634,13 +634,13 @@ def test_a_rebuilt_retry_is_classified_on_the_request_it_sent():  # e.g. a fast-
 
 
 def _candidate_outcome(first, refreshed):
-    from agent.auxiliary_client import _call_fallback_candidate_sync
+    from hermes_agent.agent.auxiliary_client import _call_fallback_candidate_sync
 
     marks, raised = [], None
     with (
-        patch("agent.auxiliary_client._mark_provider_unhealthy", side_effect=lambda *a, **k: marks.append(k)),
-        patch("agent.auxiliary_client._refresh_provider_credentials", return_value=True),
-        patch("agent.auxiliary_client._get_cached_client", return_value=(refreshed, "fb-model")),
+        patch("hermes_agent.agent.auxiliary_client._mark_provider_unhealthy", side_effect=lambda *a, **k: marks.append(k)),
+        patch("hermes_agent.agent.auxiliary_client._refresh_provider_credentials", return_value=True),
+        patch("hermes_agent.agent.auxiliary_client._get_cached_client", return_value=(refreshed, "fb-model")),
     ):
         try:
             _call_fallback_candidate_sync(
@@ -682,7 +682,7 @@ def test_a_rebuilt_retrys_invalid_answer_is_classified_on_the_request_it_sent(mo
     retry = MagicMock(base_url="https://openrouter.ai/api/v1", api_key="k2")
     retry.chat.completions.create = create(return_value=SimpleNamespace(choices=None))
     with patch.multiple(
-        "agent.auxiliary_client", _resolve_task_provider_model=lambda *_a: ("openrouter", "kimi-k2", None, None, None),
+        "hermes_agent.agent.auxiliary_client", _resolve_task_provider_model=lambda *_a: ("openrouter", "kimi-k2", None, None, None),
         _get_cached_client=lambda *_a, **_k: (first, "kimi-k2"), _refresh_provider_credentials=lambda *_a, **_k: True,
         _prepare_same_provider_retry=lambda **_k: (retry, {"model": "glm-5", "messages": _MESSAGES}),
         _recoverable_pool_provider=lambda *_a, **_k: None, _try_main_agent_model_fallback=lambda *_a, **_k: (None, None, ""),
@@ -697,7 +697,7 @@ def test_a_rebuilt_retrys_invalid_answer_is_classified_on_the_request_it_sent(mo
 
 def test_stream_watchdog_timeout_is_not_judged_by_the_error_it_cut_off():
     """The watchdog fires, then the stream surfaces a 401: the timeout is the verdict (no refresh)."""
-    from agent import auxiliary_error_policy as policy, auxiliary_stream_watchdog as wd
+    from hermes_agent.agent import auxiliary_error_policy as policy, auxiliary_stream_watchdog as wd
 
     watchdogs = []
 
@@ -744,7 +744,7 @@ def test_a_refusal_no_resend_can_change_is_sent_once(refusal, is_async, stream):
     if refusal is None:  # the SDK would wrap it as a connection error: raise it as the stream guard does
         client.chat.completions.create = (AsyncMock if is_async else MagicMock)(
             side_effect=lambda **kw: handle(None))
-    with patch("agent.auxiliary_client._aux_progress_active", return_value=stream):
+    with patch("hermes_agent.agent.auxiliary_client._aux_progress_active", return_value=stream):
         outcome = run_ladder(None, provider="nous", is_async=is_async, client=client,
                              max_tokens=16, temperature=0.3)
     assert (len(sent), outcome.fell_back) == (1, False), outcome.result
@@ -759,14 +759,14 @@ def _routed_call(clients, *, provider, is_async, pool=None, health=None, **call_
     marks = {"_mark_provider_unhealthy": lambda *_a, **_k: None} if health is None else {
         "_aux_unhealthy_until": health, "_aux_unhealthy_reason": {}, "_aux_unhealthy_logged_at": {}}
     with patch.multiple(
-        "agent.auxiliary_client", _resolve_task_provider_model=lambda *_a: (provider, "fast-1", None, None, None),
+        "hermes_agent.agent.auxiliary_client", _resolve_task_provider_model=lambda *_a: (provider, "fast-1", None, None, None),
         _get_cached_client=lambda *_a, **_k: (next(builds), "fast-1"), _transient_retry_count=lambda *_a: 0,
         _refresh_provider_credentials=lambda *_a, **_k: True, **marks,
         _try_configured_fallback_chain=lambda *_a, **_k: (None, None, ""),
         _try_main_fallback_chain=lambda *_a, **_k: (None, None, ""),
         _try_payment_fallback=lambda *_a, **_k: (fallback, "fb", "fallback"),
         _try_main_agent_model_fallback=lambda *_a, **_k: (fallback, "fb", "fallback"),
-    ), patch("agent.auxiliary_client.load_pool", lambda _p: pool):
+    ), patch("hermes_agent.agent.auxiliary_client.load_pool", lambda _p: pool):
         if is_async:
             result = asyncio.run(async_call_llm(task="title_generation", messages=_MESSAGES, **call_kw))
         else:
@@ -781,7 +781,7 @@ def test_a_rebuilt_retry_benches_only_the_key_that_sent_it(is_async, retry_url, 
     """The pool rotates off k0 (model not served to this account); the rebuilt retry's 402 benches k1 only when
     k1 sent it: an auto route that re-resolved to another backend leaves this pool's unused key alone, and the
     provider-health mark lands on the backend that answered 402, not on OpenRouter."""
-    from agent import auxiliary_client as aux
+    from hermes_agent.agent import auxiliary_client as aux
 
     sent, health = [], {}
     def handle(status, message):
@@ -826,9 +826,9 @@ def test_a_parameter_repair_survives_a_credential_refresh(is_async, third, answe
     client = _wire(handle, key="sk-0", is_async=is_async)
     pool = CredentialPool("openrouter", [Key("openrouter", f"k{i}", f"k{i}", "api_key", i, "manual", f"sk-{i}")
                                          for i in range(2)])
-    with patch.multiple("agent.auxiliary_client", _refresh_nous_auxiliary_client=lambda **_k: (client, "fast-1"),
+    with patch.multiple("hermes_agent.agent.auxiliary_client", _refresh_nous_auxiliary_client=lambda **_k: (client, "fast-1"),
                         _nous_portal_account_has_fresh_paid_access=lambda: False), \
-            patch("agent.auxiliary_rate_limit_backoff.rate_limit_wait", return_value=0.0):
+            patch("hermes_agent.agent.auxiliary_rate_limit_backoff.rate_limit_wait", return_value=0.0):
         assert _routed_call([client] * 2, provider=provider, is_async=is_async, temperature=0.3,
                             pool=pool if provider == "openrouter" else None) == answer
     assert len(sent) == 3 and ["temperature" in body for body in sent] == [True, False, False]
@@ -857,7 +857,7 @@ def test_a_fallback_candidates_repair_survives_its_credential_refresh(is_async, 
     candidates = iter([(_wire(handle, key="sk-old"), "fb", "openrouter"),
                        (_wire(handle, key="sk-next", url="https://api.example.com/v1"), "fb", "custom")])
     with patch.multiple(
-        "agent.auxiliary_client", _resolve_task_provider_model=lambda *_a: ("openrouter", "fast-1", None, None, None),
+        "hermes_agent.agent.auxiliary_client", _resolve_task_provider_model=lambda *_a: ("openrouter", "fast-1", None, None, None),
         _get_cached_client=lambda *_a, **_k: (_wire(handle, key=next(keys), is_async=is_async), "fb"),
         _transient_retry_count=lambda *_a: 0, _refresh_provider_credentials=lambda *_a, **_k: True,
         _mark_provider_unhealthy=lambda *_a, **_k: None, _recoverable_pool_provider=lambda *_a, **_k: None,
@@ -876,7 +876,7 @@ def test_a_fallback_candidates_repair_survives_its_credential_refresh(is_async, 
 def _refreshed_candidate_walk(is_async, next_status):
     """Primary 503 -> the REAL configured fallback_chain: [0] old-model temperature 400 -> stripped 401 -> refresh
     rebuilds on new-model -> 404, then [1] answers with ``next_status``. Returns (answer or error, sent, marked)."""
-    from agent import auxiliary_client as aux
+    from hermes_agent.agent import auxiliary_client as aux
 
     health, sent = {}, []
     statuses = {"sk-primary": iter([503] * 2), "sk-old": iter([400, 401]), "sk-fresh": iter([404]),
@@ -904,7 +904,7 @@ def _refreshed_candidate_walk(is_async, next_status):
         return _wire(handle, key=explicit_api_key or "sk-old", url=explicit_base_url or "https://openrouter.ai/api/v1"), model
 
     with patch.multiple(
-        "agent.auxiliary_client", _resolve_task_provider_model=lambda *_a: ("openrouter", "fast-1", None, None, None),
+        "hermes_agent.agent.auxiliary_client", _resolve_task_provider_model=lambda *_a: ("openrouter", "fast-1", None, None, None),
         _get_cached_client=build, _transient_retry_count=lambda *_a: 0, _refresh_provider_credentials=lambda *_a, **_k: True,
         _aux_unhealthy_until=health, _aux_unhealthy_reason={}, _aux_unhealthy_logged_at={},
         _recoverable_pool_provider=lambda *_a, **_k: None, resolve_provider_client=resolve,

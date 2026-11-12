@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.interrupt_control import InterruptControlMixin
+from hermes_agent.agent.interrupt_control import InterruptControlMixin
 from hermes_agent.gateway.config import GatewayConfig
 from hermes_agent.gateway.session import SessionStore
 from hermes_agent.gateway.session_authority import initialize_session_authority

@@ -15,7 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent import secret_scope
+from hermes_agent.agent import secret_scope
 from hermes_agent.gateway.config import GatewayConfig
 from hermes_agent.gateway.run import GatewayRunner
 from hermes_constants import get_hermes_home

@@ -28,7 +28,7 @@ def release_unlocks(session_id) -> None:
     """The session closed: lock the password managers it unlocked, as the sidecar's session end does
     (``hermes_agent/tui_gateway/session_lifecycle.py`` ``_lock_vault_managers``). Other sessions keep theirs."""
     try:
-        from agent.vault_backends import unlock
+        from hermes_agent.agent.vault_backends import unlock
         unlock.release_session(session_id)
     except Exception:  # health: allow BLE001 -- a close must finish even if the lock fails
         logger.debug("vault manager lock on session close failed", exc_info=True)
@@ -42,7 +42,7 @@ def vault_prompt_scope(turn, agent):
     if not local_viewer_turn(turn):
         yield
         return
-    from agent.vault_backends import unlock
+    from hermes_agent.agent.vault_backends import unlock
     authority, session_id, _generation = turn._approval_owner
 
     def ask(method, params, timeout):

@@ -54,11 +54,11 @@ def _client_base_url(client) -> str:
 def test_explicit_base_anthropic_messages_keeps_anthropic_path():
     """api_mode=anthropic_messages must build the Anthropic wrapper on the raw
     ``/anthropic`` base — not the ``/v1``-rewritten one."""
-    from agent.auxiliary_client import resolve_provider_client, AnthropicAuxiliaryClient
+    from hermes_agent.agent.auxiliary_client import resolve_provider_client, AnthropicAuxiliaryClient
 
     fake_anthropic = MagicMock(name="anthropic_sdk_client")
     with patch(
-        "agent.anthropic_adapter.build_anthropic_client",
+        "hermes_agent.agent.anthropic_adapter.build_anthropic_client",
         return_value=fake_anthropic,
     ) as mock_build:
         client, model = resolve_provider_client(
@@ -85,10 +85,10 @@ def test_explicit_base_anthropic_messages_openai_fallback_uses_v1():
     plain OpenAI client — for a dual-surface host it must be on the /v1 base.
     (Anthropic-only gateways keep /anthropic since #83642 — there is no sibling
     /v1 to fall back to.)"""
-    from agent.auxiliary_client import resolve_provider_client, AnthropicAuxiliaryClient
+    from hermes_agent.agent.auxiliary_client import resolve_provider_client, AnthropicAuxiliaryClient
 
     with patch(
-        "agent.anthropic_adapter.build_anthropic_client",
+        "hermes_agent.agent.anthropic_adapter.build_anthropic_client",
         side_effect=ImportError("anthropic package not installed"),
     ):
         client, _model = resolve_provider_client(
@@ -108,7 +108,7 @@ def test_explicit_base_anthropic_messages_openai_fallback_uses_v1():
 def test_explicit_base_without_anthropic_mode_preserves_v1_rewrite():
     """Regression: with no anthropic_messages api_mode, the /anthropic → /v1
     OpenAI-wire rewrite is preserved for known dual-surface hosts."""
-    from agent.auxiliary_client import resolve_provider_client, AnthropicAuxiliaryClient
+    from hermes_agent.agent.auxiliary_client import resolve_provider_client, AnthropicAuxiliaryClient
 
     client, _model = resolve_provider_client(
         "custom",
@@ -127,7 +127,7 @@ def test_explicit_base_without_anthropic_mode_preserves_v1_rewrite():
 def test_explicit_base_unknown_host_keeps_anthropic_path():
     """Anthropic-only custom gateways (unknown hosts) keep their /anthropic
     path even on the OpenAI wire — rewriting to /v1 404s (#83642)."""
-    from agent.auxiliary_client import resolve_provider_client, AnthropicAuxiliaryClient
+    from hermes_agent.agent.auxiliary_client import resolve_provider_client, AnthropicAuxiliaryClient
 
     client, _model = resolve_provider_client(
         "custom",

@@ -299,7 +299,7 @@ def _host_cwd_is_terminal_cwd(profile_home) -> bool:
         return False
     # An unknown or unloaded plugin is treated as remote: sending it a host path is the failure this guards. The
     # registry is read in the session's OWN profile scope: callers (session.create) run before that home is bound.
-    from agent.terminal_env_registry import provider_flag
+    from hermes_agent.agent.terminal_env_registry import provider_flag
     scope = str(profile_home) if profile_home else None
     return not (provider_flag(backend, "is_remote", True, scope=scope)
                 or provider_flag(backend, "is_container", True, scope=scope))
@@ -309,7 +309,7 @@ def _is_hermes_owned_cwd(cwd: str, profile_home) -> bool:
     """Whether ``cwd`` is inside Hermes's own host tree: the Hermes root (``/opt/data`` and its ``/opt/data/home``
     subprocess home in the Docker image, which also holds every named profile) or the install tree
     (``/opt/hermes``). A ``~`` path is the remote's home, never this host's."""
-    from agent.runtime_cwd import _is_install_tree
+    from hermes_agent.agent.runtime_cwd import _is_install_tree
     from hermes_constants import get_default_hermes_root
 
     if not os.path.isabs(cwd):
@@ -328,7 +328,7 @@ def _is_launch_dir(cwd: str, profile_home) -> bool:
     Hermes root (``/opt/data`` in the Docker image), a subprocess home (``/opt/data/home``), the bound profile's
     home, the install tree, the OS user's home or ``/`` (the desktop's launch dirs). Folders below them are not: a
     user may keep a workspace there."""
-    from agent.runtime_cwd import _is_install_tree
+    from hermes_agent.agent.runtime_cwd import _is_install_tree
     from hermes_constants import get_default_hermes_root, get_real_home
 
     if not os.path.isabs(cwd):
@@ -351,7 +351,7 @@ def _is_other_profiles_cwd(cwd: str, profile_home) -> bool:
     it. Other folders under the root stay: a user may keep a workspace there."""
     if profile_home is None or _cwd_is_remote(profile_home) or not os.path.isabs(cwd):
         return False
-    from agent.runtime_cwd import _is_install_tree
+    from hermes_agent.agent.runtime_cwd import _is_install_tree
     from hermes_constants import get_default_hermes_root
 
     try:
@@ -688,8 +688,8 @@ def _persist_branch_seed(session: dict) -> None:
     ``history`` and must never re-append it."""
     if not (key := session.get("session_key")) or not session.get("seeded") or session.get("_branch_seed_persisted"):
         return
-    from agent.message_metadata import message_identity
-    from agent.transcript_repair import sync_flushed_message_markers
+    from hermes_agent.agent.message_metadata import message_identity
+    from hermes_agent.agent.transcript_repair import sync_flushed_message_markers
     with session["history_lock"]:  # message_identity stamps the live dicts
         live = list(session.get("history") or [])
         seed = [{"role": msg.get("role", "user"), **{f: msg.get(f) for f in _WORKDIR_SEED_FIELDS},
@@ -764,8 +764,8 @@ def _write_submit_user_row(session: dict, text: Any, display_kind: str | None,
     # writer must not read a different key than the one it checks.
     if not session.get("session_key") or not isinstance(text, str) or not text.strip():
         return None
-    from agent.context_compressor import _DB_PERSISTED_MARKER
-    from agent.message_metadata import stamp_message_timestamp, stamp_message_uid
+    from hermes_agent.agent.context_compressor import _DB_PERSISTED_MARKER
+    from hermes_agent.agent.message_metadata import stamp_message_timestamp, stamp_message_uid
     staged = stamp_message_timestamp({"role": "user", "content": text})
     if display_kind:
         staged["display_kind"] = display_kind
@@ -815,7 +815,7 @@ def _adopt_submit_user_row(session: dict, agent, persist_user_message: Any, text
     if not isinstance(staged, dict) or agent is None or staged.get("content") != text:
         return
     if staged["content"] != persist_user_message:
-        from agent.session_persistence import _durable_content
+        from hermes_agent.agent.session_persistence import _durable_content
         with _session_db(session) as db:
             if db is None:
                 return
@@ -830,7 +830,7 @@ def _adopt_submit_user_row(session: dict, agent, persist_user_message: Any, text
                 logger.debug("submit-time user row update failed; the turn writes its own row", exc_info=True)
                 return
         staged["content"] = persist_user_message
-    from agent.session_persistence import _persist_lock
+    from hermes_agent.agent.session_persistence import _persist_lock
     with _persist_lock(agent):
         agent._pending_cli_user_message = staged
 
@@ -874,7 +874,7 @@ def _rewind_active_session_history(
     """Rewind one canonical user turn while retaining carrier scaffolding. Caller holds ``history_lock``. Persistent
     sessions go through ``SessionDB.rewind_user_turn`` (the durable transcript is the authority; memory is installed
     only after the commit); a session without a key rewinds the warm history alone."""
-    from agent.context_compressor import history_before_user_originated_turn, retryable_user_text, user_originated_turn_view
+    from hermes_agent.agent.context_compressor import history_before_user_originated_turn, retryable_user_text, user_originated_turn_view
 
     history = _history_without_ephemeral_scaffolding(session.get("history", []))
     user_indices = [i for i, m in enumerate(history) if user_originated_turn_view(m) is not None]
@@ -911,7 +911,7 @@ def _rewind_active_session_history(
 
 def _history_without_ephemeral_scaffolding(history: list[dict]) -> list[dict]:
     """Return the durable transcript shape without transient recovery rows."""
-    from agent.session_persistence import _is_ephemeral_scaffolding
+    from hermes_agent.agent.session_persistence import _is_ephemeral_scaffolding
     return [message.copy() for message in history if not _is_ephemeral_scaffolding(message)]
 
 

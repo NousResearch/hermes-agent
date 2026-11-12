@@ -17,7 +17,7 @@ import time
 from typing import Any, Callable
 
 from hermes_agent.tui_gateway import server
-from agent.message_sanitization import _sanitize_surrogates
+from hermes_agent.agent.message_sanitization import _sanitize_surrogates
 from hermes_agent.tui_gateway.event_replay import replay_epoch
 from hermes_agent.tui_gateway.transport import serialize_frame
 from hermes_agent.tui_gateway.ws_legacy_fallback import dispatch_legacy, legacy_fallback_allowed
@@ -191,7 +191,7 @@ class WSTransport:
         # Non-streaming frame: append behind any buffered tokens and flush the whole batch NOW so it
         # can never overtake them. The send is scheduled INSIDE the lock so wire order matches buffer
         # order even if the coalesce timer fires on the loop at the same moment.
-        from agent.async_utils import safe_schedule_threadsafe
+        from hermes_agent.agent.async_utils import safe_schedule_threadsafe
         with self._token_lock:
             self._pending_tokens.append(line)
             batch, self._pending_tokens = self._pending_tokens, []

@@ -211,7 +211,7 @@ def test_the_desktop_boot_work_runs_for_the_launch_profile_whichever_profile_con
     """The setup record and the first-install latch belong to the launch profile. On a multiplexing
     gateway a Desktop connection runs in its own profile's scope, so a first connection for another
     profile must not build the launch record from that profile's home."""
-    from agent import secret_scope
+    from hermes_agent.agent import secret_scope
     from hermes_cli import free_tier_bootstrap, onboarding_run
     from hermes_constants import get_hermes_home, get_process_hermes_home, set_hermes_home_override
     from hermes_agent.tui_gateway import server

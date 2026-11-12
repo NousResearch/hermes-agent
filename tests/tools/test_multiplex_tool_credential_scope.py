@@ -2,13 +2,13 @@
 
 Under ``gateway.multiplex_profiles`` ``os.environ`` holds the DEFAULT profile's ``.env``; a secondary
 profile's turn runs with a secret scope that may not define a var at all. Every reader below must
-then see "unset", never the default profile's value (`agent/secret_scope.py::get_secret` contract).
+then see "unset", never the default profile's value (`hermes_agent/agent/secret_scope.py::get_secret` contract).
 """
 from __future__ import annotations
 
 import pytest
 
-from agent import secret_scope
+from hermes_agent.agent import secret_scope
 
 
 @pytest.fixture

@@ -1,6 +1,6 @@
 """Content-free per-attempt compression telemetry (attempt log line, Relay mark, shared metric).
 
-Sibling of ``agent/conversation_compression.py`` (the facade), which imports it at module level; this
+Sibling of ``hermes_agent/agent/conversation_compression.py`` (the facade), which imports it at module level; this
 module must never import the facade (import cycle). It logs under the facade's logger name so log
 consumers keep one source.
 """
@@ -14,9 +14,9 @@ import time
 import uuid
 from typing import Any
 
-from agent.compaction_events import publish_attempt
+from hermes_agent.agent.compaction_events import publish_attempt
 
-logger = logging.getLogger("agent.conversation_compression")
+logger = logging.getLogger("hermes_agent.agent.conversation_compression")
 
 
 # Caller-side abort verdicts that only restate an outcome the compressor already classified more precisely:

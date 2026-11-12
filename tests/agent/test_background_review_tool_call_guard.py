@@ -24,7 +24,7 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__f
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-import agent.background_review as bg
+import hermes_agent.agent.background_review as bg
 
 
 def _fake_parent(client, *, runtime=None) -> SimpleNamespace:
@@ -58,7 +58,7 @@ def _run(agent, task_cfg=None):
     """Run the worker with AIAgent patched; return the AIAgent mock."""
     with (
         patch("hermes_cli.config.load_config", return_value={}),
-        patch("run_agent.AIAgent") as mock_aiagent,
+        patch("hermes_agent.run_agent.AIAgent") as mock_aiagent,
         patch("hermes_agent.tools.terminal_tool.set_approval_callback"),
     ):
         bg._run_review_in_thread(

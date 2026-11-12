@@ -23,12 +23,12 @@ import json
 
 import pytest
 
-from agent.tool_dispatch_helpers import (
+from hermes_agent.agent.tool_dispatch_helpers import (
     _extract_error_preview,
     _extract_file_mutation_targets,
     _extract_landed_file_mutation_paths,
 )
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 # ---------------------------------------------------------------------------
 # _extract_file_mutation_targets

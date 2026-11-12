@@ -14,7 +14,7 @@ import threading
 import time as _time
 import webbrowser
 
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 from hermes_cli.callbacks import prompt_for_secret
 from typing import Optional
 
@@ -731,7 +731,7 @@ class CLIModalMixin:
                     current["phase"] = "failed"
                     self._paint_now()
 
-        from agent.memory_provider import spawn_context_thread
+        from hermes_agent.agent.memory_provider import spawn_context_thread
         spawn_context_thread(_run, name="hermes-connection-answer").start()
 
     def _connection_answer(self, *, approve: bool) -> None:

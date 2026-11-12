@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from agent.context_compressor import (
+from hermes_agent.agent.context_compressor import (
     COMPRESSED_SUMMARY_METADATA_KEY,
     SUMMARY_PREFIX,
     ContextCompressor,
@@ -17,7 +17,7 @@ import itertools
 @pytest.fixture()
 def compressor() -> ContextCompressor:
     with patch(
-        "agent.context_compressor.get_model_context_length",
+        "hermes_agent.agent.context_compressor.get_model_context_length",
         return_value=100_000,
     ):
         instance = ContextCompressor(

@@ -28,8 +28,8 @@ def main() -> None:
     os.environ["HERMES_HOME"] = str(hermes_home)
 
     from hermes_agent.gateway.status import write_runtime_status
-    from agent.monitoring.gateway_health_export import start_gateway_health_export
-    from agent.monitoring import emitter
+    from hermes_agent.agent.monitoring.gateway_health_export import start_gateway_health_export
+    from hermes_agent.agent.monitoring import emitter
 
     config = {
         "monitoring": {

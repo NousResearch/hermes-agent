@@ -2,7 +2,7 @@
 
 from types import SimpleNamespace
 
-from agent.usage_pricing import normalize_usage
+from hermes_agent.agent.usage_pricing import normalize_usage
 
 
 def test_meta_cached_tokens_flows_to_cache_read():

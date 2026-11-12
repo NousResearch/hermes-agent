@@ -121,7 +121,7 @@ async def test_forwarded_turns_are_authored_by_the_peer_for_memory_attribution(t
     from hermes_agent.gateway.session_authority import initialize_session_authority
     from hermes_agent.gateway.session_a2a import forward_author
     from hermes_agent.gateway.session_ingress import row_turn_author
-    from agent.turn_author import a2a_key
+    from hermes_agent.agent.turn_author import a2a_key
     from hermes_agent.hermes_state_runtime import list_session_admissions
     from hermes_agent.gateway import run
 

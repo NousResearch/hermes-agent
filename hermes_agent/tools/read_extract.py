@@ -156,7 +156,7 @@ def _hosted_ocr_config() -> tuple:
     live-probed broken, so it is NOT used. ``file_tools.hosted_ocr: false`` disables even with a
     key. The key is a profile credential: read through the secret scope so a multiplexed
     secondary never spends (or reveals its documents to) the default profile's Firecrawl key."""
-    from agent.secret_scope import get_secret
+    from hermes_agent.agent.secret_scope import get_secret
     api_key = get_secret("FIRECRAWL_API_KEY") or None
     enabled = api_key is not None
     with contextlib.suppress(Exception):

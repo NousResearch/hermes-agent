@@ -18,7 +18,7 @@ def _make_agent(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "")
     monkeypatch.setenv("HERMES_INFERENCE_PROVIDER", "")
     # Avoid full AIAgent init — just import the class and build a stub
-    import run_agent as _ra
+    import hermes_agent.run_agent as _ra
 
     class _Stub:
         _interrupt_requested = False

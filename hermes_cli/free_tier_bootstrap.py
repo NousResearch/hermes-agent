@@ -282,7 +282,7 @@ def _broadcast(record: SetupRecord) -> None:
 
 def start_background_bootstrap() -> threading.Thread:
     """Run on a daemon thread so the inventory never delays the socket."""
-    from agent.memory_provider import spawn_context_thread
+    from hermes_agent.agent.memory_provider import spawn_context_thread
 
     thread = spawn_context_thread(run_bootstrap, name="free-tier-bootstrap")
     thread.start()

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import logging
 
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 
 # Log-record parity with hermes_agent/gateway/run.py and the origin module.
@@ -240,7 +240,7 @@ class GatewayGoalCommandsMixin:
         from hermes_agent.tools.approval_context import reset_current_session_key, set_current_session_key
 
         def _dispatch():
-            from agent.review_engine import start_review
+            from hermes_agent.agent.review_engine import start_review
             from hermes_agent.gateway.session_cold_review import cold_review_parent
             token = set_current_session_key(quick_key)
             try:
@@ -259,7 +259,7 @@ class GatewayGoalCommandsMixin:
             return str(exc)
         except Exception as exc:
             return t("gateway.review.start_failed", error=exc)
-        from agent.review_engine import format_dispatch_note
+        from hermes_agent.agent.review_engine import format_dispatch_note
         return format_dispatch_note(result, args)
 
     async def _handle_subgoal_command(self, event: MessageEvent) -> str:

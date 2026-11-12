@@ -25,7 +25,7 @@ def resolve_plugin_oauth_client(req: Any) -> tuple[Any, Any]:
 
     An explicit key from the main runtime wins, so aux shares the session's bearer.
     """
-    from agent import auxiliary_client as aux
+    from hermes_agent.agent import auxiliary_client as aux
 
     provider = req.provider
     api_key = aux._normalize_api_key(req.explicit_api_key)

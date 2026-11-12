@@ -402,7 +402,7 @@ def _launch_body_if_launch_owner(authority):
     profile switching this gateway to multiplexing mid-turn must not fail its later credential reads
     closed. Any other owner (a hosted named profile) stays unmarked, never reading the launch env."""
     from pathlib import Path
-    from agent.secret_scope import _is_process_home
+    from hermes_agent.agent.secret_scope import _is_process_home
     owner = Path(str(authority.profile_id))
     if not owner.is_absolute() or not _is_process_home(owner):
         return nullcontext()

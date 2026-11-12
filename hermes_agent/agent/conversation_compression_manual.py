@@ -58,7 +58,7 @@ def parse_compress_args(raw_args: str) -> CompressRequest:
 def estimate_request_tokens(agent: Any, messages: Sequence[dict[str, Any]]) -> int:
     """Transcript + system prompt + tool schemas: a transcript-only figure understates real request pressure
     and can even appear to grow after a dense handoff summary replaces many short turns (#6217)."""
-    from agent.model_metadata import estimate_request_tokens_rough
+    from hermes_agent.agent.model_metadata import estimate_request_tokens_rough
     if not messages:
         return 0
     return estimate_request_tokens_rough(
@@ -86,9 +86,9 @@ def compress_now(
     ``_compress_context`` still does useful work there — codex_app_server native compaction, and the
     phase-1 tool-result prune / blank-echo drop that ``ContextCompressor.compress`` commits even when no
     summary window exists."""
-    from agent.context_compressor import _DB_PERSISTED_MARKER, _fresh_compaction_message_copy
-    from agent.conversation_compression import finalize_context_engine_compression_notification
-    from agent.manual_compression_feedback import summarize_manual_compression
+    from hermes_agent.agent.context_compressor import _DB_PERSISTED_MARKER, _fresh_compaction_message_copy
+    from hermes_agent.agent.conversation_compression import finalize_context_engine_compression_notification
+    from hermes_agent.agent.manual_compression_feedback import summarize_manual_compression
     from hermes_cli.partial_compress import (
         rejoin_compressed_head_and_tail, split_history_for_partial_compress, summarize_compress_preview)
 
@@ -160,7 +160,7 @@ def render_compress_result(result: CompressResult, *, prefix: str = "") -> list[
     if result.status == "preview":
         return [f"{prefix}{line}" for line in result.lines]
     if result.status == "lock_skipped":
-        from agent.manual_compression_feedback import describe_compression_lock_skip
+        from hermes_agent.agent.manual_compression_feedback import describe_compression_lock_skip
         return [f"{prefix}{describe_compression_lock_skip(result.lock_holder or True)}"]
     if result.status == "nothing_to_do":
         return [f"{prefix}Nothing to compress yet."]

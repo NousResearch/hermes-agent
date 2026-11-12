@@ -4,7 +4,7 @@ import sys
 
 import pytest
 
-from agent.session_activity import (
+from hermes_agent.agent.session_activity import (
     ACTIVITY_DESCRIPTION_MAX,
     ActivityProvenance,
     bound_activity_description,

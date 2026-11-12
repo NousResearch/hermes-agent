@@ -75,10 +75,10 @@ def _add_context_variants(model_ids: list[str]) -> list[str]:
     """Insert ``<slug>-900k`` large-context picker variants after eligible base slugs.
 
     Base slugs keep the cheaper advertised 272K limit; the variant opts into the large window.
-    The suffix is Hermes-side only — stripped before the id hits the wire (agent/transports/codex.py,
-    agent/auxiliary_client.py).
+    The suffix is Hermes-side only — stripped before the id hits the wire (hermes_agent/agent/transports/codex.py,
+    hermes_agent/agent/auxiliary_client.py).
     """
-    from agent.model_metadata import CODEX_CONTEXT_VARIANT_SUFFIX, has_codex_context_variant
+    from hermes_agent.agent.model_metadata import CODEX_CONTEXT_VARIANT_SUFFIX, has_codex_context_variant
 
     out: list[str] = []
     present = set(model_ids)
@@ -100,7 +100,7 @@ def _finalize_codex_models(model_ids: list[str]) -> list[str]:
 def _drop_undiscovered_astra(model_ids: list[str]) -> list[str]:
     """Astra is account-gated: only the live account-scoped catalog may advertise it. A stale
     ``models_cache.json`` or a ``config.toml`` default is a compatibility hint, not entitlement."""
-    from agent.reasoning_effort import is_astra_model
+    from hermes_agent.agent.reasoning_effort import is_astra_model
 
     return [model for model in model_ids if not is_astra_model(model)]
 
@@ -127,7 +127,7 @@ def codex_catalog_credential_identity() -> str:
         return "missing"
     if _codex_access_token_is_expiring(token, 0):
         return "expired\n" + route
-    from agent.credential_pool import _codex_principal_identity
+    from hermes_agent.agent.credential_pool import _codex_principal_identity
 
     principal = _codex_principal_identity(token)
     return ("/".join(principal) if principal else token) + "\n" + route
@@ -164,7 +164,7 @@ def _fetch_models_from_api(access_token: str, base_url: Optional[str] = None) ->
     catalog is fetched there, never from a host the credential does not belong to (#121486).
     """
     try:
-        from agent.model_metadata import _codex_catalog_probe_allowed
+        from hermes_agent.agent.model_metadata import _codex_catalog_probe_allowed
         from hermes_cli.auth_codex import _codex_base_url
         catalog_base = (base_url or "").strip().rstrip("/") or _codex_base_url()
         if not _codex_catalog_probe_allowed(access_token, catalog_base):
@@ -172,9 +172,9 @@ def _fetch_models_from_api(access_token: str, base_url: Optional[str] = None) ->
         import httpx
         # The per-account catalog needs ChatGPT-Account-ID (else ``{"models":[]}`` with HTTP 200
         # masquerades as "no models") and, for residency-enforced workspaces, the residency header.
-        from agent.codex_headers import codex_account_headers
+        from hermes_agent.agent.codex_headers import codex_account_headers
         headers = {"Authorization": f"Bearer {access_token}", **codex_account_headers(access_token)}
-        from agent.model_metadata import fetch_codex_catalog_entries
+        from hermes_agent.agent.model_metadata import fetch_codex_catalog_entries
         entries, _status = fetch_codex_catalog_entries(
             lambda url: httpx.get(url, headers=headers, timeout=10), base_url=catalog_base)
     except Exception as exc:

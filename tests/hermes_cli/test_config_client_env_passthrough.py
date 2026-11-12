@@ -6,7 +6,7 @@ from hermes_cli.config import DEFAULT_CONFIG, load_config, save_config
 
 
 def test_default_and_user_list_round_trip(tmp_path):
-    from agent.session_client_env import configured_names
+    from hermes_agent.agent.session_client_env import configured_names
     from hermes_cli.config import _validate_config_key
     assert DEFAULT_CONFIG["terminal"]["client_env_passthrough"] == []
     assert _validate_config_key("terminal.client_env_passthrough") == (True, None)

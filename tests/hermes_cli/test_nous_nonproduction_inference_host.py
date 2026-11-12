@@ -29,7 +29,7 @@ NONPROD_PORTAL = "https://portal.example-env.nousresearch.com"
 def test_routing_overrides_follow_the_profile_scope_and_fail_closed_without_one(monkeypatch, helper, var):
     """Unscoped single-profile: environ. Multi-profile: the scope's value wins, a scoped miss is a
     miss, and a call with NO scope gets None — never the launch profile's ambient value."""
-    from agent import secret_scope as ss
+    from hermes_agent.agent import secret_scope as ss
 
     monkeypatch.setenv(var, "https://launch.example.nousresearch.com")
     monkeypatch.delenv("NOUS_PORTAL_BASE_URL", raising=False)
@@ -93,7 +93,7 @@ def test_portal_override_alone_grants_nothing(monkeypatch):
 def test_recipient_match_follows_the_profile_scope_under_multiplex(monkeypatch):
     """The recipient is the routed profile's own override: a secondary without it refuses the
     host even when the launch profile's process env names it."""
-    from agent import secret_scope as ss
+    from hermes_agent.agent import secret_scope as ss
 
     monkeypatch.setenv("NOUS_INFERENCE_BASE_URL", ENV_INFERENCE)
     ss.set_multiplex_active(True)

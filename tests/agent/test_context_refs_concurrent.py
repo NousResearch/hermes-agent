@@ -14,7 +14,7 @@ import asyncio
 
 import pytest
 
-from agent.context_references import preprocess_context_references_async
+from hermes_agent.agent.context_references import preprocess_context_references_async
 
 @pytest.mark.asyncio
 async def test_refs_expand_concurrently(tmp_path):

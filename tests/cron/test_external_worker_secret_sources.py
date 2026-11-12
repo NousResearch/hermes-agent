@@ -48,7 +48,7 @@ def homes(tmp_path, monkeypatch):
         encoding="utf-8",
     )
     yield launch, profile
-    from agent.secret_sources import registry
+    from hermes_agent.agent.secret_sources import registry
     from hermes_cli.env_loader import reset_secret_source_cache
     from hermes_cli.plugins import _reset_plugin_managers_for_tests
 
@@ -74,7 +74,7 @@ def test_worker_hydrates_owning_profile_plugin_secret_source(homes, tmp_path, mo
     scopes = []
 
     def capture(*_args, **_kwargs):
-        from agent.secret_scope import current_secret_scope
+        from hermes_agent.agent.secret_scope import current_secret_scope
         scopes.append(dict(current_secret_scope() or {}))
         return True
 

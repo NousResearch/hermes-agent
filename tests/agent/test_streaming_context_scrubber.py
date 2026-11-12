@@ -1,4 +1,4 @@
-"""Unit tests for StreamingContextScrubber (agent/memory_context.py).
+"""Unit tests for StreamingContextScrubber (hermes_agent/agent/memory_context.py).
 
 Regression coverage for #5719 — memory-context spans split across stream
 deltas must not leak payload to the UI.  The one-shot sanitize_context()
@@ -6,7 +6,7 @@ regex can't survive chunk boundaries, so _fire_stream_delta routes deltas
 through a stateful scrubber.
 """
 
-from agent.memory_context import StreamingContextScrubber, sanitize_context
+from hermes_agent.agent.memory_context import StreamingContextScrubber, sanitize_context
 
 
 class TestStreamingContextScrubberBasics:
@@ -158,7 +158,7 @@ class TestBuildMemoryContextBlockWarnsOnViolation:
 
     def test_provider_emitting_wrapper_warns(self, caplog):
         import logging
-        from agent.memory_context import build_memory_context_block
+        from hermes_agent.agent.memory_context import build_memory_context_block
 
         prewrapped = (
             "<memory-context>\n"
@@ -166,7 +166,7 @@ class TestBuildMemoryContextBlockWarnsOnViolation:
             "real fact\n"
             "</memory-context>"
         )
-        with caplog.at_level(logging.WARNING, logger="agent.memory_context"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.agent.memory_context"):
             out = build_memory_context_block(prewrapped)
 
         assert any("pre-wrapped" in rec.message for rec in caplog.records)
@@ -175,9 +175,9 @@ class TestBuildMemoryContextBlockWarnsOnViolation:
 
     def test_clean_provider_output_does_not_warn(self, caplog):
         import logging
-        from agent.memory_context import build_memory_context_block
+        from hermes_agent.agent.memory_context import build_memory_context_block
 
-        with caplog.at_level(logging.WARNING, logger="agent.memory_context"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.agent.memory_context"):
             out = build_memory_context_block("plain fact about user")
 
         assert not any("pre-wrapped" in rec.message for rec in caplog.records)
@@ -185,9 +185,9 @@ class TestBuildMemoryContextBlockWarnsOnViolation:
 
 
 def test_old_memory_manager_import_path_still_resolves():
-    # agent.memory_manager is a public module for plugins (hermes_cli/data/plugin_api.json),
-    # so the helpers that moved to agent.memory_context stay importable from it.
-    import agent.memory_context as moved
-    import agent.memory_manager as old
+    # hermes_agent.agent.memory_manager is a public module for plugins (hermes_cli/data/plugin_api.json),
+    # so the helpers that moved to hermes_agent.agent.memory_context stay importable from it.
+    import hermes_agent.agent.memory_context as moved
+    import hermes_agent.agent.memory_manager as old
     for name in ("sanitize_context", "StreamingContextScrubber", "build_memory_context_block"):
         assert getattr(old, name, None) is getattr(moved, name), name

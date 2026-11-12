@@ -256,7 +256,7 @@ def _build_plugin_env(*, env_type, image, cwd, timeout, cc, task_id, **_):
         _stamp_sandbox_home(env_obj, provider, cwd)
         return env_obj
     try:
-        from agent.terminal_env_registry import plugin_backend_names
+        from hermes_agent.agent.terminal_env_registry import plugin_backend_names
         plugin_names = plugin_backend_names()
     except Exception:
         plugin_names = []
@@ -312,7 +312,7 @@ def _check_vercel(config: dict[str, Any]) -> bool:
     if importlib.util.find_spec("vercel") is None:
 
         return _reject("vercel is required for the Vercel Sandbox terminal backend. Run hermes setup terminal and select Vercel Sandbox.")
-    from agent.secret_scope import get_secret
+    from hermes_agent.agent.secret_scope import get_secret
     if get_secret("VERCEL_OIDC_TOKEN"):
         return True
     present = [bool(get_secret(k)) for k in ("VERCEL_TOKEN", "VERCEL_PROJECT_ID", "VERCEL_TEAM_ID")]
@@ -343,7 +343,7 @@ def _ssh_pre(config: dict[str, Any]) -> bool:
 
 def _daytona_post(config: dict[str, Any]) -> bool:
     from daytona import Daytona
-    from agent.secret_scope import get_secret
+    from hermes_agent.agent.secret_scope import get_secret
     return get_secret("DAYTONA_API_KEY") is not None
 
 

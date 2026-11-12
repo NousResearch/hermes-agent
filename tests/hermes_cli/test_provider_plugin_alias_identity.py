@@ -32,7 +32,7 @@ _ALIASES = {"meta": "meta-ai", "azure": "azure-foundry", "google": "gemini", "go
 @pytest.mark.parametrize("registry", [_CATALOG, {}], ids=["catalog", "offline"])
 @pytest.mark.parametrize("alias", sorted(_ALIASES))
 def test_plugin_alias_resolves_to_the_plugin_id(monkeypatch, alias, registry):
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda *a, **k: registry)
+    monkeypatch.setattr("hermes_agent.agent.models_dev.fetch_models_dev", lambda *a, **k: registry)
 
     pdef = resolve_provider_full(alias)
 
@@ -43,7 +43,7 @@ def test_plugin_alias_resolves_to_the_plugin_id(monkeypatch, alias, registry):
 
 def test_user_provider_named_like_the_alias_still_wins(monkeypatch):
     """A configured ``providers.meta`` pointing elsewhere keeps its own identity."""
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda *a, **k: _CATALOG)
+    monkeypatch.setattr("hermes_agent.agent.models_dev.fetch_models_dev", lambda *a, **k: _CATALOG)
     user = {"meta": {"base_url": "https://relay.example.com/v1", "api_key": "sk-test"}}
 
     pdef = resolve_provider_full("meta", user_providers=user)
@@ -96,7 +96,7 @@ def test_home_plugin_claiming_the_alias_wins_over_the_bundled_one(monkeypatch, h
     """The registry picks the home's plugin for an alias it declares; resolution must agree."""
     from providers import get_provider_profile
 
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda *a, **k: registry)
+    monkeypatch.setattr("hermes_agent.agent.models_dev.fetch_models_dev", lambda *a, **k: registry)
 
     pdef = resolve_provider_full("meta")
 

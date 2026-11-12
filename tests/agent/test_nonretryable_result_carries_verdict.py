@@ -3,9 +3,9 @@ classifier's verdict: without ``failure_reason`` the desktop error card read a 4
 retryable "Provider error" and offered Retry instead of a re-login."""
 from __future__ import annotations
 
-from agent.error_classifier import classify_api_error
-from agent.error_surface import LAYER_AUTH, build_error_surface_from_result
-from agent.turn_recovery import nonretryable_client_error_result
+from hermes_agent.agent.error_classifier import classify_api_error
+from hermes_agent.agent.error_surface import LAYER_AUTH, build_error_surface_from_result
+from hermes_agent.agent.turn_recovery import nonretryable_client_error_result
 
 
 class _Rejected(Exception):

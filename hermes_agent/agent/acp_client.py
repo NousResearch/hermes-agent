@@ -32,15 +32,15 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from agent.acp_openai_bridge import (
+from hermes_agent.agent.acp_openai_bridge import (
     completion_to_stream_chunks as _completion_to_stream_chunks,
     extract_tool_calls_from_text as _extract_tool_calls_from_text,
     render_tool_bridge_sections as _render_tool_bridge_sections,
 )
-from agent.file_safety import (
+from hermes_agent.agent.file_safety import (
     get_nt_namespace_error, get_read_block_error, get_write_denied_error, is_write_approval_required)
-from agent.redact import redact_sensitive_text
-from agent.runtime_cwd import resolve_agent_cwd
+from hermes_agent.agent.redact import redact_sensitive_text
+from hermes_agent.agent.runtime_cwd import resolve_agent_cwd
 
 logger = logging.getLogger(__name__)
 _DEFAULT_TIMEOUT_SECONDS = 900.0
@@ -275,7 +275,7 @@ class ACPClient:
     attributes below are only the fallback when a caller passes neither.
     """
 
-    # Declared for agent/auxiliary_client.py: this shim drives an ACP subprocess over stdio, so it is
+    # Declared for hermes_agent/agent/auxiliary_client.py: this shim drives an ACP subprocess over stdio, so it is
     # already a complete client (never re-dispatch through a wire adapter) and async-safe as-is.
     HERMES_SKIP_TRANSPORT_WRAP = True
     HERMES_SKIP_ASYNC_WRAP = True

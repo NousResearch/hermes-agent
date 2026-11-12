@@ -9,7 +9,7 @@ per-file line ceiling.
 
 import pytest
 
-from agent.anthropic_adapter import build_anthropic_client
+from hermes_agent.agent.anthropic_adapter import build_anthropic_client
 
 SENTINEL = "sentinel-env-token-DO-NOT-SEND"
 
@@ -72,7 +72,7 @@ def test_console_key_families_carry_x_api_key_without_claude_code_identity(monke
     """#133856: Console key families must not ride Bearer + the Claude Code beta/user-agent (that request
     shape bills the subscription bucket: 400 "credit balance too low"); OAuth setup tokens still do."""
     pytest.importorskip("anthropic")
-    monkeypatch.setattr("agent.anthropic_adapter._claude_code_version_cache", "0.0.0")  # skip the `claude --version` probe
+    monkeypatch.setattr("hermes_agent.agent.anthropic_adapter._claude_code_version_cache", "0.0.0")  # skip the `claude --version` probe
     key = "sk-" + "ant-" + family + "-" + "X" * 24
     headers = {k.lower(): v for k, v in wire_headers(build_anthropic_client(key, "https://api.anthropic.com")).items()}
     assert (headers.get("authorization") == "Bearer " + key) is oauth
@@ -92,7 +92,7 @@ def test_key_cmd_token_lands_in_the_header_its_family_needs(monkeypatch, base_ur
     pytest.importorskip("anthropic")
     import httpx
 
-    monkeypatch.setattr("agent.anthropic_adapter._claude_code_version_cache", "0.0.0")
+    monkeypatch.setattr("hermes_agent.agent.anthropic_adapter._claude_code_version_cache", "0.0.0")
     key = "sk-" + "ant-" + family + "-" + "X" * 24
     client = build_anthropic_client(lambda: key, base_url)
     request = httpx.Request("POST", (base_url or "https://api.anthropic.com") + "/v1/messages", headers={"Authorization": "Bearer entra-id-bearer-via-http-hook"})

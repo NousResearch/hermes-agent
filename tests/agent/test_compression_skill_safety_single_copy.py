@@ -7,8 +7,8 @@ gets the rule too.
 
 from unittest.mock import MagicMock, patch
 
-from agent.context_compressor import SKILL_PRUNED_MARKER_PREFIX, ContextCompressor
-from agent.context_compressor_tail import SKILL_SAFETY_RULE
+from hermes_agent.agent.context_compressor import SKILL_PRUNED_MARKER_PREFIX, ContextCompressor
+from hermes_agent.agent.context_compressor_tail import SKILL_SAFETY_RULE
 
 
 def _texts(messages):
@@ -35,7 +35,7 @@ def _transcript():
 
 
 def test_prune_only_then_full_compaction_keeps_one_skill_safety_rule():
-    with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
+    with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=1_000_000):
         comp = ContextCompressor(
             model="test/model", quiet_mode=True, threshold_percent=0.5, protect_first_n=2, protect_last_n=4,
             proactive_prune_tokens=48_000, proactive_prune_min_result_chars=8_000,
@@ -46,7 +46,7 @@ def test_prune_only_then_full_compaction_keeps_one_skill_safety_rule():
     response = MagicMock()
     response.choices = [MagicMock()]
     response.choices[0].message.content = "## Goal\nOld chat.\n\n## Completed Actions\n1. talked."
-    with patch("agent.context_compressor.call_llm", return_value=response):
+    with patch("hermes_agent.agent.context_compressor.call_llm", return_value=response):
         compacted = comp.compress(pruned, force=True)
 
     assert SKILL_PRUNED_MARKER_PREFIX in _texts(compacted)

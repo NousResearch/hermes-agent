@@ -23,7 +23,7 @@ from __future__ import annotations
 import abc
 from typing import Dict
 
-from agent.provider_base import ProviderBase
+from hermes_agent.agent.provider_base import ProviderBase
 
 
 class BrowserProvider(ProviderBase):

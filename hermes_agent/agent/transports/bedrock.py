@@ -1,13 +1,13 @@
 """AWS Bedrock Converse API transport.
 
-Delegates format conversion to agent/bedrock_adapter.py. Bedrock uses its own
+Delegates format conversion to hermes_agent/agent/bedrock_adapter.py. Bedrock uses its own
 boto3 client, so client construction and calls stay on AIAgent.
 """
 
 from typing import Any, Dict, List, Optional
 
-from agent.transports.base import ProviderTransport
-from agent.transports.types import NormalizedResponse, ToolCall, Usage
+from hermes_agent.agent.transports.base import ProviderTransport
+from hermes_agent.agent.transports.types import NormalizedResponse, ToolCall, Usage
 
 
 class BedrockTransport(ProviderTransport):
@@ -25,12 +25,12 @@ class BedrockTransport(ProviderTransport):
 
     def convert_messages(self, messages: list[dict[str, Any]], **kwargs) -> Any:
         """Convert OpenAI messages to Bedrock Converse format."""
-        from agent.bedrock_adapter import convert_messages_to_converse
+        from hermes_agent.agent.bedrock_adapter import convert_messages_to_converse
         return convert_messages_to_converse(messages, model=kwargs.get("model"))
 
     def convert_tools(self, tools: list[dict[str, Any]]) -> Any:
         """Convert OpenAI tool schemas to Bedrock Converse toolConfig."""
-        from agent.bedrock_adapter import convert_tools_to_converse
+        from hermes_agent.agent.bedrock_adapter import convert_tools_to_converse
         return convert_tools_to_converse(tools)
 
     def build_kwargs(
@@ -38,7 +38,7 @@ class BedrockTransport(ProviderTransport):
         tools: Optional[list[dict[str, Any]]] = None, **params,
     ) -> dict[str, Any]:
         """Build Converse kwargs, leaving the optional output limit to the provider."""
-        from agent.bedrock_adapter import build_converse_kwargs
+        from hermes_agent.agent.bedrock_adapter import build_converse_kwargs
 
         self._model = model  # stamps the turns normalize_response captures as this model's own
         kwargs = build_converse_kwargs(
@@ -53,7 +53,7 @@ class BedrockTransport(ProviderTransport):
 
     def normalize_response(self, response: Any, **kwargs) -> NormalizedResponse:
         """Normalize either a raw boto3 dict or an already-normalized SimpleNamespace with .choices."""
-        from agent.bedrock_adapter import normalize_converse_response
+        from hermes_agent.agent.bedrock_adapter import normalize_converse_response
 
         ns = response if hasattr(response, "choices") and response.choices else normalize_converse_response(response)
         choice = ns.choices[0]
@@ -67,7 +67,7 @@ class BedrockTransport(ProviderTransport):
             key: getattr(msg, key) for key in ("reasoning_details", "bedrock_content_blocks") if getattr(msg, key, None)
         }
         if provider_data.get("reasoning_details") and getattr(self, "_model", None):
-            from agent.bedrock_adapter import CONVERSE_ISSUER_TYPE
+            from hermes_agent.agent.bedrock_adapter import CONVERSE_ISSUER_TYPE
             provider_data["reasoning_details"] = [*provider_data["reasoning_details"],
                                                   {"type": CONVERSE_ISSUER_TYPE, "model": self._model}]
         return NormalizedResponse(
@@ -84,6 +84,6 @@ class BedrockTransport(ProviderTransport):
         return bool(getattr(response, "choices", None)) if response is not None else False
 
 
-from agent.transports import register_transport
+from hermes_agent.agent.transports import register_transport
 
 register_transport("bedrock_converse", BedrockTransport)

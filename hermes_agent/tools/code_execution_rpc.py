@@ -15,7 +15,7 @@ import socket
 import threading
 import time
 
-from agent.thread_scoped_output import thread_scoped_silence
+from hermes_agent.agent.thread_scoped_output import thread_scoped_silence
 from hermes_agent.tools.registry import tool_error
 
 # Logger name kept as the origin module's so existing log expectations hold.

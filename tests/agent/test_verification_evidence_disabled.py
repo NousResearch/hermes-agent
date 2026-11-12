@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from agent.verification_evidence import (
+from hermes_agent.agent.verification_evidence import (
     mark_workspace_edited,
     record_terminal_result,
     record_verify_run,

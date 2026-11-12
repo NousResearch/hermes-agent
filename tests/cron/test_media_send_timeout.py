@@ -70,7 +70,7 @@ class TestEmptyReasonFallback:
             coro.close()
             raise exc
 
-        monkeypatch.setattr("agent.async_utils.safe_schedule_threadsafe", boom)
+        monkeypatch.setattr("hermes_agent.agent.async_utils.safe_schedule_threadsafe", boom)
 
         class _Adapter:
             async def send_voice(self, **kw):  # pragma: no cover - never awaited

@@ -521,7 +521,7 @@ method("pet.cancel", params=PetCancelParams, result=PetCancelResult,
 
 
 class PetGenProvider(Result):
-    """``agent/pet/generate/imagegen.py::list_sprite_providers`` row."""
+    """``hermes_agent/agent/pet/generate/imagegen.py::list_sprite_providers`` row."""
 
     name: str
     label: str
@@ -614,7 +614,7 @@ class ProjectFactsParams(ProfileParams):
 
 
 class ProjectFacts(Result):
-    """``agent/coding_context.py::project_facts_for`` — the system prompt's coding-context detection."""
+    """``hermes_agent/agent/coding_context.py::project_facts_for`` — the system prompt's coding-context detection."""
 
     root: str
     manifests: list[str]

@@ -143,7 +143,7 @@ def blocking_gauge(model: str, gauges: Iterable[Any], *, free: bool, top_tier: b
     never blocked. Of several full gauges, the one that frees up last (that is when the model works)."""
     if free:
         return None
-    from agent.usage_gauges import SCOPE_ALL, SCOPE_TOP_TIER
+    from hermes_agent.agent.usage_gauges import SCOPE_ALL, SCOPE_TOP_TIER
     full = [g for g in gauges
             if getattr(g, "full", False) and (g.scope == SCOPE_ALL or (g.scope == SCOPE_TOP_TIER and top_tier))]
     return max(full, key=lambda g: g.resets_at_ms or 0) if full else None
@@ -199,7 +199,7 @@ def _fits_context(model: str, needed_tokens: Optional[int], base_url: str) -> bo
     if not needed_tokens or needed_tokens <= 0:
         return True
     try:
-        from agent.model_metadata import get_model_context_length
+        from hermes_agent.agent.model_metadata import get_model_context_length
         ctx = get_model_context_length(model, base_url=base_url, provider=PROVIDER)
         return not ctx or ctx >= needed_tokens + _CONTEXT_HEADROOM_TOKENS
     except Exception:
@@ -265,12 +265,12 @@ def limit_hit(agent: Any, *, message: str, needed_tokens: Optional[int] = None) 
         if g is None:
             # The 402 says this model was refused; without a top-tier mark in the cache a full top-tier
             # gauge is still the only explanation.
-            from agent.usage_gauges import top_tier_gauge
+            from hermes_agent.agent.usage_gauges import top_tier_gauge
             top = top_tier_gauge(gauges)
             g = top if top is not None and top.full else None
         if g is None:
             return None
-        from agent.usage_gauges import gauge_limit_name
+        from hermes_agent.agent.usage_gauges import gauge_limit_name
         usage = _plan_usage()
         featured = tuple(getattr(usage, "featured_model_ids", ()) or ())
         return LimitHit(
@@ -300,7 +300,7 @@ def chat_refusal_wording(text: str, resets_at: Any = None) -> str:
     text = portal_wording(text)
     if isinstance(resets_at, (int, float)) and not isinstance(resets_at, bool) and resets_at > 0:
         try:
-            from agent.credits_tracker import format_window_reset
+            from hermes_agent.agent.credits_tracker import format_window_reset
             from hermes_cli.model_picker_usage import compact_duration
             ms = round(resets_at * 1000)  # the epoch seconds came from these ms: round, never truncate
             if left := compact_duration(ms):

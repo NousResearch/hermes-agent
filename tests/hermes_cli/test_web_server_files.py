@@ -737,7 +737,7 @@ def test_sensitive_env_files_hidden_from_listing(forced_files_client):
 def test_other_credential_store_basenames_blocked(forced_files_client):
     """Regression: the managed-files guard must cover the same credential
     basenames as gateway.platforms.base._ROOT_CREDENTIAL_FILES and
-    agent.file_safety.get_read_block_error, not just .env — an operator can
+    hermes_agent.agent.file_safety.get_read_block_error, not just .env — an operator can
     point the managed root at HERMES_HOME itself (#57505), which contains
     all of these live secret stores."""
     client, root = forced_files_client
@@ -775,7 +775,7 @@ def test_credential_dir_trees_blocked_on_subdir_descent(forced_files_client):
     """Regression: mcp-tokens/ (live MCP OAuth tokens) and pairing/ are denied
     as whole directory trees by both canonical guards
     (gateway.platforms.base._ROOT_CREDENTIAL_DIRS and
-    agent.file_safety). A basename-only check would still expose their
+    hermes_agent.agent.file_safety). A basename-only check would still expose their
     per-server files (e.g. ``mcp-tokens/github.json``) once the browser
     descends into the subdir. The managed-files guard must block any path with
     a credential-directory component, not just leaf basenames."""

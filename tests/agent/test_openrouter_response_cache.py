@@ -11,12 +11,12 @@ import pytest
 # ---------------------------------------------------------------------------
 
 class TestBuildOrHeaders:
-    """Test the build_or_headers() helper in agent/auxiliary_client.py."""
+    """Test the build_or_headers() helper in hermes_agent/agent/auxiliary_client.py."""
 
 
     def test_ttl_negative(self):
         """Negative TTL is ignored."""
-        from agent.auxiliary_client import build_or_headers
+        from hermes_agent.agent.auxiliary_client import build_or_headers
 
         headers = build_or_headers(or_config={"response_cache": True, "response_cache_ttl": -5})
         assert "X-OpenRouter-Cache-TTL" not in headers
@@ -24,7 +24,7 @@ class TestBuildOrHeaders:
 
     def test_returns_fresh_dict(self):
         """Each call returns a new dict so mutations don't leak."""
-        from agent.auxiliary_client import build_or_headers
+        from hermes_agent.agent.auxiliary_client import build_or_headers
 
         cfg = {"response_cache": True}
         h1 = build_or_headers(or_config=cfg)
@@ -35,7 +35,7 @@ class TestBuildOrHeaders:
 
     def test_none_config_load_config_fails_gracefully(self):
         """When load_config() fails, build_or_headers still returns base headers."""
-        from agent.auxiliary_client import build_or_headers
+        from hermes_agent.agent.auxiliary_client import build_or_headers
 
         with patch("hermes_cli.config.load_config", side_effect=RuntimeError("boom")), patch("hermes_cli.config.load_config_readonly", side_effect=RuntimeError("boom")):
             headers = build_or_headers(or_config=None)
@@ -55,7 +55,7 @@ class TestEnvVarOverrides:
     @pytest.mark.parametrize("ttl", ["0", "86401", "abc", "-1", "12.5"])
     def test_invalid_env_ttl_dropped(self, monkeypatch, ttl):
         """Invalid TTL env values are ignored; cache still enabled without TTL."""
-        from agent.auxiliary_client import build_or_headers
+        from hermes_agent.agent.auxiliary_client import build_or_headers
 
         monkeypatch.setenv("HERMES_OPENROUTER_CACHE", "1")
         monkeypatch.setenv("HERMES_OPENROUTER_CACHE_TTL", ttl)
@@ -66,7 +66,7 @@ class TestEnvVarOverrides:
     @pytest.mark.parametrize("ttl", ["1", "300", "86400"])
     def test_valid_env_ttl_boundaries(self, monkeypatch, ttl):
         """Boundary TTL values (1, 300, 86400) are accepted."""
-        from agent.auxiliary_client import build_or_headers
+        from hermes_agent.agent.auxiliary_client import build_or_headers
 
         monkeypatch.setenv("HERMES_OPENROUTER_CACHE", "yes")
         monkeypatch.setenv("HERMES_OPENROUTER_CACHE_TTL", ttl)
@@ -74,7 +74,7 @@ class TestEnvVarOverrides:
 
     def test_no_env_vars_falls_through_to_config(self, monkeypatch):
         """Without env vars, config.yaml controls behavior."""
-        from agent.auxiliary_client import build_or_headers
+        from hermes_agent.agent.auxiliary_client import build_or_headers
 
         monkeypatch.delenv("HERMES_OPENROUTER_CACHE", raising=False)
         monkeypatch.delenv("HERMES_OPENROUTER_CACHE_TTL", raising=False)
@@ -92,7 +92,7 @@ class TestCheckOpenrouterCacheStatus:
 
     def _make_agent(self):
         """Create a minimal AIAgent-like object with just the method under test."""
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         # Use object.__new__ to skip __init__, then set the attributes we need
         agent = object.__new__(AIAgent)

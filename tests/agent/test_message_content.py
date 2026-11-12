@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from agent.message_content import flatten_message_text
+from hermes_agent.agent.message_content import flatten_message_text
 
 
 def test_flatten_message_text_accepts_chat_and_responses_text_parts():

@@ -1,9 +1,9 @@
 """Idle-triggered compaction: interaction with the compression guards.
 
-The idle trigger (``agent/turn_context.py``, opt-in via
+The idle trigger (``hermes_agent/agent/turn_context.py``, opt-in via
 ``compression.idle_compact_after_seconds``) does not compress anything
 itself — it routes through ``agent._compress_context`` (the forwarder to
-``agent.conversation_compression.compress_context``), which owns ALL of the
+``hermes_agent.agent.conversation_compression.compress_context``), which owns ALL of the
 automatic-compaction guards:
 
 - the per-session compression lock (added after the idle-compaction PR was
@@ -27,7 +27,7 @@ from unittest.mock import MagicMock, patch
 
 from hermes_agent.hermes_state import SessionDB
 
-from agent.turn_context import build_turn_context
+from hermes_agent.agent.turn_context import build_turn_context
 
 from tests.agent.test_compression_concurrent_fork import _build_agent_with_db
 
@@ -63,10 +63,10 @@ def _run_prologue(agent, history, user_message="hello again",
     coverage in ``test_turn_context.py``). ``rough_tokens`` pins the estimate
     that the idle floor is compared against.
     """
-    with patch("agent.auxiliary_client.set_runtime_main", lambda *a, **k: None), \
-         patch("agent.turn_context._should_run_preflight_estimate",
+    with patch("hermes_agent.agent.auxiliary_client.set_runtime_main", lambda *a, **k: None), \
+         patch("hermes_agent.agent.turn_context._should_run_preflight_estimate",
                return_value=False), \
-         patch("agent.turn_context.estimate_request_tokens_rough",
+         patch("hermes_agent.agent.turn_context.estimate_request_tokens_rough",
                return_value=rough_tokens):
         return build_turn_context(
             agent=agent,
@@ -212,7 +212,7 @@ def test_idle_compaction_respects_anti_thrash_breaker(tmp_path: Path) -> None:
     The idle path is an automatic entrypoint, so two prior ineffective
     compactions must silence it too.
     """
-    from agent.context_compressor import ContextCompressor
+    from hermes_agent.agent.context_compressor import ContextCompressor
 
     db = SessionDB(db_path=tmp_path / "state.db")
     sid = "IDLE_THRASH"
@@ -220,7 +220,7 @@ def test_idle_compaction_respects_anti_thrash_breaker(tmp_path: Path) -> None:
     agent = _prep_idle_agent(db, sid)
 
     with patch(
-        "agent.context_compressor.get_model_context_length", return_value=100_000
+        "hermes_agent.agent.context_compressor.get_model_context_length", return_value=100_000
     ):
         compressor = ContextCompressor(
             model="test/model",

@@ -7,7 +7,7 @@ import logging
 import os
 import re
 
-from agent.redact import redact_sensitive_text
+from hermes_agent.agent.redact import redact_sensitive_text
 
 logger = logging.getLogger("hermes_agent.tools.send_message_tool")
 

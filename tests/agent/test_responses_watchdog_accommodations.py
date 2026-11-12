@@ -47,7 +47,7 @@ def test_xai_responses_receives_stale_timeout_floor_in_api_call(monkeypatch):
     When baseline _compute_non_stream_stale_timeout is 0.2s and TTFB watchdog is disabled (0),
     a 0.5s execution would fail with stale_call_kill on base (stale timeout at 0.2s), but passes when the floor elevates it to >=900s.
     """
-    from agent import chat_completion_helpers as h
+    from hermes_agent.agent import chat_completion_helpers as h
 
     agent = _make_mock_agent(provider="xai-oauth", api_mode="codex_responses", base_url="https://api.x.ai/v1")
     assert h._is_openai_codex_backend(agent) is False
@@ -88,7 +88,7 @@ def test_xai_responses_receives_stale_timeout_floor_in_api_call(monkeypatch):
 
 def test_xai_responses_ttfb_scaled_for_large_requests(monkeypatch):
     """Large requests scale TTFB timeout for xai-oauth (codex_responses) instead of killing at small TTFB cutoff."""
-    from agent import chat_completion_helpers as h
+    from hermes_agent.agent import chat_completion_helpers as h
 
     agent = _make_mock_agent(provider="xai-oauth", api_mode="codex_responses", base_url="https://api.x.ai/v1")
     assert h._is_openai_codex_backend(agent) is False
@@ -140,7 +140,7 @@ def test_xai_responses_ttfb_scaled_for_large_requests(monkeypatch):
 def test_hard_ceiling_clamps_hosted_but_not_local_responses_endpoints(monkeypatch):
     """The 1500s hard ceiling bounds hosted codex_responses (xAI) but must not tighten a
     local Responses server's configured stale timeout."""
-    from agent import chat_completion_helpers as h
+    from hermes_agent.agent import chat_completion_helpers as h
 
     monkeypatch.delenv("HERMES_CODEX_HARD_TIMEOUT_SECONDS", raising=False)
     kwargs = {"input": [{"role": "user", "content": "hi"}]}

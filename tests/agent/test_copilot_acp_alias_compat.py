@@ -1,4 +1,4 @@
-"""The deprecated ``agent.copilot_acp_client`` alias keeps every listed catalog ACP plugin working.
+"""The deprecated ``hermes_agent.agent.copilot_acp_client`` alias keeps every listed catalog ACP plugin working.
 
 Each test reproduces one catalog plugin's import + patch set at its pinned SHA (see
 ``plugin-catalog/<name>.yaml``) against a fake ACP agent: kiro-acp@02c4dd0, grok-acp@2851d66,
@@ -59,7 +59,7 @@ _HI = [{"role": "user", "content": "hi"}]
 def test_kiro_acp_pinned_import_shape(agent, tmp_path):
     (command, script), _ = agent
     # kiro_acp_client.py@02c4dd0: module-top import of the marker constant next to the class.
-    from agent.copilot_acp_client import ACP_MARKER_BASE_URL as _COPILAT_MARKER, CopilotACPClient
+    from hermes_agent.agent.copilot_acp_client import ACP_MARKER_BASE_URL as _COPILAT_MARKER, CopilotACPClient
 
     class KiroACPClient(CopilotACPClient):
         def __init__(self, *, base_url=None, command=None, args=None, **kwargs):
@@ -85,8 +85,8 @@ def test_grok_acp_pinned_import_and_popen_patch_shape(agent, tmp_path, monkeypat
     (command, script), methods = agent
     # grok_acp_client.py@2851d66: setup probe env, its own _spawn through the module's subprocess,
     # and model selection through the former module helper.
-    import agent.copilot_acp_client as copilot_mod
-    from agent.copilot_acp_client import (
+    import hermes_agent.agent.copilot_acp_client as copilot_mod
+    from hermes_agent.agent.copilot_acp_client import (
         CopilotACPClient, _acp_supported, _build_subprocess_env, _model_selection_request)
 
     assert _build_subprocess_env()["HOME"]
@@ -99,7 +99,7 @@ def test_grok_acp_pinned_import_and_popen_patch_shape(agent, tmp_path, monkeypat
         return real_popen(argv, *args, **kwargs)
 
     # The plugin's tests patch the module path; it must reach every ACP spawn, the base class's included.
-    monkeypatch.setattr("agent.copilot_acp_client.subprocess.Popen", _popen)
+    monkeypatch.setattr("hermes_agent.agent.copilot_acp_client.subprocess.Popen", _popen)
 
     class GrokACPClient(CopilotACPClient):
         def _spawn(self):
@@ -138,11 +138,11 @@ def test_cursor_acp_pinned_import_shape(agent, tmp_path):
     (command, script), methods = agent
     # cursor-acp __init__.py@d5b6146: own completion shaping on the former timeout normaliser,
     # name-based model selection over the legacy session/set_model, discovery without fs access.
-    from agent.copilot_acp_client import CopilotACPClient
+    from hermes_agent.agent.copilot_acp_client import CopilotACPClient
 
     class CursorACPClient(CopilotACPClient):
         def _create_chat_completion(self, *, model=None, messages=None, timeout=None, **_):
-            from agent.copilot_acp_client import _effective_timeout
+            from hermes_agent.agent.copilot_acp_client import _effective_timeout
 
             text, _reasoning = self._run_prompt("prompt", timeout_seconds=_effective_timeout(timeout), model=model)
             return text
@@ -168,7 +168,7 @@ def test_cursor_acp_pinned_import_shape(agent, tmp_path):
 
 
 def test_alias_keeps_the_former_gh_extension_diagnosis(tmp_path):
-    from agent.copilot_acp_client import CopilotACPClient
+    from hermes_agent.agent.copilot_acp_client import CopilotACPClient
 
     script = tmp_path / "old_gh_copilot.py"
     script.write_text("import sys; print('gh-copilot has been deprecated', file=sys.stderr); sys.exit(1)\n", encoding="utf-8")
@@ -177,7 +177,7 @@ def test_alias_keeps_the_former_gh_extension_diagnosis(tmp_path):
         client.list_models(timeout_seconds=30)
 
 
-# Every top-level name agent/copilot_acp_client.py had before the deprecation (0c771d7a5ba).
+# Every top-level name hermes_agent/agent/copilot_acp_client.py had before the deprecation (0c771d7a5ba).
 _FORMER_SURFACE = (
     "ACP_MARKER_BASE_URL", "Any", "Callable", "CopilotACPClient", "Iterator", "Path", "SimpleNamespace",
     "_ACP_PROBE_CACHE", "_DEFAULT_TIMEOUT_SECONDS", "_DEPRECATED_CLI_ERROR", "_DEPRECATION_MARKERS",
@@ -195,7 +195,7 @@ _FORMER_SURFACE = (
 
 
 def test_alias_serves_its_whole_former_surface_and_warns_once(monkeypatch):
-    import agent.copilot_acp_client as alias
+    import hermes_agent.agent.copilot_acp_client as alias
 
     monkeypatch.setattr(alias, "_warned", False)
     with warnings.catch_warnings(record=True) as caught:

@@ -1160,7 +1160,7 @@ CONFIG_SCHEMA = ProviderConfigSchema(
 
         fb.reset_for_tests()
         monkeypatch.setattr("hermes_cli.model_cost_guard.expensive_model_warning", lambda *_a, **_k: None)
-        monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda *_a, **_kw: False)
+        monkeypatch.setattr("hermes_agent.agent.bedrock_adapter.has_aws_credentials", lambda *_a, **_kw: False)
         broadcasts = []
         monkeypatch.setattr(fb, "_broadcast", broadcasts.append)
         with fb._lock:
@@ -2269,7 +2269,7 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         assert contents == ["old q", "old a", "summary", "live q", "live a"]
 
     def test_get_session_messages_projects_and_dedupes_composite_carrier(self):
-        from agent.context_compressor import (
+        from hermes_agent.agent.context_compressor import (
             HISTORICAL_TASK_HEADING,
             SUMMARY_PREFIX,
             _MERGED_PRIOR_CONTEXT_HEADER,
@@ -3524,7 +3524,7 @@ class TestModelInfoEndpoint:
             }
         })
 
-        with patch("agent.model_metadata.get_model_context_length", return_value=200000):
+        with patch("hermes_agent.agent.model_metadata.get_model_context_length", return_value=200000):
             resp = self.client.get("/api/model/info")
 
         data = resp.json()
@@ -3542,7 +3542,7 @@ class TestModelInfoEndpoint:
             "model": "some/obscure-model"
         })
 
-        with patch("agent.model_metadata.get_model_context_length", side_effect=Exception("boom")):
+        with patch("hermes_agent.agent.model_metadata.get_model_context_length", side_effect=Exception("boom")):
             resp = self.client.get("/api/model/info")
 
         assert resp.status_code == 200

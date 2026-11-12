@@ -210,7 +210,7 @@ def test_toolset_has_keys_for_vision_accepts_codex_auth(tmp_path, monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
     monkeypatch.setattr(
-        "agent.auxiliary_client.resolve_vision_provider_client",
+        "hermes_agent.agent.auxiliary_client.resolve_vision_provider_client",
         lambda: ("openai-codex", object(), "gpt-4.1"),
     )
 

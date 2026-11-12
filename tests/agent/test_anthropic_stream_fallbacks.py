@@ -4,9 +4,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.anthropic_adapter import create_anthropic_message
-from agent.chat_completion_helpers import _build_partial_stream_stub
-from agent.transports.anthropic import AnthropicTransport
+from hermes_agent.agent.anthropic_adapter import create_anthropic_message
+from hermes_agent.agent.chat_completion_helpers import _build_partial_stream_stub
+from hermes_agent.agent.transports.anthropic import AnthropicTransport
 
 
 class _BrokenStream:
@@ -96,7 +96,7 @@ def test_null_usage_aux_stream_is_normalized_without_create_retry():
 
 
 def _anthropic_agent(stream_factory, provider="custom"):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     agent = AIAgent(api_key="k", base_url="https://api.minimax.io/anthropic", model="MiniMax-M2",
                     quiet_mode=True, skip_context_files=True, skip_memory=True)

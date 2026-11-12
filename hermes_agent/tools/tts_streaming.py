@@ -17,7 +17,7 @@ import time
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Dict, Iterator, List, Optional
 
-from agent.think_scrubber import THINK_TAG_NAMES
+from hermes_agent.agent.think_scrubber import THINK_TAG_NAMES
 from hermes_agent.tools.tool_backend_helpers import resolve_openai_audio_api_key
 from hermes_agent.tools.tts_tool import _get_provider, _load_tts_config
 from hermes_agent.tools.tts_tool_plugins import _plugin_pcm_streaming_provider, _plugin_voice_kwargs
@@ -65,7 +65,7 @@ def take_speech_interrupted() -> bool:
 
 # Sentence boundary: after .!? followed by whitespace, or a blank line.
 SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[.!?])(?:\s|\n)|(?:\n\n)")
-# Reasoning tags come from the one canonical list (agent.think_scrubber), matched case-insensitively,
+# Reasoning tags come from the one canonical list (hermes_agent.agent.think_scrubber), matched case-insensitively,
 # so feed() and flush() strip/cut exactly the tags every other reasoning-hiding surface does.
 _THINK_NAMES = "|".join(re.escape(name) for name in THINK_TAG_NAMES)
 _THINK_BLOCK_RE = re.compile(rf"<({_THINK_NAMES})[\s>].*?</\1>", flags=re.DOTALL | re.IGNORECASE)
@@ -338,7 +338,7 @@ class GeminiStreamer(StreamingTTSProvider):
         api_key = _gemini_key()
         model = str(self.section.get("model", DEFAULT_GEMINI_TTS_MODEL)).strip() or DEFAULT_GEMINI_TTS_MODEL
         voice = str(self.section.get("voice", DEFAULT_GEMINI_TTS_VOICE)).strip() or DEFAULT_GEMINI_TTS_VOICE
-        from agent.gemini_native_adapter import normalize_gemini_base_url
+        from hermes_agent.agent.gemini_native_adapter import normalize_gemini_base_url
         base_url = normalize_gemini_base_url(
             self.section.get("base_url") or get_env_value("GEMINI_BASE_URL") or DEFAULT_GEMINI_TTS_BASE_URL,
         )

@@ -23,7 +23,7 @@ def test_every_sandbox_creator_passes_the_full_container_config(monkeypatch):
     the SAME container_config keys. Each used to keep a private (key, default) table and drifted:
     the probe lost ``docker_network`` (bridge-networked probe under lockdown, #46358/#76906/#87995),
     execute_code lost ``docker_extra_args``/``docker_forward_env``/``docker_env`` (#84027/#100019)."""
-    from agent import prompt_builder
+    from hermes_agent.agent import prompt_builder
     from hermes_agent.tools import code_execution_tool
     import hermes_agent.tools.terminal_tool_backends as backends
 

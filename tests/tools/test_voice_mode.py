@@ -255,7 +255,7 @@ class TestDetectAudioEnvironment:
 class TestNativeSttLabelSync:
     """Every native STT built-in must have a CLI voice-gate label.
 
-    ``BUILTIN_STT_PROVIDERS`` and ``agent.transcription_registry._BUILTIN_NAMES``
+    ``BUILTIN_STT_PROVIDERS`` and ``hermes_agent.agent.transcription_registry._BUILTIN_NAMES``
     are kept in sync by TestBuiltinSync, but ``hermes_agent.tools.voice_mode._NATIVE_STT_LABELS``
     is a third copy of the same list; without this test a new built-in transcribes
     fine on the gateway while the CLI voice gate reports it as MISSING.
@@ -302,7 +302,7 @@ class TestCheckVoiceRequirements:
         plugin_provider = MagicMock()
         plugin_provider.is_available.return_value = True
         monkeypatch.setattr(
-            "agent.transcription_registry.get_provider",
+            "hermes_agent.agent.transcription_registry.get_provider",
             lambda p: plugin_provider if p == "my-plugin-stt" else None,
         )
         monkeypatch.setattr(

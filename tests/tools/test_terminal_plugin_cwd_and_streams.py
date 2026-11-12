@@ -7,8 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent import terminal_env_registry as reg
-from agent.terminal_env_provider import TerminalEnvironmentProvider
+from hermes_agent.agent import terminal_env_registry as reg
+from hermes_agent.agent.terminal_env_provider import TerminalEnvironmentProvider
 from hermes_agent.tools import file_tools, file_tools_paths, terminal_tool
 from hermes_agent.tools.bot_desktop import placement
 from hermes_agent.tools.environments import streams

@@ -46,7 +46,7 @@ def _yaml_block_names(yaml_cfg: Any) -> set[str]:
 def _env_names(home: Optional[Path]) -> set[str]:
     names = {k for k, v in os.environ.items() if str(v).strip()}
     try:
-        from agent.secret_scope import current_secret_scope, load_env_file
+        from hermes_agent.agent.secret_scope import current_secret_scope, load_env_file
         scope = current_secret_scope()
         if scope is not None:
             names.update(k for k, v in scope.items() if str(v).strip())

@@ -20,8 +20,8 @@ def calls(monkeypatch):
         seen.append(kw)
         return ["Nous credits block"]
 
-    monkeypatch.setattr("agent.account_usage.nous_credits_lines", _lines)
-    monkeypatch.setattr("agent.account_usage.fetch_account_usage", lambda *a, **kw: None)
+    monkeypatch.setattr("hermes_agent.agent.account_usage.nous_credits_lines", _lines)
+    monkeypatch.setattr("hermes_agent.agent.account_usage.fetch_account_usage", lambda *a, **kw: None)
     # The handlers run against server.py's globals (method_ctx.bind_module), so patch them there.
     monkeypatch.setattr(server, "_session_profile_runtime_scope", lambda session, **kw: contextlib.nullcontext())
     monkeypatch.setattr(server, "_config_model_target", lambda: ("", ""))

@@ -15,7 +15,7 @@ import asyncio
 import json
 import pytest
 
-from agent.lsp.protocol import (
+from hermes_agent.agent.lsp.protocol import (
     LSPProtocolError,
     classify_message,
     encode_message,

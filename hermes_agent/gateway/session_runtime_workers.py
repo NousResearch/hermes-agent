@@ -48,7 +48,7 @@ def side_agents(authority):
 def interrupt_side_agents(runner, reason):
     """Hard-interrupt every counted side agent's holder across served authorities (the stop
     drain waits for them, so its timed-out interrupt must reach them). Returns how many."""
-    from agent.interrupt_compat import request_hard_interrupt
+    from hermes_agent.agent.interrupt_compat import request_hard_interrupt
     count = 0
     for authority in all_authorities(runner):
         for _, holder in side_agents(authority):
@@ -163,7 +163,7 @@ def physical_workers(authority):
 
 def stop_authority_work(authority):
     from hermes_agent.gateway.run_runtime import stop_authority_turns
-    from agent.interrupt_compat import request_hard_interrupt
+    from hermes_agent.agent.interrupt_compat import request_hard_interrupt
     stop_authority_turns(authority, in_process=True)
     for _, holder in [*physical_workers(authority), *side_agents(authority)]:
         if holder and holder[0] is not None:

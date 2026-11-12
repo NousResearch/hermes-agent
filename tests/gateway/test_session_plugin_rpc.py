@@ -279,7 +279,7 @@ async def test_plugin_frontend_gets_schema_checked_json_from_its_own_task_with_i
     manager = plugins.PluginManager()
     monkeypatch.setattr(plugins, '_plugin_manager', manager)
     # What `security.redact_secrets: false` sets at boot (the env var also reaches the plugin host).
-    monkeypatch.setattr('agent.redact._REDACT_ENABLED', False)
+    monkeypatch.setattr('hermes_agent.agent.redact._REDACT_ENABLED', False)
     monkeypatch.setenv('HERMES_REDACT_SECRETS', 'false')
     owner = AuthorityConnection(authority, object(), {'user_id': 'owner'})
     secret = 'sk-proj-' + 'A1b2C3d4' * 5

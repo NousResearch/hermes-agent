@@ -6,7 +6,7 @@ root = sys.argv[1]; sys.path.insert(0, root)
 os.environ["HERMES_HOME"] = tempfile.mkdtemp(prefix="hh-")
 os.environ["HERMES_STREAM_RETRIES"] = "0"
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 import hermes_agent.tools.delegate_tool as dt
 import hermes_agent.tools.delegate_tool_dispatch as dd
 from hermes_agent.tools.process_registry import process_registry

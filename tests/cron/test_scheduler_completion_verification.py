@@ -67,7 +67,7 @@ class _RecordingSessionDB:
 
 
 def _run_booked_job(monkeypatch, tmp_path):
-    import run_agent
+    from hermes_agent import run_agent
 
     db = _RecordingSessionDB()
     db.db_path = tmp_path / "state.db"

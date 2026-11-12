@@ -58,7 +58,7 @@ def test_format_turn_completion_corrupt_names_the_sessions_own_store(monkeypatch
     whose SessionDB is ``profiles/<name>/state.db``; guidance built from the process
     default would tell the operator to inspect/repair the root database.
     """
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     root = tmp_path / "root"
     monkeypatch.setenv("HERMES_HOME", str(root))
@@ -81,7 +81,7 @@ def test_format_turn_completion_corrupt_never_names_the_live_db():
     in the corruption banner must be the snapshot-copying
     `hermes sessions recover` lane.
     """
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     explanation = AIAgent._format_turn_completion_explanation(
         "session_persistence_failed", "corrupt"
@@ -106,7 +106,7 @@ def test_corrupt_guidance_pins_the_failing_profile(tmp_path, monkeypatch):
     import hermes_agent.gateway.run as gateway_run
     from hermes_agent.hermes_state import _default_db_path
     from hermes_agent.hermes_state_repair import _persistent_repair_exhausted_error
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     root = tmp_path / "hermes"
     home = root / "profiles" / "research"

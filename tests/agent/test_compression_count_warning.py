@@ -20,7 +20,7 @@ from hermes_agent.hermes_state import SessionDB
 
 def _build_agent_with_db(db: SessionDB, session_id: str, compression_count: int):
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key",

@@ -523,9 +523,9 @@ async def test_queued_resend_branch_delivers_media_and_preserves_protected_examp
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
     monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
 
-    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent = types.ModuleType("hermes_agent.run_agent")
     fake_run_agent.AIAgent = _QueuedMediaAgent
-    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    monkeypatch.setitem(sys.modules, "hermes_agent.run_agent", fake_run_agent)
 
     adapter = _QueuedMediaCaptureAdapter()
     gateway_run = importlib.import_module("hermes_agent.gateway.run")

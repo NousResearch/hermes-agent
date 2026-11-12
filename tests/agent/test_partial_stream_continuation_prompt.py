@@ -1,8 +1,8 @@
 """After a mid-stream transport cut the continuation must keep tools on the table (#74990)."""
 import pytest
 
-from agent import conversation_loop as cl
-from agent.context_compressor import ContextCompressor
+from hermes_agent.agent import conversation_loop as cl
+from hermes_agent.agent.context_compressor import ContextCompressor
 
 
 @pytest.mark.parametrize("dropped", [None, ["write_file"]])

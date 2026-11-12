@@ -86,7 +86,7 @@ def test_window_outcomes_are_scoped_and_do_not_grant_auth(guest, tmp_path):
 
 
 def test_billing_state_answers_the_free_tier_locally(guest, monkeypatch):
-    import agent.billing_view as bv
+    import hermes_agent.agent.billing_view as bv
     monkeypatch.setattr(bv, "build_billing_state", lambda *a, **kw: pytest.fail("free tier must not call the portal"))
     res = _call("billing.state")
     assert res["ok"] is True and res["logged_in"] is False

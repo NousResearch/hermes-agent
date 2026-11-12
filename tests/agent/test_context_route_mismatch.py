@@ -1,6 +1,6 @@
 """Tests for agent_init._context_route_mismatch context-pin scoping."""
 
-from agent.agent_init import _context_route_mismatch
+from hermes_agent.agent.agent_init import _context_route_mismatch
 
 
 class TestContextRouteMismatchNamedCustomProvider:

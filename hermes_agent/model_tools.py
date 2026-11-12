@@ -47,7 +47,7 @@ _WARNED_DISABLED_BUNDLES: set = set()
 
 def _is_delegated_child_context() -> bool:
     try:
-        from agent.delegation_context import is_delegated_child_context
+        from hermes_agent.agent.delegation_context import is_delegated_child_context
         return is_delegated_child_context()
     except Exception:
         return False
@@ -57,7 +57,7 @@ def _is_dispatcher_owned_worker() -> bool:
     """False when HERMES_KANBAN_* is present but this execution does not own it
     (delegate_task child, or a cron job fired in-process from a worker)."""
     try:
-        from agent.delegation_context import is_dispatcher_owned_worker_context
+        from hermes_agent.agent.delegation_context import is_dispatcher_owned_worker_context
         return is_dispatcher_owned_worker_context()
     except Exception:
         return True
@@ -587,7 +587,7 @@ def _resolve_active_context_length() -> int:
         model_id, model_cfg = _active_model_config()
         if not model_id:
             return 0
-        from agent.model_metadata import get_cached_context_length, get_model_context_length
+        from hermes_agent.agent.model_metadata import get_cached_context_length, get_model_context_length
         # Honor explicit `model.context_length` in config.yaml — short-circuits the OpenRouter /models probe
         # at get_model_context_length step 0, so non-OpenRouter providers don't pay the ~2-3s OpenRouter
         # fetch at every CLI startup. See issue #46620.
@@ -669,7 +669,7 @@ class _CallIds:
     tool_call_id: Optional[str] = None
     turn_id: Optional[str] = None
     api_request_id: Optional[str] = None
-    conversation_id: Optional[str] = None  # compression-stable root (agent.prompt_cache_scope.conversation_id)
+    conversation_id: Optional[str] = None  # compression-stable root (hermes_agent.agent.prompt_cache_scope.conversation_id)
 
     def hook_kwargs(self) -> dict[str, str]:
         """Same fields with None -> "" (hook/middleware wire contract)."""
@@ -685,7 +685,7 @@ def _tool_result_observer_fields(tool_name: str, result: Any) -> tuple[str, Opti
     except Exception:
         pass
     try:
-        from agent.display import _detect_tool_failure
+        from hermes_agent.agent.display import _detect_tool_failure
         failed, suffix = _detect_tool_failure(tool_name, result)
         if failed:
             return "error", "tool_error", suffix.strip().strip("[]") or None

@@ -1,8 +1,8 @@
 """The first-task catalog of onboarding's build beat: what the model may put on the build card.
 
 Pure. Gates read only hard facts (this OS, plugins installed this run, apps connected this run);
-whether a row fits the person is the model's call. ``agent/onboarding_flow.py`` checks the model's
-picks against ``eligible_tasks``; ``agent/onboarding_text.py`` renders each row's reminder.
+whether a row fits the person is the model's call. ``hermes_agent/agent/onboarding_flow.py`` checks the model's
+picks against ``eligible_tasks``; ``hermes_agent/agent/onboarding_text.py`` renders each row's reminder.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from agent.onboarding_flow import Facts
+    from hermes_agent.agent.onboarding_flow import Facts
 
 MAX_PICKS = 4
 MAX_LABEL = 32

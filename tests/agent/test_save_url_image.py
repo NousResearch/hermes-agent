@@ -1,4 +1,4 @@
-"""Direct tests for ``agent.image_gen_provider.save_url_image`` (#26942).
+"""Direct tests for ``hermes_agent.agent.image_gen_provider.save_url_image`` (#26942).
 
 These exercise the helper against a real in-process HTTP server — no
 ``requests.get`` mocking — so we catch the kinds of issues a mocked
@@ -91,7 +91,7 @@ def http_server(tmp_path, monkeypatch):
     # Force the constants/image cache helpers to re-read HERMES_HOME.
     import sys
     for mod in list(sys.modules):
-        if mod.startswith("hermes_constants") or mod.startswith("agent.image_gen_provider"):
+        if mod.startswith("hermes_constants") or mod.startswith("hermes_agent.agent.image_gen_provider"):
             sys.modules.pop(mod, None)
 
     httpd = socketserver.TCPServer(("127.0.0.1", 0), _TinyImageHandler)
@@ -107,7 +107,7 @@ def http_server(tmp_path, monkeypatch):
 class TestSaveUrlImage:
     def test_writes_real_bytes_to_hermes_home_cache(self, http_server):
         base, _ = http_server
-        from agent.image_gen_provider import save_url_image
+        from hermes_agent.agent.image_gen_provider import save_url_image
 
         path = save_url_image(f"{base}/image.png", prefix="xai_test")
 
@@ -122,7 +122,7 @@ class TestSaveUrlImage:
     def test_404_raises(self, http_server):
         """HTTP errors must propagate — caller decides whether to fall back."""
         base, _ = http_server
-        from agent.image_gen_provider import save_url_image
+        from hermes_agent.agent.image_gen_provider import save_url_image
         import httpx
 
         with pytest.raises(httpx.HTTPStatusError):
@@ -131,8 +131,8 @@ class TestSaveUrlImage:
     def test_oversize_raises_and_cleans_up(self, http_server, tmp_path):
         """Oversize downloads must NOT leak a partial file into the cache."""
         base, _ = http_server
-        from agent import provider_media
-        from agent.image_gen_provider import save_url_image
+        from hermes_agent.agent import provider_media
+        from hermes_agent.agent.image_gen_provider import save_url_image
 
         cache_dir = provider_media.cache_dir("images")
         before = set(cache_dir.glob("*"))

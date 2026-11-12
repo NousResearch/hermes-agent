@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.model_metadata_http import resolve_verify
+from hermes_agent.agent.model_metadata_http import resolve_verify
 from hermes_cli.models import _custom_provider_ssl_context
 
 _BASE = "https://relay.example.invalid/v1"

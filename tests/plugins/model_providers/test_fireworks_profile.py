@@ -32,7 +32,7 @@ class TestFireworksHeaders:
         Asserted against the shared constant rather than the literals so a
         rebrand can't leave one provider on a stale referer/title.
         """
-        from agent.auxiliary_client import _OR_HEADERS_BASE
+        from hermes_agent.agent.auxiliary_client import _OR_HEADERS_BASE
 
         headers = fireworks_profile.default_headers
         assert headers["HTTP-Referer"] == _OR_HEADERS_BASE["HTTP-Referer"]
@@ -84,7 +84,7 @@ class TestFireworksReasoning:
     def test_auxiliary_reasoning_wire_shape(
         self, fireworks_profile, provider, reasoning_config, expect_top_level, expect_generic
     ):
-        from agent.auxiliary_client import _build_call_kwargs
+        from hermes_agent.agent.auxiliary_client import _build_call_kwargs
 
         kwargs = _build_call_kwargs(
             provider, "accounts/fireworks/models/glm-5p2",

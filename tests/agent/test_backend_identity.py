@@ -1,4 +1,4 @@
-"""Owner-level tests for agent.backend_identity.
+"""Owner-level tests for hermes_agent.agent.backend_identity.
 
 This module is the single owner of the "same backend?" question — tests
 live HERE, against the predicate, not against each call site (see
@@ -8,7 +8,7 @@ the incident whose semantics it pins.
 
 from unittest.mock import patch
 
-from agent.backend_identity import (
+from hermes_agent.agent.backend_identity import (
     BackendIdentity,
     FailureScope,
     same_credential_surface,

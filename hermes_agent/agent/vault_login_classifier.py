@@ -198,7 +198,7 @@ def select_checkout_fills(classified: list[ClassifiedLoginControl], secret: dict
                           field_tokens: dict[str, str]) -> list[dict[str, Any]]:
     """Map a payment/address secret payload onto the best control per autocomplete token.
 
-    ``field_tokens`` is ``PAYMENT_FIELDS`` / ``ADDRESS_FIELDS`` (agent/vault_store.py). A combined
+    ``field_tokens`` is ``PAYMENT_FIELDS`` / ``ADDRESS_FIELDS`` (hermes_agent/agent/vault_store.py). A combined
     ``cc-exp`` control gets ``MM/YY`` from exp_month + exp_year and then suppresses the separate
     month/year fills. Returns ``[{"index", "token", "value"}]``: one control per token, highest
     score then DOM order.

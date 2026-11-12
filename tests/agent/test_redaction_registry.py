@@ -1,6 +1,6 @@
 """Tests for the plugin redaction-pattern registry.
 
-Covers ``agent.redact.register_redaction_patterns`` (validation,
+Covers ``hermes_agent.agent.redact.register_redaction_patterns`` (validation,
 dedupe, additive semantics, matcher rebuild), the
 ``PluginContext.register_redaction_patterns`` wiring, and a synthetic
 plugin written at test time for the ``register()`` end-to-end path.
@@ -15,8 +15,8 @@ import importlib.util
 
 import pytest
 
-import agent.redact as redact_mod
-from agent.redact import (
+import hermes_agent.agent.redact as redact_mod
+from hermes_agent.agent.redact import (
     _reset_plugin_redaction_patterns,
     redact_sensitive_text,
     register_redaction_patterns,
@@ -138,7 +138,7 @@ def test_plugin_context_method_never_raises(monkeypatch):
     def _boom(patterns, source=""):
         raise RuntimeError("registry exploded")
 
-    monkeypatch.setattr("agent.redact.register_redaction_patterns", _boom)
+    monkeypatch.setattr("hermes_agent.agent.redact.register_redaction_patterns", _boom)
 
     manager = plugins_mod.PluginManager()
     manifest = plugins_mod.PluginManifest(name="test-redactor")

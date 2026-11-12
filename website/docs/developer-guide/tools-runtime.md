@@ -132,7 +132,7 @@ When the model returns a `tool_call`, the flow is:
 ```
 Model response with tool_call
     ↓
-agent loop (`agent/conversation_loop.py`, via `run_agent.py`'s `AIAgent` facade)
+agent loop (`hermes_agent/agent/conversation_loop.py`, via `hermes_agent/run_agent.py`'s `AIAgent` facade)
     ↓
 hermes_agent.model_tools.handle_function_call(name, args, task_id, user_task)
     ↓

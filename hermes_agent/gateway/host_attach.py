@@ -45,7 +45,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from agent.deadline import poll_until
+from hermes_agent.agent.deadline import poll_until
 
 logger = logging.getLogger(__name__)
 

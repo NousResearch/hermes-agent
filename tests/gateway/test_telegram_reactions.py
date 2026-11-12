@@ -58,7 +58,7 @@ def test_explicit_env_wins_over_materialized_yaml_default(monkeypatch):
 
 def test_scoped_miss_does_not_leak_default_profile_env(monkeypatch):
     """Under multiplex a scoped miss must not read another profile's process-env value (#72348)."""
-    from agent.secret_scope import reset_secret_scope, set_multiplex_active, set_secret_scope
+    from hermes_agent.agent.secret_scope import reset_secret_scope, set_multiplex_active, set_secret_scope
 
     monkeypatch.setenv("TELEGRAM_REACTIONS", "true")  # default profile's bridged value
     adapter = _make_adapter()

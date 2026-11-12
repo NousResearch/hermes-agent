@@ -86,7 +86,7 @@ FEISHU_WEBHOOK_AVAILABLE = aiohttp is not None
 
 from hermes_agent.gateway.approval_actor import approval_refusal, refusal_text, update_prompt_refusal
 from hermes_agent.gateway.config import Platform, PlatformConfig
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 from hermes_agent.gateway.platforms.base import (
     BasePlatformAdapter, ExecApprovalPrompt, SendResult, describe_proxy_error, env_proxy_for_redaction,
     SUPPORTED_DOCUMENT_TYPES, cache_document_from_bytes_async, cache_image_from_url,
@@ -2224,7 +2224,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
 
     def _submit_on_loop(self, loop: Any, coro: Any) -> bool:
         """Schedule background work on the adapter loop with shared failure logging."""
-        from agent.async_utils import safe_schedule_threadsafe
+        from hermes_agent.agent.async_utils import safe_schedule_threadsafe
         future = safe_schedule_threadsafe(
             coro, loop, logger=logger, log_message="[Feishu] Failed to schedule background callback work",
             log_level=logging.WARNING,

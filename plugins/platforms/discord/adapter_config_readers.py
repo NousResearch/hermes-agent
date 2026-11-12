@@ -5,7 +5,7 @@ Re-exported from ``plugins.platforms.discord.adapter`` (callers and tests import
 """
 from typing import Any, Optional
 
-from agent.deadline import MAX_SAFE_TIMEOUT_S
+from hermes_agent.agent.deadline import MAX_SAFE_TIMEOUT_S
 
 
 def _read_dm_role_auth_guild() -> Optional[int]:

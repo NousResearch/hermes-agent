@@ -282,7 +282,7 @@ async def execute(authority, ref, row, policy):
             or row['principal_id'] != authority.sessions[ref.session_id].source.user_id):
         # A cron session only runs its own frozen fire; anything else typed into it fails with a
         # descriptor the viewer can render (and offer a new chat for), never a generic failure.
-        from agent.i18n import t
+        from hermes_agent.agent.i18n import t
         text = t('gateway.errors.cron_session_read_only')
         authority.pending_results[row['admission_id']] = {'result': {
             'final_response': '', 'messages': [], 'failed': True, 'completed': False,

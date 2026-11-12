@@ -25,7 +25,7 @@ class _Open(Result):
 
 
 class BatteryCategory(WireEnum):
-    """``agent/battery.py::battery_category`` colour bucket."""
+    """``hermes_agent/agent/battery.py::battery_category`` colour bucket."""
 
     good = "good"
     warn = "warn"

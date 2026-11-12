@@ -45,7 +45,7 @@ def _fingerprint(block: Any) -> str | None:
 def tracks_rejected_thinking(agent: Any) -> bool:
     """Signed-replay routes only (Anthropic and its cloud platforms, MiniMax): Kimi, DeepSeek and
     third-party routes keep their own replay contract and the one-request ``reasoning_details`` repair."""
-    from agent.anthropic_thinking_policy import SIGNED_REPLAY_ROUTES, anthropic_thinking_route
+    from hermes_agent.agent.anthropic_thinking_policy import SIGNED_REPLAY_ROUTES, anthropic_thinking_route
 
     return getattr(agent, "api_mode", None) == "anthropic_messages" and anthropic_thinking_route(
         getattr(agent, "base_url", None), getattr(agent, "model", None)
@@ -105,7 +105,7 @@ def _persist(agent: Any, rejected: set[str]) -> None:
 
 
 def _mirrored_readable_thinking(message: dict) -> str | None:
-    from agent.anthropic_message_convert import assistant_replay_carrier
+    from hermes_agent.agent.anthropic_message_convert import assistant_replay_carrier
 
     _, carrier = assistant_replay_carrier(message)
     readable = [
@@ -178,7 +178,7 @@ def remember_rejected_thinking(agent: Any, api_messages: Any) -> int:
     }
     # The provider-visible history changed while the canonical content fingerprint did
     # not, so a previous prompt-token anchor is no longer valid for this request shape.
-    from agent.usage_anchor import set_usage_anchor
+    from hermes_agent.agent.usage_anchor import set_usage_anchor
 
     set_usage_anchor(agent, None)
     if not current:

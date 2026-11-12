@@ -12,9 +12,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.agent_runtime_helpers import extract_api_error_context
-from agent.error_classifier import FailoverReason, classify_api_error
-from agent.turn_retry_state import TurnRetryState
+from hermes_agent.agent.agent_runtime_helpers import extract_api_error_context
+from hermes_agent.agent.error_classifier import FailoverReason, classify_api_error
+from hermes_agent.agent.turn_retry_state import TurnRetryState
 from tests.hermes_cli.anon_portal import make_jwt
 
 WELCOME = "https://welcome-api.nousresearch.com/v1"
@@ -89,7 +89,7 @@ def _agent(**overrides):
 
 class TestOneShotRecoveries:
     def test_model_not_free_moves_the_session_onto_the_alternate_and_retries_once(self):
-        from agent.turn_recovery import _recover_welcome_tier
+        from hermes_agent.agent.turn_recovery import _recover_welcome_tier
         agent = _agent()
         classified = _classify(_refusal("model_not_free", alternates=["nous/welcome"]), model="gpt-5")
         retry = TurnRetryState()
@@ -100,14 +100,14 @@ class TestOneShotRecoveries:
         assert _recover_welcome_tier(agent, classified, retry) is False
 
     def test_model_not_free_without_an_alternate_does_nothing(self):
-        from agent.turn_recovery import _recover_welcome_tier
+        from hermes_agent.agent.turn_recovery import _recover_welcome_tier
         agent = _agent()
         classified = _classify(_refusal("model_not_free"), model="gpt-5")
         assert _recover_welcome_tier(agent, classified, TurnRetryState()) is False
         assert agent.model == "gpt-5"
 
     def test_a_wrong_host_refusal_re_reads_the_route_once(self):
-        from agent.turn_recovery import _recover_welcome_tier
+        from hermes_agent.agent.turn_recovery import _recover_welcome_tier
         calls = []
         agent = _agent(_try_refresh_nous_client_credentials=lambda **kw: calls.append(kw) or True)
         body = {"status": 400, "message": "Anonymous accounts must use https://welcome-api.nousresearch.com for inference."}
@@ -119,7 +119,7 @@ class TestOneShotRecoveries:
         assert _recover_welcome_tier(agent, classified, retry) is False
 
     def test_a_named_account_on_the_welcome_host_re_reads_the_route_once(self):
-        from agent.turn_recovery import _recover_welcome_tier
+        from hermes_agent.agent.turn_recovery import _recover_welcome_tier
         calls = []
         agent = _agent(api_key=make_jwt(account_tier="free", client_id="hermes-cli"),
                        _try_refresh_nous_client_credentials=lambda **kw: calls.append(kw) or True)
@@ -132,7 +132,7 @@ class TestOneShotRecoveries:
         assert _recover_welcome_tier(agent, classified, retry) is False
 
     def test_a_wrong_host_refusal_whose_heal_fails_falls_through(self):
-        from agent.turn_recovery import _recover_welcome_tier
+        from hermes_agent.agent.turn_recovery import _recover_welcome_tier
         agent = _agent(_try_refresh_nous_client_credentials=lambda **kw: False)
         body = {"status": 400, "message": "Anonymous accounts must use https://welcome-api.nousresearch.com for inference."}
         assert _recover_welcome_tier(agent, _classify(_gateway_error(400, body), base_url=PAID), TurnRetryState()) is False
@@ -144,20 +144,20 @@ class TestLongWaitRule:
         ("rate_limited", 0, False), ("at_capacity", 30, False), ("admission_closed", 30, False),
     ])
     def test_only_a_long_rate_limited_refusal_is_an_exhausted_allowance(self, reason, retry_after, expected):
-        from agent.nous_rate_guard import is_long_welcome_rate_limit
+        from hermes_agent.agent.nous_rate_guard import is_long_welcome_rate_limit
         classified = _classify(_refusal(reason, retry_after=retry_after))
         assert is_long_welcome_rate_limit(classified.error_context) is expected
 
     def test_no_refusal_is_not_long(self):
-        from agent.nous_rate_guard import is_long_welcome_rate_limit
+        from hermes_agent.agent.nous_rate_guard import is_long_welcome_rate_limit
         assert is_long_welcome_rate_limit({}) is False and is_long_welcome_rate_limit(None) is False
 
     def test_the_turn_records_a_long_refusal_from_the_classifiers_context(self, monkeypatch):
         """The turn hands the guard TWO contexts: its own (``extract_api_error_context``), which
         never carries ``welcome_refusal``, and the classifier's, which does. The breaker must key on
         the latter and record the reset it computed."""
-        import agent.nous_rate_guard as guard
-        from agent.turn_recovery import _is_genuine_nous_rate_limit
+        import hermes_agent.agent.nous_rate_guard as guard
+        from hermes_agent.agent.turn_recovery import _is_genuine_nous_rate_limit
         recorded = []
         monkeypatch.setattr(guard, "record_nous_rate_limit", lambda **kw: recorded.append(kw))
         err = _refusal("rate_limited", retry_after=600)
@@ -184,12 +184,12 @@ class TestOutageCopy:
     @pytest.mark.parametrize("reason", [FailoverReason.timeout, FailoverReason.overloaded,
                                         FailoverReason.server_error])
     def test_a_spent_transport_failure_on_the_welcome_host_reads_as_one_sentence(self, reason):
-        from agent.turn_recovery import _welcome_outage_copy
+        from hermes_agent.agent.turn_recovery import _welcome_outage_copy
         from hermes_cli.anon_auth import FREE_TIER_OUTAGE_COPY
         assert _welcome_outage_copy(_ANON, WELCOME, SimpleNamespace(reason=reason)) == FREE_TIER_OUTAGE_COPY
 
     def test_other_routes_and_other_reasons_keep_the_technical_summary(self):
-        from agent.turn_recovery import _welcome_outage_copy
+        from hermes_agent.agent.turn_recovery import _welcome_outage_copy
         assert _welcome_outage_copy(_ANON, PAID, SimpleNamespace(reason=FailoverReason.timeout)) == ""
         assert _welcome_outage_copy(_ANON, WELCOME, SimpleNamespace(reason=FailoverReason.rate_limit)) == ""
         # ``unknown`` is the catch-all for status-less local failures, not the free model's trouble.
@@ -201,7 +201,7 @@ class TestOutageCopy:
 
 class TestTerminalResultsCarryTheFreeTierBlock:
     """The terminal results stamp ``free_tier`` so a client renders the free tier's own card
-    (agent/error_surface.py) instead of an OAuth re-login."""
+    (hermes_agent/agent/error_surface.py) instead of an OAuth re-login."""
 
     @staticmethod
     def _terminal_agent():
@@ -209,12 +209,12 @@ class TestTerminalResultsCarryTheFreeTierBlock:
                        _summarize_api_error=lambda e: "HTTP 403: no permissions", _emit_status=lambda *a: None,
                        _persist_session=lambda *a: None, _plines=lambda *a: None, _buffer_status=lambda *a: None,
                        _rate_limit_state=None, _has_pending_fallback=lambda: False)
-        from agent.status_output import StatusOutputMixin
+        from hermes_agent.agent.status_output import StatusOutputMixin
         agent._emit_diagnostic_status = StatusOutputMixin._emit_diagnostic_status.__get__(agent)
         return agent
 
     def test_a_dark_tier_403_is_stamped_disabled_with_the_chat_sentence(self):
-        from agent.turn_recovery import nonretryable_client_error_result
+        from hermes_agent.agent.turn_recovery import nonretryable_client_error_result
         err = _generic_403()
         classified = _classify(err)
         result = nonretryable_client_error_result(
@@ -229,7 +229,7 @@ class TestTerminalResultsCarryTheFreeTierBlock:
         assert result["error"] == "HTTP 403: no permissions"      # the technical detail stays in the log line
 
     def test_an_exhausted_capacity_refusal_is_stamped_at_capacity(self):
-        from agent.turn_recovery import max_retries_exhausted_result
+        from hermes_agent.agent.turn_recovery import max_retries_exhausted_result
         err = _refusal("at_capacity", retry_after=30)
         classified = _classify(err)
         result = max_retries_exhausted_result(
@@ -241,7 +241,7 @@ class TestTerminalResultsCarryTheFreeTierBlock:
         assert "/login" in result["final_response"]
 
     def test_a_spent_outage_on_the_welcome_host_is_stamped_outage(self):
-        from agent.turn_recovery import max_retries_exhausted_result
+        from hermes_agent.agent.turn_recovery import max_retries_exhausted_result
         err = _gateway_error(503, {"status": 503, "message": "The requested model is currently unavailable."})
         classified = _classify(err)
         result = max_retries_exhausted_result(
@@ -251,7 +251,7 @@ class TestTerminalResultsCarryTheFreeTierBlock:
         assert result["free_tier"]["kind"] == "outage"
 
     def test_the_same_outage_on_the_paid_host_is_not_stamped(self):
-        from agent.turn_recovery import max_retries_exhausted_result
+        from hermes_agent.agent.turn_recovery import max_retries_exhausted_result
         err = _gateway_error(503, {"status": 503, "message": "The requested model is currently unavailable."})
         result = max_retries_exhausted_result(
             self._terminal_agent(), err, _classify(err, base_url=PAID), attempts=3, is_rate_limited=False,
@@ -284,7 +284,7 @@ class TestFreeTierCooldownCutoff:
             monkeypatch.delenv(name, raising=False)
 
     def test_an_attended_desktop_session_ends_the_turn_and_names_the_reset(self):
-        from agent.turn_recovery import free_tier_cooldown_ends_turn, max_retries_exhausted_result
+        from hermes_agent.agent.turn_recovery import free_tier_cooldown_ends_turn, max_retries_exhausted_result
         err = _plain_429(90)
         assert free_tier_cooldown_ends_turn(_agent(platform="desktop"), err, WELCOME) is True
         result = max_retries_exhausted_result(
@@ -297,7 +297,7 @@ class TestFreeTierCooldownCutoff:
 
     def test_a_subagent_of_a_desktop_session_keeps_waiting(self):
         """The child runs in a copy of the parent's context, so it reads the parent's source."""
-        from agent.turn_recovery import free_tier_cooldown_ends_turn
+        from hermes_agent.agent.turn_recovery import free_tier_cooldown_ends_turn
         from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
         tokens = set_session_vars(source="desktop")
         try:
@@ -307,7 +307,7 @@ class TestFreeTierCooldownCutoff:
 
     def test_a_gateway_admitted_finite_cli_turn_keeps_waiting(self):
         """``hermes chat -q`` over the daemon carries its one-shot fact on the admission, not in env."""
-        from agent.turn_recovery import free_tier_cooldown_ends_turn
+        from hermes_agent.agent.turn_recovery import free_tier_cooldown_ends_turn
         from hermes_agent.gateway.session_finite import finite_turn_scope
         with finite_turn_scope(True):
             assert free_tier_cooldown_ends_turn(_agent(platform="cli"), _plain_429(90), WELCOME) is False
@@ -315,7 +315,7 @@ class TestFreeTierCooldownCutoff:
 
     @pytest.mark.parametrize("platform", ["cron", None])
     def test_an_unattended_run_keeps_waiting_and_is_told_the_reset(self, platform):
-        from agent.turn_recovery import compute_error_backoff, free_tier_cooldown_ends_turn
+        from hermes_agent.agent.turn_recovery import compute_error_backoff, free_tier_cooldown_ends_turn
         err = _plain_429(90)
         agent = _backoff_agent(platform=platform)
         assert free_tier_cooldown_ends_turn(agent, err, WELCOME) is False
@@ -326,7 +326,7 @@ class TestFreeTierCooldownCutoff:
     def test_a_paid_long_wait_stays_buffered_with_mains_attempt_numbers(self):
         """A paid 300 s Retry-After: the status line is buffered (replayed only if every retry
         fails) and the live wait line names the attempt that just failed, as on main."""
-        from agent.turn_recovery import compute_error_backoff
+        from hermes_agent.agent.turn_recovery import compute_error_backoff
         agent = _backoff_agent(provider="openrouter", api_key="sk-or-test", platform="desktop")
         err = _plain_429(300)
         wait = compute_error_backoff(agent, err, retry_count=1, max_retries=3, is_rate_limited=True,

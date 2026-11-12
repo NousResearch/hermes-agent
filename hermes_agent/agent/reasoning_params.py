@@ -2,13 +2,13 @@
 
 When ``reasoning`` extra_body is safe to send, LM Studio / Ollama / endpoint-profile capability probes,
 ``reasoning_content`` echo families, and strict-API tool-call sanitising.
-Extracted from ``run_agent.py``; every method resolves through ``AIAgent``'s MRO unchanged.
+Extracted from ``hermes_agent/run_agent.py``; every method resolves through ``AIAgent``'s MRO unchanged.
 """
 import logging
 import time
 
-from agent.lazy_forward import forward as _forward, forward_static as _forward_static
-from agent.message_sanitization import matches_reasoning_echo_family
+from hermes_agent.agent.lazy_forward import forward as _forward, forward_static as _forward_static
+from hermes_agent.agent.message_sanitization import matches_reasoning_echo_family
 from utils import base_url_host_matches
 
 # Static OpenRouter fallback when the live /v1/models capability cache is cold.
@@ -72,7 +72,7 @@ def unset_reasoning_default(agent) -> dict | None:
     if not default:
         return None
     try:
-        from agent.models_dev import get_model_capabilities
+        from hermes_agent.agent.models_dev import get_model_capabilities
 
         caps = get_model_capabilities(provider, model, allow_network=False)
     except Exception:
@@ -97,7 +97,7 @@ class ReasoningParamsMixin:
             return True
         if (profile := self._reasoning_endpoint_profile()) is not None:
             # A claimed endpoint gates on its own catalog: reasoning goes out iff it declares a payload.
-            from agent.provider_route_hooks import ask_profile
+            from hermes_agent.agent.provider_route_hooks import ask_profile
             return ask_profile(profile, "reasoning_payload", None, self.model, None,
                                base_url=self.base_url, scope=self) is not None
         if (self.provider or "").strip().lower() == "lmstudio":
@@ -157,7 +157,7 @@ class ReasoningParamsMixin:
         profile = self._reasoning_endpoint_profile()
         if profile is None:
             return None
-        from agent.provider_route_hooks import ask_profile
+        from hermes_agent.agent.provider_route_hooks import ask_profile
         return ask_profile(profile, "reasoning_payload", None, self.model, self.reasoning_config,
                            base_url=str(base_url), scope=self)
 
@@ -165,9 +165,9 @@ class ReasoningParamsMixin:
         """``build_assistant_message``; a held turn's row with visible text comes back typed hidden
         (``withhold_held_row``) until ``finish_text_response`` publishes it as the final. The row is
         stamped with the response's reasoning count: the replay price of its (encrypted) reasoning."""
-        from agent.chat_completion_helpers import build_assistant_message
-        from agent.message_metadata import stamp_reasoning_tokens
-        from agent.stream_delivery import withhold_held_row
+        from hermes_agent.agent.chat_completion_helpers import build_assistant_message
+        from hermes_agent.agent.message_metadata import stamp_reasoning_tokens
+        from hermes_agent.agent.stream_delivery import withhold_held_row
 
         msg = build_assistant_message(self, assistant_message, finish_reason)
         stamp_reasoning_tokens(msg, getattr(self, "_last_response_reasoning_tokens", 0))
@@ -180,7 +180,7 @@ class ReasoningParamsMixin:
         per turn — and recomputed after ``switch_model()`` / fallback activation or a recorded
         field rejection, the only events allowed to change the replayed bytes mid-session.
         """
-        from agent.message_sanitization import reasoning_replay_route, rejected_reasoning_carriers
+        from hermes_agent.agent.message_sanitization import reasoning_replay_route, rejected_reasoning_carriers
 
         rejected = rejected_reasoning_carriers(self)
         key = (getattr(self, "api_mode", None), self.provider, self.model, getattr(self, "_base_url_lower", self.base_url),
@@ -213,7 +213,7 @@ class ReasoningParamsMixin:
             return bool((load_config_readonly().get("model") or {}).get("reasoning_echo"))
         except Exception as exc:  # health: allow BLE001 -- a config failure must fall back, not fail init
             # Log the class, never the config value or exception traceback.
-            logging.getLogger("run_agent").warning(
+            logging.getLogger("hermes_agent.run_agent").warning(
                 "Agent configuration for model.reasoning_echo could not be loaded (%s); "
                 "using the default reasoning echo setting. Check the active Hermes Python "
                 "environment and dependencies; run 'hermes config check' after "
@@ -241,9 +241,9 @@ class ReasoningParamsMixin:
         """True when the current provider is Xiaomi MiMo thinking mode."""
         return matches_reasoning_echo_family("mimo", (self.provider or "").lower(), self.model, self.base_url)
 
-    _copy_reasoning_content_for_api = _forward("agent.agent_runtime_helpers", "copy_reasoning_content_for_api")
+    _copy_reasoning_content_for_api = _forward("hermes_agent.agent.agent_runtime_helpers", "copy_reasoning_content_for_api")
 
-    _reapply_reasoning_echo_for_provider = _forward("agent.agent_runtime_helpers", "reapply_reasoning_echo_for_provider")
+    _reapply_reasoning_echo_for_provider = _forward("hermes_agent.agent.agent_runtime_helpers", "reapply_reasoning_echo_for_provider")
 
     @staticmethod
     def _sanitize_tool_calls_for_strict_api(api_msg: dict, model: str | None = None, *, base_url: str | None = None,
@@ -255,14 +255,14 @@ class ReasoningParamsMixin:
         tool_calls = api_msg.get("tool_calls")
         if not isinstance(tool_calls, list):
             return api_msg
-        from agent.transports.chat_completions import _model_consumes_thought_signature
+        from hermes_agent.agent.transports.chat_completions import _model_consumes_thought_signature
         keep_signature = _model_consumes_thought_signature(model, base_url, provider)
         strip = {"call_id", "response_item_id"} | (set() if keep_signature else {"extra_content"})
         api_msg["tool_calls"] = [{k: v for k, v in tc.items() if k not in strip} if isinstance(tc, dict) else tc
                                  for tc in tool_calls]
         return api_msg
 
-    _sanitize_tool_call_arguments = _forward_static("agent.agent_runtime_helpers", "sanitize_tool_call_arguments")
+    _sanitize_tool_call_arguments = _forward_static("hermes_agent.agent.agent_runtime_helpers", "sanitize_tool_call_arguments")
 
     def _should_sanitize_tool_calls(self) -> bool:
         """True for every non-Codex API: Codex Responses fields are not Chat Completions schema and 400 elsewhere."""

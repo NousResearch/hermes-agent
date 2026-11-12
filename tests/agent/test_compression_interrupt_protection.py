@@ -16,7 +16,7 @@ from unittest.mock import patch
 
 import pytest
 
-import agent.auxiliary_client as aux
+import hermes_agent.agent.auxiliary_client as aux
 
 
 class TestAuxInterruptProtection:
@@ -57,7 +57,7 @@ class TestCompressionProtectsSummaryCall:
     def test_compressor_call_site_uses_protection(self):
         # The summary call must run inside aux_interrupt_protection. We assert
         # the protection flag is ACTIVE at the moment call_llm is invoked.
-        from agent.context_compressor import ContextCompressor
+        from hermes_agent.agent.context_compressor import ContextCompressor
 
         seen = {}
 
@@ -74,7 +74,7 @@ class TestCompressionProtectsSummaryCall:
             seen["task"] = kwargs.get("task")
             return _Resp()
 
-        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(model="test", quiet_mode=True)
 
         msgs = [
@@ -83,7 +83,7 @@ class TestCompressionProtectsSummaryCall:
             {"role": "user", "content": "more"},
             {"role": "assistant", "content": "done"},
         ]
-        with patch("agent.context_compressor.call_llm", side_effect=fake_call_llm):
+        with patch("hermes_agent.agent.context_compressor.call_llm", side_effect=fake_call_llm):
             summary = c._generate_summary(msgs)
 
         assert summary is not None
@@ -97,9 +97,9 @@ class TestCompressionProtectsSummaryCall:
     def test_explicit_interrupt_is_not_degraded_into_summary_fallback(self):
         """Ctrl+C cancellation must escape summary fallback so the outer
         compression transaction can abort without rotating the session."""
-        from agent.context_compressor import ContextCompressor
+        from hermes_agent.agent.context_compressor import ContextCompressor
 
-        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(model="test", quiet_mode=True)
 
         msgs = [
@@ -109,7 +109,7 @@ class TestCompressionProtectsSummaryCall:
             {"role": "assistant", "content": "done"},
         ]
         with aux.aux_interrupt_protection(cancel_check=lambda: True), patch(
-            "agent.context_compressor.call_llm",
+            "hermes_agent.agent.context_compressor.call_llm",
             side_effect=aux.AuxiliaryExplicitCancellation(),
         ):
             try:
@@ -122,9 +122,9 @@ class TestCompressionProtectsSummaryCall:
     def test_non_explicit_interrupted_error_remains_provider_failure(self):
         """An unrelated provider/OS InterruptedError must keep the established
         summary-failure fallback semantics when no host cancel was requested."""
-        from agent.context_compressor import ContextCompressor
+        from hermes_agent.agent.context_compressor import ContextCompressor
 
-        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(model="test", quiet_mode=True)
 
         msgs = [
@@ -134,16 +134,16 @@ class TestCompressionProtectsSummaryCall:
             {"role": "assistant", "content": "done"},
         ]
         with patch(
-            "agent.context_compressor.call_llm",
+            "hermes_agent.agent.context_compressor.call_llm",
             side_effect=InterruptedError("provider syscall interrupted"),
         ):
             assert c._generate_summary(msgs) is None
 
     def test_explicit_interrupt_restores_rehydration_state(self):
         """Cancellation after the handoff scan must be a compressor no-op."""
-        from agent.context_compressor import ContextCompressor
+        from hermes_agent.agent.context_compressor import ContextCompressor
 
-        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(
                 model="test",
                 protect_first_n=1,

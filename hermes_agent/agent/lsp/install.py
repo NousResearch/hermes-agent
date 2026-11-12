@@ -21,7 +21,7 @@ from typing import Any, Callable, Dict, Optional
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_constants import find_node_executable, with_hermes_node_path
 
-logger = logging.getLogger("agent.lsp.install")
+logger = logging.getLogger("hermes_agent.agent.lsp.install")
 
 
 def _recipe(strategy: str, pkg: str, bin_name: str, **extra: Any) -> dict[str, Any]:

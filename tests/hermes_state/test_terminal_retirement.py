@@ -113,7 +113,7 @@ def test_late_accounting_backfill_cannot_resurrect_a_retired_session(tmp_path):
                       expected_generation=snap['runtime_generation'])
         receipt = rt.mutate_runtime_session(db, epoch=epoch, **delete)
         # The real delayed callback: a background-review fork reporting into its parent.
-        from agent.background_review import _record_review_usage_to_parent
+        from hermes_agent.agent.background_review import _record_review_usage_to_parent
         parent = SimpleNamespace(_session_db=db, session_id='retired')
         _record_review_usage_to_parent(parent, {'model': 'm', 'provider': 'p', 'base_url': None,
                                                 'api_calls': 1, 'input_tokens': 3, 'output_tokens': 1})

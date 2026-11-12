@@ -35,7 +35,7 @@ def test_slash_review_dispatches_under_the_parent_session_identity(monkeypatch):
     try:
         with (
             patch.object(server, "_session_uses_compute_host", return_value=False),
-            patch("agent.review_engine.start_review", fake_start_review),
+            patch("hermes_agent.agent.review_engine.start_review", fake_start_review),
         ):
             out = server._live_slash_command_output(sid, session, "review", "")
         from hermes_agent.gateway.session_context import get_session_env

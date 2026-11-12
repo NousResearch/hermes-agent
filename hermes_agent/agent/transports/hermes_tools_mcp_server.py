@@ -2,7 +2,7 @@
 
 Codex owns the loop and tool list there, so a curated subset of Hermes tools is
 exposed over stdio MCP; codex registers it via ``~/.codex/config.toml
-[mcp_servers.hermes-tools]``. Run: ``python -m agent.transports.hermes_tools_mcp_server``.
+[mcp_servers.hermes-tools]``. Run: ``python -m hermes_agent.agent.transports.hermes_tools_mcp_server``.
 """
 
 from __future__ import annotations
@@ -133,7 +133,7 @@ def _build_server() -> Any:
 
 
 def main(argv: Optional[list[str]] = None) -> int:
-    """Entry point for `python -m agent.transports.hermes_tools_mcp_server`."""
+    """Entry point for `python -m hermes_agent.agent.transports.hermes_tools_mcp_server`."""
     argv = argv or sys.argv[1:]
     verbose = "--verbose" in argv or "-v" in argv
     from hermes_logging import DisplayNameFormatter

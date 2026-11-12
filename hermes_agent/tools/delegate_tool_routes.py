@@ -1,6 +1,6 @@
 """Per-task child routes from the active delegation provider (``delegation.backend``).
 
-``delegate_task`` asks the active :class:`agent.delegation_provider.DelegationProvider` for one
+``delegate_task`` asks the active :class:`hermes_agent.agent.delegation_provider.DelegationProvider` for one
 route per task, validates the model's provider-declared parameters, turns each route into the
 credential bundle child construction already consumes (the same resolver ``delegation.*`` uses),
 and binds a profile route's scope around the child's construction and conversation. The provider
@@ -17,7 +17,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Optional
 
-from agent.delegation_provider import (
+from hermes_agent.agent.delegation_provider import (
     RESERVED_TASK_PARAMETERS, ROUTE_KEYS, DelegationProvider, DelegationRouteError,
 )
 
@@ -53,7 +53,7 @@ class TaskRoute:
 
 
 def _active_provider(config: Mapping[str, Any]) -> DelegationProvider:
-    from agent.delegation_registry import get_active_provider
+    from hermes_agent.agent.delegation_registry import get_active_provider
     return get_active_provider(config)
 
 
@@ -125,7 +125,7 @@ def delegated_profile_scope(home: Any) -> Iterator[None]:
     if not isinstance(home, (str, Path)) or hermes_home_key(home) == hermes_home_key(get_hermes_home()):
         yield
         return
-    from agent.secret_scope import (
+    from hermes_agent.agent.secret_scope import (
         reset_multiplex_context, reset_secret_scope, set_multiplex_context, set_secret_scope,
     )
     from hermes_cli.env_loader import hydrate_profile_secret_sources
@@ -179,7 +179,7 @@ def _refuse_under_worker_snapshot(home: Path) -> None:
     """A managed worker (kanban, safe mode, managed sessions) runs on the session config frozen at creation:
     every config reader returns that snapshot and the process never opens profile files, so another profile's
     config.yaml is unreachable here. Refuse rather than pair the launch profile's model with the target's keys."""
-    from agent.safe_worker_policy import worker_config_snapshot
+    from hermes_agent.agent.safe_worker_policy import worker_config_snapshot
     from hermes_constants import get_hermes_home, hermes_home_key
     if worker_config_snapshot() is not None and hermes_home_key(home) != hermes_home_key(get_hermes_home()):
         raise DelegationRouteError(
@@ -269,7 +269,7 @@ def _undeclared_error(provider: DelegationProvider, index: int, names: list[str]
     """Why a task carrying parameters the session's backend does not declare is refused (a model inventing them, or
     a session whose tools came from another build than its backend); dropping them would run the task on this
     backend's default route. ``/delegation <backend> --now`` or ``/new`` rebuilds the tools and the backend together."""
-    from agent.delegation_registry import _registry
+    from hermes_agent.agent.delegation_registry import _registry
     active = provider.name
     listed = ", ".join(f"'{name}'" for name in names)
     owners = sorted({other.name for other in _registry.list_providers() if other.name != active
@@ -312,7 +312,7 @@ def resolve_task_routes(task_list: list[dict[str, Any]], config: Mapping[str, An
     ``delegation.backend``), or ``([], error)`` when that backend cannot run (fails closed, never another backend).
     A task the backend cannot route gets a route with ``error`` set; its siblings are unaffected. Identical routes
     resolve credentials once per call (the default backend resolves exactly once)."""
-    from agent.delegation_backends import pinned_backend
+    from hermes_agent.agent.delegation_backends import pinned_backend
     if pinned := pinned_backend(parent_agent):
         config = {**config, "backend": pinned}
     try:

@@ -54,7 +54,7 @@ import pytest
 
 def _make_codex_agent():
     """Build a minimal AIAgent wired for codex_responses streaming tests."""
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     agent = AIAgent(
         api_key="test-key",
@@ -73,7 +73,7 @@ def _make_codex_agent():
 def test_codex_stream_wire_error_event_surfaces_stream_error_event():
     """A wire ``type=error`` SSE frame raises ``_StreamErrorEvent`` with the
     provider's real message in the body."""
-    from run_agent import _StreamErrorEvent
+    from hermes_agent.run_agent import _StreamErrorEvent
 
     provider_message = "You do not have an active Grok subscription"
 
@@ -113,7 +113,7 @@ def test_codex_stream_wire_error_event_surfaces_stream_error_event():
 
 def test_codex_stream_wire_error_event_nested_envelope_attr_style():
     """Details nested under ``error`` (SDK attr-object shape) are surfaced."""
-    from run_agent import _StreamErrorEvent
+    from hermes_agent.run_agent import _StreamErrorEvent
 
     agent = _make_codex_agent()
 
@@ -169,7 +169,7 @@ def test_summarize_api_error_decorates_xai_entitlement_403():
     separate SKU.  Other causes (no subscription, wrong tier, exhausted
     quota) follow.
     """
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     error = RuntimeError(
         "HTTP 403: Error code: 403 - {'code': 'The caller does not have permission "
@@ -214,8 +214,8 @@ def test_classify_api_error_stream_event_grok_subscription_is_auth():
     skipped.  The explicit pattern added at step 1 must fire first and
     return auth/non-retryable so _is_entitlement_failure can stop the loop.
     """
-    from run_agent import _StreamErrorEvent
-    from agent.error_classifier import classify_api_error, FailoverReason
+    from hermes_agent.run_agent import _StreamErrorEvent
+    from hermes_agent.agent.error_classifier import classify_api_error, FailoverReason
 
     err = _StreamErrorEvent(
         "You have either run out of available resources or do not have an "
@@ -254,7 +254,7 @@ def _assistant_msg_with_encrypted_reasoning(text="hi from grok", encrypted="enc_
 
 def test_codex_reasoning_replay_default_includes_encrypted_content():
     """Native Codex backend (default) must still replay encrypted reasoning."""
-    from agent.codex_responses_adapter import _chat_messages_to_responses_input
+    from hermes_agent.agent.codex_responses_adapter import _chat_messages_to_responses_input
 
     msgs = [
         {"role": "user", "content": "hi"},
@@ -277,7 +277,7 @@ def test_codex_reasoning_replay_includes_encrypted_content_for_xai():
     cross-turn coherence — that's the whole point of the partnership
     integration.
     """
-    from agent.codex_responses_adapter import _chat_messages_to_responses_input
+    from hermes_agent.agent.codex_responses_adapter import _chat_messages_to_responses_input
 
     msgs = [
         {"role": "user", "content": "hi"},
@@ -324,7 +324,7 @@ def test_codex_reasoning_replay_includes_encrypted_content_for_xai():
     ],
 )
 def test_is_entitlement_failure_matches_real_xai_bodies(message):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     assert AIAgent._is_entitlement_failure(
         {"message": message, "reason": "permission_denied"},
@@ -334,7 +334,7 @@ def test_is_entitlement_failure_matches_real_xai_bodies(message):
 
 def test_is_entitlement_failure_false_for_status_other_than_401_403():
     """200/429/500 must never be classified as entitlement, even if body matches."""
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     body = {
         "message": "do not have an active Grok subscription",
@@ -354,7 +354,7 @@ def test_recover_with_credential_pool_skips_refresh_on_entitlement_403():
     the entitlement guard, recovery returns False so the error surfaces
     normally with the friendly hint from _summarize_api_error.
     """
-    from agent.error_classifier import FailoverReason
+    from hermes_agent.agent.error_classifier import FailoverReason
 
     agent = _make_codex_agent()
 
@@ -393,7 +393,7 @@ def test_recover_with_credential_pool_skips_refresh_on_entitlement_403():
 
 def test_recover_with_credential_pool_rotates_on_xai_spending_limit_403():
     """xAI's explicit spending-limit 403 must rotate, not hit the entitlement guard."""
-    from agent.error_classifier import FailoverReason, classify_api_error
+    from hermes_agent.agent.error_classifier import FailoverReason, classify_api_error
 
     agent = _make_codex_agent()
     next_entry = MagicMock(id="healthy-account")
@@ -543,7 +543,7 @@ def test_unstamped_reasoning_is_replayed_for_backwards_compat():
     """Reasoning items persisted before this patch don't carry _issuer_kind.
     They must still be replayed (legacy-compatible behaviour).
     """
-    from agent.codex_responses_adapter import _chat_messages_to_responses_input
+    from hermes_agent.agent.codex_responses_adapter import _chat_messages_to_responses_input
 
     msgs = [
         {"role": "user", "content": "hi"},
@@ -576,7 +576,7 @@ def test_normalize_codex_response_stamps_issuer_on_reasoning():
     """
     from types import SimpleNamespace
 
-    from agent.codex_responses_adapter import _normalize_codex_response
+    from hermes_agent.agent.codex_responses_adapter import _normalize_codex_response
 
     reasoning_item = SimpleNamespace(
         type="reasoning",
@@ -603,7 +603,7 @@ def test_transport_round_trip_drops_foreign_reasoning():
     """Full transport flow: build_kwargs against codex_backend after grok turns
     must produce an `input` array that contains zero foreign reasoning items.
     """
-    from agent.transports.codex import ResponsesApiTransport
+    from hermes_agent.agent.transports.codex import ResponsesApiTransport
 
     transport = ResponsesApiTransport()
     messages = [

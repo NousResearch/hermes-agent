@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import agent.auxiliary_client as ac
+import hermes_agent.agent.auxiliary_client as ac
 
 _CONFIG = {'custom_providers': [{'name': 'routed', 'base_url': 'https://gw.example.com/v1',
                                  'extra_headers': {'X-Route-Token': 'tok'}}]}

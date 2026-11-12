@@ -3,7 +3,7 @@ when primary provider credentials are exhausted."""
 import pytest
 from unittest.mock import patch, MagicMock
 from providers.base import ProviderProfile
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 def _make_tool_defs():
@@ -30,10 +30,10 @@ def test_init_tries_fallback_when_primary_returns_none():
             return fb, "kimi2.5"
         return None, None  # primary exhausted
 
-    with patch("agent.auxiliary_client.resolve_provider_client", side_effect=fake_resolve), \
+    with patch("hermes_agent.agent.auxiliary_client.resolve_provider_client", side_effect=fake_resolve), \
          patch("hermes_agent.model_tools.get_tool_definitions", return_value=_make_tool_defs()), \
          patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}), \
-         patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
+         patch("hermes_agent.agent.process_bootstrap.OpenAI", return_value=MagicMock()):
 
         agent = AIAgent(
             provider="alibaba-coding-plan",
@@ -52,10 +52,10 @@ def test_init_tries_fallback_when_primary_returns_none():
 
 def test_init_raises_when_no_fallback_configured():
     """When primary returns None and no fallback is set, should raise."""
-    with patch("agent.auxiliary_client.resolve_provider_client", return_value=(None, None)), \
+    with patch("hermes_agent.agent.auxiliary_client.resolve_provider_client", return_value=(None, None)), \
          patch("hermes_agent.model_tools.get_tool_definitions", return_value=_make_tool_defs()), \
          patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}), \
-         patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
+         patch("hermes_agent.agent.process_bootstrap.OpenAI", return_value=MagicMock()):
 
         with pytest.raises(RuntimeError, match="no API key was found"):
             AIAgent(
@@ -88,10 +88,10 @@ def test_init_tries_fallback_when_openrouter_pool_exhausted():
             return fb, "qwen3.5:4b"
         return None, None  # openrouter pool exhausted
 
-    with patch("agent.auxiliary_client.resolve_provider_client", side_effect=fake_resolve), \
+    with patch("hermes_agent.agent.auxiliary_client.resolve_provider_client", side_effect=fake_resolve), \
          patch("hermes_agent.model_tools.get_tool_definitions", return_value=_make_tool_defs()), \
          patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}), \
-         patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
+         patch("hermes_agent.agent.process_bootstrap.OpenAI", return_value=MagicMock()):
 
         agent = AIAgent(
             provider="openrouter",
@@ -115,10 +115,10 @@ def test_init_tries_fallback_when_openrouter_pool_exhausted():
 def test_init_openrouter_exhausted_without_chain_keeps_generic_error():
     """openrouter exhausted + no usable fallback keeps the generic
     'No LLM provider configured' error (not the named-provider one)."""
-    with patch("agent.auxiliary_client.resolve_provider_client", return_value=(None, None)), \
+    with patch("hermes_agent.agent.auxiliary_client.resolve_provider_client", return_value=(None, None)), \
          patch("hermes_agent.model_tools.get_tool_definitions", return_value=_make_tool_defs()), \
          patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}), \
-         patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
+         patch("hermes_agent.agent.process_bootstrap.OpenAI", return_value=MagicMock()):
 
         with pytest.raises(RuntimeError, match="No LLM provider configured"):
             AIAgent(
@@ -167,12 +167,12 @@ def test_init_fallback_recomputes_api_mode_for_per_model_profile_exception():
             return fb_client, "gpt-5-mini"
         return None, None  # primary (nous) has no usable credentials
 
-    with patch("agent.auxiliary_client.resolve_provider_client", side_effect=fake_resolve), \
+    with patch("hermes_agent.agent.auxiliary_client.resolve_provider_client", side_effect=fake_resolve), \
          patch("providers.get_provider_profile",
                side_effect=lambda name: _RELAY if name == "acme-relay" else real_get_profile(name)), \
          patch("hermes_agent.model_tools.get_tool_definitions", return_value=_make_tool_defs()), \
          patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}), \
-         patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
+         patch("hermes_agent.agent.process_bootstrap.OpenAI", return_value=MagicMock()):
 
         agent = AIAgent(
             provider="nous",
@@ -204,10 +204,10 @@ def test_init_fallback_keeps_codex_responses_for_openai_codex():
             return fb_client, "gpt-5.4-mini"
         return None, None
 
-    with patch("agent.auxiliary_client.resolve_provider_client", side_effect=fake_resolve), \
+    with patch("hermes_agent.agent.auxiliary_client.resolve_provider_client", side_effect=fake_resolve), \
          patch("hermes_agent.model_tools.get_tool_definitions", return_value=_make_tool_defs()), \
          patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}), \
-         patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
+         patch("hermes_agent.agent.process_bootstrap.OpenAI", return_value=MagicMock()):
 
         agent = AIAgent(
             provider="nous",

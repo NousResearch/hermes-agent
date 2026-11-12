@@ -255,8 +255,8 @@ class LintMixin:
         from the linted file's directory.  Sandboxed backends answer False: their toolchain is not the host's."""
         if not self._lsp_local_only():
             return False
-        from agent.lsp.manager import parse_trusted_workspaces
-        from agent.lsp.workspace import is_trusted_workspace, operator_workspace_roots
+        from hermes_agent.agent.lsp.manager import parse_trusted_workspaces
+        from hermes_agent.agent.lsp.workspace import is_trusted_workspace, operator_workspace_roots
         from hermes_cli.config import load_config_readonly
         lsp_cfg = load_config_readonly().get("lsp")
         trusted = parse_trusted_workspaces(lsp_cfg.get("trusted_workspaces") if isinstance(lsp_cfg, dict) else None)
@@ -268,7 +268,7 @@ class LintMixin:
         if not self._lsp_local_only():
             return None
         try:
-            from agent.lsp import get_service
+            from hermes_agent.agent.lsp import get_service
             return get_service()
         except Exception:
             return None
@@ -283,7 +283,7 @@ class LintMixin:
             svc = self._lsp_service()
             if svc is not None:
                 return svc.handles_extension(ext)
-            from agent.lsp.servers import SERVERS
+            from hermes_agent.agent.lsp.servers import SERVERS
         except Exception:
             return False
         return any(ext.lower() in srv.extensions for srv in SERVERS)
@@ -326,17 +326,17 @@ class LintMixin:
                                post_content: Optional[str] = None, started: Optional[float] = None) -> str:
         """Formatted LSP diagnostics this edit introduced, or "" when LSP is unavailable/disabled/clean
         OR the verdict is not ready yet.  Never blocks the write on the language server: the check
-        (``agent.lsp.edit_check``) diagnoses ``post_content`` (the bytes this write produced) against
+        (``hermes_agent.agent.lsp.edit_check``) diagnoses ``post_content`` (the bytes this write produced) against
         ``pre_content`` (None = new file) on the LSP loop: those snapshots, not a later read of the
         file, which another session may already have rewritten.  The write waits for the verdict only until ``inline_deadline(started)`` (what is
         left of the write's latency budget; ``started`` = ``time.monotonic()`` at write entry); a slower
-        verdict reaches the model with a later tool result of the same session (``agent.lsp.deferred``)."""
+        verdict reaches the model with a later tool result of the same session (``hermes_agent.agent.lsp.deferred``)."""
         svc = self._lsp_service()
         if svc is None or not self._lsp_will_handle(path):
             return ""
         try:
-            from agent.lsp import deferred
-            from agent.lsp.edit_check import inline_wait
+            from hermes_agent.agent.lsp import deferred
+            from hermes_agent.agent.lsp.edit_check import inline_wait
             abs_path = os.path.abspath(path)
             owner = deferred.current_owner()
             # This session's undelivered verdict for the file: the new check takes it over (diffs
@@ -374,7 +374,7 @@ def _format_lsp_block(path: str, diagnostics, header: str) -> str:
     if not diagnostics:
         return ""
     try:
-        from agent.lsp.reporter import report_for_file, truncate
+        from hermes_agent.agent.lsp.reporter import report_for_file, truncate
         block = report_for_file(path, diagnostics)
         return truncate(header + block) if block else ""
     except Exception:  # LSP never breaks a write
@@ -384,8 +384,8 @@ def _format_lsp_block(path: str, diagnostics, header: str) -> str:
 
 def _post_deferred(owner: str, abs_path: str, future, carry, token) -> None:
     """Done-callback (LSP loop thread): queue a late verdict for the session that made the edit, then
-    release a turn end waiting on it (``agent.lsp.deferred.settle_for_agent``)."""
-    from agent.lsp import deferred
+    release a turn end waiting on it (``hermes_agent.agent.lsp.deferred.settle_for_agent``)."""
+    from hermes_agent.agent.lsp import deferred
     try:
         _queue_late_verdict(owner, abs_path, future, carry)
     finally:
@@ -395,7 +395,7 @@ def _post_deferred(owner: str, abs_path: str, future, carry, token) -> None:
 def _queue_late_verdict(owner: str, abs_path: str, future, carry) -> None:
     """A superseded check posts nothing: the newer check owns its verdict AND the notes it carried.
     No verdict hands back only what the check still holds (``result.carry``), never the caller's copy."""
-    from agent.lsp import deferred
+    from hermes_agent.agent.lsp import deferred
     try:
         result = None if future.cancelled() else future.result()
     except Exception:  # a failed check reports nothing; the older note goes back

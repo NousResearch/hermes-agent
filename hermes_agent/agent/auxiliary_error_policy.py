@@ -1,15 +1,15 @@
 """What the auxiliary recovery ladder does with a failed request, read from ``classify_api_error``'s verdict.
 
 The labels :func:`fallback_label` returns are the ones the logs, unhealthy marks and candidate quarantine
-TTLs (agent/auxiliary_health.py) key on.
+TTLs (hermes_agent/agent/auxiliary_health.py) key on.
 """
 
 from __future__ import annotations
 
 from typing import Any, NamedTuple, Optional
 
-from agent.auxiliary_call_outcome import is_cancellation
-from agent.error_classifier import (
+from hermes_agent.agent.auxiliary_call_outcome import is_cancellation
+from hermes_agent.agent.error_classifier import (
     POLICY_REFUSAL_REASONS, TRANSIENT_REASONS, ClassifiedError, FailoverReason, classify_api_error,
 )
 

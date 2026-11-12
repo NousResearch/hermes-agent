@@ -22,7 +22,7 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from agent.context_compressor import (
+from hermes_agent.agent.context_compressor import (
     SKILL_PRUNED_MARKER_PREFIX,
     SUMMARY_PREFIX,
     ContextCompressor,
@@ -42,7 +42,7 @@ def _make_compressor(**overrides):
     )
     kwargs.update(overrides)
     with patch(
-        "agent.context_compressor.get_model_context_length", return_value=100000
+        "hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000
     ):
         return ContextCompressor(**kwargs)
 
@@ -225,7 +225,7 @@ class TestMarkerSurvivesRealCompress:
         with (
             patch.object(c, "_find_tail_cut_by_tokens", return_value=9),
             patch(
-                "agent.context_compressor.call_llm", return_value=drop_response
+                "hermes_agent.agent.context_compressor.call_llm", return_value=drop_response
             ) as mock_call,
         ):
             result = c.compress(msgs, force=True)
@@ -258,7 +258,7 @@ class TestMarkerSurvivesRealCompress:
         drop_response = self._mock_response("## Goal\nNext task in flight.")
         with (
             patch.object(c, "_find_tail_cut_by_tokens", return_value=8),
-            patch("agent.context_compressor.call_llm", return_value=drop_response),
+            patch("hermes_agent.agent.context_compressor.call_llm", return_value=drop_response),
         ):
             result = c.compress(msgs, force=True)
         summary_text = self._summary_text_of(result)
@@ -267,7 +267,7 @@ class TestMarkerSurvivesRealCompress:
     def test_slash_invoked_skill_is_marked_and_quoted_as_typed(self):
         """A /skill turn carries its body inline: compaction lists the skill for reload and quotes only what
         the user typed, never the skill body as "the user's actual words"."""
-        from agent.skill_commands import _build_skill_message
+        from hermes_agent.agent.skill_commands import _build_skill_message
         note = ('[IMPORTANT: The user has invoked the "probe-inv" skill, indicating they want '
                 "you to follow its instructions. The full skill content is loaded below.]")
         body = "RULE: include INV-HERON.\n" + "skill body prose. " * 600
@@ -296,7 +296,7 @@ class TestMarkerSurvivesRealCompress:
         ]
         with (
             patch.object(c, "_find_tail_cut_by_tokens", return_value=9),
-            patch("agent.context_compressor.call_llm", return_value=self._mock_response("## Goal\nWork.")),
+            patch("hermes_agent.agent.context_compressor.call_llm", return_value=self._mock_response("## Goal\nWork.")),
         ):
             result = c.compress(msgs, force=True)
         summary_text = self._summary_text_of(result)
@@ -313,7 +313,7 @@ class TestReinjectionBoundsAndRedaction:
         # _build_static_fallback_summary; the helper itself is mechanical.
 
     def test_reinjection_block_is_redacted(self, monkeypatch):
-        import agent.redact as redact_mod
+        import hermes_agent.agent.redact as redact_mod
 
         # force=True redaction must win even when redaction is disabled.
         monkeypatch.setattr(redact_mod, "_REDACT_ENABLED", False, raising=False)

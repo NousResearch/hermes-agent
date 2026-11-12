@@ -2,7 +2,7 @@
 
 Publishes the commit fence ``hard_interrupt()`` reads, runs the compressor on a snapshot under the progress
 timeout, mirrors ``_DB_PERSISTED_MARKER`` stamps back onto the live lists and rebinds the session context.
-Extracted from ``run_agent.py``; every method resolves through ``AIAgent``'s MRO unchanged.
+Extracted from ``hermes_agent/run_agent.py``; every method resolves through ``AIAgent``'s MRO unchanged.
 """
 
 import contextlib
@@ -11,10 +11,10 @@ import functools
 import logging
 import threading
 
-from agent.session_activity import ActivityProvenance
+from hermes_agent.agent.session_activity import ActivityProvenance
 
 # Same logger name as the origin module so log records / caplog filters are unchanged.
-logger = logging.getLogger("run_agent")
+logger = logging.getLogger("hermes_agent.run_agent")
 
 
 class _CommitFenceRegistration:
@@ -50,7 +50,7 @@ def _report_compression_timeout(
     progress_observed: bool,
 ) -> None:
     """Host-side timeout bookkeeping: log, activity stamp, cooldown ladder, user warning."""
-    from agent.conversation_compression import mark_context_compression_timed_out
+    from hermes_agent.agent.conversation_compression import mark_context_compression_timed_out
     mark_context_compression_timed_out(agent)
     if total_exhausted:
         logger.warning(
@@ -111,8 +111,8 @@ def _sync_persisted_markers(target_messages, source_messages) -> None:
     Matched by scoped identity; timestamp-less repeated content is ambiguous, so every scoped match is
     stamped. Imported UNCONDITIONALLY: a silent fallback literal would split the stamping key from the flush's
     and resurrect the duplicate-row bug."""
-    from agent.context_compressor import _DB_PERSISTED_MARKER
-    from agent.conversation_compression import _stamp_scoped_twins
+    from hermes_agent.agent.context_compressor import _DB_PERSISTED_MARKER
+    from hermes_agent.agent.conversation_compression import _stamp_scoped_twins
     if not isinstance(target_messages, list) or not isinstance(source_messages, list):
         return
     for source_message in source_messages:
@@ -128,7 +128,7 @@ def _run_under_progress_timeout(
     The pooled worker must NEVER share the caller's live transcript — a late engine after a host timeout could
     rewrite it. It deep-snapshots on the worker and publishes only via an ADMITTED commit; a no-op/abort
     returns the snapshot unchanged, so the ORIGINAL list is handed back to keep identity semantics."""
-    from agent.conversation_compression import (
+    from hermes_agent.agent.conversation_compression import (
         CompressionCommitFence, request_exceeds_model_window, run_compress_context_with_progress_timeout,
     )
 
@@ -201,7 +201,7 @@ def _mirror_result_onto_live_lists(agent, result, messages, *, direct_path: bool
     if result_messages is not messages:
         # The token-estimate memo pins message strings; bodies the summary replaced can never hit again,
         # and close() only sees the compressed history.
-        from agent.model_metadata_token_memo import forget_message_token_memo
+        from hermes_agent.agent.model_metadata_token_memo import forget_message_token_memo
         with contextlib.suppress(Exception):
             forget_message_token_memo(messages, keep=result_messages)
 
@@ -230,7 +230,7 @@ class CompressionFacadeMixin:
         defer_context_engine_notification: bool = False, commit_fence=None, verbatim_tail: list | None = None,
         trigger: str | None = None, snapshot_is_current=None, overflow_reason: str | None = None,
     ) -> tuple:
-        """Forwarder — see ``agent.conversation_compression.compress_context``.
+        """Forwarder — see ``hermes_agent.agent.conversation_compression.compress_context``.
         ``force=True`` (manual /compress) bypasses the summary-failure cooldown; ``bypass_cooldown=True``
         (provider-proven overflow recovery) runs one real attempt while the cooldown stays armed.
 
@@ -244,16 +244,16 @@ class CompressionFacadeMixin:
         # provider request it was meant to prevent. The typed helper upgrades the simple attribute to
         # thread-local state guarded by a per-agent lock so overlapping automatic/manual entrypoints cannot
         # clobber each other's outcome (#98741).
-        from agent.conversation_compression import (
+        from hermes_agent.agent.conversation_compression import (
             CompressionCommitFence, compress_context, reset_context_compression_timeout_outcome,
             resolve_context_compression_timeouts,
         )
         reset_context_compression_timeout_outcome(self)
-        from agent.portal_tags import (
+        from hermes_agent.agent.portal_tags import (
             get_affinity_scope, get_conversation_context, reset_affinity_scope, reset_conversation_context,
             set_affinity_scope, set_conversation_context,
         )
-        from agent.prompt_cache_scope import declared_conversation_scope_safe
+        from hermes_agent.agent.prompt_cache_scope import declared_conversation_scope_safe
         # Out-of-turn compaction (/compact, gateway /compress, partial head compression) runs outside
         # run_conversation's ambient scope; publish the root as a fallback so the summarizer's call carries
         # the conversation tag. No-op for in-turn callers. Same for the ROUTING scope when declared.

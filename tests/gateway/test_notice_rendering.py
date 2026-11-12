@@ -4,7 +4,7 @@ Covers render_notice_line — the pure helper that turns an AgentNotice into the
 single plaintext line pushed standalone over a messaging platform (no status
 bar, unlike the TUI). Behavior contracts, not data snapshots.
 """
-from agent.credits_tracker import AgentNotice
+from hermes_agent.agent.credits_tracker import AgentNotice
 from hermes_agent.gateway.run import render_notice_line
 
 
@@ -12,7 +12,7 @@ def test_real_policy_notices_render_without_doubling():
     """End-to-end regression: every notice evaluate_credits_notices emits already
     carries its glyph, so render_notice_line must return it unchanged (no second
     glyph prepended) for the messaging push."""
-    from agent.credits_tracker import CreditsState, evaluate_credits_notices
+    from hermes_agent.agent.credits_tracker import CreditsState, evaluate_credits_notices
 
     def _emitted(uf=None, paid=True, purchased=0):
         # Both crossing gates pre-opened: this test's subject is RENDERING of

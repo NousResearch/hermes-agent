@@ -226,13 +226,13 @@ def _report_host_gateway_slot(mgr, issues: list[str]) -> None:
 def check_certificates(should_fix: bool = False, issues: list | None = None) -> None:
     """Verify the actual TLS policy is usable before the first HTTPS call tracebacks.
 
-    The policy is ``agent.ssl_verify``: the platform verifier (truststore) is
+    The policy is ``hermes_agent.agent.ssl_verify``: the platform verifier (truststore) is
     installed process-wide and every stack builds SSL contexts through it. There
     is no certifi bundle to validate anymore; the check is that the platform
     store is in force and a default context constructs.
     """
     try:
-        from agent.ssl_verify import install_truststore
+        from hermes_agent.agent.ssl_verify import install_truststore
     except Exception as e:
         return check_warn("TLS trust check skipped", str(e))
     if issues is None:

@@ -5,7 +5,7 @@ that can't encode non-ASCII characters in API request payloads.
 """
 
 
-from agent.message_sanitization import _strip_non_ascii, _sanitize_messages_non_ascii, _sanitize_structure_non_ascii, _sanitize_tools_non_ascii, _sanitize_messages_surrogates, sanitize_outbound_kwargs
+from hermes_agent.agent.message_sanitization import _strip_non_ascii, _sanitize_messages_non_ascii, _sanitize_structure_non_ascii, _sanitize_tools_non_ascii, _sanitize_messages_surrogates, sanitize_outbound_kwargs
 
 
 class TestStripNonAscii:
@@ -207,7 +207,7 @@ class TestSanitizeMessagesPersistMarker:
     corrupt bytes while the live transcript holds the repaired ones."""
 
     def test_surrogate_repair_pops_marker(self):
-        from agent.context_compressor import _DB_PERSISTED_MARKER
+        from hermes_agent.agent.context_compressor import _DB_PERSISTED_MARKER
 
         msg = {"role": "user", "content": "test \ud800 end", _DB_PERSISTED_MARKER: True}
         assert _sanitize_messages_surrogates([msg]) is True
@@ -216,17 +216,17 @@ class TestSanitizeMessagesPersistMarker:
 
 
     def test_unchanged_dict_keeps_marker(self):
-        from agent.context_compressor import _DB_PERSISTED_MARKER
+        from hermes_agent.agent.context_compressor import _DB_PERSISTED_MARKER
 
         msg = {"role": "user", "content": "clean ascii", _DB_PERSISTED_MARKER: True}
         assert _sanitize_messages_non_ascii([msg]) is False
         assert msg[_DB_PERSISTED_MARKER] is True
 
     def test_ascii_recovery_sanitizes_detached_request_not_canonical_history(self, monkeypatch):
-        from agent.context_compressor import _DB_PERSISTED_MARKER
-        from agent.turn_recovery import _recover_unicode_encode_error
+        from hermes_agent.agent.context_compressor import _DB_PERSISTED_MARKER
+        from hermes_agent.agent.turn_recovery import _recover_unicode_encode_error
 
-        monkeypatch.setattr("agent.turn_recovery._runtime_uses_ascii_encoding", lambda: True)
+        monkeypatch.setattr("hermes_agent.agent.turn_recovery._runtime_uses_ascii_encoding", lambda: True)
 
         canonical = [{"role": "user", "content": "olá ☕", _DB_PERSISTED_MARKER: True}]
         api_messages = [{"role": "user", "content": "olá ☕"}]
@@ -279,9 +279,9 @@ class TestSanitizeMessagesPersistMarker:
         retry_kwargs["extra_body"]["note"].encode("ascii")
 
     def test_ascii_word_in_error_does_not_strip_utf8_request_copy(self, monkeypatch):
-        from agent.turn_recovery import _recover_unicode_encode_error
+        from hermes_agent.agent.turn_recovery import _recover_unicode_encode_error
 
-        monkeypatch.setattr("agent.turn_recovery._runtime_uses_ascii_encoding", lambda: False)
+        monkeypatch.setattr("hermes_agent.agent.turn_recovery._runtime_uses_ascii_encoding", lambda: False)
         canonical = [{"role": "user", "content": "olá ☕"}]
         api_messages = [{"role": "user", "content": "olá ☕"}]
         agent = type("Agent", (), {

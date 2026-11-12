@@ -41,7 +41,7 @@ def home(tmp_path, monkeypatch):
 # plain registry provider. Both must honour the on-disk env row.
 @pytest.mark.parametrize("provider,primary", [("deepseek", "DEEPSEEK_API_KEY"), ("openrouter", "OPENROUTER_API_KEY")])
 def test_on_disk_env_row_outside_registry_tuple_joins_rotation(home, provider, primary):
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
 
     extra = f"{primary}_2"
     _write_home(home, provider, {primary: SYN_PRIMARY, extra: SYN_SECONDARY}, extra)
@@ -57,7 +57,7 @@ def test_on_disk_env_row_outside_registry_tuple_joins_rotation(home, provider, p
 
 
 def test_unset_env_row_stays_out_of_rotation_and_on_disk(home):
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
 
     _write_home(home, "deepseek", {"DEEPSEEK_API_KEY": SYN_PRIMARY}, "DEEPSEEK_API_KEY_2")
 
@@ -74,7 +74,7 @@ def test_unset_env_row_stays_out_of_rotation_and_on_disk(home):
 # not silently enter rotation.
 @pytest.mark.parametrize("provider,primary", [("deepseek", "DEEPSEEK_API_KEY"), ("openrouter", "OPENROUTER_API_KEY")])
 def test_numbered_env_siblings_seed_rotation_without_config(home, provider, primary, monkeypatch):
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
 
     for n in (3, 5):
         monkeypatch.delenv(f"{primary}_{n}", raising=False)

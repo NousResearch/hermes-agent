@@ -2,7 +2,7 @@
 
 Auxiliary LLM calls (vision, compression, title_generation, ...) record
 their token usage into session_model_usage with a ``task`` dimension via
-the ambient accounting context (agent/aux_accounting.py), making aux model
+the ambient accounting context (hermes_agent/agent/aux_accounting.py), making aux model
 spend visible in analytics.
 """
 from pathlib import Path
@@ -187,7 +187,7 @@ class TestSchemaMigrationV22:
 
 class TestAmbientAccountingContext:
     def test_record_aux_usage_writes_through_context(self, db):
-        from agent.aux_accounting import (
+        from hermes_agent.agent.aux_accounting import (
             record_aux_usage,
             reset_accounting_context,
             set_accounting_context,
@@ -210,7 +210,7 @@ class TestAmbientAccountingContext:
     def test_moa_tasks_excluded(self, db):
         """MoA advisor usage is already folded into the main-loop delta by
         conversation_loop — recording it here would double-count."""
-        from agent.aux_accounting import (
+        from hermes_agent.agent.aux_accounting import (
             record_aux_usage,
             reset_accounting_context,
             set_accounting_context,
@@ -229,11 +229,11 @@ class TestAmbientAccountingContext:
 
     def test_validate_llm_response_records(self, db):
         """The aux client's validation chokepoint feeds the recorder."""
-        from agent.aux_accounting import (
+        from hermes_agent.agent.aux_accounting import (
             reset_accounting_context,
             set_accounting_context,
         )
-        from agent.auxiliary_client import _validate_llm_response
+        from hermes_agent.agent.auxiliary_client import _validate_llm_response
 
         db.create_session("s1", source="cli")
         token = set_accounting_context(db, "s1")
@@ -291,7 +291,7 @@ class TestInsightsAuxTotals:
     def test_overview_totals_include_aux_usage(self, db):
         """`hermes insights` overview must count aux tokens, not just the
         sessions counters (issues #58592, #9979)."""
-        from agent.insights import InsightsEngine
+        from hermes_agent.agent.insights import InsightsEngine
 
         db.create_session("s1", source="cli")
         db.update_token_counts(

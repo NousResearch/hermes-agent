@@ -202,7 +202,7 @@ def test_every_surface_has_both_opt_outs(launch, monkeypatch):
 
 def test_a_clone_reaches_the_selected_memory_providers_create_hook_once(launch, monkeypatch):
     import plugins.memory as memory_pkg
-    from agent.memory_provider import MemoryProvider
+    from hermes_agent.agent.memory_provider import MemoryProvider
     from hermes_constants import get_hermes_home
 
     calls = []
@@ -252,7 +252,7 @@ def test_the_cli_does_not_say_no_keys_when_it_copied_them(launch, capsys):
 
 
 def test_validating_in_another_home_runs_under_multiplex_semantics(launch, monkeypatch):
-    from agent.secret_scope import is_multiplex_active
+    from hermes_agent.agent.secret_scope import is_multiplex_active
     from hermes_cli.model_switch import ModelSwitchResult
     other = launch / "profiles" / "other"
     other.mkdir(parents=True)

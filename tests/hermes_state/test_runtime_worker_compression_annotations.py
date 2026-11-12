@@ -1,7 +1,7 @@
 """Compaction receipts must refresh the producer's row identities."""
 import pytest
 
-from agent.runtime_session_store import RuntimeSessionStore
+from hermes_agent.agent.runtime_session_store import RuntimeSessionStore
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_runtime import begin_runtime_epoch, mutate_worker_execution, register_worker_execution
 

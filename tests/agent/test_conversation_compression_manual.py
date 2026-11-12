@@ -1,4 +1,4 @@
-"""Invariants for the shared manual-/compress core (``agent/conversation_compression_manual``)."""
+"""Invariants for the shared manual-/compress core (``hermes_agent/agent/conversation_compression_manual``)."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.conversation_compression_manual import compress_now, parse_compress_args
+from hermes_agent.agent.conversation_compression_manual import compress_now, parse_compress_args
 
 
 def _history():
@@ -137,7 +137,7 @@ def _stored_agent(db, history, *, create=True):
     for message in history:
         db.append_message("sid", message["role"], message["content"])
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         agent = AIAgent(api_key="test-key", base_url="https://openrouter.ai/api/v1", model="test/model",
                         quiet_mode=True, session_db=db, session_id="sid", skip_context_files=True, skip_memory=True)
     agent._compression_feasibility_checked = True
@@ -152,7 +152,7 @@ def _compress(agent, history, raw):
     response = MagicMock()
     response.choices = [MagicMock()]
     response.choices[0].message.content = "## Goal\nNumbered fruit questions.\n## Progress\nEarly ones answered."
-    with patch("agent.context_compressor.call_llm", lambda **_kw: response):
+    with patch("hermes_agent.agent.context_compressor.call_llm", lambda **_kw: response):
         return compress_now(agent, history, parse_compress_args(raw), system_message="", skip_without_window=True)
 
 
@@ -306,7 +306,7 @@ def test_in_place_compress_keeps_a_gap_below_the_newest_held_row(session_db):
     """A surface can hold rows 1–N, miss another surface's rows, then persist its own later rows.
     The newest held id is then the lease watermark, so a cap at that id archives the unseen gap.
     Those rows were never summarized; they must stay live, once each."""
-    from agent.context_compressor import _DB_PERSISTED_MARKER
+    from hermes_agent.agent.context_compressor import _DB_PERSISTED_MARKER
 
     agent, _ = _stored_agent(session_db, _exchanges(10))
     held = session_db.get_resume_conversations("sid")[0]

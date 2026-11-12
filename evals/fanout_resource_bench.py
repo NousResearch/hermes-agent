@@ -164,7 +164,7 @@ def main() -> None:
 
     srv = _serve()
     port = srv.server_address[1]
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     from hermes_agent.tools import delegate_tool
 
     from hermes_agent.hermes_state import SessionDB
@@ -218,7 +218,7 @@ def main() -> None:
     if a.out:
         open(a.out, "w", encoding="utf-8").write(json.dumps(out, indent=1))
     try:
-        from agent.lsp import shutdown_service
+        from hermes_agent.agent.lsp import shutdown_service
         shutdown_service()
         from hermes_agent.tools.code_kernel import shutdown_all_kernels
         shutdown_all_kernels()

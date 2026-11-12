@@ -1,7 +1,7 @@
 """Regression tests: HTTP 413 recovery must score progress in BYTES.
 
 Bug (#88960 / #47339): a 413 is a *byte*-size error, but the recovery loop in
-``agent/conversation_loop.py`` scored compression progress with
+``hermes_agent/agent/conversation_loop.py`` scored compression progress with
 ``estimate_messages_tokens_rough``, which deliberately prices every image at
 a flat per-image token cost so screenshots don't trigger premature
 compaction.  When the payload is image-dominated that progress test can never
@@ -18,7 +18,7 @@ estimate.  These tests assert that invariant directly.
 
 import pytest
 
-from agent.message_sanitization import serialized_messages_bytes
+from hermes_agent.agent.message_sanitization import serialized_messages_bytes
 
 
 def _data_url_image(size_bytes: int) -> dict:

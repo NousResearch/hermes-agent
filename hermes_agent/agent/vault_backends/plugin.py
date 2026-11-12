@@ -19,8 +19,8 @@ from __future__ import annotations
 from contextlib import contextmanager
 from typing import Any, Callable, Optional
 
-from agent.vault_backends.base import LoginBackend
-from agent.vault_store import VAULT_KINDS, VaultItemMeta
+from hermes_agent.agent.vault_backends.base import LoginBackend
+from hermes_agent.agent.vault_store import VAULT_KINDS, VaultItemMeta
 
 _FAILED = object()
 _INVALID = object()

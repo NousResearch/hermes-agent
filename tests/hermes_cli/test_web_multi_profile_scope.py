@@ -37,7 +37,7 @@ def two_homes(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(root))
     monkeypatch.setenv("A_ONLY_TOKEN", A_VAL)  # the dashboard process loaded its own .env
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
-    from agent import secret_scope
+    from hermes_agent.agent import secret_scope
     from hermes_agent.tui_gateway import launch_profile_policy as lpp
     monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", False)
     monkeypatch.setattr(lpp, "_snapshot", None)
@@ -57,7 +57,7 @@ def client(two_homes):
 
 
 def test_get_config_for_named_profile_expands_only_its_own_secrets(client, two_homes):
-    from agent.secret_scope import is_multiplex_active
+    from hermes_agent.agent.secret_scope import is_multiplex_active
 
     resp = client.get("/api/config?profile=b")
     assert resp.status_code == 200, resp.text

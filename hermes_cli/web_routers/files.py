@@ -77,7 +77,7 @@ _FS_READDIR_HIDDEN = {
 # Basenames the managed-files API must never list, read or download: credential
 # stores that become live secrets in the browsable tree the moment an operator
 # points the managed root at HERMES_HOME. Mirrors the two canonical guards
-# (agent.file_safety.get_read_block_error, gateway.platforms.base
+# (hermes_agent.agent.file_safety.get_read_block_error, gateway.platforms.base
 # ._ROOT_CREDENTIAL_FILES) so the Files tab never lags behind them.
 # These typically contain credentials (API keys, tokens) and exposing them through the dashboard file
 # browser is a security leak — see issue #57505.

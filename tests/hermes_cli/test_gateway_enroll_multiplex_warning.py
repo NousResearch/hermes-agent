@@ -2,7 +2,7 @@
 
 ``hermes gateway enroll --connector-url/--wake-url`` persists GATEWAY_RELAY_URL /
 GATEWAY_RELAY_WAKE_URL into the active profile's .env. Those are process-global
-deployment stamps (agent/secret_scope.py): a multiplexed gateway reads them from
+deployment stamps (hermes_agent/agent/secret_scope.py): a multiplexed gateway reads them from
 the process environment only, never from a secondary profile's isolated secret
 scope — so an enroll run from a secondary profile must WARN that the written
 URLs will not activate from there (sol-reviewer round-4: the first cut read

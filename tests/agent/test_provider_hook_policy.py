@@ -19,7 +19,7 @@ CARRIER = "hermes.native_assistant"
 @pytest.fixture
 def make_profile(request, monkeypatch):
     import providers
-    from agent import provider_route_hooks
+    from hermes_agent.agent import provider_route_hooks
     from providers.base import ProviderProfile
 
     monkeypatch.setattr(provider_route_hooks, "_WARNED", set(), raising=False)
@@ -42,9 +42,9 @@ def make_profile(request, monkeypatch):
 
 
 def _agent():
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
-    with patch("agent.process_bootstrap.OpenAI") as mock_openai:
+    with patch("hermes_agent.agent.process_bootstrap.OpenAI") as mock_openai:
         mock_openai.return_value = MagicMock()
         return AIAgent(api_key="k", base_url=HOST, provider="custom", api_mode="chat_completions", model="m1",
                        quiet_mode=True, skip_context_files=True, skip_memory=True, enabled_toolsets=[],
@@ -72,7 +72,7 @@ def _replay(self, values, *, model, base_url):
 
 
 def test_a_failed_hook_warns_per_session_and_is_asked_again_after_a_reset(make_profile, caplog):
-    from agent.provider_route_hooks import ask_profile
+    from hermes_agent.agent.provider_route_hooks import ask_profile
 
     calls = []
 
@@ -82,7 +82,7 @@ def test_a_failed_hook_warns_per_session_and_is_asked_again_after_a_reset(make_p
 
     profile = make_profile(request_headers=flaky)
     first, second = _agent(), _agent()
-    with caplog.at_level(logging.WARNING, logger="agent.provider_route_hooks"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.agent.provider_route_hooks"):
         for agent in (first, first, second):
             assert ask_profile(profile, "request_headers", {}, base_url=HOST, model="m", scope=agent) == {}
         first.reset_session_state()
@@ -125,7 +125,7 @@ def test_failing_reasoning_hook_keeps_the_session_on_the_generic_answer(make_pro
     def request():  # the wire plus the two reasoning gates built from this hook
         return _wire(agent, hist), agent._supports_reasoning_extra_body(), agent._endpoint_reasoning_payload()
 
-    with caplog.at_level(logging.WARNING, logger="agent.provider_route_hooks"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.agent.provider_route_hooks"):
         first = request()
         state["fail"] = False  # the hook recovers; the session must not flip back mid-conversation
         later = [request() for _ in range(2)]
@@ -153,7 +153,7 @@ def test_replay_hook_failing_on_a_later_call_never_flips_bytes_after_that_turn(m
     first, _ = _wire(agent, hist)
     assert first[2]["hp_opaque"] == "OPQ0"
     hist = _history(4, text_at=(3,))  # a new key set late in history: the hook is asked again and fails
-    with caplog.at_level(logging.WARNING, logger="agent.provider_route_hooks"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.agent.provider_route_hooks"):
         second, _ = _wire(agent, hist)
         third, _ = _wire(agent, hist)
     assert second == third

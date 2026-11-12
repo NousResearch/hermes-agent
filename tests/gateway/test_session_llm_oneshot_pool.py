@@ -233,7 +233,7 @@ def test_the_call_runs_in_the_handlers_context_and_its_result_is_checked_before_
 def test_a_worker_that_cannot_start_gives_its_slot_back(monkeypatch):
     """Thread exhaustion at spawn: the call fails with the start error, and its admission and the
     worker count go back, so the owner does not answer ``oneshot_busy`` for good after 16 of them."""
-    from agent import memory_provider
+    from hermes_agent.agent import memory_provider
     real = memory_provider.spawn_context_thread
 
     class _Unstartable:

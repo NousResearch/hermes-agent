@@ -23,7 +23,7 @@ class TestFlushDeduplication:
     def _make_agent(self, session_db):
         """Create a minimal AIAgent with a real session DB."""
         with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
-            from run_agent import AIAgent
+            from hermes_agent.run_agent import AIAgent
             agent = AIAgent(
                 api_key="test-key",
                 base_url="https://openrouter.ai/api/v1",

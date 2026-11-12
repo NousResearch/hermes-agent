@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import inspect
 
-from agent.transports.hermes_tools_mcp_server import (
+from hermes_agent.agent.transports.hermes_tools_mcp_server import (
     _signature_from_schema,
 )
 
@@ -82,7 +82,7 @@ class TestModuleSurface:
         own builtins are better-integrated with its sandbox + approvals.
         Specifically: no terminal/shell, no read_file/write_file, no
         patch — those are codex's built-in tools."""
-        from agent.transports.hermes_tools_mcp_server import EXPOSED_TOOLS
+        from hermes_agent.agent.transports.hermes_tools_mcp_server import EXPOSED_TOOLS
         forbidden = {
             "terminal", "shell", "read_file", "write_file", "patch",
             "search_files", "process",
@@ -98,7 +98,7 @@ class TestModuleSurface:
         """Each exposed name must dispatch through handle_function_call in a plain Hermes process:
         a name only a plugin registers (the camofox plugin's browser_navigate & co.) is not core."""
         from hermes_agent import model_tools
-        from agent.transports.hermes_tools_mcp_server import EXPOSED_TOOLS
+        from hermes_agent.agent.transports.hermes_tools_mcp_server import EXPOSED_TOOLS
         missing = set(EXPOSED_TOOLS) - set(model_tools.get_all_tool_names())
         assert not missing, f"EXPOSED_TOOLS names no core tool registers: {sorted(missing)}"
 
@@ -107,7 +107,7 @@ class TestMain:
     def test_main_returns_2_when_mcp_unavailable(self, monkeypatch):
         """When the mcp package isn't installed, main() should exit
         cleanly with code 2 and an install hint, not crash."""
-        import agent.transports.hermes_tools_mcp_server as m
+        import hermes_agent.agent.transports.hermes_tools_mcp_server as m
 
         def boom_build(*a, **kw):
             raise ImportError("mcp not installed")
@@ -117,7 +117,7 @@ class TestMain:
         assert rc == 2
 
     def test_main_handles_keyboard_interrupt(self, monkeypatch):
-        import agent.transports.hermes_tools_mcp_server as m
+        import hermes_agent.agent.transports.hermes_tools_mcp_server as m
 
         class FakeServer:
             def run(self):
@@ -128,7 +128,7 @@ class TestMain:
         assert rc == 0
 
     def test_main_returns_1_on_runtime_error(self, monkeypatch):
-        import agent.transports.hermes_tools_mcp_server as m
+        import hermes_agent.agent.transports.hermes_tools_mcp_server as m
 
         class CrashingServer:
             def run(self):

@@ -3,8 +3,8 @@ import json
 import shlex
 import sys
 
-from agent.turn_context import _bind_turn_identity
-from run_agent import AIAgent
+from hermes_agent.agent.turn_context import _bind_turn_identity
+from hermes_agent.run_agent import AIAgent
 from hermes_agent.tools.process_registry import ProcessRegistry
 from hermes_agent.tools.terminal_tool import terminal_tool
 

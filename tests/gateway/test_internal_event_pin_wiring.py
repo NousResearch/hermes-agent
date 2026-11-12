@@ -52,7 +52,7 @@ def _wake_source() -> SessionSource:
 def _make_runner(
     monkeypatch, config: GatewayConfig | None = None, *, durable_prompt_pin: dict | None = None,
 ):
-    import agent.model_metadata as mm
+    import hermes_agent.agent.model_metadata as mm
     import hermes_agent.gateway.run as gr
     import hermes_agent.gateway.session as gs
 
@@ -641,9 +641,9 @@ async def test_channel_override_turns_keep_one_cached_agent_and_the_pin(
     )
     monkeypatch.setattr(gr, "_load_gateway_config", lambda: {"model": {"default": global_model}})
     monkeypatch.setattr(gr, "_resolve_gateway_model", lambda config=None: global_model)
-    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent = types.ModuleType("hermes_agent.run_agent")
     fake_run_agent.AIAgent = _TurnAgent
-    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    monkeypatch.setitem(sys.modules, "hermes_agent.run_agent", fake_run_agent)
     _TurnAgent.instances = 0
 
     runner = _make_runner(monkeypatch, config)

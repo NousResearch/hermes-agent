@@ -22,7 +22,7 @@ import hermes_yaml as yaml
 from hermes_constants import get_hermes_home
 from utils import atomic_write_text, is_truthy_value
 from hermes_cli.config import cfg_get
-from agent.skill_utils import (
+from hermes_agent.agent.skill_utils import (
     extract_skill_description,
     is_skill_description_truncated_for_prompt,
     parse_frontmatter as _parse_frontmatter,
@@ -213,7 +213,7 @@ def _resolve_skill_dir(name: str, category: str | None = None) -> Path:
     """New-skill dir; honors ``skills.create_dir`` (e.g. a shared fleet dir)."""
     base = _skills_dir()
     try:
-        from agent.skill_utils import get_skill_create_dir
+        from hermes_agent.agent.skill_utils import get_skill_create_dir
         base = get_skill_create_dir() or base
     except Exception:
         logger.debug("skills.create_dir lookup failed", exc_info=True)
@@ -221,7 +221,7 @@ def _resolve_skill_dir(name: str, category: str | None = None) -> Path:
 
 
 def _iter_skill_dirs(root: Path):
-    from agent.skill_utils import is_excluded_skill_path
+    from hermes_agent.agent.skill_utils import is_excluded_skill_path
     for skill_md in root.rglob("SKILL.md"):
         if not is_excluded_skill_path(skill_md):
             yield skill_md.parent
@@ -236,7 +236,7 @@ def _read_frontmatter_name(skill_md: Path) -> Optional[str]:
     same ``MAX_NAME_LENGTH`` budget skills_list applies when displaying it.
     """
     try:
-        from agent.skill_utils import parse_frontmatter
+        from hermes_agent.agent.skill_utils import parse_frontmatter
 
         content = skill_md.read_text(encoding="utf-8-sig", errors="replace")[:4000]
         frontmatter, _ = parse_frontmatter(content)
@@ -265,7 +265,7 @@ def _find_skill(name: str) -> Optional[dict[str, Any]]:
     skill's directory. A display name held by two or more distinct skills resolves to
     nothing: like skill_view's same-tier collision refusal, refusing to guess beats
     silently mutating the wrong skill; the directory name still resolves."""
-    from agent.skill_utils import get_all_skills_dirs
+    from hermes_agent.agent.skill_utils import get_all_skills_dirs
     local_root = None
     if "/" in name or "\\" in name:
         try:
@@ -345,7 +345,7 @@ def _find_skill_in_other_profiles(name: str) -> list[tuple[str, Path]]:
 
 def _skill_not_found_error(name: str, suffix: str = "") -> str:
     """Not-found error naming other profiles that hold the skill, plus ``suffix``."""
-    from agent.file_safety import _resolve_active_profile_name
+    from hermes_agent.agent.file_safety import _resolve_active_profile_name
     base = f"Skill '{name}' not found in active profile '{_resolve_active_profile_name()}'."
     others = _find_skill_in_other_profiles(name)
     if len(others) == 1:
@@ -758,7 +758,7 @@ def _record_success(action, name, result, *, file_path, absorbed_into, task_id,
             action, name, before=ledger_before if ledger_before is not None else [],
             after_root=_post["path"] if _post else None, evidence=_evidence)
     with suppress(Exception):
-        from agent.prompt_builder import clear_skills_system_prompt_cache
+        from hermes_agent.agent.prompt_builder import clear_skills_system_prompt_cache
         clear_skills_system_prompt_cache(clear_snapshot=True)
     # Curator telemetry: only the background review fork marks a skill agent-created
     # (foreground creates belong to the user). A recoverable curator archive keeps its

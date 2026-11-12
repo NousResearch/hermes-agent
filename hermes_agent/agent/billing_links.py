@@ -1,6 +1,6 @@
 """Provider-agnostic billing/credit recovery links for billing-classified failures.
 
-Detection lives in :mod:`agent.error_classifier` (``FailoverReason.billing``); the
+Detection lives in :mod:`hermes_agent.agent.error_classifier` (``FailoverReason.billing``); the
 :class:`BillingBlock` rides the turn result and the gateway ``message.complete`` event
 so every surface renders one structured signal instead of re-parsing error text.
 """

@@ -17,17 +17,17 @@ from unittest.mock import patch
 
 import pytest
 
-from agent.prompt_builder import PLATFORM_HINTS
-from agent.system_prompt import (
+from hermes_agent.agent.prompt_builder import PLATFORM_HINTS
+from hermes_agent.agent.system_prompt import (
     _tui_embedded_pane_clarifier,
     build_system_prompt_parts,
 )
 
 def _stable_prompt(agent):
     with (
-        patch("agent.prompt_builder.load_soul_md", return_value=""),
-        patch("agent.prompt_builder.build_environment_hints", return_value=""),
-        patch("agent.prompt_builder.build_context_files_prompt", return_value=""),
+        patch("hermes_agent.agent.prompt_builder.load_soul_md", return_value=""),
+        patch("hermes_agent.agent.prompt_builder.build_environment_hints", return_value=""),
+        patch("hermes_agent.agent.prompt_builder.build_context_files_prompt", return_value=""),
     ):
         return build_system_prompt_parts(agent)["stable"]
 

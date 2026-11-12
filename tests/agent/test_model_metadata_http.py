@@ -6,7 +6,7 @@ from threading import Thread
 
 import pytest
 
-from agent import model_metadata, model_metadata_http
+from hermes_agent.agent import model_metadata, model_metadata_http
 
 
 @pytest.fixture

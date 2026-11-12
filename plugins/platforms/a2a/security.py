@@ -16,7 +16,7 @@ import time
 import urllib.parse
 from dataclasses import dataclass
 from typing import Optional
-from agent.proxy_bypass import is_loopback_host
+from hermes_agent.agent.proxy_bypass import is_loopback_host
 from hermes_agent.gateway.platforms._shared import profile_scoped as _profile_scoped
 
 logger = logging.getLogger(__name__)
@@ -26,7 +26,7 @@ def _startup_env(name: str) -> str:
     """One A2A setting from the active profile's scope, else the env. Inside a secondary
     profile's scope a miss yields "" and never falls through to the default profile's env."""
     if _profile_scoped():
-        from agent.secret_scope import get_secret
+        from hermes_agent.agent.secret_scope import get_secret
         return (get_secret(name) or "").strip()
     return os.getenv(name, "").strip()
 
@@ -189,11 +189,11 @@ def wrap_inbound(peer: str, text: str) -> str:
 
 
 def redact_outbound(text: str) -> str:
-    """Scrub credentials (the shared egress scrub — every pattern ``agent/redact.py`` knows, fail-closed)
+    """Scrub credentials (the shared egress scrub — every pattern ``hermes_agent/agent/redact.py`` knows, fail-closed)
     and e-mail addresses before text ships to a remote peer."""
     if not text:
         return text
-    from agent.redact import redact_for_egress
+    from hermes_agent.agent.redact import redact_for_egress
 
     return _EMAIL_RE.sub("[redacted-email]", redact_for_egress(text))
 

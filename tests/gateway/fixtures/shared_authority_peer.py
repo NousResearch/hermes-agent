@@ -60,7 +60,7 @@ async def probe():
     from hermes_cli import web_server
     from hermes_cli.dashboard_auth.ws_tickets import mint_ticket
     from hermes_agent.tui_gateway import server
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     from shared_authority_recovery import prepare_crash, recover_probe, verify_envelope_guards
     from tests.waiting import async_wait_until
 

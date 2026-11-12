@@ -10,8 +10,8 @@ import urllib.request
 from contextlib import asynccontextmanager
 from typing import Dict, Optional, Set
 from utils import normalize_proxy_url
-from agent.proxy_bypass import is_loopback_host, should_bypass_proxy
-from agent import runtime_cwd as _runtime_cwd
+from hermes_agent.agent.proxy_bypass import is_loopback_host, should_bypass_proxy
+from hermes_agent.agent import runtime_cwd as _runtime_cwd
 from hermes_agent.tools.mcp_tool_errors import _MCP_HTTP_MAX_BODY_BYTES, NonMcpEndpointError, _apply_identity_header, _describe_http_failure, _handshake_answered_with_unsupported_version, _handshake_rejected_as_modern, _is_streamable_http_rejection, _make_http_rejection_recorder, _make_mcp_body_cap_transport, _make_redirect_header_stripper, _resolve_client_cert, _unwrap_exception_group
 from hermes_agent.tools.mcp_tool_lifecycle import _filter_mcp_children, _leader_start_time, _orphan_stdio_pid_servers, _orphan_stdio_pids, _stdio_pgids, _stdio_pids, _stdio_starttimes
 from hermes_cli.process_identity import own_process_groups, register_child, release_process_groups
@@ -55,11 +55,11 @@ def _mcp_proxy_mounts(httpx_mod, url: str, ssl_verify, client_cert, server_name:
     first, then the OS proxy), ``NO_PROXY`` / platform bypass list respected, ``socks://``
     normalized, and TLS settings identical to the transport they accompany.
 
-    NO_PROXY goes through ``agent.proxy_bypass.should_bypass_proxy`` — the one matcher the LLM
+    NO_PROXY goes through ``hermes_agent.agent.proxy_bypass.should_bypass_proxy`` — the one matcher the LLM
     transport and the gateway adapters use (CIDR ranges and ``*.host`` forms the stdlib check
     does not understand) — plus ``urllib.request.proxy_bypass`` for the OS bypass list
     (Windows ``ProxyOverride`` / macOS exceptions). Loopback is never dialed through a proxy
-    (``agent.proxy_bypass.is_loopback_host``), NO_PROXY or not.
+    (``hermes_agent.agent.proxy_bypass.is_loopback_host``), NO_PROXY or not.
 
     A mount wins over ``transport=`` for the URLs it matches, so each proxy transport is wrapped in
     the same wire-body cap as the direct one. A proxy the installed httpx cannot build (e.g.
@@ -94,7 +94,7 @@ class LiveEndpointUnavailable(ConnectionError):
 
 
 def _live_endpoint(server_name: str) -> Optional[tuple[str, dict]]:
-    from agent.redact import register_vault_redaction_value
+    from hermes_agent.agent.redact import register_vault_redaction_value
     from hermes_platform import declaration
     from hermes_platform.host import facts
     from hermes_platform.resolver.app import AppResolver
@@ -128,7 +128,7 @@ def _stdio_launch(config: dict) -> tuple:
     """(command, env, cwd) a stdio child is spawned with, resolved in the current profile's scope."""
     command, env = _config._resolve_stdio_command(config["command"], _config._build_safe_env(config.get("env")))
     # A stdio child inherits this process's cwd when none is configured. Hosted sessions (ACP,
-    # gateway) pin a logical cwd via agent.runtime_cwd; without it the child resolves relative
+    # gateway) pin a logical cwd via hermes_agent.agent.runtime_cwd; without it the child resolves relative
     # paths against the daemon's launch dir, not the session workspace. Explicit config always
     # wins; an existing session/TERMINAL_CWD anchor becomes the default; else native (None).
     # The resolved default is fixed for the connection's lifetime.

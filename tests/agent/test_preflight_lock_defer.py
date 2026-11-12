@@ -25,7 +25,7 @@ from tests.agent.test_turn_context import _FakeAgent, _build
 
 @pytest.fixture(autouse=True)
 def _stub_runtime_main():
-    with patch("agent.auxiliary_client.set_runtime_main", lambda *a, **k: None):
+    with patch("hermes_agent.agent.auxiliary_client.set_runtime_main", lambda *a, **k: None):
         yield
 
 

@@ -65,7 +65,7 @@ def pool_cooldown_message(provider_id: str) -> Optional[str]:
     the cooldown and its reset time instead; ``None`` when the pool is empty or a credential is
     usable (the caller keeps the missing-credential diagnostic).
     """
-    from agent.credential_pool import STATUS_DEAD, PooledCredential, _exhausted_until
+    from hermes_agent.agent.credential_pool import STATUS_DEAD, PooledCredential, _exhausted_until
     from hermes_cli.auth import read_credential_pool
 
     entries = []
@@ -128,7 +128,7 @@ def pool_billing_message(
     ``pool_cooldown_message``). ``None`` when the pool is empty, a credential is usable, no entry is
     currently benched, or none carries a billing verdict.
     """
-    from agent.credential_pool import (
+    from hermes_agent.agent.credential_pool import (
         FAILURE_REASON_BILLING,
         STATUS_DEAD,
         STATUS_EXHAUSTED,

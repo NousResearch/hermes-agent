@@ -17,7 +17,7 @@ import logging
 from typing import Any, Dict, List
 from unittest.mock import patch
 
-from agent.context_compressor import ContextCompressor, _estimate_msg_budget_tokens
+from hermes_agent.agent.context_compressor import ContextCompressor, _estimate_msg_budget_tokens
 
 LARGE_WINDOW = 1_000_000
 
@@ -33,7 +33,7 @@ def _compressor(**kw: Any) -> ContextCompressor:
     )
     defaults.update(kw)
     with patch(
-        "agent.context_compressor.get_model_context_length",
+        "hermes_agent.agent.context_compressor.get_model_context_length",
         return_value=LARGE_WINDOW,
     ):
         return ContextCompressor(**defaults)
@@ -150,7 +150,7 @@ def test_over_threshold_reclamation_no_op_warns_once(caplog) -> None:
     msgs = _history()
     billed = c.threshold_tokens + 5_000
 
-    with caplog.at_level(logging.WARNING, logger="agent.context_compressor"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.agent.context_compressor"):
         result, pruned = c.prune_tool_results_only(msgs, current_tokens=billed)
     assert (result, pruned) == (msgs, 0)
 
@@ -158,7 +158,7 @@ def test_over_threshold_reclamation_no_op_warns_once(caplog) -> None:
     assert warnings, "over-threshold reclamation no-op was silent"
 
     # Same state on the next tool iteration: deduped, not re-logged.
-    with caplog.at_level(logging.WARNING, logger="agent.context_compressor"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.agent.context_compressor"):
         c.prune_tool_results_only(msgs, current_tokens=billed)
     assert len(_over_threshold_warnings(caplog)) == len(warnings)
 
@@ -167,7 +167,7 @@ def test_under_threshold_no_op_is_not_warned(caplog) -> None:
     c = _compressor(proactive_prune_min_reclaim_tokens=10_000_000)
     msgs = _history()
 
-    with caplog.at_level(logging.WARNING, logger="agent.context_compressor"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.agent.context_compressor"):
         result, pruned = c.prune_tool_results_only(
             msgs, current_tokens=c.threshold_tokens - 1
         )

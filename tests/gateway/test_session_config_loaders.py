@@ -183,7 +183,7 @@ def test_bg_side_agent_uses_the_sessions_provider_routing(tmp_path):
     """``/bg`` through its handler: the side agent it constructs routes with the session's
     ``provider_routing``, not the runner's daemon-start copy."""
     import asyncio
-    import run_agent
+    from hermes_agent import run_agent
     from hermes_agent.gateway import session_tui_side
     from hermes_agent.gateway.session_contract import SessionRef
     from tests.gateway.test_local_create_env_refs import _owner

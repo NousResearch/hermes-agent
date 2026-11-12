@@ -212,7 +212,7 @@ def test_managed_session_override_on_env_overridden_codex_host_follows_auth_stor
 def test_secondary_profile_scoped_codex_host_follows_its_auth_store(tmp_path, monkeypatch):
     """A profile whose HERMES_CODEX_BASE_URL lives only in its secret scope (the launch profile's
     process env names another host) still re-resolves its managed bearer each turn."""
-    from agent.secret_scope import reset_secret_scope, set_secret_scope
+    from hermes_agent.agent.secret_scope import reset_secret_scope, set_secret_scope
 
     runner = _runner(monkeypatch, tmp_path)
     secondary_host = "http://127.0.0.1:9/secondary/v1"

@@ -207,7 +207,7 @@ class TestShadowedCheckpointRowsArePruned:
 
     @staticmethod
     def _agent(db):
-        from agent.session_persistence import SessionPersistenceMixin
+        from hermes_agent.agent.session_persistence import SessionPersistenceMixin
 
         class _Agent(SessionPersistenceMixin):
             pass

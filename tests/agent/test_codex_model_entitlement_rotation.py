@@ -11,8 +11,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from agent.agent_runtime_helpers import recover_with_credential_pool
-from agent.error_classifier import FailoverReason, classify_api_error
+from hermes_agent.agent.agent_runtime_helpers import recover_with_credential_pool
+from hermes_agent.agent.error_classifier import FailoverReason, classify_api_error
 
 MODEL = "gpt-5.3-codex"
 OTHER_MODEL = "gpt-5.3-codex-mini"
@@ -47,7 +47,7 @@ def pool(tmp_path, monkeypatch):
          "access_token": tok, "refresh_token": f"rt-{i}", "expires_at_ms": 4_000_000_000_000}
         for i, tok in enumerate(TOKENS)
     ]}}))
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
     return load_pool("openai-codex")
 
 
@@ -82,7 +82,7 @@ def test_entitlement_400_benches_only_that_model_and_rotates(pool):
 
 
 def test_all_entries_rejecting_falls_back_to_session_marker(pool):
-    from agent.fallback_cooldown import _is_entitlement_rejected, _mark_entitlement_rejected_model
+    from hermes_agent.agent.fallback_cooldown import _is_entitlement_rejected, _mark_entitlement_rejected_model
 
     agent = types.SimpleNamespace(
         provider="openai-codex", model=MODEL, _credential_pool=pool,

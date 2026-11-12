@@ -87,7 +87,7 @@ def _version(path):
 def start_due_boot() -> None:
     """Work out the local Desktop's due answer off the RPC path, after the setup bootstrap has recorded
     a fresh install (``begin_local_desktop_boot``)."""
-    from agent.memory_provider import spawn_context_thread
+    from hermes_agent.agent.memory_provider import spawn_context_thread
     from hermes_cli import free_tier_bootstrap, onboarding_due
 
     finish = onboarding_due.begin_boot(_due_stamp)
@@ -110,7 +110,7 @@ def begin_local_desktop_boot() -> None:
     process outlives app launches, so a later connection retries the install steps a failed boot
     left unsettled."""
     global _local_desktop_boot_started
-    from agent.memory_provider import spawn_context_thread
+    from hermes_agent.agent.memory_provider import spawn_context_thread
     from hermes_cli import free_tier_bootstrap
     from hermes_cli.process_identity import serving_local_desktop
     from hermes_agent.tui_gateway.launch_profile_policy import launch_profile_scope_if_multiplexed
@@ -136,7 +136,7 @@ _onboarding_start_lock = threading.Lock()
 
 def _active_run() -> dict:
     """The onboarding chat in progress and its run id, both None when no run is open."""
-    from agent.onboarding_record import active_session_id, load
+    from hermes_agent.agent.onboarding_record import active_session_id, load
     with _profile_db(_ONBOARDING_PROFILE) as db:
         session_id = None if db is None else active_session_id(db)
         return {"session_id": session_id, "run_id": (load(db, session_id) or {}).get("run_id") if session_id else None}
@@ -167,10 +167,10 @@ def _claim_before_run(scope: dict, *, assume_fresh: bool):
 
 @method("onboarding.start")
 def _(rid, params: dict) -> dict:
-    from agent.onboarding_facts import read_facts
-    from agent.onboarding_flow import End, Facts
-    from agent.onboarding_record import advance, load, open_session_ids, start
-    from agent.onboarding_text import CHAT_TITLE, opening_prompt
+    from hermes_agent.agent.onboarding_facts import read_facts
+    from hermes_agent.agent.onboarding_flow import End, Facts
+    from hermes_agent.agent.onboarding_record import advance, load, open_session_ids, start
+    from hermes_agent.agent.onboarding_text import CHAT_TITLE, opening_prompt
     from hermes_cli.auth_constants import AuthError
     from hermes_cli import free_tier_bootstrap
     # The app's once-per-launch start: closing the app mid-run does not count, so that run's chat goes
@@ -242,8 +242,8 @@ def _(rid, params: dict) -> dict:
 
 @method("onboarding.skip")
 def _(rid, params: dict) -> dict:
-    from agent.onboarding_flow import End
-    from agent.onboarding_record import advance, load
+    from hermes_agent.agent.onboarding_flow import End
+    from hermes_agent.agent.onboarding_record import advance, load
     session, err = _sess_nowait(params, rid)
     if err:
         return err
@@ -278,8 +278,8 @@ def _discard_unfinished_runs(db, stored_ids: list[str]) -> None:
     still live here (a backend that outlived the app), then deleted the way ``session.delete`` deletes
     it, which ends its run (``deleted``) and tells every window. A chat the delete refuses keeps its
     messages, and its run ends as ``replaced`` so it is never resumed."""
-    from agent.onboarding_flow import End
-    from agent.onboarding_record import advance, delete_chat
+    from hermes_agent.agent.onboarding_flow import End
+    from hermes_agent.agent.onboarding_record import advance, delete_chat
     for sid in _live_session_ids(stored_ids):
         _close_session_by_id(sid, end_reason="onboarding_restart")
     sessions_dir = Path(_profile_home("default") or get_hermes_home()) / "sessions"
@@ -295,21 +295,21 @@ def _discard_unfinished_runs(db, stored_ids: list[str]) -> None:
 
 
 def _setup_beat_request(sid: str, payload: dict) -> dict | None:
-    from agent.onboarding_flow import CARD_TIMEOUT_S
+    from hermes_agent.agent.onboarding_flow import CARD_TIMEOUT_S
     from hermes_agent.tui_gateway import server_requests
     return server_requests.send("setup_beat", sid, dict(payload), timeout=CARD_TIMEOUT_S)
 
 
 def _stage_onboarding_turn_note(sid: str, agent, history_empty: bool) -> None:
-    """Before a user turn in the onboarding chat (``agent.onboarding_session.onboarding_turn_note``)."""
-    from agent.onboarding_session import append_turn_note, onboarding_turn_note
+    """Before a user turn in the onboarding chat (``hermes_agent.agent.onboarding_session.onboarding_turn_note``)."""
+    from hermes_agent.agent.onboarding_session import append_turn_note, onboarding_turn_note
     from hermes_agent.tui_gateway import server_requests
     append_turn_note(agent, onboarding_turn_note(
         agent, history_empty=history_empty, card_waiting=server_requests.pending_kind(sid) == "setup_beat"))
 
 
 def register(server) -> None:
-    from agent.onboarding_record import on_ended
+    from hermes_agent.agent.onboarding_record import on_ended
 
     bind_module(globals(), server, skip=("_",))
     # Every window, not one session: the window showing the run may be subscribed to another chat.

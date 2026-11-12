@@ -17,7 +17,7 @@ from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Optional
 
-from agent.skill_utils import EXCLUDED_SKILL_DIRS
+from hermes_agent.agent.skill_utils import EXCLUDED_SKILL_DIRS
 from hermes_constants import get_hermes_home
 
 _USAGE_TS_KEYS = ("last_activity_at", "last_used_at", "last_viewed_at", "last_patched_at", "created_at")
@@ -87,7 +87,7 @@ def build_skill_nodes(skill_roots: list[tuple[str, Path]]) -> dict[str, SkillNod
     # symlink into the profile tree resolves to the external root), so a local copy of the same
     # name still classifies as its own source.
     try:
-        from agent.skill_utils import is_external_skill_path
+        from hermes_agent.agent.skill_utils import is_external_skill_path
     except Exception:
         is_external_skill_path = None  # type: ignore[assignment]
     for source, root in skill_roots:
@@ -99,7 +99,7 @@ def build_skill_nodes(skill_roots: list[tuple[str, Path]]) -> dict[str, SkillNod
             except OSError:
                 continue
             try:
-                from agent.skill_utils import parse_frontmatter
+                from hermes_agent.agent.skill_utils import parse_frontmatter
                 fm = parse_frontmatter(text)[0] or {}
             except Exception:
                 fm = {}

@@ -21,7 +21,7 @@ def isolated_home(tmp_path, monkeypatch):
     for var in ("OPENAI_API_KEY", "OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_BASE_URL",
                 "OPENROUTER_BASE_URL", "HERMES_INFERENCE_PROVIDER", "NOUS_API_KEY"):
         monkeypatch.delenv(var, raising=False)
-    monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda *_a, **_kw: False)
+    monkeypatch.setattr("hermes_agent.agent.bedrock_adapter.has_aws_credentials", lambda *_a, **_kw: False)
     from hermes_cli import free_tier_bootstrap as fb
     fb.reset_for_tests()
     return home

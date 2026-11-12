@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from agent.lsp import install, servers
+from hermes_agent.agent.lsp import install, servers
 
 
 def _npm_shim_pair(bin_dir: Path, name: str) -> Path:

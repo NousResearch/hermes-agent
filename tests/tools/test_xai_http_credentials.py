@@ -10,7 +10,7 @@ def _set_xai_oauth_unavailable(monkeypatch):
 
 
 def test_xai_credentials_fail_closed_without_profile_scope(tmp_path, monkeypatch):
-    from agent import secret_scope
+    from hermes_agent.agent import secret_scope
     from hermes_cli.config import invalidate_env_cache
     from hermes_agent.tools.xai_http import resolve_xai_http_credentials
 
@@ -34,7 +34,7 @@ def test_xai_credentials_fail_closed_without_profile_scope(tmp_path, monkeypatch
 def test_xai_credentials_do_not_fall_back_to_environ_when_scope_has_no_key(
     tmp_path, monkeypatch
 ):
-    from agent import secret_scope
+    from hermes_agent.agent import secret_scope
     from hermes_cli.config import invalidate_env_cache
     from hermes_agent.tools.xai_http import resolve_xai_http_credentials
 
@@ -87,7 +87,7 @@ def _install_fake_oauth_pool(monkeypatch, oauth_token: str) -> None:
             return _FakePool()
         raise KeyError(provider_id)
 
-    monkeypatch.setattr("agent.credential_pool.load_pool", _fake_load_pool)
+    monkeypatch.setattr("hermes_agent.agent.credential_pool.load_pool", _fake_load_pool)
 
 
 def test_prefer_api_key_wins_over_available_oauth(monkeypatch):
@@ -163,7 +163,7 @@ def test_prefer_api_key_honors_profile_scope_only_key(tmp_path, monkeypatch):
     """A key present only in the active profile's secret scope (not in
     os.environ / .env) is honored on the preferred path — the read goes
     through resolve_provider_secret, not a raw env lookup."""
-    from agent import secret_scope
+    from hermes_agent.agent import secret_scope
     from hermes_cli.config import invalidate_env_cache
     from hermes_agent.tools.xai_http import resolve_xai_http_credentials
 

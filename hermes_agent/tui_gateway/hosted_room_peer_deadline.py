@@ -90,7 +90,7 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def _fetch(request, budget):
-    from agent.ssl_verify import install_truststore
+    from hermes_agent.agent.ssl_verify import install_truststore
     from hermes_agent.tui_gateway.hosted_room_peer_http import (
         MAX_PEER_ERROR_RESPONSE_BYTES, MAX_PEER_RESPONSE_BYTES, _read_bounded_response)
 
@@ -112,7 +112,7 @@ def _fetch(request, budget):
 
 def open_peer_url(request, *, timeout: float):
     """Bound the caller's wait and outstanding attempts; never follow redirects."""
-    from agent.memory_provider import spawn_context_thread
+    from hermes_agent.agent.memory_provider import spawn_context_thread
 
     url = urllib.parse.urlsplit(request.full_url)
     target = (url.hostname, url.port or (443 if url.scheme == 'https' else 80))

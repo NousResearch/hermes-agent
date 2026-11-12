@@ -22,7 +22,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 def _make_agent_openrouter():
@@ -62,7 +62,7 @@ def _make_fallback_agent(fallback_model):
     with (
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(
             api_key="test-key",
@@ -137,7 +137,7 @@ def test_fallback_activation_resets_stale_streak():
     agent._consecutive_stale_streams = 7
 
     with patch(
-        "agent.auxiliary_client.resolve_provider_client",
+        "hermes_agent.agent.auxiliary_client.resolve_provider_client",
         return_value=(_mock_client(), "resolved"),
     ):
         assert agent._try_activate_fallback() is True

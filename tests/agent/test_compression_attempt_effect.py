@@ -12,10 +12,10 @@ from unittest.mock import patch
 
 import pytest
 
-from agent.context_compressor import ContextCompressor
-from agent.conversation_compression import compress_context
-from agent.conversation_compression_checkpoint import CompressionCheckpointUnavailable
-from agent.transports.codex_app_server_session import TurnResult
+from hermes_agent.agent.context_compressor import ContextCompressor
+from hermes_agent.agent.conversation_compression import compress_context
+from hermes_agent.agent.conversation_compression_checkpoint import CompressionCheckpointUnavailable
+from hermes_agent.agent.transports.codex_app_server_session import TurnResult
 from hermes_cli.observability import shared_metrics_events
 from hermes_cli.observability.shared_metrics_fields import compression_fields
 
@@ -59,7 +59,7 @@ class _Agent:
 
 
 def _compressor():
-    with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
+    with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100_000):
         compressor = ContextCompressor(
             model="test/main-model", provider="test-provider", threshold_percent=0.50, quiet_mode=True,
             config_context_length=100_000,
@@ -97,7 +97,7 @@ def test_committed_summary_records_trigger_effect_and_method_without_content(cap
     agent = _Agent(_compressor())
 
     with patch.object(agent.context_compressor, "_generate_summary", return_value="SANITIZED SUMMARY"):
-        with caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
+        with caplog.at_level(logging.INFO, logger="hermes_agent.agent.conversation_compression"):
             _compressed, _ = compress_context(agent, _messages(), "system prompt", approx_tokens=80_000, trigger="pre_api")
 
     [record] = _attempt_records(caplog)
@@ -121,7 +121,7 @@ def test_deterministic_fallback_commit_records_its_method_and_dropped_items(capl
     agent = _Agent(_compressor())
 
     with patch.object(agent.context_compressor, "_generate_summary", return_value=None):
-        with caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
+        with caplog.at_level(logging.INFO, logger="hermes_agent.agent.conversation_compression"):
             _compressed, _ = compress_context(agent, _messages(), "system prompt", approx_tokens=80_000)
 
     [record] = _attempt_records(caplog)
@@ -140,7 +140,7 @@ def test_gate_blocked_attempt_logs_one_blocked_record_and_no_shared_metric(caplo
     with patch.object(type(compressor), "_compression_block_reason", return_value="cooldown:42"), \
             patch.object(type(compressor), "_automatic_compression_blocked", return_value=True), \
             patch.object(compressor, "_generate_summary") as summary:
-        with caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
+        with caplog.at_level(logging.INFO, logger="hermes_agent.agent.conversation_compression"):
             returned, _ = compress_context(agent, messages, "system prompt", approx_tokens=80_000, trigger="post_tool")
 
     assert returned is messages
@@ -153,7 +153,7 @@ def test_gate_blocked_attempt_logs_one_blocked_record_and_no_shared_metric(caplo
 
 
 def test_bypassed_attempt_does_not_leak_shared_metric_state_into_pool_saturation(caplog, shared_metric_rows):
-    from agent.conversation_compression import run_compress_context_with_progress_timeout
+    from hermes_agent.agent.conversation_compression import run_compress_context_with_progress_timeout
 
     compressor = _compressor()
     agent = _Agent(compressor)
@@ -161,8 +161,8 @@ def test_bypassed_attempt_does_not_leak_shared_metric_state_into_pool_saturation
             patch.object(type(compressor), "_automatic_compression_blocked", return_value=True):
         compress_context(agent, _messages(), "system prompt", approx_tokens=80_000, trigger="post_tool")
 
-    with patch("agent.conversation_compression._try_admit_compression_job", return_value=False):
-        with caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
+    with patch("hermes_agent.agent.conversation_compression._try_admit_compression_job", return_value=False):
+        with caplog.at_level(logging.INFO, logger="hermes_agent.agent.conversation_compression"):
             run_compress_context_with_progress_timeout(
                 worker=lambda _fence: pytest.fail("a refused job must not run"), messages=_messages(),
                 system_prompt_fallback="system prompt", idle_timeout_seconds=5.0, total_ceiling_seconds=5.0,
@@ -211,7 +211,7 @@ def _codex_agent(result, auto_mode):
 def test_codex_route_logs_exactly_one_record_per_exit(caplog, shared_metric_rows, auto_mode, force, result, expected):
     agent = _codex_agent(result, auto_mode)
 
-    with caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
+    with caplog.at_level(logging.INFO, logger="hermes_agent.agent.conversation_compression"):
         compress_context(agent, [{"role": "user", "content": SECRET}], "system", approx_tokens=90_000, force=force)
 
     [record] = _attempt_records(caplog)
@@ -226,7 +226,7 @@ def test_codex_compact_that_raises_logs_one_record_and_reraises_the_same_error(c
     error = RuntimeError(f"boom {SECRET}")
     agent = _codex_agent(error, "hermes")
 
-    with caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
+    with caplog.at_level(logging.INFO, logger="hermes_agent.agent.conversation_compression"):
         with pytest.raises(RuntimeError) as excinfo:
             compress_context(agent, [{"role": "user", "content": SECRET}], "system", approx_tokens=90_000, force=True)
 
@@ -244,7 +244,7 @@ def test_codex_route_refused_for_a_required_checkpoint_logs_one_record_and_raise
     agent = _codex_agent(TurnResult(thread_id="t1"), "hermes")
     agent.compression_checkpoint_required = True
 
-    with caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
+    with caplog.at_level(logging.INFO, logger="hermes_agent.agent.conversation_compression"):
         with pytest.raises(CompressionCheckpointUnavailable, match="codex_app_server"):
             compress_context(agent, [{"role": "user", "content": SECRET}], "system", approx_tokens=90_000, force=True)
 
@@ -265,11 +265,11 @@ def test_precise_automatic_triggers_keep_the_coarse_shared_metric_bucket(trigger
 
 
 def test_blocked_record_never_carries_the_cooldown_seconds(caplog):
-    from agent.conversation_compression_telemetry import _emit_blocked_attempt_telemetry
+    from hermes_agent.agent.conversation_compression_telemetry import _emit_blocked_attempt_telemetry
 
     agent = SimpleNamespace(context_compressor=None, session_id="s", _compression_attempt_id="a")
 
-    with caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
+    with caplog.at_level(logging.INFO, logger="hermes_agent.agent.conversation_compression"):
         _emit_blocked_attempt_telemetry(agent, time.monotonic(), None, None, "structural_backoff:917")
 
     [record] = _attempt_records(caplog)
@@ -293,7 +293,7 @@ def test_overflow_block_names_the_guard_that_blocked_not_the_bypassed_cooldown(
     compressor._ineffective_compression_count = 2 if tripped else 0
 
     with patch.object(type(compressor), "_refresh_durable_guards"), \
-            caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
+            caplog.at_level(logging.INFO, logger="hermes_agent.agent.conversation_compression"):
         returned, _ = compress_context(
             agent, (messages := _messages()), "system prompt", approx_tokens=80_000, trigger="overflow",
             bypass_cooldown=True,
@@ -315,7 +315,7 @@ def _abort_on_stale_snapshot(agent):
 def _abort_at_the_commit_fence(agent):
     # The fence refuses the commit after the summary ran: the attempt restores the compressor's pre-attempt
     # state, which puts the PREVIOUS attempt's telemetry dict back before the record is written.
-    from agent.conversation_compression import CompressionCommitFence
+    from hermes_agent.agent.conversation_compression import CompressionCommitFence
 
     fence = CompressionCommitFence()
     with patch.object(fence, "begin_commit", return_value=False):
@@ -325,9 +325,9 @@ def _abort_at_the_commit_fence(agent):
 
 
 def _refuse_on_a_saturated_pool(agent):
-    from agent.conversation_compression import run_compress_context_with_progress_timeout
+    from hermes_agent.agent.conversation_compression import run_compress_context_with_progress_timeout
 
-    with patch("agent.conversation_compression._try_admit_compression_job", return_value=False):
+    with patch("hermes_agent.agent.conversation_compression._try_admit_compression_job", return_value=False):
         run_compress_context_with_progress_timeout(
             worker=lambda _fence: pytest.fail("a refused job must not run"), messages=_messages(),
             system_prompt_fallback="system prompt", idle_timeout_seconds=5.0, total_ceiling_seconds=5.0,
@@ -348,7 +348,7 @@ def test_aborted_record_after_a_commit_describes_its_own_attempt(caplog, abort, 
     agent = _Agent(_compressor())
 
     with patch.object(agent.context_compressor, "_generate_summary", return_value="SUMMARY"):
-        with caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
+        with caplog.at_level(logging.INFO, logger="hermes_agent.agent.conversation_compression"):
             compress_context(agent, _messages(), "system prompt", approx_tokens=80_000, trigger="pre_api")
             abort(agent)
 
@@ -388,9 +388,9 @@ def test_ownership_exit_records_the_session_the_attempt_ran_in(caplog, tmp_path,
     agent._session_db = SessionDB(db_path=tmp_path / "state.db")
     agent._session_db.create_session(agent.session_id, "cli", model="test/main-model")
 
-    with patch.multiple("agent.conversation_compression", **ownership_patch), \
+    with patch.multiple("hermes_agent.agent.conversation_compression", **ownership_patch), \
             patch.object(agent.context_compressor, "_generate_summary") as summary:
-        with caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
+        with caplog.at_level(logging.INFO, logger="hermes_agent.agent.conversation_compression"):
             compress_context(agent, _messages(), "system prompt", approx_tokens=80_000, trigger="post_tool")
 
     summary.assert_not_called()
@@ -405,7 +405,7 @@ def test_session_backed_commit_keeps_the_attempts_own_record(caplog, tmp_path, m
     before the record is emitted (#118580). The record must still describe this attempt and name the
     session it started in, in both commit modes."""
     from hermes_agent.hermes_state import SessionDB
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     agent = AIAgent(
@@ -418,7 +418,7 @@ def test_session_backed_commit_keeps_the_attempts_own_record(caplog, tmp_path, m
     agent.context_compressor.tail_token_budget = 10
     try:
         with patch.object(agent.context_compressor, "_generate_summary", return_value="SANITIZED SUMMARY"):
-            with caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
+            with caplog.at_level(logging.INFO, logger="hermes_agent.agent.conversation_compression"):
                 agent._compress_context(_messages(), "sys", approx_tokens=80_000, trigger="pre_api")
     finally:
         agent.close()
@@ -433,9 +433,9 @@ def test_session_backed_commit_keeps_the_attempts_own_record(caplog, tmp_path, m
 def test_committed_effect_includes_the_retained_partial_compression_tail(
     caplog, tmp_path, monkeypatch, in_place,
 ):
-    from agent.model_metadata import estimate_messages_tokens_rough
+    from hermes_agent.agent.model_metadata import estimate_messages_tokens_rough
     from hermes_agent.hermes_state import SessionDB
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     agent = AIAgent(
@@ -451,7 +451,7 @@ def test_committed_effect_includes_the_retained_partial_compression_tail(
     head_tokens = estimate_messages_tokens_rough(head)
     try:
         with patch.object(agent.context_compressor, "_generate_summary", return_value="SANITIZED SUMMARY"):
-            with caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
+            with caplog.at_level(logging.INFO, logger="hermes_agent.agent.conversation_compression"):
                 compressed, _ = agent._compress_context(
                     head, "sys", approx_tokens=80_000, force=True, verbatim_tail=tail,
                 )
@@ -474,7 +474,7 @@ def test_engine_that_returns_an_empty_transcript_logs_one_aborted_record(caplog,
     messages = _messages()
 
     with patch.object(agent.context_compressor, "compress", return_value=[]):
-        with caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
+        with caplog.at_level(logging.INFO, logger="hermes_agent.agent.conversation_compression"):
             compressed, _ = compress_context(agent, messages, "system prompt", approx_tokens=80_000, trigger="pre_api")
 
     assert compressed == _messages()

@@ -1,6 +1,6 @@
 """Catalog layers above the bundled ``locales/`` tree: plugin language packs and the user overlay.
 
-A language pack is per-language and multi-surface: ``<lang>.yaml`` (core, read by ``agent.i18n.t``),
+A language pack is per-language and multi-surface: ``<lang>.yaml`` (core, read by ``hermes_agent.agent.i18n.t``),
 ``<lang>.tui.yaml`` and ``<lang>.desktop.yaml`` (opaque to Python: parsed, flattened, served to the
 renderers over ``i18n.catalog``). Every layer is a flat ``{dotted.key: text}`` mapping and may be
 PARTIAL — it only carries the keys it overrides.
@@ -11,7 +11,7 @@ Two layers live here:
 - **overlay** — ``$HERMES_HOME/locales/<lang>[.<surface>].yaml`` of the *current* profile home.
 
 Merged views are cached per ``(lang, surface)`` / ``(home, lang, surface)``; :func:`clear_cache` (called
-by ``agent.i18n.reset_language_cache``) drops them, and every pack mutation resets the facade's caches
+by ``hermes_agent.agent.i18n.reset_language_cache``) drops them, and every pack mutation resets the facade's caches
 so the next ``t()`` sees the new layer.
 """
 
@@ -138,7 +138,7 @@ _overlay_files_cache: dict[str, frozenset[tuple[str, str]]] = {}
 
 
 def _reset_facade() -> None:
-    from agent.i18n import reset_language_cache  # lazy: the facade imports this module
+    from hermes_agent.agent.i18n import reset_language_cache  # lazy: the facade imports this module
     reset_language_cache()
 
 

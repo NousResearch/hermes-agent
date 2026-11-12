@@ -8,7 +8,7 @@ import sys
 
 from rich.markup import escape as _escape
 
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 from utils import base_url_host_matches
 
 
@@ -63,7 +63,7 @@ def _credential_pool_notice(provider: str) -> tuple:
     startup notice. *cooling* is True when the first line is a live cooldown with its remaining
     time; a dead (quarantined) sign-in adds a line naming the re-login."""
     import time
-    from agent.credential_pool import STATUS_DEAD, STATUS_EXHAUSTED, load_pool
+    from hermes_agent.agent.credential_pool import STATUS_DEAD, STATUS_EXHAUSTED, load_pool
     try:
         pool = load_pool(provider)
         if not pool.has_credentials() or pool.has_available():
@@ -176,7 +176,7 @@ def _collect_resume_entries(display_history, disp: dict, clean_assistant):
     screen, retitle the window or restyle the panel. Pure-reasoning assistant rows with no
     visible output are skipped, as are tool-call-only rows when ``resume_skip_tool_only``.
     """
-    from agent.message_metadata import withheld_prompt_text
+    from hermes_agent.agent.message_metadata import withheld_prompt_text
     from hermes_agent.tools.ansi_strip import sanitize_display_text as _sanitize_display_text
     max_user_len = int(disp.get("resume_max_user_chars", 300))
     max_asst_len = int(disp.get("resume_max_assistant_chars", 200))
@@ -528,8 +528,8 @@ class CLIAgentSetupMixin:
     def _resolve_turn_agent_config(self, user_message: str) -> dict:
         """Effective model/runtime config for one turn — always the session's primary
         provider. With a static `/fast` tier (fast / ultrafast) attach request_overrides;
-        auto/cold tiers are applied per request by agent.fast_mode instead."""
-        from agent.fast_mode import STATIC_TIERS
+        auto/cold tiers are applied per request by hermes_agent.agent.fast_mode instead."""
+        from hermes_agent.agent.fast_mode import STATIC_TIERS
         from hermes_cli.models import resolve_fast_mode_overrides
         runtime = _current_runtime(self)
         route = {"model": self.model, "runtime": runtime, "signature": _route_signature(self.model, runtime)}
@@ -755,7 +755,7 @@ class CLIAgentSetupMixin:
             # Hydrate credits notices at session OPEN (parity with the TUI) so a depletion
             # warning shows before the first message. Idempotent + fail-open in the helper.
             try:
-                from agent.credits_tracker import seed_credits_at_session_start
+                from hermes_agent.agent.credits_tracker import seed_credits_at_session_start
                 seed_credits_at_session_start(self.agent)
             except Exception:
                 pass
@@ -851,7 +851,7 @@ class CLIAgentSetupMixin:
         restored = [m for m in restored if m.get("role") != "session_meta"]
         self.conversation_history = restored
         self._resume_display_history = [m for m in display_history if m.get("role") != "session_meta"]
-        from agent.context_compressor import is_user_originated_turn
+        from hermes_agent.agent.context_compressor import is_user_originated_turn
         # Count only user-originated turns: legacy compaction handoffs are durable
         # role=user rows without display_kind.
         msg_count = len([m for m in self._resume_display_history if is_user_originated_turn(m)])

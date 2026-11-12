@@ -175,7 +175,7 @@ def test_init_env_args_uses_hermes_dotenv_for_empty_shell_env(monkeypatch):
 
 def test_init_env_args_uses_active_profile_for_forwarded_env(monkeypatch):
     """Docker forwarding must resolve the routed profile's secret scope."""
-    from agent import secret_scope as ss
+    from hermes_agent.agent import secret_scope as ss
 
     env = _make_execute_only_env(forward_env=["SERVICE_TOKEN"])
     monkeypatch.setenv("SERVICE_TOKEN", "token-for-default")
@@ -195,7 +195,7 @@ def test_init_env_args_uses_active_profile_for_forwarded_env(monkeypatch):
 
 def test_init_env_args_omits_missing_scoped_forwarded_env(monkeypatch):
     """A missing routed secret must not reintroduce the process env value."""
-    from agent import secret_scope as ss
+    from hermes_agent.agent import secret_scope as ss
 
     env = _make_execute_only_env(forward_env=["SERVICE_TOKEN"])
     monkeypatch.setenv("SERVICE_TOKEN", "token-for-default")
@@ -215,7 +215,7 @@ def test_init_env_args_omits_missing_scoped_forwarded_env(monkeypatch):
 
 def test_runtime_exec_tracks_scope_and_clears_missing_value(monkeypatch):
     """Shared Docker containers must refresh and clear profile-scoped values."""
-    from agent import secret_scope as ss
+    from hermes_agent.agent import secret_scope as ss
 
     env = _make_execute_only_env(forward_env=["SERVICE_TOKEN"])
     monkeypatch.setenv("SERVICE_TOKEN", "token-for-default")
@@ -256,7 +256,7 @@ def test_runtime_exec_tracks_scope_and_clears_missing_value(monkeypatch):
 
 def test_wrapped_exec_scopes_explicit_forward_env_across_profiles(monkeypatch, tmp_path):
     """The shared snapshot must not resurrect an explicit forward-only value."""
-    from agent import secret_scope as ss
+    from hermes_agent.agent import secret_scope as ss
 
     env = _make_execute_only_env(forward_env=["EXPLICIT_TOKEN"])
     env.cwd = str(tmp_path)

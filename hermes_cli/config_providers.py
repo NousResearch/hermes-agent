@@ -536,7 +536,7 @@ def get_custom_provider_context_length(
     config: Optional[dict[str, Any]] = None) -> Optional[int]:
     """Per-model ``context_length`` override from a route-matching entry, or ``None``.
 
-    Before this helper existed, the lookup was duplicated in ``run_agent.py``'s startup path only; every
+    Before this helper existed, the lookup was duplicated in ``hermes_agent/run_agent.py``'s startup path only; every
     other path (notably ``/model`` switch) fell back to the 128K default. See #15779.
     """
     from hermes_cli.config import get_compatible_custom_providers, load_config_readonly

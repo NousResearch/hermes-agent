@@ -11,7 +11,7 @@ import pytest
 
 def _scripted_stream_client(monkeypatch, streams):
     """A GeminiNativeClient whose Nth stream yields ``streams[N]``: event dicts, then httpx drops on ``"DROP"``."""
-    from agent.gemini_native_adapter import GeminiNativeClient
+    from hermes_agent.agent.gemini_native_adapter import GeminiNativeClient
 
     sent = []
 
@@ -41,7 +41,7 @@ def _scripted_stream_client(monkeypatch, streams):
         def close(self):
             return None
 
-    monkeypatch.setattr("agent.gemini_native_adapter.httpx.Client", lambda *a, **k: DummyHTTP())
+    monkeypatch.setattr("hermes_agent.agent.gemini_native_adapter.httpx.Client", lambda *a, **k: DummyHTTP())
     client = GeminiNativeClient(api_key="AQ.test", base_url="https://generativelanguage.googleapis.com/v1beta")
     kwargs = {"model": "gemini-4-argon", "messages": [{"role": "user", "content": "count"}], "stream": True}
     return client, kwargs, sent
@@ -70,7 +70,7 @@ def test_dropped_long_decode_stream_resumes_from_its_last_checkpoint(monkeypatch
     ([[_ld_event("1\n", token="ckpt-1"), "DROP"], ["DROP"]], 4),  # bounded: one token rides at most 3 resends
 ])
 def test_dropped_stream_without_a_clean_checkpoint_raises(monkeypatch, streams, requests):
-    from agent.gemini_native_adapter import GeminiAPIError
+    from hermes_agent.agent.gemini_native_adapter import GeminiAPIError
 
     client, kwargs, sent = _scripted_stream_client(monkeypatch, streams)
     with pytest.raises(GeminiAPIError) as excinfo:
@@ -82,7 +82,7 @@ def test_dropped_stream_without_a_clean_checkpoint_raises(monkeypatch, streams, 
 def test_long_decode_hop_ceiling_ends_as_length(monkeypatch):
     """A server that keeps answering CONTINUATION must not bill forever: past ceil(budget / 32,768) + 1
     hops the turn ends as ``length`` (unary and streaming), with usage summed over the hops taken."""
-    from agent.gemini_native_adapter import GeminiNativeClient
+    from hermes_agent.agent.gemini_native_adapter import GeminiNativeClient
 
     def hop(n):
         cand = {"content": {"role": "model", "parts": [{"text": f"p{n} "}]}, "finishReason": "CONTINUATION",
@@ -116,7 +116,7 @@ def test_long_decode_hop_ceiling_ends_as_length(monkeypatch):
         def close(self):
             return None
 
-    monkeypatch.setattr("agent.gemini_native_adapter.httpx.Client", lambda *a, **k: DummyHTTP())
+    monkeypatch.setattr("hermes_agent.agent.gemini_native_adapter.httpx.Client", lambda *a, **k: DummyHTTP())
     client = GeminiNativeClient(api_key="AQ.test", base_url="https://generativelanguage.googleapis.com/v1beta")
     kwargs = {"model": "gemini-4-argon", "messages": [{"role": "user", "content": "go"}], "max_tokens": 65_536}
 
@@ -136,8 +136,8 @@ def test_long_decode_hop_ceiling_ends_as_length(monkeypatch):
 def test_long_decode_usage_keeps_canonical_buckets_on_first_hop():
     """Context engines read the canonical buckets: input/cache_read follow the same first-hop split as
     prompt_tokens, so cache_read never exceeds the context-facing prompt."""
-    from agent.gemini_long_decode import merge_hop_usage
-    from agent.gemini_native_adapter import _usage_from_metadata
+    from hermes_agent.agent.gemini_long_decode import merge_hop_usage
+    from hermes_agent.agent.gemini_native_adapter import _usage_from_metadata
 
     hops = [{"promptTokenCount": 100, "cachedContentTokenCount": 40, "candidatesTokenCount": 32768},
             {"promptTokenCount": 32868, "cachedContentTokenCount": 32800, "candidatesTokenCount": 10}]

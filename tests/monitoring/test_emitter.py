@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from agent.monitoring.emitter import MonitoringEmitter
+from hermes_agent.agent.monitoring.emitter import MonitoringEmitter
 
 def test_emit_never_raises_when_disabled():
     em = MonitoringEmitter(enabled=False)
@@ -11,7 +11,7 @@ def test_emit_never_raises_when_disabled():
     em.close()
 
 def test_process_singleton_stays_dormant_until_subscribed():
-    from agent.monitoring import emitter
+    from hermes_agent.agent.monitoring import emitter
 
     emitter.reset_emitter_for_tests()
     try:

@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.delegation_provider import DelegationProvider
+from hermes_agent.agent.delegation_provider import DelegationProvider
 
 CODEX = {"base_url": "https://chatgpt.com/backend-api/codex", "api_key": "codex-key", "model": "gpt-6-astra"}
 LOCAL = {"base_url": "http://127.0.0.1:8080/v1", "api_key": "k", "model": "qwen3-local"}
@@ -60,7 +60,7 @@ def _spawn(routes, *, cfg=None, parent=None, construct=_construct, provider=None
     with (
         patch("hermes_agent.tools.delegate_tool._load_config", return_value=cfg or {}),
         patch("hermes_agent.tools.delegate_tool_routes._active_provider", return_value=provider or _Backend(routes)),
-        patch("run_agent.AIAgent", side_effect=construct) as agent,
+        patch("hermes_agent.run_agent.AIAgent", side_effect=construct) as agent,
         patch("hermes_agent.tools.delegate_tool._run_batch",
               side_effect=lambda batch, background: batches.append(batch) or json.dumps(
                   {"status": "built", **({"refused": batch.refused} if batch.refused else {})})),
@@ -98,7 +98,7 @@ def test_a_tier_the_route_does_not_offer_refuses_that_task_and_its_sibling_runs(
 @pytest.mark.parametrize("account_offers, expected", [(False, None), (True, "ultrafast"), (None, "ultrafast")])
 def test_ultrafast_follows_the_codex_account_like_the_fast_command(account_offers, expected):
     """The Codex backend serves another tier to a plan without ultrafast; refuse unless the account lists it."""
-    with patch("agent.codex_service_tiers.codex_account_offers_tier", return_value=account_offers):
+    with patch("hermes_agent.agent.codex_service_tiers.codex_account_offers_tier", return_value=account_offers):
         result, built, _ = _spawn([{**CODEX, "model": "gpt-6.1-sol", "service_tier": "ultrafast"}])
     if expected is None:
         assert "not available" in result["error"] and built == []
@@ -115,7 +115,7 @@ def test_ultrafast_is_checked_against_the_routes_own_account():
         seen.append(access_token)
         return access_token == "routed-account-key"
 
-    with patch("agent.codex_service_tiers.codex_account_offers_tier", side_effect=offers):
+    with patch("hermes_agent.agent.codex_service_tiers.codex_account_offers_tier", side_effect=offers):
         result, built, _ = _spawn([{**CODEX, "api_key": "routed-account-key", "model": "gpt-6.1-sol",
                                     "service_tier": "ultrafast"}])
     assert seen == ["routed-account-key"]
@@ -137,7 +137,7 @@ def test_route_tier_survives_a_provider_extra_body_merged_at_construction():
 
 def test_default_backend_never_reads_a_tier_from_the_delegation_section():
     """``service_tier`` is not a delegation-section key: the default route stays exactly today's."""
-    from agent.delegation_registry import get_active_provider
+    from hermes_agent.agent.delegation_registry import get_active_provider
     result, (child,), _ = _spawn([None], cfg={**CODEX, "service_tier": "fast"}, provider=get_active_provider({}))
     assert result == {"status": "built"}
     assert child.get("service_tier") is None and "service_tier" not in child["request_overrides"]
@@ -172,7 +172,7 @@ def test_labelled_route_result_reports_what_the_child_ran_on():
 def test_every_backend_routed_result_names_its_backend_and_the_default_keeps_its_shape():
     """An unlabelled backend route still reports its backend and what ran; the default backend's children leave the
     result entry exactly as before."""
-    from agent.delegation_registry import get_active_provider
+    from hermes_agent.agent.delegation_registry import get_active_provider
     from hermes_agent.tools.delegate_tool_child_run import _SchemaOutcome, _build_result_entry
 
     def entry_of(child):

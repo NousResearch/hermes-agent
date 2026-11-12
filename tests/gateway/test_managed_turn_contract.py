@@ -29,7 +29,7 @@ def assignment(tmp_path, monkeypatch, *, finite=True, unattended=False, yolo=Fal
 
 @pytest.mark.parametrize('unattended', [False, True])
 def test_child_executes_under_finite_policy_and_preserves_receipt(tmp_path, monkeypatch, unattended):
-    from agent import managed_worker as worker
+    from hermes_agent.agent import managed_worker as worker
     from hermes_agent.gateway.session_finite import finite_turn_required, unattended_turn
     from hermes_agent.tools.approval import _yolo_active, clear_session
     frame, _ = assignment(tmp_path, monkeypatch, unattended=unattended)
@@ -71,11 +71,11 @@ def test_child_executes_under_finite_policy_and_preserves_receipt(tmp_path, monk
     monkeypatch.setattr(worker, 'discover_profile_mcp', lambda policy: None)
     monkeypatch.setattr(worker, 'retire_agent', lambda agent: None)
     monkeypatch.setattr(worker, 'WorkerControls', Controls)
-    monkeypatch.setattr('agent.runtime_session_store.WorkerRPC', lambda home: lambda *a, **k: {'owner_epoch': 1})
-    monkeypatch.setattr('agent.runtime_session_store.RuntimeSessionStore', Store)
+    monkeypatch.setattr('hermes_agent.agent.runtime_session_store.WorkerRPC', lambda home: lambda *a, **k: {'owner_epoch': 1})
+    monkeypatch.setattr('hermes_agent.agent.runtime_session_store.RuntimeSessionStore', Store)
     monkeypatch.setattr('hermes_agent.tools.process_registry.process_registry.recover_from_checkpoint', lambda: None)
-    monkeypatch.setattr('run_agent.AIAgent', Agent)
-    monkeypatch.setattr('agent.title_generator.wait_for_title_upgrades', lambda: None)
+    monkeypatch.setattr('hermes_agent.run_agent.AIAgent', Agent)
+    monkeypatch.setattr('hermes_agent.agent.title_generator.wait_for_title_upgrades', lambda: None)
     clear_session('managed-contract')  # the child owns a fresh approval registry
     worker.execute(frame, SimpleNamespace(send=lambda kind, **payload: frames.append({'type': kind, **payload})))
     assert observed == [(True, unattended, unattended)]
@@ -109,7 +109,7 @@ def test_current_yolo_revocation_overrides_frozen_launch(tmp_path, monkeypatch):
 
 
 def test_committed_surface_crosses_the_bootstrap_validated_and_one_turn_only(tmp_path, monkeypatch):
-    from agent.managed_worker import validate_bootstrap
+    from hermes_agent.agent.managed_worker import validate_bootstrap
     from hermes_agent.gateway.session_kanban import run_worker_turns
     from hermes_agent.tools.voice_live import VOICE_LIVE_TURN_NOTE
     frame, (authority, ref, row, policy, scope) = assignment(tmp_path, monkeypatch)

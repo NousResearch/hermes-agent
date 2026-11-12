@@ -9,7 +9,7 @@ with on the first turn of that session. Two pieces make that true:
    from current config). If this helper ever started clobbering it, the
    gateway's refresh would be silently undone.
 2. The per-turn budget object is rebuilt from ``agent.max_iterations`` at the
-   start of every turn (``agent/turn_context.py`` -> ``IterationBudget``), so
+   start of every turn (``hermes_agent/agent/turn_context.py`` -> ``IterationBudget``), so
    refreshing ``max_iterations`` on the cached agent is sufficient to change
    the operative cap the agent loop checks.
 
@@ -20,8 +20,8 @@ assignment, so they fail if either contract regresses.
 import time
 from types import SimpleNamespace
 
-from agent.iteration_budget import IterationBudget
-from agent.session_activity import ActivityProvenance
+from hermes_agent.agent.iteration_budget import IterationBudget
+from hermes_agent.agent.session_activity import ActivityProvenance
 
 
 def _make_cached_agent(max_iterations: int) -> SimpleNamespace:

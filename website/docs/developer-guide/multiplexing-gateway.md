@@ -12,7 +12,7 @@ by `hermes_cli/gateway_multiplex_mode.py::resolve_multiplex_mode`, which runs
 the `hermes gateway migrate` preflight and keeps the gateway standalone when a
 secondary still runs its own gateway, a blocker exists, or the host cannot be
 migrated (see "The mode flag"). This document is the design rationale
-referenced from `agent/secret_scope.py` ("Workstream A"): what is isolated per
+referenced from `hermes_agent/agent/secret_scope.py` ("Workstream A"): what is isolated per
 profile, the mechanism that isolates it, and what deliberately stays
 process-global.
 
@@ -50,7 +50,7 @@ is documented as a known limitation at the end of this document.
   tokens only; a blank or unrecognized value returns "no override" so an empty
   deployment secret cannot shadow a config opt-in.
 - At startup, `GatewayRunner.__init__` calls
-  `agent.secret_scope.set_multiplex_active(...)` once. `_MULTIPLEX_ACTIVE` is
+  `hermes_agent.agent.secret_scope.set_multiplex_active(...)` once. `_MULTIPLEX_ACTIVE` is
   a plain module global, not a contextvar: it describes the deployment mode,
   not a per-task value. Its only job is to arm the fail-closed behavior in
   `get_secret()`.
@@ -120,7 +120,7 @@ via `copy_context()` and unwind deterministically — nothing is written to
 
 ## Workstream A: context-local secret scope
 
-`agent/secret_scope.py` exists because the obvious implementation — union all
+`hermes_agent/agent/secret_scope.py` exists because the obvious implementation — union all
 profile `.env` files into `os.environ` — leaks profile A's keys into profile
 B's turns and into every subprocess spawned with `env=dict(os.environ)`.
 
@@ -331,6 +331,6 @@ out of scope for this document.
 
 - [Multi-profile gateways](../user-guide/multi-profile-gateways.md) — user-facing guide, including `profile_routes`
   and the standalone one-gateway-per-profile alternative.
-- `agent/secret_scope.py`, `hermes_constants.py`, `hermes_agent/gateway/profile_routing.py`,
+- `hermes_agent/agent/secret_scope.py`, `hermes_constants.py`, `hermes_agent/gateway/profile_routing.py`,
   `hermes_agent/gateway/run.py` (`_profile_runtime_scope`), `hermes_cli/profiles.py`
   (`profiles_to_serve`), `hermes_agent/gateway/session.py`, `hermes_agent/tui_gateway/methods_profiles.py`.

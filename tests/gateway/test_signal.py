@@ -296,22 +296,22 @@ class TestSignalSessionSource:
 
 
 # ---------------------------------------------------------------------------
-# Phone Redaction in agent/redact.py
+# Phone Redaction in hermes_agent/agent/redact.py
 # ---------------------------------------------------------------------------
 
 class TestSignalPhoneRedaction:
     @pytest.fixture(autouse=True)
     def _ensure_redaction_enabled(self, monkeypatch):
-        # agent.redact snapshots _REDACT_ENABLED at import time from the
+        # hermes_agent.agent.redact snapshots _REDACT_ENABLED at import time from the
         # HERMES_REDACT_SECRETS env var. monkeypatch.delenv is too late —
         # the module was already imported during test collection with
         # whatever value was in the env then. Force the flag directly.
         # See skill: cross-test-pollution Pattern 5.
         monkeypatch.delenv("HERMES_REDACT_SECRETS", raising=False)
-        monkeypatch.setattr("agent.redact._REDACT_ENABLED", True)
+        monkeypatch.setattr("hermes_agent.agent.redact._REDACT_ENABLED", True)
 
     def test_us_number(self):
-        from agent.redact import redact_sensitive_text
+        from hermes_agent.agent.redact import redact_sensitive_text
         result = redact_sensitive_text("Call +15551234567 now")
         assert "+15551234567" not in result
         assert "+155" in result  # Prefix preserved

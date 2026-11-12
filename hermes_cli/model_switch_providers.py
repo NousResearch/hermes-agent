@@ -13,7 +13,7 @@ import time
 import threading as _threading
 from dataclasses import dataclass, field
 from typing import Any, List, Optional
-from agent.command_token_source import build_command_token_provider, materialize_probe_api_key
+from hermes_agent.agent.command_token_source import build_command_token_provider, materialize_probe_api_key
 from hermes_cli.providers import custom_provider_aliases, custom_provider_slug, get_label
 from utils import base_url_host_matches
 
@@ -174,7 +174,7 @@ def _credential_pool_is_usable(provider: str, *, raw_pool_present: bool = False,
     accepts a pool whose entries are all in cooldown: a rate-limited provider is not a signed-out
     one, and limits are per-model for many providers, so another model may still work."""
     try:
-        from agent.credential_pool import load_pool
+        from hermes_agent.agent.credential_pool import load_pool
         pool = load_pool(provider)
         if pool.has_credentials():
             return for_picker or pool.has_available()
@@ -272,7 +272,7 @@ def _iter_builtin_candidates(models_dev_data: dict, excluded: set, seen: set):
     silently switch a user onto an endpoint they may have no key for), aliases of another canonical
     profile ("kimi" -> "kimi-coding"), non-api_key auth types (section 2 handles them) and
     unroutable providers. PROVIDER_REGISTRY env var names win over models.dev's."""
-    from agent.models_dev import models_dev_provider_map
+    from hermes_agent.agent.models_dev import models_dev_provider_map
     from hermes_cli.auth import PROVIDER_REGISTRY, is_runtime_provider_routable
     from hermes_cli.models import _AGGREGATOR_PROVIDERS
     from hermes_cli.providers import ALIASES
@@ -343,7 +343,7 @@ def _overlay_has_env_creds(pid: str, hermes_slug: str, overlay, read_env) -> boo
     has_creds = False
     if overlay.auth_type == "vertex":
         try:
-            from agent.vertex_adapter import has_vertex_credentials
+            from hermes_agent.agent.vertex_adapter import has_vertex_credentials
             has_creds = has_vertex_credentials()
         except Exception as exc:
             logger.debug("Vertex credential check failed: %s", exc)
@@ -393,7 +393,7 @@ def _has_aws_sdk_creds_for_listing(slug: str, current_provider: str) -> bool:
     if str(slug or "").strip().lower() != str(current_provider or "").strip().lower():
         return False
     try:
-        from agent.bedrock_adapter import has_aws_credentials
+        from hermes_agent.agent.bedrock_adapter import has_aws_credentials
         return bool(has_aws_credentials())
     except Exception:
         return False
@@ -659,7 +659,7 @@ def _collect_authed_provider_slugs(
     Env vars are read through the per-profile secret scope. AWS SDK providers are skipped
     (heavier detection)."""
     from hermes_cli.model_switch import _scoped_key_env
-    from agent.models_dev import models_dev_provider_map
+    from hermes_agent.agent.models_dev import models_dev_provider_map
     from hermes_cli.auth import PROVIDER_REGISTRY
     from hermes_cli.providers import hermes_overlays
     from hermes_cli.models import CANONICAL_PROVIDERS
@@ -845,7 +845,7 @@ def _lap_lmstudio_row(b: _PickerBuild, user_providers: dict) -> None:
 def _lap_builtin_rows(b: _PickerBuild, data: dict, user_providers: dict) -> None:
     """Section 1: models.dev-mapped providers with api_key auth."""
     from hermes_cli.model_switch import _declared_model_ids, _scoped_key_env
-    from agent.models_dev import get_provider_info
+    from hermes_agent.agent.models_dev import get_provider_info
     for hermes_id, mdev_id, pconfig, env_vars in _iter_builtin_candidates(data, b.excluded, b.seen_slugs):
         # Per-profile scope, never raw os.environ: a secondary profile's picker otherwise listed the
         # LAUNCH profile's env-keyed providers and hid its own .env-keyed ones.
@@ -898,7 +898,7 @@ def _overlay_has_creds(b: _PickerBuild, pid: str, hermes_slug: str, overlay) -> 
         # The pool gates anthropic behind is_provider_explicitly_configured() (aux tasks must not
         # consume Claude Code tokens); the picker is discovery-oriented, so read the files directly.
         try:
-            from agent.anthropic_credentials import read_claude_code_credentials, read_hermes_oauth_credentials
+            from hermes_agent.agent.anthropic_credentials import read_claude_code_credentials, read_hermes_oauth_credentials
             hermes_creds = read_hermes_oauth_credentials()
             cc_creds = read_claude_code_credentials()
             if (hermes_creds and hermes_creds.get("accessToken")) or (cc_creds and cc_creds.get("accessToken")):
@@ -910,7 +910,7 @@ def _overlay_has_creds(b: _PickerBuild, pid: str, hermes_slug: str, overlay) -> 
 
 def _lap_overlay_rows(b: _PickerBuild, data: dict, user_providers: dict) -> None:
     """Section 2: Hermes-only providers (nous, openai-codex, opencode-go, plugin overlays, ...)."""
-    from agent.models_dev import models_dev_provider_map
+    from hermes_agent.agent.models_dev import models_dev_provider_map
     from hermes_cli.model_switch import _declared_model_ids
     from hermes_cli.providers import hermes_overlays
 
@@ -1249,7 +1249,7 @@ def list_authenticated_providers(
     historical coupling, ``False`` retains the full 5s budget for callers that only want
     exhausted-pool visibility (#103843)."""
 
-    from agent.models_dev import fetch_models_dev
+    from hermes_agent.agent.models_dev import fetch_models_dev
     from hermes_cli.config import coerce_provider_id, stringify_provider_map
 
     non_blocking_catalogs = bool(non_blocking_catalogs)
@@ -1426,7 +1426,7 @@ def _attach_window_model_notes(providers: list[dict]) -> None:
         usage = fresh or nous_picker_usage(any_age=True)
         if usage is None:
             return
-        from agent.plan_limits import cached_pricing
+        from hermes_agent.agent.plan_limits import cached_pricing
         pricing = cached_pricing()  # this profile's catalog only (cache-only, no credential refresh)
         models = [str(m) for m in nous.get("models", [])]
         # Subscription-billed rows carry no tag (usage_tag_levels).

@@ -55,7 +55,7 @@ def runtime(request, tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(tmp_path / "shared-auth"))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
-    from agent import billing_usage, billing_view, secret_scope, subscription_view
+    from hermes_agent.agent import billing_usage, billing_view, secret_scope, subscription_view
     from hermes_cli import auth, nous_account, nous_billing
     from hermes_agent.tui_gateway import launch_profile_policy, server
 
@@ -186,7 +186,7 @@ def test_sibling_routes_use_the_same_profile_scope(runtime, caplog, method, para
 
 @pytest.mark.parametrize("profile", ["launch", "secondary"])
 def test_step_up_binds_the_profile_before_starting_the_external_flow(runtime, monkeypatch, profile):
-    from agent.secret_scope import get_secret
+    from hermes_agent.agent.secret_scope import get_secret
     from hermes_cli import auth
     from hermes_constants import get_hermes_home
 

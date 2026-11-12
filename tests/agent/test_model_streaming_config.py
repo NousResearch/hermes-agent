@@ -12,7 +12,7 @@ import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 _BASE = {
     "model": {
@@ -37,7 +37,7 @@ def _build_agent(config):
         )
 
 
-@patch("agent.process_bootstrap.OpenAI")
+@patch("hermes_agent.agent.process_bootstrap.OpenAI")
 def test_streaming_absent_keeps_streaming_enabled(mock_openai):
     mock_openai.return_value = MagicMock()
     agent = _build_agent(_BASE)
@@ -45,7 +45,7 @@ def test_streaming_absent_keeps_streaming_enabled(mock_openai):
     assert agent._disable_streaming is False
 
 
-@patch("agent.process_bootstrap.OpenAI")
+@patch("hermes_agent.agent.process_bootstrap.OpenAI")
 def test_streaming_string_false_seeds_disable_streaming(mock_openai):
     """String falsy values ('false', '0') must also disable streaming —
     YAML users commonly quote booleans."""
@@ -55,7 +55,7 @@ def test_streaming_string_false_seeds_disable_streaming(mock_openai):
     assert agent._disable_streaming is True
 
 
-@patch("agent.process_bootstrap.OpenAI")
+@patch("hermes_agent.agent.process_bootstrap.OpenAI")
 def test_streaming_invalid_value_keeps_streaming_enabled(mock_openai):
     """Unrecognized values warn and keep the safe default (streaming on),
     rather than silently disabling or crashing init."""
@@ -65,7 +65,7 @@ def test_streaming_invalid_value_keeps_streaming_enabled(mock_openai):
     assert agent._disable_streaming is False
 
 
-@patch("agent.process_bootstrap.OpenAI")
+@patch("hermes_agent.agent.process_bootstrap.OpenAI")
 def test_legacy_string_model_section_does_not_crash(mock_openai):
     """The top-level ``model`` key is a legacy string; init must not crash."""
     mock_openai.return_value = MagicMock()
@@ -74,7 +74,7 @@ def test_legacy_string_model_section_does_not_crash(mock_openai):
     assert agent._disable_streaming is False
 
 
-@patch("agent.process_bootstrap.OpenAI")
+@patch("hermes_agent.agent.process_bootstrap.OpenAI")
 def test_streaming_false_read_from_real_config_file(mock_openai):
     """End-to-end: a real config.yaml in HERMES_HOME (sandboxed per-test by
     conftest) with ``model.streaming: false`` must seed the flag through the

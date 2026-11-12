@@ -21,8 +21,8 @@ from unittest.mock import patch
 
 import pytest
 
-from agent.auxiliary_client import _fallback_entry_timeout, _call_fallback_candidate_sync
-from agent.context_compressor import ContextCompressor
+from hermes_agent.agent.auxiliary_client import _fallback_entry_timeout, _call_fallback_candidate_sync
+from hermes_agent.agent.context_compressor import ContextCompressor
 
 
 # ---------------------------------------------------------------------------
@@ -32,7 +32,7 @@ from agent.context_compressor import ContextCompressor
 
 def _patch_task_config(chain):
     return patch(
-        "agent.auxiliary_client._get_auxiliary_task_config",
+        "hermes_agent.agent.auxiliary_client._get_auxiliary_task_config",
         return_value={"fallback_chain": chain},
     )
 
@@ -78,7 +78,7 @@ def test_fallback_candidate_call_uses_entry_timeout():
 
 
 def _make_compressor():
-    with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+    with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000):
         return ContextCompressor(model="main-model", quiet_mode=True)
 
 
@@ -92,9 +92,9 @@ def _msgs():
 
 def _fail_with_timeout(compressor, now):
     with patch(
-        "agent.context_compressor.call_llm",
+        "hermes_agent.agent.context_compressor.call_llm",
         side_effect=TimeoutError("Request timed out."),
-    ), patch("agent.context_compressor.time.monotonic", return_value=now):
+    ), patch("hermes_agent.agent.context_compressor.time.monotonic", return_value=now):
         return compressor._generate_summary(_msgs())
 
 
@@ -120,9 +120,9 @@ def test_non_timeout_transient_errors_keep_flat_cooldown():
     escalation is scoped to timeout-class failures only."""
     c = _make_compressor()
     with patch(
-        "agent.context_compressor.call_llm",
+        "hermes_agent.agent.context_compressor.call_llm",
         side_effect=RuntimeError("rate limit exceeded"),
-    ), patch("agent.context_compressor.time.monotonic", return_value=1000.0):
+    ), patch("hermes_agent.agent.context_compressor.time.monotonic", return_value=1000.0):
         assert c._generate_summary(_msgs()) is None
     assert c._summary_failure_cooldown_until == 1000.0 + 60
 

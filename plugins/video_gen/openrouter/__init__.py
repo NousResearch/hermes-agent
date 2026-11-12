@@ -17,7 +17,7 @@ import logging
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from agent.video_gen_provider import VideoGenProvider, error_response, save_url_video, success_response
+from hermes_agent.agent.video_gen_provider import VideoGenProvider, error_response, save_url_video, success_response
 
 logger = logging.getLogger(__name__)
 

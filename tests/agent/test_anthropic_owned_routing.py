@@ -7,8 +7,8 @@ import httpx
 import pytest
 from openai import AuthenticationError
 
-from agent import anthropic_credentials as ac
-from agent import auxiliary_client as aux
+from hermes_agent.agent import anthropic_credentials as ac
+from hermes_agent.agent import auxiliary_client as aux
 
 
 def _seed(tmp_path, monkeypatch):

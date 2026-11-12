@@ -10,8 +10,8 @@ from unittest.mock import patch
 
 import httpx
 
-from agent.auxiliary_client import _create_openai_client, _openai_http_client_kwargs
-from agent.process_bootstrap import _get_proxy_for_base_url
+from hermes_agent.agent.auxiliary_client import _create_openai_client, _openai_http_client_kwargs
+from hermes_agent.agent.process_bootstrap import _get_proxy_for_base_url
 
 
 def _pool_types(http_client) -> list:
@@ -22,7 +22,7 @@ def _pool_types(http_client) -> list:
     ]
 
 
-@patch("agent.auxiliary_client.OpenAI")
+@patch("hermes_agent.agent.auxiliary_client.OpenAI")
 def test_create_openai_client_routes_via_env_proxy(mock_openai, monkeypatch):
     for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
                 "https_proxy", "http_proxy", "all_proxy", "NO_PROXY", "no_proxy"):

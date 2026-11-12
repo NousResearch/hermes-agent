@@ -28,7 +28,7 @@ def _make_agent(monkeypatch):
     """Minimal AIAgent-like stub, mirroring test_start_order_gate.py."""
     monkeypatch.setenv("OPENROUTER_API_KEY", "")
     monkeypatch.setenv("HERMES_INFERENCE_PROVIDER", "")
-    import run_agent as _ra
+    import hermes_agent.run_agent as _ra
 
     class _Stub:
         _interrupt_requested = False
@@ -106,7 +106,7 @@ def _slow_execute(delay: float = 0.25):
 
 def test_heartbeat_touches_periodically_and_stops():
     """The heartbeat thread touches activity on cadence, then exits on stop."""
-    import agent.tool_executor as te
+    import hermes_agent.agent.tool_executor as te
 
     touches: list = []
     stop = threading.Event()
@@ -143,7 +143,7 @@ def test_slow_tool_call_refreshes_activity_during_execution(monkeypatch):
     completion stamp existed; a silent 30+ minute call left the clock
     frozen and the gateway watchdog abandoned the turn.
     """
-    import agent.tool_executor as te
+    import hermes_agent.agent.tool_executor as te
 
     monkeypatch.setattr(te, "_TOOL_ACTIVITY_HEARTBEAT_INTERVAL_S", 0.05)
 
@@ -174,7 +174,7 @@ def test_slow_tool_call_refreshes_activity_during_execution(monkeypatch):
 
 def test_fast_tool_call_does_not_leave_stray_heartbeat(monkeypatch):
     """A quick tool exits the heartbeat thread; no touches after return."""
-    import agent.tool_executor as te
+    import hermes_agent.agent.tool_executor as te
 
     monkeypatch.setattr(te, "_TOOL_ACTIVITY_HEARTBEAT_INTERVAL_S", 0.05)
 
@@ -203,7 +203,7 @@ def test_fast_tool_call_does_not_leave_stray_heartbeat(monkeypatch):
 def test_heartbeat_stops_when_execute_raises(monkeypatch):
     """If the tool call raises, the heartbeat thread still stops (no leak)."""
 
-    import agent.tool_executor as te
+    import hermes_agent.agent.tool_executor as te
 
     monkeypatch.setattr(te, "_TOOL_ACTIVITY_HEARTBEAT_INTERVAL_S", 0.05)
 
@@ -235,7 +235,7 @@ def test_heartbeat_stops_when_execute_raises(monkeypatch):
 
 def test_concurrent_tool_call_heartbeat(monkeypatch):
     """Concurrent execution also stamps activity via the shared chokepoint."""
-    import agent.tool_executor as te
+    import hermes_agent.agent.tool_executor as te
 
     monkeypatch.setattr(te, "_TOOL_ACTIVITY_HEARTBEAT_INTERVAL_S", 0.05)
 
@@ -247,7 +247,7 @@ def test_concurrent_tool_call_heartbeat(monkeypatch):
     agent._touch_activity = lambda desc: touches.append(time.time())
 
     agent._execute_tool_calls_concurrent = (
-        __import__("run_agent").AIAgent._execute_tool_calls_concurrent.__get__(agent)
+        __import__("hermes_agent.run_agent", fromlist=["AIAgent"]).AIAgent._execute_tool_calls_concurrent.__get__(agent)
     )
 
     class _FakeToolCall:
@@ -281,7 +281,7 @@ def test_heartbeat_exits_once_worker_tid_is_interrupted():
     so the heartbeat has to stop on the bit itself, or the abandoned tool keeps
     the inactivity watchdog pinned for the rest of the run.
     """
-    import agent.tool_executor as te
+    import hermes_agent.agent.tool_executor as te
     from hermes_agent.tools.interrupt import set_interrupt
 
     touches: list = []
@@ -316,7 +316,7 @@ def test_heartbeat_exits_once_worker_tid_is_interrupted():
 def test_sequential_timeout_stops_abandoned_workers_heartbeat(monkeypatch):
     """After the sequential deadline abandons a non-cooperative tool, no more
     ``tool running:`` stamps arrive — the timed-out tool no longer fakes liveness (#111922)."""
-    import agent.tool_executor as te
+    import hermes_agent.agent.tool_executor as te
 
     monkeypatch.setattr(te, "_TOOL_ACTIVITY_HEARTBEAT_INTERVAL_S", 0.05)
     monkeypatch.setattr(te, "_SEQUENTIAL_INTERRUPT_POLL_SECONDS", 0.05)

@@ -25,7 +25,7 @@ from pathlib import Path
 from xml.etree import ElementTree
 from xml.sax.saxutils import escape
 
-from agent.deadline import poll_until
+from hermes_agent.agent.deadline import poll_until
 from hermes_cli._subprocess_compat import (
     _WINDOWS_GATEWAY_BREAKAWAY_ENV,
     windows_detach_flags,

@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from agent.credits_tracker import AgentNotice
-from agent.status_output import StatusOutputMixin
+from hermes_agent.agent.credits_tracker import AgentNotice
+from hermes_agent.agent.status_output import StatusOutputMixin
 from hermes_agent.gateway.config import Platform
 from hermes_agent.gateway.run import GatewayRunner, _load_gateway_config
 from hermes_agent.gateway.run_turn_runner import TurnRunner

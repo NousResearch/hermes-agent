@@ -19,7 +19,7 @@ def record_unexecuted_failure(reply, reason=None, error=None):
         captured['result'] = {'final_response': '', 'messages': [], 'failed': True, 'completed': False,
                               'error': str(error or reply or 'The admitted turn failed.')}
         if reason:
-            from agent.turn_failure_copy import stamp_failure
+            from hermes_agent.agent.turn_failure_copy import stamp_failure
             stamp_failure(captured['result'], reason, False)
     return reply
 
@@ -37,7 +37,7 @@ def _redacted(value):
     storage boundary like every transcript row (``security.redact_secrets``). The live viewer
     prints the completion event, never this copy."""
     if isinstance(value, str):
-        from agent.redact import redact_sensitive_text
+        from hermes_agent.agent.redact import redact_sensitive_text
         return redact_sensitive_text(value)
     if isinstance(value, dict):
         return {k: _redacted(v) for k, v in value.items()}
@@ -144,9 +144,9 @@ def close_discarded_turn(db, conn, row, notice=None, *, replace_after=None, disp
     stacking a second boundary (#134889 GW-21). An earlier turn's boundary stays.
 
     ``display_metadata`` (``{error, error_surface}``) rides the boundary so a reopened chat redraws
-    the turn's error card from history (``agent.conversation_loop._failed_turn_display_metadata``)."""
+    the turn's error card from history (``hermes_agent.agent.conversation_loop._failed_turn_display_metadata``)."""
     import time
-    from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, PARTIAL_FAILED_TURN_NOTICE
+    from hermes_agent.agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, PARTIAL_FAILED_TURN_NOTICE
     from hermes_agent.hermes_state_local_lineage import local_physical_target
     from hermes_agent.hermes_state_runtime import _canonical_chain
     target = _canonical_chain(conn, local_physical_target(conn, row['target_session_id']))[-1]

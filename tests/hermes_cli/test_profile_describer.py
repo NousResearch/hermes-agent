@@ -46,7 +46,7 @@ def _patch_aux_client(content: str):
     # describe_profile now routes through call_llm (#35566) — mock it at the
     # source module.
     return patch(
-        "agent.auxiliary_client.call_llm",
+        "hermes_agent.agent.auxiliary_client.call_llm",
         return_value=_fake_aux_response(content),
     )
 

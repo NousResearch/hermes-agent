@@ -21,7 +21,7 @@ _EXPECTED_PATHS = {"google_token.json", "google_client_secret.json"}
 
 
 def _parse_frontmatter(content: str) -> dict:
-    from agent.skill_utils import parse_frontmatter
+    from hermes_agent.agent.skill_utils import parse_frontmatter
 
     fm, _ = parse_frontmatter(content)
     return fm

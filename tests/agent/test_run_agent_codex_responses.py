@@ -9,8 +9,8 @@ sys.modules.setdefault("fire", types.SimpleNamespace(Fire=lambda *a, **k: None))
 sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
 sys.modules.setdefault("fal_client", types.SimpleNamespace())
 
-import run_agent
-from agent.conversation_loop import _CODEX_INCOMPLETE_NUDGE
+from hermes_agent import run_agent
+from hermes_agent.agent.conversation_loop import _CODEX_INCOMPLETE_NUDGE
 
 
 @pytest.fixture(autouse=True)
@@ -18,7 +18,7 @@ def _no_codex_backoff(monkeypatch):
     """Short-circuit retry backoff so Codex retry tests don't block on real
     wall-clock waits (5s jittered_backoff base delay + tight time.sleep loop)."""
     import time as _time
-    monkeypatch.setattr("agent.retry_utils.jittered_backoff", lambda *a, **k: 0.0)
+    monkeypatch.setattr("hermes_agent.agent.retry_utils.jittered_backoff", lambda *a, **k: 0.0)
     monkeypatch.setattr(_time, "sleep", lambda *_a, **_k: None)
 
 
@@ -429,7 +429,7 @@ def test_run_codex_stream_strips_relay_added_retention_at_consumer_wire(
     caplog,
 ):
     """A Relay-added unsupported field cannot reach consumer ChatGPT Codex."""
-    from agent import relay_llm
+    from hermes_agent.agent import relay_llm
 
     agent = _build_agent(monkeypatch)
     captured = {}
@@ -466,7 +466,7 @@ def test_run_codex_stream_strips_relay_added_retention_at_consumer_wire(
     )
     assert relayed["prompt_cache_retention"] == "24h"
 
-    with caplog.at_level("WARNING", logger="agent.codex_runtime"):
+    with caplog.at_level("WARNING", logger="hermes_agent.agent.codex_runtime"):
         agent._run_codex_stream(relayed)
 
     assert "prompt_cache_retention" not in captured
@@ -477,7 +477,7 @@ def test_run_codex_stream_strips_nested_request_override_retention(
     caplog,
 ):
     """Configured extra_body retention cannot cross the final wire boundary."""
-    from agent.transports.codex import ResponsesApiTransport
+    from hermes_agent.agent.transports.codex import ResponsesApiTransport
 
     agent = _build_agent(monkeypatch)
     captured = {}
@@ -509,7 +509,7 @@ def test_run_codex_stream_strips_nested_request_override_retention(
     )
     assert request["extra_body"] == {"prompt_cache_retention": "24h"}
 
-    with caplog.at_level("WARNING", logger="agent.codex_runtime"):
+    with caplog.at_level("WARNING", logger="hermes_agent.agent.codex_runtime"):
         agent._run_codex_stream(request)
 
     # The transform bypass (#93650) re-introduces extra_body to carry the bulk
@@ -525,7 +525,7 @@ def test_consumer_codex_wire_guard_strips_nested_extra_body_retention(caplog):
     """The SDK merges ``extra_body`` into the JSON body, so a nested
     ``extra_body.prompt_cache_retention`` reaches the endpoint exactly like the
     top-level field — the guard must strip both shapes (#89897)."""
-    from agent.codex_runtime import _sanitize_consumer_codex_request
+    from hermes_agent.agent.codex_runtime import _sanitize_consumer_codex_request
 
     agent = SimpleNamespace(_is_codex_backend=lambda: True, model="gpt-5.6-sol")
     extra_body = {"prompt_cache_retention": "24h", "unrelated": "keep"}
@@ -535,7 +535,7 @@ def test_consumer_codex_wire_guard_strips_nested_extra_body_retention(caplog):
         "extra_body": extra_body,
     }
 
-    with caplog.at_level("WARNING", logger="agent.codex_runtime"):
+    with caplog.at_level("WARNING", logger="hermes_agent.agent.codex_runtime"):
         sanitized = _sanitize_consumer_codex_request(agent, request)
 
     assert "prompt_cache_retention" not in sanitized.get("extra_body", {})
@@ -547,7 +547,7 @@ def test_consumer_codex_wire_guard_strips_nested_extra_body_retention(caplog):
 
 def test_consumer_codex_wire_guard_preserves_nested_retention_on_compatible_endpoint():
     """Compatible endpoints keep a nested extra_body retention untouched."""
-    from agent.codex_runtime import _sanitize_consumer_codex_request
+    from hermes_agent.agent.codex_runtime import _sanitize_consumer_codex_request
 
     agent = SimpleNamespace(_is_codex_backend=lambda: False)
     request = {
@@ -588,7 +588,7 @@ def test_wire_guard_scopes_retention_drop_by_real_endpoint(
     built on each base URL, so a change to the hostname/path predicate that
     widened the drop onto retention-supporting hosts would fail here.
     """
-    from agent.codex_runtime import _sanitize_consumer_codex_request
+    from hermes_agent.agent.codex_runtime import _sanitize_consumer_codex_request
 
     _patch_agent_bootstrap(monkeypatch)
     agent = run_agent.AIAgent(
@@ -657,7 +657,7 @@ def test_run_codex_stream_returns_collected_items_when_stream_ends_without_termi
 
 
 def test_consume_codex_stream_routes_commentary_phase_deltas_to_reasoning(monkeypatch):
-    from agent.codex_runtime import _consume_codex_event_stream
+    from hermes_agent.agent.codex_runtime import _consume_codex_event_stream
 
     commentary_item = SimpleNamespace(
         type="message",
@@ -710,7 +710,7 @@ def test_consume_codex_stream_collects_refusal_deltas_as_text(monkeypatch):
     some compatible backends) no output_item.done — without collecting the
     refusal the consumer sees zero usable content.
     """
-    from agent.codex_runtime import _consume_codex_event_stream
+    from hermes_agent.agent.codex_runtime import _consume_codex_event_stream
 
     response = _consume_codex_event_stream(
         _FakeCreateStream([
@@ -729,7 +729,7 @@ def test_consume_codex_stream_collects_refusal_deltas_as_text(monkeypatch):
 
 def test_extract_responses_message_text_reads_refusal_parts():
     """Refusal content parts inside a message item surface as text."""
-    from agent.codex_responses_adapter import _extract_responses_message_text
+    from hermes_agent.agent.codex_responses_adapter import _extract_responses_message_text
 
     item = SimpleNamespace(
         type="message",
@@ -752,7 +752,7 @@ def test_extract_responses_message_text_reads_refusal_parts():
 
 
 def test_consume_codex_stream_separates_commentary_from_analysis(monkeypatch):
-    from agent.codex_runtime import _consume_codex_event_stream
+    from hermes_agent.agent.codex_runtime import _consume_codex_event_stream
 
     commentary_item = SimpleNamespace(
         type="message",
@@ -795,10 +795,10 @@ def test_consume_codex_stream_separates_commentary_from_analysis(monkeypatch):
 
 
 def test_run_codex_stream_delivers_redacted_commentary_once(monkeypatch):
-    from agent.codex_responses_adapter import _normalize_codex_response
+    from hermes_agent.agent.codex_responses_adapter import _normalize_codex_response
 
     agent = _build_agent(monkeypatch)
-    monkeypatch.setattr("agent.redact._REDACT_ENABLED", True)
+    monkeypatch.setattr("hermes_agent.agent.redact._REDACT_ENABLED", True)
     delivered = []
     reasoning_streamed = []
     agent.interim_assistant_callback = (
@@ -917,7 +917,7 @@ def test_run_codex_stream_returns_terminal_response_when_post_terminal_drain_fai
 
     agent.client = SimpleNamespace(responses=SimpleNamespace(create=_fake_create))
 
-    with caplog.at_level(logging.WARNING, logger="agent.codex_runtime"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.agent.codex_runtime"):
         response = agent._run_codex_stream(_codex_request_kwargs())
 
     # Only ONE physical request was ever opened -- the drain failure did not
@@ -933,7 +933,7 @@ def test_run_codex_stream_skips_post_terminal_drain_without_socket(monkeypatch):
     open after completion can neither hang the turn nor discard the billed response."""
     import threading
 
-    from agent import codex_runtime
+    from hermes_agent.agent import codex_runtime
 
     agent = _build_agent(monkeypatch)
     message_item = SimpleNamespace(
@@ -993,8 +993,8 @@ def test_run_codex_stream_owner_close_does_not_retry_raw_when_managed_close_rais
     """A managed close that already closes the provider must not trigger a second raw close."""
     import threading
 
-    from agent import codex_runtime
-    from agent import relay_llm
+    from hermes_agent.agent import codex_runtime
+    from hermes_agent.agent import relay_llm
 
     agent = _build_agent(monkeypatch)
     message_item = SimpleNamespace(
@@ -1053,7 +1053,7 @@ def test_run_codex_stream_post_terminal_timeout_keeps_close_on_reader_thread(mon
     """The timeout thread may shutdown the socket, but only the reader thread may release its FD."""
     import threading
 
-    from agent import codex_runtime
+    from hermes_agent.agent import codex_runtime
 
     agent = _build_agent(monkeypatch)
     owner = threading.current_thread().name
@@ -1121,7 +1121,7 @@ def test_run_codex_stream_post_terminal_clean_drain_never_shutdowns(monkeypatch)
     """A provider that closes inside the budget must stay on the ordinary owner-thread path."""
     import threading
 
-    from agent import codex_runtime
+    from hermes_agent.agent import codex_runtime
 
     agent = _build_agent(monkeypatch)
     socket_calls = []
@@ -1472,7 +1472,7 @@ def test_try_refresh_codex_client_credentials_handles_xai_oauth(monkeypatch):
         "hermes_cli.auth.resolve_xai_oauth_runtime_credentials",
         _fake_resolve,
     )
-    monkeypatch.setattr("agent.process_bootstrap.OpenAI", _fake_openai)
+    monkeypatch.setattr("hermes_agent.agent.process_bootstrap.OpenAI", _fake_openai)
 
     existing = _ExistingClient()
     agent.client = existing
@@ -1548,7 +1548,7 @@ def test_try_refresh_codex_client_credentials_skips_xai_oauth_when_singleton_dif
 
 def test_preflight_codex_api_kwargs_strips_optional_function_call_id(monkeypatch):
     _build_agent(monkeypatch)
-    from agent.codex_responses_adapter import _preflight_codex_api_kwargs
+    from hermes_agent.agent.codex_responses_adapter import _preflight_codex_api_kwargs
     preflight = _preflight_codex_api_kwargs(
         {
             "model": "gpt-5-codex",
@@ -1577,7 +1577,7 @@ def test_preflight_codex_api_kwargs_rejects_function_call_output_without_call_id
     _build_agent(monkeypatch)
 
     with pytest.raises(ValueError):
-        from agent.codex_responses_adapter import _preflight_codex_api_kwargs
+        from hermes_agent.agent.codex_responses_adapter import _preflight_codex_api_kwargs
         _preflight_codex_api_kwargs(
             {
                 "model": "gpt-5-codex",
@@ -1850,7 +1850,7 @@ def test_codex_incomplete_opaque_state_updated_in_place(monkeypatch):
 
 def test_normalize_codex_response_marks_commentary_only_message_as_incomplete(monkeypatch):
     _build_agent(monkeypatch)
-    from agent.codex_responses_adapter import _normalize_codex_response
+    from hermes_agent.agent.codex_responses_adapter import _normalize_codex_response
     assistant_message, finish_reason = _normalize_codex_response(
         _codex_commentary_message_response("I'll inspect the repository first.")
     )
@@ -1865,7 +1865,7 @@ def test_normalize_codex_response_marks_commentary_only_message_as_incomplete(mo
 
 def test_normalize_codex_response_does_not_fallback_to_output_text_for_commentary_only(monkeypatch):
     _build_agent(monkeypatch)
-    from agent.codex_responses_adapter import _normalize_codex_response
+    from hermes_agent.agent.codex_responses_adapter import _normalize_codex_response
 
     response = _codex_commentary_message_response("I’ll call the tool now.")
     response.output_text = "I’ll call the tool now."
@@ -1899,7 +1899,7 @@ def test_app_server_bridge_commentary_then_final_agent_messages_are_each_already
     """#74248 boundary 2: codex app-server emits commentary deltas + completed, then final deltas +
     completed. The completed final must compare against ITS OWN deltas, not "commentary + final", or
     it is re-delivered with already_streamed=False and the gateway posts a second copy."""
-    from agent.codex_runtime import make_codex_app_server_event_bridge
+    from hermes_agent.agent.codex_runtime import make_codex_app_server_event_bridge
 
     agent = _build_agent(monkeypatch)
     agent.stream_delta_callback = lambda text: None
@@ -1973,7 +1973,7 @@ def test_interim_commentary_already_streamed_requires_exact_match(
     )
 
     agent._current_streamed_assistant_text = streamed
-    from agent.codex_responses_adapter import _normalize_codex_response
+    from hermes_agent.agent.codex_responses_adapter import _normalize_codex_response
 
     normalized, finish_reason = _normalize_codex_response(
         _codex_commentary_final_tool_response("checking the queue to pick it up")
@@ -2134,7 +2134,7 @@ def test_chat_messages_to_responses_input_reasoning_only_has_following_item(monk
             ],
         },
     ]
-    from agent.codex_responses_adapter import _chat_messages_to_responses_input
+    from hermes_agent.agent.codex_responses_adapter import _chat_messages_to_responses_input
     items = _chat_messages_to_responses_input(messages)
 
     # Find the reasoning item
@@ -2275,7 +2275,7 @@ def test_duplicate_detection_uses_commentary_when_hidden_reasoning_changes(monke
 
 def test_consume_codex_stream_separates_reasoning_summary_parts():
     """summary_index is the part boundary; the wire sends no separator itself."""
-    from agent.codex_runtime import _consume_codex_event_stream
+    from hermes_agent.agent.codex_runtime import _consume_codex_event_stream
 
     reasoning_streamed = []
 
@@ -2313,7 +2313,7 @@ def test_consume_codex_stream_separates_reasoning_summary_parts():
 
 def test_consume_codex_stream_leaves_unindexed_reasoning_untouched():
     """Streams with no summary_index (plain reasoning_text) must not gain breaks."""
-    from agent.codex_runtime import _consume_codex_event_stream
+    from hermes_agent.agent.codex_runtime import _consume_codex_event_stream
 
     reasoning_streamed = []
 

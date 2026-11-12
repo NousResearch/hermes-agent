@@ -10,7 +10,7 @@ import re
 import pytest
 
 from hermes_agent.compat.paths import current_path
-from agent.runtime_session_store import RuntimeSessionStore
+from hermes_agent.agent.runtime_session_store import RuntimeSessionStore
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_runtime import begin_runtime_epoch, mutate_worker_execution, register_worker_execution
 

@@ -24,7 +24,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.codex_runtime import _consume_codex_event_stream
+from hermes_agent.agent.codex_runtime import _consume_codex_event_stream
 
 
 def _stream_completed_without_done():

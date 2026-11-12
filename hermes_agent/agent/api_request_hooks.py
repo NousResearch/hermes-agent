@@ -1,7 +1,7 @@
 """Lifecycle-hook payloads for ``AIAgent`` API requests.
 
 JSON-safe coercion, secret-key redaction, size caps, and the ``api_request_error`` hook dispatch.
-Extracted from ``run_agent.py``; every method resolves through ``AIAgent``'s MRO unchanged.
+Extracted from ``hermes_agent/run_agent.py``; every method resolves through ``AIAgent``'s MRO unchanged.
 """
 import json
 import os
@@ -10,7 +10,7 @@ from contextlib import suppress
 from types import SimpleNamespace
 from typing import Any, Dict, Optional
 
-from agent.usage_pricing import normalize_usage
+from hermes_agent.agent.usage_pricing import normalize_usage
 
 _SENSITIVE_HOOK_KEYS = {"api_key", "authorization", "proxy_authorization", "cookie", "set_cookie"}
 

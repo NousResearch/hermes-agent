@@ -9,8 +9,8 @@ import tempfile
 from pathlib import Path
 from typing import Any, Iterable
 
-from agent.compression_marker import elide
-from agent.verification_evidence import last_unattributed_run
+from hermes_agent.agent.compression_marker import elide
+from hermes_agent.agent.verification_evidence import last_unattributed_run
 
 
 _MAX_CHANGED_PATHS_IN_NUDGE = 8
@@ -106,8 +106,8 @@ def _verification_snapshot(
     """``(status, facts)`` for the first edited workspace needing proof, else the
     first recognized workspace when every one is ``passed``."""
     try:
-        from agent.coding_context import project_facts_for
-        from agent.verification_evidence import verification_status
+        from hermes_agent.agent.coding_context import project_facts_for
+        from hermes_agent.agent.verification_evidence import verification_status
     except Exception:
         return None
 
@@ -137,8 +137,8 @@ def _workspace_has_runnable_recipe(root: Any) -> bool:
     if not root:
         return False
     try:
-        from agent.verify.environment import manifest_path
-        from agent.verify.recipes import detect_recipe
+        from hermes_agent.agent.verify.environment import manifest_path
+        from hermes_agent.agent.verify.recipes import detect_recipe
 
         root_path = Path(str(root))
         if manifest_path(root_path).is_file():
@@ -191,7 +191,7 @@ def build_verify_on_stop_nudge(
 
     # Optional shipped coding guidance, only paid when this evidence gate fires.
     try:
-        from agent.verify_hooks import coding_verify_guidance
+        from hermes_agent.agent.verify_hooks import coding_verify_guidance
 
         guidance = coding_verify_guidance()
     except Exception:

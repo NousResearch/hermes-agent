@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import logging
 
-from agent.provider_registry import ProviderRegistry, lower_key
-from agent.transcription_provider import TranscriptionProvider
+from hermes_agent.agent.provider_registry import ProviderRegistry, lower_key
+from hermes_agent.agent.transcription_provider import TranscriptionProvider
 
 logger = logging.getLogger(__name__)
 

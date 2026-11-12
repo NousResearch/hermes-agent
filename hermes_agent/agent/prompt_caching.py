@@ -9,7 +9,7 @@ import copy
 from dataclasses import dataclass
 from typing import Any, Dict, List
 
-from agent.prompt_cache_boundary import find_stable_prefix
+from hermes_agent.agent.prompt_cache_boundary import find_stable_prefix
 
 
 @dataclass(frozen=True)
@@ -27,7 +27,7 @@ def envelope_tool_part_cache_markers_supported(provider: str | None, base_url: s
     block; LiteLLM-style proxies copy parts verbatim, so it lands at ``tool_result.content[0]``
     (non-retryable 400). There, role:tool carries no part markers and the budget reallocates.
     """
-    from agent.agent_runtime_helpers import _is_litellm_route
+    from hermes_agent.agent.agent_runtime_helpers import _is_litellm_route
 
     return not _is_litellm_route((provider or "").strip().lower(), base_url or "")
 

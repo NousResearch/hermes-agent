@@ -7,7 +7,7 @@ sys.modules.setdefault("fire", types.SimpleNamespace(Fire=lambda *a, **k: None))
 sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
 sys.modules.setdefault("fal_client", types.SimpleNamespace())
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -35,7 +35,7 @@ class _FakeOpenAI:
 def _make_agent(monkeypatch, provider, api_mode="chat_completions", base_url="https://openrouter.ai/api/v1"):
     monkeypatch.setattr("hermes_agent.model_tools.get_tool_definitions", lambda **kw: _tool_defs("web_search", "terminal"))
     monkeypatch.setattr("hermes_agent.model_tools.check_toolset_requirements", dict)
-    monkeypatch.setattr("agent.process_bootstrap.OpenAI", _FakeOpenAI)
+    monkeypatch.setattr("hermes_agent.agent.process_bootstrap.OpenAI", _FakeOpenAI)
     return AIAgent(
         api_key="test",
         base_url=base_url,

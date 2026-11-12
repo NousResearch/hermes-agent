@@ -120,8 +120,8 @@ class _WireRoute(NamedTuple):
 
 def _wire_route(model: Any, base_url: Any, scope: Any = None) -> _WireRoute:
     from providers import profile_for_host
-    from agent.provider_route_hooks import ask_profile
-    from agent.transports.chat_completions import _model_consumes_thought_signature
+    from hermes_agent.agent.provider_route_hooks import ask_profile
+    from hermes_agent.agent.transports.chat_completions import _model_consumes_thought_signature
 
     url = str(base_url or "")
     profile = profile_for_host(url)
@@ -158,7 +158,7 @@ def _replay_plan(answer: Any, values: dict) -> Any:
 
 def _replay_carriers(route: _WireRoute, values: dict) -> dict:
     from providers import registry_generation
-    from agent.provider_route_hooks import ask_profile, hook_failed
+    from hermes_agent.agent.provider_route_hooks import ask_profile, hook_failed
 
     if hook_failed(route.profile, "replay_message_carriers", route.scope):
         return {}
@@ -224,7 +224,7 @@ def shape_wire_carriers(messages: list, *, model: Any, base_url: Any, scope: Any
     """Wire copy of ``messages`` with each carrier on the route that reads it and nowhere else.
     Never mutates the input; unchanged messages are returned by identity. *scope* is the agent (failed
     profile hooks stay failed for it; see ``provider_route_hooks.ask_profile``)."""
-    from agent.provider_route_hooks import hook_failed
+    from hermes_agent.agent.provider_route_hooks import hook_failed
 
     route = _wire_route(model, base_url, scope)
     failed_before = route.profile is None or hook_failed(route.profile, "replay_message_carriers", scope)

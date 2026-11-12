@@ -221,7 +221,7 @@ def get_provider_profile(name: str) -> ProviderProfile | None:
 
     Returns None if the provider has no profile (falls back to generic).
     """
-    from agent.safe_worker_policy import safe_worker_enabled
+    from hermes_agent.agent.safe_worker_policy import safe_worker_enabled
 
     if safe_worker_enabled():
         return None
@@ -334,7 +334,7 @@ def profile_for_host(url: str, *, metadata: bool = False) -> ProviderProfile | N
     ``$HERMES_HOME`` plugin installed after import (or in another profile) is seen; memoized per
     (home, host) until the registry changes, because wire paths ask on every request.
     """
-    from agent.safe_worker_policy import safe_worker_enabled
+    from hermes_agent.agent.safe_worker_policy import safe_worker_enabled
     from utils import base_url_hostname
 
     host = base_url_hostname(url) if url else ""
@@ -362,7 +362,7 @@ def profile_for_host(url: str, *, metadata: bool = False) -> ProviderProfile | N
 def list_providers() -> list[ProviderProfile]:
     """Return all registered provider profiles (one per canonical name); the bound home's
     ``$HERMES_HOME`` plugins shadow process-wide profiles of the same name."""
-    from agent.safe_worker_policy import safe_worker_enabled
+    from hermes_agent.agent.safe_worker_policy import safe_worker_enabled
 
     if safe_worker_enabled():
         return []
@@ -455,7 +455,7 @@ def _refresh_home_layer(layer: _HomeLayer, home: Path | None, key: str, *, force
     without making every model lookup perform two filesystem stats.
     """
     now = time.monotonic()
-    from agent.safe_worker_policy import safe_worker_enabled
+    from hermes_agent.agent.safe_worker_policy import safe_worker_enabled
 
     # Safe mode fires zero user customization: same gate as ``_discover_providers``.
     if home is None or safe_worker_enabled() or not (
@@ -864,7 +864,7 @@ def bundled_profiles() -> list[ProviderProfile]:
     order), WITHOUT config and without touching the registry: each bundled plugin is executed into
     a private module whose registrations are collected. For descriptive catalogs, which must not
     depend on config or on discovery having run."""
-    from agent.safe_worker_policy import safe_worker_enabled
+    from hermes_agent.agent.safe_worker_policy import safe_worker_enabled
 
     if safe_worker_enabled():  # a safe worker loads no plugin code, bundled included (as list_providers)
         return []
@@ -901,7 +901,7 @@ def _discover_providers() -> None:
     module-level. Later steps win on name collision. ``$HERMES_HOME`` plugins are
     per profile home and load through :func:`_home_layer` at lookup time.
     """
-    from agent.safe_worker_policy import safe_worker_enabled
+    from hermes_agent.agent.safe_worker_policy import safe_worker_enabled
 
     if safe_worker_enabled():
         return

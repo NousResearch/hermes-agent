@@ -1,6 +1,6 @@
 """Google Vertex AI provider profile: Gemini via Google Cloud's OpenAI-compatible endpoint.
 
-Auth is OAuth2 (service-account JSON or ADC), not a static key: ``agent/vertex_adapter.py``
+Auth is OAuth2 (service-account JSON or ADC), not a static key: ``hermes_agent/agent/vertex_adapter.py``
 mints ``(token, base_url)`` and the token is passed as ``api_key``. ``auth_type="vertex"``
 keeps it out of the api_key provider path so a credentials-file path is never mistaken for a key.
 """
@@ -16,7 +16,7 @@ class VertexProfile(ProviderProfile):
 
     def build_extra_body(self, *, session_id: str | None = None, **context: Any) -> dict[str, Any]:
         """Emit ``extra_body.google.thinking_config`` like the ``gemini`` provider's OpenAI-compat subpath."""
-        from agent.transports.chat_completions import _build_gemini_thinking_config, _snake_case_gemini_thinking_config
+        from hermes_agent.agent.transports.chat_completions import _build_gemini_thinking_config, _snake_case_gemini_thinking_config
 
         raw = _build_gemini_thinking_config(context.get("model") or "", context.get("reasoning_config"))
         thinking_config = _snake_case_gemini_thinking_config(raw) if raw else None

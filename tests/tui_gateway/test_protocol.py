@@ -1233,7 +1233,7 @@ def test_make_agent_accepts_list_system_prompt(server, monkeypatch):
             captured.update(kwargs)
             self.model = kwargs.get("model", "")
 
-    monkeypatch.setitem(sys.modules, "run_agent", types.SimpleNamespace(AIAgent=_Agent))
+    monkeypatch.setitem(sys.modules, "hermes_agent.run_agent", types.SimpleNamespace(AIAgent=_Agent))
     monkeypatch.setitem(
         sys.modules,
         "hermes_cli.runtime_provider",
@@ -1292,7 +1292,7 @@ def test_slash_exec_rejects_skill_commands(server):
     # Mock scan_skill_commands to return a known skill
     fake_skills = {"/hermes-agent-dev": {"name": "hermes-agent-dev", "description": "Dev workflow"}}
 
-    with patch("agent.skill_commands.get_skill_commands", return_value=fake_skills):
+    with patch("hermes_agent.agent.skill_commands.get_skill_commands", return_value=fake_skills):
         resp = server.handle_request({
             "id": "r1",
             "method": "slash.exec",
@@ -1313,7 +1313,7 @@ def test_slash_exec_scopes_skill_lookup_to_session_profile(server, tmp_path):
     command falls through to the slash-worker dead path instead of routing
     to command.dispatch.
     """
-    import agent.skill_commands as sc_mod
+    import hermes_agent.agent.skill_commands as sc_mod
 
     empty_local_dir = tmp_path / "no-local-skills"
     empty_local_dir.mkdir()
@@ -1360,7 +1360,7 @@ def test_command_dispatch_expands_stacked_skills_from_temp_home(server, tmp_path
     '/nature-figure /academic-plotting Plot the results' loads BOTH skills
     over the remaining instruction instead of leaving the second token in
     the prompt as plain text."""
-    from agent import skill_commands
+    from hermes_agent.agent import skill_commands
     from hermes_agent.tools import skills_tool
 
     home = tmp_path / ".hermes"
@@ -1410,7 +1410,7 @@ def test_command_dispatch_expands_stacked_skills_from_temp_home(server, tmp_path
 def test_command_dispatch_stacked_split_keeps_unknown_tokens_as_instruction(server, tmp_path, monkeypatch):
     """A non-skill or repeated token stops the stack and stays instruction text —
     the split must never eat content the user meant as the prompt."""
-    from agent import skill_commands
+    from hermes_agent.agent import skill_commands
     from hermes_agent.tools import skills_tool
 
     home = tmp_path / ".hermes"
@@ -1451,8 +1451,8 @@ def test_sessionless_slash_palette_follows_profile_param(server, tmp_path, monke
     named ``profile``'s home, not the launch profile's — A→B→A under multiplexing (#124651). The
     palette's quick_commands are that profile's too, and an unknown profile is 4064, not a
     launch-profile palette."""
-    import agent.skill_commands as sc_mod
-    from agent.secret_scope import is_multiplex_active, set_multiplex_active
+    import hermes_agent.agent.skill_commands as sc_mod
+    from hermes_agent.agent.secret_scope import is_multiplex_active, set_multiplex_active
 
     root = tmp_path / "hermes_home"
     for name in ("s6probe-a", "s6probe-b"):
@@ -1548,7 +1548,7 @@ def test_slash_exec_skill_scan_raise_returns_dispatch_payload_not_banner(server,
     The client gets command.dispatch's skill payload (the expanded prompt), never
     a silent success that drops it.
     """
-    import agent.skill_commands as sc_mod
+    import hermes_agent.agent.skill_commands as sc_mod
 
     empty_local_dir, session, worker = _grilling_profile(tmp_path)
     sid = session["session_key"]
@@ -1580,7 +1580,7 @@ def test_slash_exec_skill_scan_raise_returns_dispatch_payload_not_banner(server,
 
 def test_slash_exec_skill_scan_raise_is_hard_error_not_banner_when_dispatch_misses(server, tmp_path):
     """If the scan keeps failing, slash.exec still must not ok-reply the banner."""
-    import agent.skill_commands as sc_mod
+    import hermes_agent.agent.skill_commands as sc_mod
 
     empty_local_dir, session, worker = _grilling_profile(tmp_path)
     sid = session["session_key"]
@@ -1606,7 +1606,7 @@ def test_slash_exec_skill_scan_raise_is_hard_error_not_banner_when_dispatch_miss
 
 def test_slash_exec_skill_scan_raise_still_runs_registry_commands(server):
     """A skill-scan exception must not block built-ins the worker owns."""
-    import agent.skill_commands as sc_mod
+    import hermes_agent.agent.skill_commands as sc_mod
 
     class _StatusWorker:
         def __init__(self):
@@ -1641,7 +1641,7 @@ def test_slash_exec_worker_skill_refuse_returns_dispatch_payload(server, tmp_pat
     The gate can miss (stale empty scan) while dispatch still resolves the skill.
     The client gets that payload, and the worker stays up.
     """
-    import agent.skill_commands as sc_mod
+    import hermes_agent.agent.skill_commands as sc_mod
 
     empty_local_dir, session, worker = _grilling_profile(tmp_path)
     sid = session["session_key"]
@@ -1682,7 +1682,7 @@ def test_slash_exec_worker_skill_refuse_returns_dispatch_payload(server, tmp_pat
 
 def test_command_dispatch_scopes_skill_lookup_to_session_profile(server, tmp_path):
     """command.dispatch must load a skill that exists only in the session profile."""
-    import agent.skill_commands as sc_mod
+    import hermes_agent.agent.skill_commands as sc_mod
 
     empty_local_dir = tmp_path / "no-local-skills"
     empty_local_dir.mkdir()
@@ -1724,8 +1724,8 @@ def test_command_dispatch_scopes_skill_lookup_to_session_profile(server, tmp_pat
 def test_slash_exec_routes_a_secondary_only_bundle_to_dispatch(server, tmp_path, monkeypatch):
     """A skill bundle that exists only under the session profile's ``skill-bundles/`` must be
     resolved (and routed to command.dispatch) against that profile, not the launch home (#110695)."""
-    import agent.skill_bundles as sb_mod
-    import agent.skill_commands as sc_mod
+    import hermes_agent.agent.skill_bundles as sb_mod
+    import hermes_agent.agent.skill_commands as sc_mod
 
     monkeypatch.delenv("HERMES_BUNDLES_DIR", raising=False)
     profile_b = tmp_path / "profile_b"

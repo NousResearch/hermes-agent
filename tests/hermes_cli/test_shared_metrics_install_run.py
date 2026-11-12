@@ -17,7 +17,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent import relay_runtime
+from hermes_agent.agent import relay_runtime
 from hermes_cli.observability import relay_shared_metrics
 from hermes_cli.observability import shared_metrics as store_module
 from hermes_cli.observability import shared_metrics_contract as contract

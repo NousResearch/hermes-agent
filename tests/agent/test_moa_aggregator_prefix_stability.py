@@ -7,8 +7,8 @@ the provider had just cached and the prompt cache collapsed to the system prompt
 
 from types import SimpleNamespace
 
-from agent import moa_loop
-from agent.anthropic_message_convert import convert_messages_to_anthropic
+from hermes_agent.agent import moa_loop
+from hermes_agent.agent.anthropic_message_convert import convert_messages_to_anthropic
 
 
 def test_attach_reference_guidance_never_mutates_the_trailing_user_turn():

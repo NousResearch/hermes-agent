@@ -135,14 +135,14 @@ def _open_child_session_db(parent_agent) -> Any:
     # profiles), and a bare SessionDB() would write the child's transcript into the launch profile's db,
     # breaking parent_session_id lineage and session_search. AsyncSessionDB wrappers (gateway) forward
     # .db_path via __getattr__, so this works through them.
-    from agent.runtime_session_store import RuntimeSessionStore, WorkerPersistenceError, is_worker_process
+    from hermes_agent.agent.runtime_session_store import RuntimeSessionStore, WorkerPersistenceError, is_worker_process
     parent_session_db = getattr(parent_agent, "_session_db", None)
     if is_worker_process() or isinstance(parent_session_db, RuntimeSessionStore):
         # Missing db_path on a scoped store is NOT permission to open the launch profile: the
         # owner reserves the child's row and execution under the parent's own (#141793).
         if not isinstance(parent_session_db, RuntimeSessionStore):
             raise WorkerPersistenceError('worker_child_registration_required')
-        from agent.runtime_session_child import reserve_child_store
+        from hermes_agent.agent.runtime_session_child import reserve_child_store
         return reserve_child_store(parent_session_db)
     if parent_session_db is None:
         return None
@@ -186,7 +186,7 @@ def _apply_child_compression_cap(child, delegation_cfg: dict) -> None:
     (lower of it and any global ``compression.threshold_tokens``). Off by default: a 1M-window child
     compacts where its parent does. The compressor applies the cap on first window resolution, which
     happens after construction, so setting it here is exactly equivalent to config."""
-    from agent.context_compressor import ContextCompressor
+    from hermes_agent.agent.context_compressor import ContextCompressor
 
     cc = getattr(child, "context_compressor", None)
     if not isinstance(cc, ContextCompressor):
@@ -235,8 +235,8 @@ def _build_child_agent(
     inheritance so children can run on a different provider:model pair. ``profile_home`` builds (and later runs,
     see ``_ChildRun.await_child``) the child inside that profile's scope; it never shares the parent's pool."""
     import uuid as _uuid
-    from run_agent import AIAgent
-    from agent.delegation_context import delegated_child_context
+    from hermes_agent.run_agent import AIAgent
+    from hermes_agent.agent.delegation_context import delegated_child_context
     from hermes_agent.tools.delegate_tool_routes import delegated_profile_scope
     # Role is depth-derived: a child may delegate iff the kill switch is on and
     # depth budget remains below max_spawn_depth. The `role` arg is ignored.
@@ -291,7 +291,7 @@ def _build_child_agent(
         # Children run provider-less. Under compression.checkpoint_required the child arms the same gate
         # (read inside the delegated profile scope, as the child reads it) and would die at its first
         # compaction, so it inherits the provider, scoped as a fork. Cost: one initialize() per spawn.
-        from agent.conversation_compression_checkpoint import checkpoint_required_from_config
+        from hermes_agent.agent.conversation_compression_checkpoint import checkpoint_required_from_config
 
         child_checkpoint_required = checkpoint_required_from_config()
         with delegated_child_context():
@@ -338,7 +338,7 @@ def _build_child_agent(
     child._progress_identity_ref = child_session_ref
     child._delegate_depth, child._delegate_role = child_depth, effective_role  # post-degrade role
     # Plugins see one conversation per delegation tree.
-    from agent.prompt_cache_scope import conversation_id
+    from hermes_agent.agent.prompt_cache_scope import conversation_id
     child._inherited_conversation_id = conversation_id(parent_agent)
     child._subagent_id, child._parent_subagent_id = subagent_id, parent_subagent_id
     _apply_child_compression_cap(child, delegation_cfg)
@@ -546,7 +546,7 @@ def _settle_refused_transcripts(refused: list[dict[str, Any]], live_deleg_id: Op
 def _oneshot_spawn_budget(parent_agent: Any, requested: int) -> Optional[str]:
     """Charge *requested* children against the finite one-shot session's total (delegation.oneshot_max_children);
     the error text tells the model to do the work inline. Interactive and gateway sessions are never charged."""
-    from agent.oneshot_footprint import is_single_query_session
+    from hermes_agent.agent.oneshot_footprint import is_single_query_session
     if not is_single_query_session():
         return None
     cap = _get_oneshot_max_children()
@@ -879,7 +879,7 @@ _LIVE_CONTROL_PARAMS = frozenset({"action", "subagent_id", "message"})
 
 def oneshot_delegate_function(function: dict) -> dict:
     """A built delegate_task definition minus live control and ``group``, for a one-shot or inline-gateway session
-    (agent/oneshot_footprint.py): its children are joined inside the call, so ``action`` list/steer/stop never has a
+    (hermes_agent/agent/oneshot_footprint.py): its children are joined inside the call, so ``action`` list/steer/stop never has a
     running child to reach, ``group`` never changes delivery, and the background-delivery paragraph never applies.
     The handler still accepts those arguments."""
     description = function.get("description") or ""
@@ -926,7 +926,7 @@ def _model_background_value(args: dict, parent_agent=None) -> bool:
     """Background flag for the MODEL-facing dispatch path (registry fallback). Top-level delegations always run in the
     background — the model does not choose — for single tasks and fan-out batches alike (one async unit, one
     consolidated result); an orchestrator subagent (depth > 0) is the exception since it needs its workers' results
-    within its own turn. The live path is ``run_agent._dispatch_delegate_task``; this mirrors it for the rare case
+    within its own turn. The live path is ``hermes_agent.run_agent._dispatch_delegate_task``; this mirrors it for the rare case
     the intercept is bypassed. Direct Python callers keep the synchronous default."""
     return not getattr(parent_agent, "_delegate_depth", 0) > 0
 

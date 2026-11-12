@@ -1,4 +1,4 @@
-"""Tests for agent.async_utils.safe_schedule_threadsafe."""
+"""Tests for hermes_agent.agent.async_utils.safe_schedule_threadsafe."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from concurrent.futures import Future
 from unittest.mock import patch
 
 
-from agent.async_utils import safe_schedule_threadsafe
+from hermes_agent.agent.async_utils import safe_schedule_threadsafe
 
 
 # ---------------------------------------------------------------------------
@@ -84,7 +84,7 @@ class TestSafeScheduleThreadsafe:
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always")
                 with patch(
-                    "agent.async_utils.asyncio.run_coroutine_threadsafe",
+                    "hermes_agent.agent.async_utils.asyncio.run_coroutine_threadsafe",
                     side_effect=RuntimeError("scheduler down"),
                 ):
                     result = safe_schedule_threadsafe(coro, loop)

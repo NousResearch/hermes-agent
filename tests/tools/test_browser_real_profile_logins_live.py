@@ -344,14 +344,14 @@ def test_whitespace_username_resolves_through_the_backend(tmp_path, _schema, mon
     exactly, so the handle's ``'bob'`` never matched and resolve returned None. The fix carries the
     raw saved username into the handle, so the account match succeeds. Only the backend path exercises
     the strip — calling the resolver directly would not reproduce it."""
-    from agent.vault_backends import enabled_backends
+    from hermes_agent.agent.vault_backends import enabled_backends
 
     port = _free_port()
     origin = f"http://127.0.0.1:{port}"
     root = _seed_profile(tmp_path, "ws-user", _schema, origin, [(" bob ", "BOB-PW", 10)])
 
     # Consent on; the snapshot copy dir IS the seeded Chrome profile (Default/Login Data present).
-    monkeypatch.setattr("agent.vault_backends.base._browser_profile_enabled", lambda: True)
+    monkeypatch.setattr("hermes_agent.agent.vault_backends.base._browser_profile_enabled", lambda: True)
     monkeypatch.setattr("hermes_cli.browser_connect.detect_default_chromium", lambda: "chrome")
     monkeypatch.setattr("hermes_cli.browser_connect.real_profile_copy_dir", lambda browser: str(root))
 

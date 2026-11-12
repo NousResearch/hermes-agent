@@ -32,7 +32,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.context_compressor import _DB_PERSISTED_MARKER
+from hermes_agent.agent.context_compressor import _DB_PERSISTED_MARKER
 from hermes_agent.hermes_state import SessionDB
 
 
@@ -45,7 +45,7 @@ def _build_agent_with_db(db: SessionDB, session_id: str):
     (which owns the "grew before lease" adoption) is exercised.
     """
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key",
@@ -241,7 +241,7 @@ def test_adoption_skipped_when_preflush_fails_keeps_live_input(
     must reach the summarizer instead of the longer snapshot that lacks it.
 
     Covers every real failure shape of ``_flush_messages_to_session_db``:
-    an exception, ``False`` (DB append error, run_agent.py), and ``None``
+    an exception, ``False`` (DB append error, hermes_agent/run_agent.py), and ``None``
     (persistence-isolated fork / no session DB). All three must behave
     identically: no snapshot adoption, live input handed to the compressor.
     """

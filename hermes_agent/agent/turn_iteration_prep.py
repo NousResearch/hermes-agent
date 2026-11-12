@@ -5,7 +5,7 @@ standalone user row after the newest tool result, run-budget wrap-up notice, too
 argument sanitization, interrupt-placeholder ghost-row neutralisation, role-alternation repair),
 ``announce_api_call`` (verbose summary / quiet spinner) and, after the retry loop,
 ``apply_retry_restarts`` (consumes the ``TurnRetryState`` restart flags). Nothing here
-imports ``agent.conversation_loop`` at module level (cycle)."""
+imports ``hermes_agent.agent.conversation_loop`` at module level (cycle)."""
 
 from __future__ import annotations
 
@@ -16,12 +16,12 @@ from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, Dict, List, Tuple
 
-from agent.display import KawaiiSpinner
-from agent.interrupt_control import interrupt_issuer, interrupted_during_api_call_reason
-from agent.turn_context_compaction import _reanchor
-from agent.turn_truncation import boosted_output_cap
+from hermes_agent.agent.display import KawaiiSpinner
+from hermes_agent.agent.interrupt_control import interrupt_issuer, interrupted_during_api_call_reason
+from hermes_agent.agent.turn_context_compaction import _reanchor
+from hermes_agent.agent.turn_truncation import boosted_output_cap
 
-logger = logging.getLogger("agent.conversation_loop")
+logger = logging.getLogger("hermes_agent.agent.conversation_loop")
 
 
 def _anchors_current_turn(messages: Any, idx: Any, user_message: Any) -> bool:
@@ -33,7 +33,7 @@ def _anchors_current_turn(messages: Any, idx: Any, user_message: Any) -> bool:
         return False
     if msg.get("content") == user_message:
         return True
-    from agent.context_compressor import user_originated_turn_view
+    from hermes_agent.agent.context_compressor import user_originated_turn_view
 
     view = user_originated_turn_view(msg)
     return view is not None and view.get("content") == user_message
@@ -48,7 +48,7 @@ ITERATION_BUDGET_WARNING_TEMPLATE = (
 def _maybe_inject_iteration_budget_warning(agent: Any, messages: Any) -> bool:
     """Append the opt-in one-shot warning to the newest tool result."""
     import os
-    from agent.delegation_context import is_dispatcher_owned_worker_context
+    from hermes_agent.agent.delegation_context import is_dispatcher_owned_worker_context
 
     # Cancellation results still need persistence, but must not urge more work.
     if getattr(agent, "_interrupt_requested", False):
@@ -83,7 +83,7 @@ def _maybe_inject_iteration_budget_warning(agent: Any, messages: Any) -> bool:
             "continue. A diff or commit alone is not completion evidence."
         )
     # Only the current tool-result tail is mutable; an older turn may already be cached.
-    from agent.context_compressor import _DB_PERSISTED_MARKER
+    from hermes_agent.agent.context_compressor import _DB_PERSISTED_MARKER
     if (not messages or messages[-1].get("role") != "tool"
             or messages[-1].get(_DB_PERSISTED_MARKER)):
         return False
@@ -118,11 +118,11 @@ class IterationPrep:
 # losing the second row's checkpoint ``api_content``. Neutralise a copy instead.
 def _neutralise_replay_echo_ghosts(seq: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
     """(new list, neutralised); never mutates ``seq`` or its row dicts."""
-    from agent.agent_runtime_helpers_placeholders import (
+    from hermes_agent.agent.agent_runtime_helpers_placeholders import (
         _INTERRUPTED_PLACEHOLDER,
         _LEGACY_INTERRUPTED_PLACEHOLDER,
     )
-    from agent.conversation_loop import _INTERRUPT_SCAFFOLD_MARKER
+    from hermes_agent.agent.conversation_loop import _INTERRUPT_SCAFFOLD_MARKER
     # Retire only spellings that predate the #132949 wording change: the scaffold
     # (#81841) and the old placeholder, both reproduced verbatim. The current
     # placeholder is the post-fix value — it stays (this is also what
@@ -147,12 +147,12 @@ def prepare_iteration(
     """Prepare ``messages`` for this iteration in the original order. Every mutation here is
     cache-safe by construction: steer text is appended as a new (not yet persisted) user row, the ghost-row
     filter neutralises copies of hidden interrupt placeholders, and repair runs BEFORE the request build."""
-    from agent.conversation_loop import _maybe_inject_run_budget_wrapup
+    from hermes_agent.agent.conversation_loop import _maybe_inject_run_budget_wrapup
 
     # nous.anthropic_wire=auto: a wire switch decided from the previous response lands here,
     # before this iteration's request is built and with nothing in flight.
     if getattr(agent, "_nous_wire_pending", None):
-        from agent.nous_wire import apply_pending_wire_switch
+        from hermes_agent.agent.nous_wire import apply_pending_wire_switch
         apply_pending_wire_switch(agent)
 
     # Fire step_callback for gateway hooks (agent:step event).
@@ -219,7 +219,7 @@ def prepare_iteration(
     # Repair malformed role alternation (tool→user / user→user tails): providers
     # return empty content on them and the empty-retry loop spins. The _with_cursor
     # variant also recomputes the SessionDB flush cursor after compaction.
-    from agent.agent_runtime_helpers import repair_message_sequence_with_cursor
+    from hermes_agent.agent.agent_runtime_helpers import repair_message_sequence_with_cursor
     repaired_seq = repair_message_sequence_with_cursor(agent, messages)
     if repaired_seq > 0:
         request_logger.info(
@@ -287,11 +287,11 @@ def _inject_steer_after_newest_tool_result(agent: Any, messages: Any, steer_text
     for _si in range(len(messages) - 1, -1, -1):
         _sm = messages[_si]
         if isinstance(_sm, dict) and _sm.get("role") == "tool":
-            from agent.prompt_builder import steer_user_row
+            from hermes_agent.agent.prompt_builder import steer_user_row
             messages.insert(_si + 1, steer_user_row(steer_text))
             logger.debug("Pre-API-call steer drain: appended user row after tool msg at index %d", _si)
             return
-    from agent.agent_runtime_helpers import _requeue_pending_steer
+    from hermes_agent.agent.agent_runtime_helpers import _requeue_pending_steer
     _requeue_pending_steer(agent, steer_text)
 
 
@@ -356,7 +356,7 @@ def begin_iteration(
     """Iteration entry in the original order: apply a pending redirect, reset the checkpoint
     dedup, then the interrupt / review-budget / iteration-budget exits. ``api_call_count`` is
     incremented here (the grace call consumes its flag instead of the budget)."""
-    from agent.conversation_loop import (
+    from hermes_agent.agent.conversation_loop import (
         _apply_active_turn_redirect, _review_input_budget_exhausted
     )
 
@@ -451,7 +451,7 @@ def apply_retry_restarts(
     interrupt/redirect that keeps re-arming a restart flag cannot refund the budget
     forever and hold the turn lease indefinitely."""
 
-    from agent.conversation_loop import (
+    from hermes_agent.agent.conversation_loop import (
         _HANDOFF_SKIP_FINAL_RESPONSE, _should_skip_model_call_for_reference_handoff
     )
 

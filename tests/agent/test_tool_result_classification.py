@@ -2,7 +2,7 @@
 
 import json
 
-from agent.tool_result_classification import (
+from hermes_agent.agent.tool_result_classification import (
     file_mutation_result_landed,
 )
 
@@ -21,7 +21,7 @@ def test_write_file_with_nested_lint_error_counts_as_landed():
 
 
 def test_side_effect_classification_keeps_session_mutations():
-    from agent.tool_result_classification import tool_may_have_side_effect
+    from hermes_agent.agent.tool_result_classification import tool_may_have_side_effect
 
     assert tool_may_have_side_effect("todo") is True
     assert tool_may_have_side_effect("memory") is True

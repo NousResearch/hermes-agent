@@ -14,7 +14,7 @@ import os
 from pathlib import Path
 from typing import AbstractSet, Iterable, Iterator, Optional, Set, Tuple
 
-logger = logging.getLogger("agent.lsp.workspace")
+logger = logging.getLogger("hermes_agent.agent.lsp.workspace")
 
 # Cache: start dir → (worktree_root, is_git) so repeated calls don't re-stat.  Cleared on shutdown; capped
 # because every distinct file dir a long gateway session touches lands here (#62950).
@@ -159,7 +159,7 @@ def operator_workspace_roots() -> set[str]:
     (``resolve_agent_cwd``: the Desktop/TUI session cwd, ``hermes -w``'s worktree, a gateway's
     ``terminal.cwd``).  The agent's ``cd`` moves neither (it only moves the terminal's cwd).  A repo at
     or above ``$HOME`` never counts: a dotfiles repo would trust every directory below it."""
-    from agent.runtime_cwd import resolve_agent_cwd
+    from hermes_agent.agent.runtime_cwd import resolve_agent_cwd
     from hermes_agent.gateway.session_context import get_session_env
     from hermes_agent.tools.terminal_scope import TerminalPolicyUnavailable
     from utils import is_truthy_value

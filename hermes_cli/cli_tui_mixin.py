@@ -15,8 +15,8 @@ import sys
 import threading
 import time
 
-from agent.i18n import t
-from agent.interrupt_compat import request_hard_interrupt
+from hermes_agent.agent.i18n import t
+from hermes_agent.agent.interrupt_compat import request_hard_interrupt
 from hermes_cli.commands_completion import SlashCommandAutoSuggest, cli_slash_completer
 from pathlib import Path
 from prompt_toolkit.filters import Condition
@@ -1534,7 +1534,7 @@ class CLITuiMixin:
         # running event for this install; the flag persists to config.yaml. Guarded so
         # onboarding can never break the input loop.
         try:
-            from agent.onboarding import BUSY_INPUT_FLAG, busy_input_hint_cli, is_seen, mark_seen
+            from hermes_agent.agent.onboarding import BUSY_INPUT_FLAG, busy_input_hint_cli, is_seen, mark_seen
             if not is_seen(CLI_CONFIG, BUSY_INPUT_FLAG):
                 _hint_mode = "redirect" if redirected else _effective_mode
                 _cprint(f"  {_DIM}{busy_input_hint_cli(_hint_mode)}{_RST}")
@@ -1693,7 +1693,7 @@ class CLITuiMixin:
             event.app.invalidate()
         if pasted_text:
             # Sanitize surrogates (Word/Google Docs paste) before writing.
-            from agent.message_sanitization import _sanitize_surrogates
+            from hermes_agent.agent.message_sanitization import _sanitize_surrogates
             pasted_text = _sanitize_surrogates(pasted_text)
             line_count = pasted_text.count('\n')
             buf = event.current_buffer

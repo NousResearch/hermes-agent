@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from agent.conversation_loop import _restore_or_build_system_prompt
+from hermes_agent.agent.conversation_loop import _restore_or_build_system_prompt
 
 STORED_PROMPT = (
     "SYSTEM PROMPT BODY\n\nConversation started: Monday, January 05, 2026\n"

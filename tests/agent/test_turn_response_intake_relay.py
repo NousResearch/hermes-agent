@@ -16,8 +16,8 @@ preview intact.
 from types import SimpleNamespace
 from typing import Any
 
-from agent.agent_runtime_helpers import extract_reasoning
-from agent.turn_response_intake import normalize_model_response
+from hermes_agent.agent.agent_runtime_helpers import extract_reasoning
+from hermes_agent.agent.turn_response_intake import normalize_model_response
 
 
 class _Transport:

@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 
 from hermes_cli import lifecycle, plugins
-from agent import relay_runtime
+from hermes_agent.agent import relay_runtime
 from hermes_cli.observability import relay_shared_metrics
 from hermes_cli.plugins import PluginManager
 
@@ -997,7 +997,7 @@ def test_real_binding_aggregates_tool_and_approval_timeouts(
 def test_execution_adapters_do_not_create_relay_host_without_a_consumer(
     monkeypatch,
 ):
-    from agent import relay_llm, relay_tools
+    from hermes_agent.agent import relay_llm, relay_tools
 
     relay_runtime._reset_for_tests()
     imports = []
@@ -1067,7 +1067,7 @@ def test_core_task_instrumentation_preserves_prompt_history_and_tool_schema(
     direct_runtime,
     monkeypatch,
 ):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     agent = object.__new__(AIAgent)
     agent.session_id = "cache-stable-session"
@@ -1115,7 +1115,7 @@ def test_core_task_instrumentation_preserves_prompt_history_and_tool_schema(
         return {"final_response": "ok", "completed": True}
 
     monkeypatch.setattr(
-        "agent.conversation_loop.run_conversation",
+        "hermes_agent.agent.conversation_loop.run_conversation",
         fake_run_conversation,
     )
 
@@ -1138,7 +1138,7 @@ def test_skipped_turn_does_not_finish_another_sessions_matching_task(
     monkeypatch,
 ):
     """A skipped turn must not use shared-metrics' task-id fallback on finish."""
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     owner_session = "instrumented-session"
     shared_task_id = "caller-supplied-task-id"
@@ -1176,7 +1176,7 @@ def test_skipped_turn_does_not_finish_another_sessions_matching_task(
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
-        "agent.conversation_loop.run_conversation",
+        "hermes_agent.agent.conversation_loop.run_conversation",
         lambda *_args, **_kwargs: {"final_response": "ok", "completed": True},
     )
 
@@ -1608,7 +1608,7 @@ def test_subagent_agent_boundary_closes_its_own_scope(
     monkeypatch,
     terminal,
 ):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     coordinator = relay_runtime.SESSION_COORDINATOR
     profile_key = relay_runtime.current_profile_key()
@@ -1632,7 +1632,7 @@ def test_subagent_agent_boundary_closes_its_own_scope(
 
     if terminal == "return":
         monkeypatch.setattr(
-            "agent.conversation_loop.run_conversation",
+            "hermes_agent.agent.conversation_loop.run_conversation",
             lambda *_args, **_kwargs: {
                 "final_response": "done",
                 "completed": True,
@@ -1645,7 +1645,7 @@ def test_subagent_agent_boundary_closes_its_own_scope(
         def fail(*_args, **_kwargs):
             raise RuntimeError("child failed")
 
-        monkeypatch.setattr("agent.conversation_loop.run_conversation", fail)
+        monkeypatch.setattr("hermes_agent.agent.conversation_loop.run_conversation", fail)
         with pytest.raises(RuntimeError, match="child failed"):
             AIAgent.run_conversation(child_agent, "private", task_id="child-task")
     elif terminal == "cancelled":
@@ -1653,7 +1653,7 @@ def test_subagent_agent_boundary_closes_its_own_scope(
         def cancel(*_args, **_kwargs):
             raise KeyboardInterrupt
 
-        monkeypatch.setattr("agent.conversation_loop.run_conversation", cancel)
+        monkeypatch.setattr("hermes_agent.agent.conversation_loop.run_conversation", cancel)
         with pytest.raises(KeyboardInterrupt):
             AIAgent.run_conversation(child_agent, "private", task_id="child-task")
     else:
@@ -1661,7 +1661,7 @@ def test_subagent_agent_boundary_closes_its_own_scope(
         def time_out(*_args, **_kwargs):
             raise TimeoutError("child timed out")
 
-        monkeypatch.setattr("agent.conversation_loop.run_conversation", time_out)
+        monkeypatch.setattr("hermes_agent.agent.conversation_loop.run_conversation", time_out)
         with pytest.raises(TimeoutError, match="child timed out"):
             AIAgent.run_conversation(child_agent, "private", task_id="child-task")
 

@@ -11,16 +11,16 @@ import string
 from typing import Any
 from urllib.parse import urlparse
 
-from agent.reasoning_effort import (
+from hermes_agent.agent.reasoning_effort import (
     GEMINI4_THINKING_LEVELS, KIMI_K3_EFFORTS, KIMI_K3_OVERRIDES, OPENAI_COMPAT_WIRE_EFFORTS, clamp_effort,
     clamp_reasoning_config, kimi_supported_efforts, requested_effort, tokenhub_effort,
 )
-from agent.message_metadata import DATA_USE, MESSAGE_UID, data_use_requirement
-from agent.message_sanitization import coalesce_tool_call_id, normalize_finish_reason as _normalize_finish_reason
-from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
-from agent.prompt_builder import DEVELOPER_ROLE_MODELS
-from agent.transports.base import ProviderTransport
-from agent.transports.types import NormalizedResponse, ToolCall, Usage
+from hermes_agent.agent.message_metadata import DATA_USE, MESSAGE_UID, data_use_requirement
+from hermes_agent.agent.message_sanitization import coalesce_tool_call_id, normalize_finish_reason as _normalize_finish_reason
+from hermes_agent.agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
+from hermes_agent.agent.prompt_builder import DEVELOPER_ROLE_MODELS
+from hermes_agent.agent.transports.base import ProviderTransport
+from hermes_agent.agent.transports.types import NormalizedResponse, ToolCall, Usage
 
 # xAI reserves ``tool_search`` for its server-side tool (HTTP 400 on client
 # declarations); aliased on the wire, mapped back in normalize_response.
@@ -52,7 +52,7 @@ def _rename_tool_search_bridge_for_xai(tools: list[dict[str, Any]]) -> tuple[lis
 
     If a real tool already holds ``hermes_tool_search``, the bridge takes a ``_2``/``_3`` suffix.
     """
-    from agent.transports.codex import _alias_reserved_tools
+    from hermes_agent.agent.transports.codex import _alias_reserved_tools
 
     return _alias_reserved_tools(
         tools, ("tool_search",), name_of=lambda t: (t.get("function") or {}).get("name"),
@@ -87,18 +87,18 @@ def _add_prompt_cache_key(
     so equivalent prefixes hit one bucket across modes.
 
     ``cache_scope_id``, when provided, is the rotation-stable logical scope (compression-lineage root —
-    agent/prompt_cache_scope.py) and takes precedence over the physical ``session_id`` so the key survives
+    hermes_agent/agent/prompt_cache_scope.py) and takes precedence over the physical ``session_id`` so the key survives
     context-compression session rotation (#79017).
     """
     # Stable prompt-cache routing for the Codex/Responses aux path, mirroring the main transport
-    # (agent/transports/codex.py::build_kwargs, which sets prompt_cache_key =
+    # (hermes_agent/agent/transports/codex.py::build_kwargs, which sets prompt_cache_key =
     # _content_cache_key(instructions, tools)). Without this, MoA acting-aggregator and other auxiliary
     # Responses calls stay cache-cold while the main Responses transport is warm (issue #53735). The key is
     # content-addressed from the static prefix (instructions + tool schemas) so it stays warm across
     # turns/fires. Guard the top-level field the same way the main transport does: xAI Responses takes the
     # key in extra_body (not top-level) and endpoints declaring ``responses_prompt_cache_key=False`` opt out
     # of cache-key routing entirely — for those hosts, skip it here.
-    from agent.transports.codex import (
+    from hermes_agent.agent.transports.codex import (
         _bound_prompt_cache_key_field, _cache_scope_from_session_id, _content_cache_key
     )
 
@@ -169,7 +169,7 @@ def _reasoning_config_for_model(model: str, reasoning_config: dict | None) -> di
 
 def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> dict | None:
     """Translate Hermes/OpenRouter-style reasoning config to Gemini thinkingConfig."""
-    from agent.gemini_native_adapter import gemini_uses_thinking_level
+    from hermes_agent.agent.gemini_native_adapter import gemini_uses_thinking_level
 
     if not isinstance(reasoning_config, dict):
         return None
@@ -243,7 +243,7 @@ def _raise_gemini_thinking_max_tokens(model: str, reasoning_config: dict | None,
     thinking_config = _build_gemini_thinking_config(model, reasoning_config)
     if not thinking_config:
         return requested
-    from agent.gemini_native_adapter import _effective_gemini_max_output_tokens
+    from hermes_agent.agent.gemini_native_adapter import _effective_gemini_max_output_tokens
 
     return _effective_gemini_max_output_tokens(requested, thinking_config)
 
@@ -311,7 +311,7 @@ def _wire_reasoning_carriers(provider: Any, base_url: Any) -> frozenset:
     "Provider returned error". Portal lanes that reject a carrier are handled by the
     per-(provider, host, model) reactive strip. Stored history always keeps every carrier.
     """
-    from agent.message_sanitization import route_reasoning_carriers
+    from hermes_agent.agent.message_sanitization import route_reasoning_carriers
 
     return route_reasoning_carriers(provider, base_url)
 
@@ -689,7 +689,7 @@ class ChatCompletionsTransport(ProviderTransport):
             # keys (tags, reasoning, provider, ...) are unknown fields -> HTTP 400.
             # The native client reads only thinking_config and the long-decode budget.
             try:
-                from agent.gemini_native_adapter import is_native_gemini_base_url
+                from hermes_agent.agent.gemini_native_adapter import is_native_gemini_base_url
                 _native_gemini = is_native_gemini_base_url(params.get("base_url"))
             except Exception:
                 _native_gemini = False
@@ -728,8 +728,8 @@ class ChatCompletionsTransport(ProviderTransport):
         if getattr(msg, "reasoning_details", None):
             provider_data["reasoning_details"] = msg.reasoning_details
         # Message-level carriers (Gemini text-turn signature, profile-declared reasoning keys):
-        # agent/reasoning_carriers.py.
-        from agent.reasoning_carriers import declared_carrier_keys
+        # hermes_agent/agent/reasoning_carriers.py.
+        from hermes_agent.agent.reasoning_carriers import declared_carrier_keys
 
         opaque_keys, text_keys = declared_carrier_keys()
         for key in dict.fromkeys(("extra_content", *opaque_keys, *text_keys)):
@@ -799,6 +799,6 @@ class ChatCompletionsTransport(ProviderTransport):
         return {"cached_tokens": cached, "creation_tokens": written} if cached or written else None
 
 
-from agent.transports import register_transport
+from hermes_agent.agent.transports import register_transport
 
 register_transport("chat_completions", ChatCompletionsTransport)

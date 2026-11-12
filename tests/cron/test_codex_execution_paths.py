@@ -8,7 +8,7 @@ sys.modules.setdefault("fire", types.SimpleNamespace(Fire=lambda *a, **k: None))
 sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
 sys.modules.setdefault("fal_client", types.SimpleNamespace())
 
-import run_agent
+from hermes_agent import run_agent
 
 
 def _run_owned_job(job, tmp_path):
@@ -129,7 +129,7 @@ class _Codex401ThenSuccessAgent(run_agent.AIAgent):
 
 def test_cron_run_job_codex_path_handles_internal_401_refresh(monkeypatch, tmp_path):
     _patch_agent_bootstrap(monkeypatch)
-    monkeypatch.setattr("agent.process_bootstrap.OpenAI", _FakeOpenAI)
+    monkeypatch.setattr("hermes_agent.agent.process_bootstrap.OpenAI", _FakeOpenAI)
     monkeypatch.setattr(run_agent, "AIAgent", _Codex401ThenSuccessAgent)
     monkeypatch.setattr(
         "hermes_cli.runtime_provider.resolve_runtime_provider",

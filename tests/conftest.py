@@ -195,7 +195,7 @@ except AttributeError:
 os.environ["HERMES_TEST_ISOLATION"] = os.environ.get("HERMES_HOME", "") or "1"
 
 # Lazy-install kill-switch, set before any test module is imported. The per-test
-# fixture below sets it too, but collection runs first: agent/bedrock_adapter.py
+# fixture below sets it too, but collection runs first: hermes_agent/agent/bedrock_adapter.py
 # calls lazy_deps.ensure() at import time, so collecting a file that imports it
 # ran a real `uv pip install boto3` into the shared venv while other files raced
 # on whether botocore was importable yet.
@@ -379,7 +379,7 @@ def _hermetic_environment(tmp_path, tmp_path_factory, monkeypatch):
     #     launch-env snapshot flip once and stay). A test that routes one RPC/request to a named
     #     profile would otherwise leave every later test in the file fail-closed (unscoped
     #     ``get_env_value`` in a test body raises). Reset the latch per test.
-    secret_scope_mod = sys.modules.get("agent.secret_scope")
+    secret_scope_mod = sys.modules.get("hermes_agent.agent.secret_scope")
     if secret_scope_mod is not None and hasattr(secret_scope_mod, "_MULTIPLEX_ACTIVE"):
         monkeypatch.setattr(secret_scope_mod, "_MULTIPLEX_ACTIVE", False)
     if secret_scope_mod is not None and hasattr(secret_scope_mod, "_AUTO_PINNED_HOME"):
@@ -544,7 +544,7 @@ def _close_leaked_session_dbs():
     # sys.modules lookup, not import: a file that never touched title_generator spawned
     # nothing. Tests that swap in a stub module (tui_gateway golden transcript) have no
     # real threads either, so a stub without the helper is the same "nothing to join" case.
-    wait = getattr(sys.modules.get("agent.title_generator"), "wait_for_title_upgrades", None)
+    wait = getattr(sys.modules.get("hermes_agent.agent.title_generator"), "wait_for_title_upgrades", None)
     if wait is not None:
         wait()
     try:
@@ -602,7 +602,7 @@ def _neutralize_macos_keychain_creds(request, monkeypatch):
         return
 
     try:
-        _mod = importlib.import_module("agent.anthropic_credentials")
+        _mod = importlib.import_module("hermes_agent.agent.anthropic_credentials")
     except Exception:
         return
     monkeypatch.setattr(
@@ -1325,7 +1325,7 @@ def pytest_runtest_call(item):
     try:
         return (yield)
     finally:
-        wait = getattr(sys.modules.get("agent.title_generator"), "wait_for_title_upgrades", None)
+        wait = getattr(sys.modules.get("hermes_agent.agent.title_generator"), "wait_for_title_upgrades", None)
         if wait is not None:
             wait()
 
@@ -1525,7 +1525,7 @@ def _restore_aux_runtime_main():
     """Restore the auxiliary client's main-runtime binding after every test.
 
     ``build_turn_context`` binds the turn's main route with
-    ``agent.auxiliary_client.set_runtime_main`` in a ContextVar. Production
+    ``hermes_agent.agent.auxiliary_client.set_runtime_main`` in a ContextVar. Production
     turns each run in their own context; a single pytest process runs every
     test in one, so a fake agent's route outlives its test and later tests'
     auxiliary routing treats it as the main model. For example, after
@@ -1540,11 +1540,11 @@ def _restore_aux_runtime_main():
     """
     # Hold the real variable: a test may swap a stub into sys.modules for the
     # module, and that swap is undone only after this teardown runs.
-    var = getattr(sys.modules.get("agent.auxiliary_client"), "_RUNTIME_MAIN_CONTEXT", None)
+    var = getattr(sys.modules.get("hermes_agent.agent.auxiliary_client"), "_RUNTIME_MAIN_CONTEXT", None)
     before = var.get() if var is not None else None
     yield
     if var is None:
-        var = getattr(sys.modules.get("agent.auxiliary_client"), "_RUNTIME_MAIN_CONTEXT", None)
+        var = getattr(sys.modules.get("hermes_agent.agent.auxiliary_client"), "_RUNTIME_MAIN_CONTEXT", None)
     if var is not None and var.get() is not before:
         var.set(before)
 
@@ -1553,13 +1553,13 @@ def _restore_aux_runtime_main():
 def _moa_caches_isolated():
     """Clear module-level MoA cold-start caches before each test.
 
-    ``agent.moa_loop`` caches the resolved preset and each slot's provider
+    ``hermes_agent.agent.moa_loop`` caches the resolved preset and each slot's provider
     runtime at module level (keyed on config mtime / provider+model) so the
     tool loop doesn't re-resolve them serially on every iteration. Tests
     monkeypatch resolvers and config paths, so a cache entry leaked from one
     test would poison the next. Clear both around every test.
     """
-    import agent.moa_loop as moa
+    import hermes_agent.agent.moa_loop as moa
 
     moa._preset_cache.clear()
     moa._runtime_cache.clear()

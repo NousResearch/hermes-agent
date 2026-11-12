@@ -93,7 +93,7 @@ class GatewayConfigLoadersMixin:
     def _load_ephemeral_system_prompt() -> str:
         """HERMES_EPHEMERAL_SYSTEM_PROMPT env first (a local session's: its client's), then
         ``display.personality`` / ``agent.system_prompt``."""
-        from agent.session_client_env import session_env
+        from hermes_agent.agent.session_client_env import session_env
         from hermes_agent.gateway.run import _load_gateway_config
         prompt = session_env("HERMES_EPHEMERAL_SYSTEM_PROMPT")
         if prompt:

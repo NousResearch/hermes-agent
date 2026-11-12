@@ -96,7 +96,7 @@ def rewrite_memory_query(user_message: str) -> str:
         return ""
 
     try:
-        from agent.auxiliary_client import call_llm
+        from hermes_agent.agent.auxiliary_client import call_llm
 
         response = call_llm(
             task=TASK_KEY,

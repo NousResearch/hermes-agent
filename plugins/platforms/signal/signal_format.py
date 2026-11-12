@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import re
 
-from agent.markdown_tables import is_table_divider, realign_markdown_tables
+from hermes_agent.agent.markdown_tables import is_table_divider, realign_markdown_tables
 
 # Signal has no fixed-width client area; this budgets for a phone screen in the app's
 # monospace face. Tables wider than this fall back to realign_markdown_tables()'s

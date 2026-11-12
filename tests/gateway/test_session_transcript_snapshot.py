@@ -191,7 +191,7 @@ def _two_handoffs_on_one_carrier(db, target):
 
 def _rewrap(db, target, goal):
     """One more in-place compaction that re-wraps question 2's carrier: one more handoff before it."""
-    from agent.context_compressor import (
+    from hermes_agent.agent.context_compressor import (
         SUMMARY_PREFIX, _MERGED_PRIOR_CONTEXT_HEADER, _MERGED_SUMMARY_DELIMITER, _SUMMARY_END_MARKER,
     )
     held = db.get_messages_as_conversation(target)

@@ -8,7 +8,7 @@ still counting actual thinking TEXT when it is not already carried by
 ``reasoning``/``reasoning_content``.
 """
 
-from agent.context_compressor import (
+from hermes_agent.agent.context_compressor import (
     _estimate_msg_budget_tokens,
     _reasoning_details_text_chars,
 )
@@ -77,8 +77,8 @@ class TestBudgetExcludesReasoningDetailsEnvelope:
         """Ciphertext bytes are never priced as text (a native compaction checkpoint alone is ~5M
         chars, #100611). Replayed reasoning costs the provider-reported count stamped on its turn
         (#125920); a checkpoint costs 0 in both the budget walk and the trigger estimator."""
-        from agent.message_metadata import stamp_reasoning_tokens
-        from agent.model_metadata import estimate_messages_tokens_rough
+        from hermes_agent.agent.message_metadata import stamp_reasoning_tokens
+        from hermes_agent.agent.model_metadata import estimate_messages_tokens_rough
 
         base = {"role": "assistant", "content": "hi"}
         loaded = dict(base, codex_reasoning_items=[{"type": "reasoning", "encrypted_content": "e" * 20_000}])
@@ -115,7 +115,7 @@ class TestPreflightExcludesReasoningDetails:
     reasoning_details envelope."""
 
     def test_preflight_estimate_ignores_reasoning_details(self):
-        from agent.model_metadata import _estimate_message_tokens_without_images
+        from hermes_agent.agent.model_metadata import _estimate_message_tokens_without_images
 
         base = {"role": "assistant", "content": "hello there"}
         loaded = dict(

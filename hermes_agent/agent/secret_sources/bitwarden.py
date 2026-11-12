@@ -21,11 +21,11 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from agent.secret_sources._cache import (
+from hermes_agent.agent.secret_sources._cache import (
     CachedFetch as _CachedFetch, SecretCache, atomic_write_json, entry_from_payload,
     current_cache_path, fingerprint as _token_fingerprint, remove_cache_file, resolve_cache_home,
 )
-from agent.secret_sources.base import (
+from hermes_agent.agent.secret_sources.base import (
     ErrorKind, FetchResult, SecretSource, classify_cli_error, coerce_float,
     is_valid_env_name as _is_valid_env_name, get_source_environment, run_cli, source_child_env,
 )

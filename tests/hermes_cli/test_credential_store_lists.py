@@ -29,8 +29,8 @@ def home(tmp_path, monkeypatch):
 
 
 def _current(home: Path) -> tuple[str, ...]:
-    from agent.secret_sources import bitwarden as bw
-    from agent.secret_sources import onepassword as op
+    from hermes_agent.agent.secret_sources import bitwarden as bw
+    from hermes_agent.agent.secret_sources import onepassword as op
     from plugins.platforms.photon import adapter as photon
 
     paths = (bw._disk_cache_path(home), bw._encrypted_disk_cache_path(home), op._STORE.disk.path(home),
@@ -70,7 +70,7 @@ def test_profile_credential_paths_list_both_locations(home):
 
 
 def test_file_tools_refuse_to_read_or_write_them(home, monkeypatch):
-    import agent.file_safety as fs
+    import hermes_agent.agent.file_safety as fs
 
     root = home.parent / "root"
     monkeypatch.setattr(fs, "_hermes_home_path", lambda: home)

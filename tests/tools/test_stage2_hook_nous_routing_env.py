@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from agent.secret_scope import load_env_file
+from hermes_agent.agent.secret_scope import load_env_file
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 STAGE2_HOOK = REPO_ROOT / "docker" / "stage2-hook.sh"

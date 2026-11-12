@@ -256,9 +256,9 @@ class TestCompressTagsCarriedTail:
         untagged, the tail originals are recalled as compacted history."""
         from unittest.mock import patch
 
-        from agent.context_compressor import _COMPACTION_TAIL_MARKER, ContextCompressor
+        from hermes_agent.agent.context_compressor import _COMPACTION_TAIL_MARKER, ContextCompressor
 
-        with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100_000):
             compressor = ContextCompressor(
                 model="test/model", protect_first_n=2, protect_last_n=2, quiet_mode=True,
             )
@@ -268,7 +268,7 @@ class TestCompressTagsCarriedTail:
             {"role": "user" if i % 2 == 0 else "assistant", "content": f"filler turn {i} " + "x" * 400}
             for i in range(12)
         ]
-        with patch("agent.context_compressor.call_llm", side_effect=RuntimeError("no provider")):
+        with patch("hermes_agent.agent.context_compressor.call_llm", side_effect=RuntimeError("no provider")):
             out = compressor.compress(list(history))
 
         assert len(out) < len(history)

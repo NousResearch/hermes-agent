@@ -172,7 +172,7 @@ class TestAuthJsonSiblingReaders:
         assert has_xai_credentials() is True
 
     def test_auxiliary_nous_provider_reads_non_ascii_store(self, hermes_home, windows_default_encoding, monkeypatch):
-        """agent/auxiliary_client's Nous-provider lookup reads the same store.
+        """hermes_agent/agent/auxiliary_client's Nous-provider lookup reads the same store.
 
         The lookup returns None on any read failure, silently disabling Nous as
         the auxiliary (vision/summarization) provider. A non-ASCII label must
@@ -185,7 +185,7 @@ class TestAuthJsonSiblingReaders:
         }
         _write_utf8(hermes_home / "auth.json", store)
 
-        import agent.auxiliary_client as aux
+        import hermes_agent.agent.auxiliary_client as aux
 
         # _AUTH_JSON_PATH is resolved at module import time, so the
         # HERMES_HOME env from the fixture doesn't reach it — point it at

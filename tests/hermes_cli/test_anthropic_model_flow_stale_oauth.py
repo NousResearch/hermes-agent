@@ -25,7 +25,7 @@ class TestStaleOAuthTokenDetection:
 
         # No valid Claude Code credentials available (expired, no refresh token)
         monkeypatch.setattr(
-            "agent.anthropic_credentials.read_claude_code_credentials",
+            "hermes_agent.agent.anthropic_credentials.read_claude_code_credentials",
             lambda: {
                 "accessToken": "expired-cc-token",
                 "refreshToken": "",          # No refresh — can't recover
@@ -34,16 +34,16 @@ class TestStaleOAuthTokenDetection:
             },
         )
         monkeypatch.setattr(
-            "agent.anthropic_credentials.is_claude_code_token_valid",
+            "hermes_agent.agent.anthropic_credentials.is_claude_code_token_valid",
             lambda creds: False,             # Explicitly expired
         )
         monkeypatch.setattr(
-            "agent.anthropic_credentials._is_oauth_token",
+            "hermes_agent.agent.anthropic_credentials._is_oauth_token",
             lambda key: key.startswith("sk-ant-"),
         )
         # _resolve_claude_code_token_from_credentials has no valid path
         monkeypatch.setattr(
-            "agent.anthropic_credentials._resolve_claude_code_token_from_credentials",
+            "hermes_agent.agent.anthropic_credentials._resolve_claude_code_token_from_credentials",
             lambda creds=None: None,
         )
 

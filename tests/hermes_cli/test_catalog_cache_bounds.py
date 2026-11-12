@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from agent import models_dev
+from hermes_agent.agent import models_dev
 import hermes_cli.models_catalog_static as static
 import hermes_cli.models_pricing as pricing
 
@@ -35,7 +35,7 @@ def test_xai_floor_reuses_the_process_models_dev_copy_without_network(monkeypatc
 
 _LAZY_PROBE = r"""
 import json, sys
-from agent import models_dev
+from hermes_agent.agent import models_dev
 parses = []
 real = models_dev._load_disk_cache
 models_dev._load_disk_cache = lambda: parses.append(1) or real()

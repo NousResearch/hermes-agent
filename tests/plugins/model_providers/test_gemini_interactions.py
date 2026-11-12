@@ -12,7 +12,7 @@ import httpx
 import pytest
 
 import providers
-from agent.gemini_native_adapter import GeminiAPIError
+from hermes_agent.agent.gemini_native_adapter import GeminiAPIError
 
 SIG_A, SIG_B = "c2lnLWE=", "c2lnLWI="
 PNG = "data:image/png;base64,iVBORw0KGgo="

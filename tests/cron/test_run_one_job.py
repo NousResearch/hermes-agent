@@ -379,7 +379,7 @@ def test_run_one_job_installs_secret_scope_under_multiplex(monkeypatch, tmp_path
     Behavior contract: the same scope is present during run_job and
     _deliver_result, and no scope remains after run_one_job returns.
     """
-    from agent import secret_scope as ss
+    from hermes_agent.agent import secret_scope as ss
 
     # Point cron's home resolution at a profile whose .env carries a secret.
     (tmp_path / ".env").write_text("OPENROUTER_BASE_URL=https://openrouter.ai/api/v1\n")

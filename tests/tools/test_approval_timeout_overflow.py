@@ -12,7 +12,7 @@ import threading
 
 from unittest.mock import patch
 
-from agent.deadline import MAX_SAFE_TIMEOUT_S
+from hermes_agent.agent.deadline import MAX_SAFE_TIMEOUT_S
 
 
 def _with_configured_timeout(value):
@@ -79,7 +79,7 @@ class TestApprovalTimeoutOverflowClamp:
         # and (b) still EXTEND beyond the 360s fallback when approvals.timeout
         # is legitimately larger — clamping it down to the fallback would
         # break serialization while a real prompt is still answerable (#79719).
-        from agent.tool_executor import (
+        from hermes_agent.agent.tool_executor import (
             _AUTHORIZATION_GATE_LOCK_TIMEOUT_S,
             _authorization_gate_lock_timeout,
         )

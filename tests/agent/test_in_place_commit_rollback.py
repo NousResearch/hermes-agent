@@ -46,7 +46,7 @@ def _session_db(name):
 
 def _make_agent(session_db, session_id):
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key",
@@ -101,8 +101,8 @@ class TestInPlaceCommitFailureRollback:
     def test_failed_commit_does_not_reinsert_the_transcript(self):
         """archive_and_compact raises → live list must return to the snapshot."""
         from hermes_agent.hermes_state import SessionDB
-        from agent.context_compressor import _DB_PERSISTED_MARKER
-        from agent.conversation_compression import compress_context
+        from hermes_agent.agent.context_compressor import _DB_PERSISTED_MARKER
+        from hermes_agent.agent.conversation_compression import compress_context
 
         with _session_db("rollback.db") as db:
             sid = "20260831_120000_rollback"
@@ -153,8 +153,8 @@ class TestInPlaceCommitFailureRollback:
     def test_successful_commit_still_compacts_in_place(self):
         """The rollback must not fire when the commit landed (#98450 guard)."""
         from hermes_agent.hermes_state import SessionDB
-        from agent.context_compressor import _DB_PERSISTED_MARKER
-        from agent.conversation_compression import compress_context
+        from hermes_agent.agent.context_compressor import _DB_PERSISTED_MARKER
+        from hermes_agent.agent.conversation_compression import compress_context
 
         with _session_db("committed.db") as db:
             sid = "20260831_120001_committed"

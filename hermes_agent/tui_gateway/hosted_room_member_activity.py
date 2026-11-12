@@ -141,7 +141,7 @@ _COORDINATE_FIELDS = ("room_id", "thread_id", "member_id", "turn_id", "task_id",
 def emit_room_member_activity(hosted_task: Mapping[str, Any], *, kind: str, payload: Mapping[str, Any] | None,
                               seq: int | None = None) -> bool:
     """Queue one activity event for every registered consumer; False when nobody listens."""
-    from agent.plugin_stream_hooks import enqueue_plugin_stream_hook
+    from hermes_agent.agent.plugin_stream_hooks import enqueue_plugin_stream_hook
 
     coordinates = {field: hosted_task.get(field) for field in _COORDINATE_FIELDS}
     return enqueue_plugin_stream_hook(HOOK_NAME, **coordinates, kind=kind, seq=seq, payload=dict(payload or {}))

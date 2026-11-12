@@ -6,7 +6,7 @@ from __future__ import annotations
 import re
 
 from .method_ctx import bind_module
-from agent.prompt_builder import STEER_DISPLAY_KIND
+from hermes_agent.agent.prompt_builder import STEER_DISPLAY_KIND
 
 # Discord routing note (hermes_agent/gateway/run_inbound.py::discord_triggering_note) persisted as user
 # ``content`` by gateways before the authored-text fix; presentation-only heal for those rows.
@@ -16,14 +16,14 @@ _DISCORD_TRIGGERING_NOTE_RE = re.compile(
 
 
 def _bridged_tool_labels(name: str, args: dict) -> list[dict]:
-    from agent.display import tool_labels_for_call
+    from hermes_agent.agent.display import tool_labels_for_call
 
     return [label.as_payload() for label in tool_labels_for_call(name, args)]
 
 
 def _active_image_routing_identity(agent: Any) -> tuple[str, str]:
     """Return the live provider/model, falling back before agent startup."""
-    from agent.auxiliary_client import _read_main_model, _read_main_provider
+    from hermes_agent.agent.auxiliary_client import _read_main_model, _read_main_provider
     return (getattr(agent, "provider", "") or _read_main_provider(), getattr(agent, "model", "") or _read_main_model())
 
 
@@ -52,7 +52,7 @@ def _build_persist_message_with_image_refs(user_text: str, image_paths: list[str
     """Persisted form of the user's message: ``@image:<path>`` directives (the desktop renders them as
     images); ``_build_image_ref_message``'s ``image_url:`` hint is model-only, never persisted. Caption
     first, directives last: session previews are the first 60 chars of the first user message."""
-    from agent.context_references import format_reference_value
+    from hermes_agent.agent.context_references import format_reference_value
     text = user_text or ""
     refs = "\n".join(f"@image:{format_reference_value(p)}" for p in image_paths if Path(p).exists())
     if not refs:
@@ -155,7 +155,7 @@ def _user_image_display_text(content: Any) -> str | None:
     if text_part.get("type") != "text" or not isinstance(text_part.get("text"), str):
         return None
     text = text_part["text"]
-    from agent.context_references import format_reference_value
+    from hermes_agent.agent.context_references import format_reference_value
     if "\n\n[Image attached at: " in text:
         caption, hints = text.split("\n\n[Image attached at: ", 1)
         if not caption or caption == "What do you see in this image?":
@@ -192,7 +192,7 @@ def _user_image_display_text(content: Any) -> str | None:
     if len(image_parts) != len(paths) or len(content) not in (1 + len(paths), 2 + len(paths)):
         return None
     if len(content) > 1 + len(paths):
-        from agent.memory_context import sanitize_context
+        from hermes_agent.agent.memory_context import sanitize_context
         memory = content[-1]
         if not isinstance(memory, dict) or memory.get("type") != "text" or not isinstance(memory.get("text"), str) or sanitize_context(memory["text"]).strip():
             return None
@@ -248,7 +248,7 @@ def _expand_skill_invocation_for_replay(text: str, task_id: str) -> str:
     if not head.startswith("/"):
         return text
     try:
-        from agent.skill_commands import build_skill_invocation_message, resolve_skill_command_key
+        from hermes_agent.agent.skill_commands import build_skill_invocation_message, resolve_skill_command_key
         cmd_key = resolve_skill_command_key(head.lstrip("/"), interactive=True)
         return text if cmd_key is None else (build_skill_invocation_message(cmd_key, arg.strip(), task_id=task_id) or text)
     except Exception:  # a skill that no longer resolves must not break the rewind
@@ -265,7 +265,7 @@ def _legacy_display_kind(role: str, text: str) -> str | None:
     """Display type of a synthetic row persisted untyped: new rows are typed at turn start (``persist_user_display_kind``);
     this prefix sniff migrates rows already on disk (a turn killed mid-run never reached the stamp)."""
     # Imported functions are not rebound onto server.py (method_ctx.bind_module): import here.
-    from agent.turn_failure_copy import untyped_failed_turn_display_kind
+    from hermes_agent.agent.turn_failure_copy import untyped_failed_turn_display_kind
 
     if failed_turn := untyped_failed_turn_display_kind(role, text):
         return failed_turn
@@ -297,8 +297,8 @@ def _remember_tool_call_args(tool_calls: list, tool_call_args: dict) -> None:
 def _history_to_messages(history: list[dict], *, profile_home=None, image_urls: bool = True) -> list[dict]:
     """``image_urls=False`` is the ``inline_images=false`` projection (#116511): image parts render ``[image]``
     so a remote client's history read stays kilobytes instead of re-transmitting every stored attachment."""
-    from agent.history_commentary import project_history_commentary
-    from agent.message_metadata import withheld_prompt_text
+    from hermes_agent.agent.history_commentary import project_history_commentary
+    from hermes_agent.agent.message_metadata import withheld_prompt_text
 
     messages = []
     tool_call_args = {}
@@ -328,7 +328,7 @@ def _history_to_messages(history: list[dict], *, profile_home=None, image_urls: 
             content_text = withheld_prompt_text(m) or content_text
         if role == "user" and m.get("display_kind") == STEER_DISPLAY_KIND:
             # Mid-turn /steer: show the user's own words, not the model-facing marker wrapper.
-            from agent.conversation_compression import _extract_steer_text_from_message
+            from hermes_agent.agent.conversation_compression import _extract_steer_text_from_message
             content_text = _extract_steer_text_from_message(m) or content_text
         if role == "tool":
             tc_name, tc_args = tool_call_args.get(m.get("tool_call_id") or "", (None, None))
@@ -528,7 +528,7 @@ def _turn_failure_detail(error: Any, reason: Any = None, prompt: Any = None) -> 
     if not message and not reason_text:
         return ""
     try:
-        from agent.redact import redact_sensitive_text
+        from hermes_agent.agent.redact import redact_sensitive_text
         message = redact_sensitive_text(message, force=True)
     except Exception:
         message = "<unredactable>"  # never fail open

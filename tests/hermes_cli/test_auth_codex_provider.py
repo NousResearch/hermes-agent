@@ -458,7 +458,7 @@ def test_pool_only_force_refresh_rotates_the_pool_entry(tmp_path, monkeypatch):
             hints.append(api_key_hint)
             return SimpleNamespace(runtime_api_key="pool-fresh")
 
-    monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: Pool())
+    monkeypatch.setattr("hermes_agent.agent.credential_pool.load_pool", lambda provider: Pool())
 
     resolved = resolve_codex_runtime_credentials(force_refresh=True)
     assert resolved["api_key"] == "pool-fresh"

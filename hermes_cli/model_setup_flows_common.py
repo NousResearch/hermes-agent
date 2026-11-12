@@ -237,7 +237,7 @@ def _models_dev_merged(provider_id: str, curated) -> list:
     from hermes_cli.models_catalog_static import _LIVE_FIRST_PICKER_PROVIDERS
     mdev_models: list = []
     with contextlib.suppress(Exception):
-        from agent.models_dev import list_agentic_models
+        from hermes_agent.agent.models_dev import list_agentic_models
         mdev_models = list_agentic_models(provider_id)
     if not mdev_models:
         return []
@@ -259,7 +259,7 @@ def _prune_replaced_custom_model_config_credentials(base_url: str, *, provider_n
     custom pools: after an explicit custom-endpoint switch an old pool still carrying that source
     points at the previous endpoint and could be selected before the fresh config."""
     try:
-        from agent.credential_pool import CUSTOM_POOL_PREFIX, custom_provider_pool_key_candidates
+        from hermes_agent.agent.credential_pool import CUSTOM_POOL_PREFIX, custom_provider_pool_key_candidates
         from hermes_cli.auth import read_credential_pool, write_credential_pool
 
         # A keyed ``providers.<key>`` endpoint stores under the durable slug while

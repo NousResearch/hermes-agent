@@ -13,8 +13,8 @@ import os
 import time
 from typing import Any, Optional, Tuple
 
-from agent.credential_source import VERTEX_OAUTH, tag_credential_source
-from agent.secret_scope import get_secret as _get_secret, is_multiplex_active
+from hermes_agent.agent.credential_source import VERTEX_OAUTH, tag_credential_source
+from hermes_agent.agent.secret_scope import get_secret as _get_secret, is_multiplex_active
 
 try:
     import google.auth

@@ -18,7 +18,7 @@ class TestIsAuthErrorXaiOauth403:
 
     @pytest.fixture(autouse=True)
     def _import(self):
-        from agent.auxiliary_error_policy import auth_refresh, classify_attempt
+        from hermes_agent.agent.auxiliary_error_policy import auth_refresh, classify_attempt
         self.is_auth_error = lambda exc: auth_refresh(classify_attempt(exc, "xai-oauth"))
 
     def test_xai_403_bad_credentials_is_auth_error(self):
@@ -59,7 +59,7 @@ class TestIsAuthErrorXaiOauth403:
 # ── _recoverable_pool_provider ──────────────────────────────────────────────
 
 def _import_recoverable_pool_provider():
-    from agent.auxiliary_client import _recoverable_pool_provider
+    from hermes_agent.agent.auxiliary_client import _recoverable_pool_provider
     return _recoverable_pool_provider
 
 
@@ -95,7 +95,7 @@ class TestRecoverablePoolProviderXaiOAuth:
 # ── _refresh_provider_credentials (structure check) ─────────────────────────
 
 def _import_refresh_provider_credentials():
-    from agent.auxiliary_client import _refresh_provider_credentials
+    from hermes_agent.agent.auxiliary_client import _refresh_provider_credentials
     return _refresh_provider_credentials
 
 

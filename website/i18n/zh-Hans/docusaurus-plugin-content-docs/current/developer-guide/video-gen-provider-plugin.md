@@ -41,14 +41,14 @@ plugins/video_gen/my-backend/
 
 ## VideoGenProvider ABC
 
-继承 `agent.video_gen_provider.VideoGenProvider`。必须实现：`name` 属性和 `generate()` 方法。
+继承 `hermes_agent.agent.video_gen_provider.VideoGenProvider`。必须实现：`name` 属性和 `generate()` 方法。
 
 ```python
 # plugins/video_gen/my-backend/__init__.py
 from typing import Any, Dict, List, Optional
 import os
 
-from agent.video_gen_provider import (
+from hermes_agent.agent.video_gen_provider import (
     VideoGenProvider,
     error_response,
     success_response,

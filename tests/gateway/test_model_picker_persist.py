@@ -83,7 +83,7 @@ def _fake_switch_result():
 
 
 def _stub_picker_dependencies(monkeypatch):
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
+    monkeypatch.setattr("hermes_agent.agent.models_dev.fetch_models_dev", dict)
     monkeypatch.setattr(
         "hermes_cli.model_switch_providers.list_picker_providers",
         lambda **kw: [{"slug": "openrouter", "name": "OpenRouter", "models": ["gpt-5.5"]}],
@@ -209,7 +209,7 @@ async def test_multiplex_picker_global_persists_only_named_profile(
 ):
     """A named picker must not seed its global write from the default profile."""
     import hermes_agent.gateway.run as gateway_run
-    from agent.secret_scope import set_multiplex_active
+    from hermes_agent.agent.secret_scope import set_multiplex_active
 
     default_home = tmp_path / "default"
     named_home = tmp_path / "profiles" / "named"

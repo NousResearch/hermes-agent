@@ -122,9 +122,9 @@ from hermes_agent.gateway.platforms.base import (
     validate_media_delivery_path)
 from hermes_agent.gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
 from hermes_agent.gateway.platforms.api_server_response_store import ResponseStore
-from agent.i18n import t
-from agent.redact import redact_sensitive_text
-from agent.interrupt_compat import request_hard_interrupt
+from hermes_agent.agent.i18n import t
+from hermes_agent.agent.redact import redact_sensitive_text
+from hermes_agent.agent.interrupt_compat import request_hard_interrupt
 from hermes_agent.gateway.readiness import collect_runtime_readiness
 
 from hermes_agent.gateway.parked_route_refusal import ParkedRouteRefused
@@ -306,14 +306,14 @@ def _is_compressed_summary_message(message: Any) -> bool:
     (SessionDB drops the in-process marker; a prefix scan misses merge-into-tail carriers)."""
     if not isinstance(message, dict):
         return False
-    from agent.context_compressor import is_compaction_summary_message
+    from hermes_agent.agent.context_compressor import is_compaction_summary_message
     return is_compaction_summary_message(message)
 
 
 def _project_client_message(message: dict[str, Any]) -> dict[str, Any]:
     """Strip compaction scaffolding: standalone handoffs become hidden empty rows (stable
     ids), merged handoffs keep only the real prior-tail content; inherited tool calls dropped."""
-    from agent.compaction_display import (
+    from hermes_agent.agent.compaction_display import (
         _COMPACTION_INTERNAL_FIELDS, project_compaction_message_for_display)
     if (message.get("display_kind") == "hidden"
             and (message.get("display_metadata") or {}).get("notification_category") == "diagnostic"):
@@ -587,7 +587,7 @@ def _request_turn_author(body: dict[str, Any]) -> Optional[dict[str, Any]]:
         return None
     if not isinstance(raw, dict):
         raise ValueError("author must be an object")
-    from agent.turn_author import parse_turn_author
+    from hermes_agent.agent.turn_author import parse_turn_author
     return parse_turn_author(raw)
 
 
@@ -1392,7 +1392,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         if not profile or profile == "default":
             return self._api_key
         try:
-            from agent.secret_scope import get_secret
+            from hermes_agent.agent.secret_scope import get_secret
             from hermes_cli.auth import has_usable_secret
             key = get_secret("API_SERVER_KEY", "") or ""
             return key if has_usable_secret(key, min_length=16) else ""
@@ -1513,7 +1513,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         """
         if not profile:
             with suppress(Exception):
-                from agent.secret_scope import is_multiplex_active
+                from hermes_agent.agent.secret_scope import is_multiplex_active
                 if is_multiplex_active():
                     from hermes_agent.gateway.run import _profile_runtime_scope
                     from hermes_constants import get_hermes_home
@@ -2189,7 +2189,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         ``gateway_session_key`` persists across transcripts (memory scope), unlike ``session_id``;
         ``route`` / ``session_model`` are mutually exclusive; ``confirmed_runtime_lock`` beats the
         session ``/model`` override, disables the fallback chain and fails closed."""
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         from hermes_agent.gateway.run import (
             _checkpoint_agent_kwargs, _current_max_iterations, _resolve_runtime_agent_kwargs,
             _resolve_gateway_model, _load_gateway_config, GatewayRunner)
@@ -3496,7 +3496,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             # retry or the misfire backstop rather than silently dropping it —
             # matches _CRON_FIRE_RETRY_AFTER_SECONDS in web_routers/cron.py.
             with suppress(ImportError):
-                from agent.estop import check_paused as _estop_check_paused
+                from hermes_agent.agent.estop import check_paused as _estop_check_paused
                 if _estop_check_paused("cron-webhook", logger):
                     return web.json_response(
                         {"error": "hermes is paused (ESTOP)", "job_id": job_id},
@@ -3682,7 +3682,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         ``resume_unanswered_turn`` marks a policy-gated re-run of a turn whose user row the failed attempt
         already persisted: the transcript's unanswered tail row is adopted from ``conversation_history``
         as THIS turn's user message instead of being appended a second time
-        (``agent.session_persistence.adopt_unanswered_turn``; #115325)."""
+        (``hermes_agent.agent.session_persistence.adopt_unanswered_turn``; #115325)."""
         if getattr(self.gateway_runner, "session_authority", None) is not None:
             from hermes_agent.gateway.session_api_turn import run_api_turn
             return await run_api_turn(self, user_message=user_message, conversation_history=conversation_history,
@@ -3711,7 +3711,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     session_id=session_id or "", profile=request_profile or "",
                     session_history_delivery=session_history_delivery)
                 agent = None
-                from agent.notification_presentation import notification_turn
+                from hermes_agent.agent.notification_presentation import notification_turn
                 from hermes_agent.gateway.warning_notifications import diagnostic_turn_muted
                 muted = diagnostic_turn_muted({"notification_category": notification_category}, "api_server")
                 try:
@@ -3730,7 +3730,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                         # A dispatcher's re-run of a failed delivery turn: the DM's own row is already
                         # in the store (the failed attempt persisted it at turn start), so continue THAT
                         # row instead of appending a second copy of the same text (#115325).
-                        from agent.session_persistence import adopt_unanswered_turn
+                        from hermes_agent.agent.session_persistence import adopt_unanswered_turn
 
                         adopt_unanswered_turn(conversation_history, user_message, agent)
                     if active_run_id:

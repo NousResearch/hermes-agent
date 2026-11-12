@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from agent import i18n
+from hermes_agent.agent import i18n
 from cli import HermesCLI
 
 

@@ -244,7 +244,7 @@ class TestCLIJudgeGate:
 
         _aux_client = (object(), "judge-model") if judge_available else (None, None)
         monkeypatch.setattr(
-            "agent.auxiliary_client.get_text_auxiliary_client",
+            "hermes_agent.agent.auxiliary_client.get_text_auxiliary_client",
             lambda name: _aux_client,
         )
         # Match the real judge_goal contract:

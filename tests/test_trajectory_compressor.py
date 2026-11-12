@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
-from agent.compression_marker import _COMPRESSION_MARKER_RE
+from hermes_agent.agent.compression_marker import _COMPRESSION_MARKER_RE
 
 from hermes_agent.trajectory_compressor import (
     CompressionConfig,

@@ -506,7 +506,7 @@ this is consent and visibility. It is **not a sandbox**: in-process plugin code
 can still read any file the user can, and reviewers reject plugins that do.
 
 **Usage panels:** don't call the usage endpoints yourself. Use
-`agent.account_usage.fetch_account_usage("openai-codex", read_only=True)`. It
+`hermes_agent.agent.account_usage.fetch_account_usage("openai-codex", read_only=True)`. It
 returns an `AccountUsageSnapshot` (plan, session/weekly windows with
 `used_percent` and `reset_at`) and never refreshes or rotates a credential.
 **Sign-out** belongs to Hermes, not to a plugin: point users at
@@ -1026,7 +1026,7 @@ config_schema:
 **Secrets never touch `config.yaml`.** A `secret` field carries only the `.env`
 name and whether a value is set; the Desktop stores the value through the same
 credential route as provider API keys (`PUT /api/env`), and your plugin reads it
-with `get_secret("MY_PLUGIN_API_KEY")` from `agent.secret_scope` — exactly like a `requires_env` entry.
+with `get_secret("MY_PLUGIN_API_KEY")` from `hermes_agent.agent.secret_scope` — exactly like a `requires_env` entry.
 Never read `.env`, `auth.json` or another tool's credential files yourself (catalog rule 11).
 The `plugins.manage settings` action refuses secret keys and any value whose type
 or `choices` disagree with the schema.
@@ -1258,7 +1258,7 @@ returns the on-disk catalog only.
 ### Ship a language pack
 
 A plugin can add a UI language or override the wording of an existing one for every surface at once —
-Python (`agent.i18n.t()`: approval prompts, gateway replies, tool verbs, tips), the `hermes --tui`
+Python (`hermes_agent.agent.i18n.t()`: approval prompts, gateway replies, tool verbs, tips), the `hermes --tui`
 interface and the Desktop app. Declare `provides_locales` and ship the YAML; **no Python is needed**:
 
 ```
@@ -1570,24 +1570,24 @@ Every name in `hermes_cli.plugins.VALID_HOOKS` has at least one core fire site. 
 
 | Hook | Fired by |
 |------|----------|
-| `pre_tool_call` | `hermes_cli/plugins.py` `_dispatch_pre_tool_call_hooks`, called from `agent/tool_executor.py` `_pre_tool_block`, `agent/agent_runtime_helpers.py` `_pre_tool_block_message` and `hermes_agent/model_tools.py` `_pre_dispatch_guards` |
+| `pre_tool_call` | `hermes_cli/plugins.py` `_dispatch_pre_tool_call_hooks`, called from `hermes_agent/agent/tool_executor.py` `_pre_tool_block`, `hermes_agent/agent/agent_runtime_helpers.py` `_pre_tool_block_message` and `hermes_agent/model_tools.py` `_pre_dispatch_guards` |
 | `post_tool_call` | `hermes_agent/model_tools.py` `_emit_post_tool_call_hook` |
 | `transform_terminal_output` | `hermes_agent/tools/terminal_tool_result.py` `_apply_output_transform_hook` |
 | `transform_tool_result` | `hermes_agent/model_tools.py` `_apply_transform_tool_result_hook` |
-| `transform_llm_output` | `agent/turn_finalizer.py` `apply_llm_output_transform` |
-| `pre_llm_call` | `agent/turn_context.py` `_collect_pre_llm_call_context` |
-| `post_llm_call` | `agent/turn_finalizer.py` `_apply_output_hooks` |
-| `on_stream_start` / `on_stream_end` | `agent/stream_delivery.py` `StreamDeliveryMixin._emit_stream_start` / `_emit_stream_end` |
-| `on_stream_delta` | `agent/stream_delivery.py` `StreamDeliveryMixin._fire_stream_delta` (text) and `_fire_reasoning_delta` (reasoning) |
-| `on_interim_message` | `agent/stream_delivery.py` `StreamDeliveryMixin._emit_interim_assistant_message` |
-| `pre_verify` | `hermes_cli/plugins.py` `get_pre_verify_continue_message`, called from `agent/turn_stop_gates.py` `_pre_verify_nudge` |
-| `pre_api_request` | `agent/turn_api_request.py` `_fire_pre_api_request_hook` |
-| `post_api_request` | `agent/turn_response_intake.py` `_fire_post_api_request_hook` |
-| `api_request_error` | `agent/api_request_hooks.py` `ApiRequestHooksMixin._invoke_api_request_error_hook` |
-| `pre_auxiliary_call` / `post_auxiliary_call` | `agent/auxiliary_hooks.py` `_AuxCallHooks.pre` / `_AuxCallHooks.post` |
-| `transform_api_error_classification` | `hermes_cli/plugins.py` `get_plugin_error_classification`, called from `agent/error_classifier.py` `_plugin_verdict` |
-| `on_session_start` | `agent/conversation_loop.py` `_restore_or_build_system_prompt` |
-| `on_session_end` | `agent/turn_finalizer.py` `finalize_turn`; interrupted exits: `hermes_cli/cli_shutdown.py` `_invoke_interrupted_session_end`, `hermes_agent/tui_gateway/session_lifecycle.py` `_finalize_session` |
+| `transform_llm_output` | `hermes_agent/agent/turn_finalizer.py` `apply_llm_output_transform` |
+| `pre_llm_call` | `hermes_agent/agent/turn_context.py` `_collect_pre_llm_call_context` |
+| `post_llm_call` | `hermes_agent/agent/turn_finalizer.py` `_apply_output_hooks` |
+| `on_stream_start` / `on_stream_end` | `hermes_agent/agent/stream_delivery.py` `StreamDeliveryMixin._emit_stream_start` / `_emit_stream_end` |
+| `on_stream_delta` | `hermes_agent/agent/stream_delivery.py` `StreamDeliveryMixin._fire_stream_delta` (text) and `_fire_reasoning_delta` (reasoning) |
+| `on_interim_message` | `hermes_agent/agent/stream_delivery.py` `StreamDeliveryMixin._emit_interim_assistant_message` |
+| `pre_verify` | `hermes_cli/plugins.py` `get_pre_verify_continue_message`, called from `hermes_agent/agent/turn_stop_gates.py` `_pre_verify_nudge` |
+| `pre_api_request` | `hermes_agent/agent/turn_api_request.py` `_fire_pre_api_request_hook` |
+| `post_api_request` | `hermes_agent/agent/turn_response_intake.py` `_fire_post_api_request_hook` |
+| `api_request_error` | `hermes_agent/agent/api_request_hooks.py` `ApiRequestHooksMixin._invoke_api_request_error_hook` |
+| `pre_auxiliary_call` / `post_auxiliary_call` | `hermes_agent/agent/auxiliary_hooks.py` `_AuxCallHooks.pre` / `_AuxCallHooks.post` |
+| `transform_api_error_classification` | `hermes_cli/plugins.py` `get_plugin_error_classification`, called from `hermes_agent/agent/error_classifier.py` `_plugin_verdict` |
+| `on_session_start` | `hermes_agent/agent/conversation_loop.py` `_restore_or_build_system_prompt` |
+| `on_session_end` | `hermes_agent/agent/turn_finalizer.py` `finalize_turn`; interrupted exits: `hermes_cli/cli_shutdown.py` `_invoke_interrupted_session_end`, `hermes_agent/tui_gateway/session_lifecycle.py` `_finalize_session` |
 | `on_session_finalize` | `hermes_cli/lifecycle.py` `finalize_session`, called from `hermes_cli/cli_session_mixin.py` `CLISessionMixin._notify_session_boundary`, `hermes_cli/cli_shutdown.py` `_notify_session_finalize`, `hermes_agent/tui_gateway/session_lifecycle.py` `_notify_session_boundary` and `hermes_agent/gateway/run_shutdown_session_end.py` `GatewaySessionEndMixin._finalize_session_off_loop` |
 | `on_session_reset` | `hermes_cli/cli_session_mixin.py` `CLISessionMixin._notify_session_boundary`; `hermes_agent/tui_gateway/session_registry.py` `_start_session_services`; `hermes_agent/gateway/slash_commands_session.py` `GatewaySessionCommandsMixin._handle_reset_command`; `hermes_agent/gateway/run_shutdown_session_end.py` `GatewaySessionEndMixin._reset_session_off_loop` |
 | `on_session_delete` | `hermes_agent/hermes_state_common.py` `emit_session_deleted` |
@@ -1612,8 +1612,8 @@ Every name in `hermes_cli.plugins.VALID_HOOKS` has at least one core fire site. 
 | `on_kanban_dispatch_tick` | `hermes_cli/kanban_db.py` `_fire_dispatch_tick_hook` |
 | `gateway_platform_event` | `hermes_agent/gateway/run_adapters.py` `GatewayAdapterLifecycleMixin._handle_gateway_platform_event` (events come from the Telegram and Discord adapters) |
 | `pre_command` | `hermes_cli/plugins.py` `fire_pre_command_hook`, called from `cli.py` `HermesCLI.process_command`, `hermes_agent/gateway/run_inbound_hooks.py` `GatewayInboundHooksMixin._hm_command_hooks` and `hermes_agent/gateway/session_commands.py` |
-| `post_compaction` | `agent/compaction_events.py` `fire_post_compaction` |
-| `post_curator_run` | `agent/curator.py` `_notify_post_curator_run` |
+| `post_compaction` | `hermes_agent/agent/compaction_events.py` `fire_post_compaction` |
+| `post_curator_run` | `hermes_agent/agent/curator.py` `_notify_post_curator_run` |
 
 ### `pre_llm_call` context injection
 
@@ -1900,12 +1900,12 @@ def register(ctx):
 **Where handlers run:** a slash command handler runs in the gateway process that owns the session, also when the user types the command in the classic `hermes chat` CLI. The handler is not running in the user's terminal or directory, so:
 
 - Return the text to show. `print()` writes to the gateway's stdout, and the user never sees it.
-- Take the session's working directory from `agent.runtime_cwd.resolve_agent_cwd()`, not `os.getcwd()`, which is the gateway's own directory. Resolve relative paths against it.
+- Take the session's working directory from `hermes_agent.agent.runtime_cwd.resolve_agent_cwd()`, not `os.getcwd()`, which is the gateway's own directory. Resolve relative paths against it.
 - Read session identity with `get_session_env("HERMES_SESSION_PLATFORM")`, `get_session_env("HERMES_SESSION_CHAT_ID")` and the other `HERMES_SESSION_*` names, not `os.environ`. Import the function itself with `from hermes_agent.gateway.session_context import get_session_env`: that name is the public seam, and `hermes plugins validate` reports `import hermes_agent.gateway.session_context` as a private import.
 - For "who asked this turn" (authorization, provenance), read `HERMES_SESSION_ACTOR_ID` / `HERMES_SESSION_ACTOR_NAME`. Both are empty when the turn has no single actor (another member's message joined it), in process and in a terminal or `execute_code` child alike, so treat empty as nobody in particular. `HERMES_SESSION_USER_ID` is the session route, and it is empty in a shared chat (Telegram observe mode), so code that rebuilds a delivery target from it stays on the shared conversation.
 
 ```python
-from agent.runtime_cwd import resolve_agent_cwd
+from hermes_agent.agent.runtime_cwd import resolve_agent_cwd
 from hermes_agent.gateway.session_context import get_session_env
 
 def _handle_todo(raw_args: str) -> str:
@@ -2346,11 +2346,11 @@ class MyPlatformAdapter(BasePlatformAdapter):
     async def disconnect(self): ...
 
 def check_requirements():
-    from agent.secret_scope import get_secret
+    from hermes_agent.agent.secret_scope import get_secret
     return bool(get_secret("MYPLATFORM_TOKEN"))
 
 def _env_enablement():
-    from agent.secret_scope import get_secret
+    from hermes_agent.agent.secret_scope import get_secret
     tok = (get_secret("MYPLATFORM_TOKEN") or "").strip()
     if not tok:
         return None
@@ -2398,7 +2398,7 @@ Drop an implementation of `MemoryProvider` into `plugins/memory/<name>/`:
 
 ```python
 # plugins/memory/my-memory/__init__.py
-from agent.memory_provider import MemoryProvider
+from hermes_agent.agent.memory_provider import MemoryProvider
 
 class MyMemoryProvider(MemoryProvider):
     @property
@@ -2406,7 +2406,7 @@ class MyMemoryProvider(MemoryProvider):
         return "my-memory"
 
     def is_available(self) -> bool:
-        from agent.secret_scope import get_secret
+        from hermes_agent.agent.secret_scope import get_secret
         return bool(get_secret("MY_MEMORY_API_KEY"))
 
     def initialize(self, session_id: str, **kwargs) -> None:
@@ -2436,7 +2436,7 @@ If a provider also loads as a general plugin, general discovery owns its lifecyc
 
 ```python
 # plugins/context_engine/my-engine/__init__.py
-from agent.context_engine import ContextEngine
+from hermes_agent.agent.context_engine import ContextEngine
 
 class MyContextEngine(ContextEngine):
     @property
@@ -2462,7 +2462,7 @@ Drop a provider into `plugins/image_gen/<name>/`:
 
 ```python
 # plugins/image_gen/my-imggen/__init__.py
-from agent.image_gen_provider import ImageGenProvider
+from hermes_agent.agent.image_gen_provider import ImageGenProvider
 
 class MyImageGenProvider(ImageGenProvider):
     @property

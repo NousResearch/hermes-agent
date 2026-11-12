@@ -16,12 +16,12 @@ from unittest.mock import MagicMock, patch
 
 
 def test_turn_start_preflight_timeout_returns_typed_result_not_exception():
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     with (
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(
             api_key="test-key-1234567890",
@@ -51,7 +51,7 @@ def test_turn_start_preflight_timeout_returns_typed_result_not_exception():
     )
 
     def _timed_out(messages, _system_message, **_kwargs):
-        from agent.conversation_compression import (
+        from hermes_agent.agent.conversation_compression import (
             mark_context_compression_timed_out,
             reset_context_compression_timeout_outcome,
         )

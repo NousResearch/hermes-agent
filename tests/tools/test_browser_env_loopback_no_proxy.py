@@ -10,7 +10,7 @@ for loopback URLs only.
 import pytest
 
 import hermes_agent.tools.browser_session as bs
-from agent.proxy_bypass import add_loopback_no_proxy, loopback_connect_kwargs, loopback_request_kwargs
+from hermes_agent.agent.proxy_bypass import add_loopback_no_proxy, loopback_connect_kwargs, loopback_request_kwargs
 
 
 @pytest.fixture

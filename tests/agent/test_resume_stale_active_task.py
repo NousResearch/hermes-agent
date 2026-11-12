@@ -11,7 +11,7 @@ On a resumed lineage the inherited handoff must be detected as a summary
 (state to rehydrate), never re-serialized as a fresh user turn.
 """
 
-from agent.context_compressor import (
+from hermes_agent.agent.context_compressor import (
     HISTORICAL_TASK_HEADING,
     SUMMARY_PREFIX,
     ContextCompressor,

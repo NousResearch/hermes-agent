@@ -109,8 +109,8 @@ class TestTrustGateAtCallTime:
     def test_approval_card_shows_redacted_bounded_arguments(self, fake_session, monkeypatch):
         """The approver sees the call's arguments, never its secrets (even with redaction turned off
         for logs), and the card stays inside the smallest messaging cap."""
-        import agent.redact
-        monkeypatch.setattr(agent.redact, "_REDACT_ENABLED", False)
+        import hermes_agent.agent.redact
+        monkeypatch.setattr(hermes_agent.agent.redact, "_REDACT_ENABLED", False)
         _set_trust("srv", "untrusted")
         handler = _mcp_handlers._make_tool_handler("srv", "trigger_build", 30.0)
         args = {

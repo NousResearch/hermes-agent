@@ -15,8 +15,8 @@ import httpx
 import openai
 import pytest
 
-from agent.error_classifier import FailoverReason, classify_api_error
-from agent.message_sanitization import _looks_like_image_content_rejection
+from hermes_agent.agent.error_classifier import FailoverReason, classify_api_error
+from hermes_agent.agent.message_sanitization import _looks_like_image_content_rejection
 
 _REQUEST = httpx.Request("POST", "https://example.invalid/v1/chat/completions")
 
@@ -76,7 +76,7 @@ def test_affordable_402_classifies_as_billing_with_a_parseable_budget():
     """#49769 is recovered in the main loop, not by the classifier: the 402 stays ``billing`` and the
     recovery chain retries once with the cap lowered to the budget it names
     (``tests/agent/test_affordable_402_main_loop.py`` drives that retry end to end)."""
-    from agent.auxiliary_client import _affordable_max_tokens_from_error
+    from hermes_agent.agent.auxiliary_client import _affordable_max_tokens_from_error
 
     error = _status(openai.APIStatusError, 402, AFFORD_402)
     result = classify_api_error(error, provider="openrouter", model="anthropic/claude-opus-5.5")

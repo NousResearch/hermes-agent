@@ -1,6 +1,6 @@
 """``gateway.bot_loop_guard.max_hops`` / ``bot_replies_expect_reply`` read from a real config.yaml through
 the loader both consumers use (``gateway.bot_loop_guard.load_settings``): the messaging gateway's chain
-rules and Bot Mode's ``agent/bot_chain.py`` (#137027)."""
+rules and Bot Mode's ``hermes_agent/agent/bot_chain.py`` (#137027)."""
 
 import json
 
@@ -36,7 +36,7 @@ def test_max_hops_and_reply_rule_from_config_yaml_drive_the_gateway_chain(config
 def test_max_hops_from_config_yaml_caps_bot_mode_sends(config_home, monkeypatch):
     from types import SimpleNamespace
 
-    from agent import bot_chain
+    from hermes_agent.agent import bot_chain
 
     monkeypatch.setattr(bot_chain, "_CHAINS", {})
     config_home({"max_hops": 2, "bot_replies_expect_reply": False})

@@ -152,7 +152,7 @@ def test_boot_refuses_remote_secrets_source_that_maps_plane_credential(plane, mo
     """End to end through load_hermes_dotenv: the REMOTE secrets: section drives the sources (D32)."""
     from types import SimpleNamespace
 
-    from agent.secret_sources import registry
+    from hermes_agent.agent.secret_sources import registry
     from hermes_cli import env_loader
     plane.upper = {"secrets": {"command": {"enabled": True}}}
     seen = {}
@@ -750,7 +750,7 @@ def test_refused_source_plane_url_is_never_visible_to_a_concurrent_request(plane
     import os
     import threading
 
-    from agent.secret_sources import registry
+    from hermes_agent.agent.secret_sources import registry
     from hermes_cli import env_loader
     monkeypatch.setattr(env_loader, "_APPLIED_HOMES", set())
     with StubPlane() as other:

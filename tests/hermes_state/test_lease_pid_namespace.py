@@ -18,7 +18,7 @@ import pytest
 
 from hermes_agent import hermes_state_common
 from hermes_agent import hermes_state_pidns
-from agent.conversation_compression import _compression_lock_holder
+from hermes_agent.agent.conversation_compression import _compression_lock_holder
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_pidns import LocalPidNamespace
 

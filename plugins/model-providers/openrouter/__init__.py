@@ -3,10 +3,10 @@
 import logging
 from typing import Any
 
-from agent.portal_tags import get_affinity_scope, get_conversation_context
-from agent.prompt_cache_scope import GROK_AGGREGATOR_MODEL_PREFIXES, is_fork_cache_scope
-from agent.reasoning_effort import codex_supported_efforts
-from agent.transports.codex import _cache_scope_from_session_id
+from hermes_agent.agent.portal_tags import get_affinity_scope, get_conversation_context
+from hermes_agent.agent.prompt_cache_scope import GROK_AGGREGATOR_MODEL_PREFIXES, is_fork_cache_scope
+from hermes_agent.agent.reasoning_effort import codex_supported_efforts
+from hermes_agent.agent.transports.codex import _cache_scope_from_session_id
 from providers import register_provider
 from providers.base import ProviderProfile
 
@@ -17,7 +17,7 @@ _CACHE: list[str] | None = None
 # Legacy allowlist of Anthropic models that still accept an explicit "disable
 # thinking" request. Claude 4.6+ and newer named models mandate reasoning and
 # 400 on any disable form, so *unknown* Anthropic models default to "cannot
-# disable" (mirrors agent/anthropic_adapter._get_anthropic_max_output).
+# disable" (mirrors hermes_agent/agent/anthropic_adapter._get_anthropic_max_output).
 _ANTHROPIC_REASONING_OPTIONAL_SUBSTRINGS = (
     "claude-3",          # 3, 3.5, 3.7
     "claude-opus-4-0", "claude-opus-4.0", "claude-opus-4-1", "claude-opus-4.1",
@@ -196,7 +196,7 @@ class OpenRouterProfile(ProviderProfile):
         # xAI's prompt cache is pinned per backend server via this header.
         grok_conv_id = _sticky_key(session_id)
         # A cache-parity fork carries the parent's ambient scope; on Grok that key would evict
-        # the parent's server slot, so honour the fork-derived scope (agent/prompt_cache_scope.py).
+        # the parent's server slot, so honour the fork-derived scope (hermes_agent/agent/prompt_cache_scope.py).
         if is_fork_cache_scope(context.get("cache_scope_id")):
             grok_conv_id = context["cache_scope_id"]
         if grok_conv_id and model and model.startswith(GROK_AGGREGATOR_MODEL_PREFIXES):

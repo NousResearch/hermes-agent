@@ -11,7 +11,7 @@ from __future__ import annotations
 import random
 import threading
 
-from agent.i18n import DEFAULT_LANGUAGE, t
+from hermes_agent.agent.i18n import DEFAULT_LANGUAGE, t
 
 TIP_KEY_PREFIX = "tips.t"
 PLACEHOLDER_KEY_PREFIX = "tips.placeholder.p"

@@ -9,7 +9,7 @@ candidate must get the same recovery as the primary request.
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from agent.auxiliary_client import (
+from hermes_agent.agent.auxiliary_client import (
     _call_fallback_candidate_sync,
     _drive_ladder,
     _failure,

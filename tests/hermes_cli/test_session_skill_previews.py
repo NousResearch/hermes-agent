@@ -12,7 +12,7 @@ shaper directly, so the CASE expression and the Python side are covered together
 
 import pytest
 
-from agent.context_compressor import (
+from hermes_agent.agent.context_compressor import (
     HISTORICAL_TASK_HEADING,
     SUMMARY_PREFIX,
     _HISTORICAL_SUMMARY_PREFIXES,
@@ -20,7 +20,7 @@ from agent.context_compressor import (
     _MERGED_SUMMARY_DELIMITER,
     _SUMMARY_END_MARKER,
 )
-from agent import skill_commands
+from hermes_agent.agent import skill_commands
 from hermes_agent.tools import skills_tool
 from hermes_agent.hermes_state import SessionDB
 
@@ -228,7 +228,7 @@ class TestSkillScaffoldedSessionLookup:
         rows = db.list_skill_scaffolded_sessions()
         assert [row["id"] for row in rows] == ["auto"]
         # The caller re-derives the typed request through the describer.
-        from agent.skill_commands import describe_skill_invocation
+        from hermes_agent.agent.skill_commands import describe_skill_invocation
         assert describe_skill_invocation(rows[0]["content"]) == "why is my deploy timing out?"
 
 

@@ -3,9 +3,9 @@ import re
 
 import pytest
 
-from agent.prompt_builder import build_skills_system_prompt, clear_skills_system_prompt_cache
-from agent.skill_utils import SKILL_PROMPT_DESC_LIMIT, clip_skill_description
-from agent.skills_index_delta import index_entries
+from hermes_agent.agent.prompt_builder import build_skills_system_prompt, clear_skills_system_prompt_cache
+from hermes_agent.agent.skill_utils import SKILL_PROMPT_DESC_LIMIT, clip_skill_description
+from hermes_agent.agent.skills_index_delta import index_entries
 
 LONG = "Use when cutting, publishing, or abandoning a hermes-agent release and its notes."
 

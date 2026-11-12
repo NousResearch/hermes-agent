@@ -116,7 +116,7 @@ one 200K run was stuck after 0.42M tokens of work, one transcript never fit.
 
 ## Notes
 
-- Question generation and judging use `agent.auxiliary_client.call_llm`
+- Question generation and judging use `hermes_agent.agent.auxiliary_client.call_llm`
   (same transport the compressor uses), so the harness needs a configured
   provider. Costs real tokens: ~(policies x questions) answer calls plus
   one generation and one judge pass.

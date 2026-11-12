@@ -93,7 +93,7 @@ def test_skills_breakdown_shape_sorted_and_attributed(isolated_home):
 
 def test_skills_breakdown_attributes_demoted_category_shared_line(isolated_home):
     """A real posture-demoted category retains every skill in the breakdown."""
-    from agent.prompt_builder import build_skills_system_prompt
+    from hermes_agent.agent.prompt_builder import build_skills_system_prompt
 
     _seed_skill(isolated_home, "alpha-skill", "alpha description")
     _seed_skill(isolated_home, "beta-skill", "beta description")

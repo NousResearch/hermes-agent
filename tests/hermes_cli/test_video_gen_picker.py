@@ -12,8 +12,8 @@ from typing import Any, Dict, List, Optional
 
 import pytest
 
-from agent import video_gen_registry
-from agent.video_gen_provider import VideoGenProvider
+from hermes_agent.agent import video_gen_registry
+from hermes_agent.agent.video_gen_provider import VideoGenProvider
 
 
 class _FakeVideoProvider(VideoGenProvider):

@@ -117,14 +117,14 @@ def owner(monkeypatch, tmp_path):
 
 
 def test_one_connection_serves_every_call(owner, tmp_path):
-    from agent.runtime_session_store import WorkerRPC
+    from hermes_agent.agent.runtime_session_store import WorkerRPC
     rpc = WorkerRPC(tmp_path)
     assert [rpc('worker.persist')['n'] for _ in range(5)] == [1, 2, 3, 4, 5]
     assert (owner.connections, owner.tickets) == (1, 1)
 
 
 def test_reconnects_with_a_fresh_ticket_after_the_owner_drops_it(owner, tmp_path):
-    from agent.runtime_session_store import WorkerRPC
+    from hermes_agent.agent.runtime_session_store import WorkerRPC
     rpc = WorkerRPC(tmp_path)
     owner.drop = 'after_reply'
     assert rpc('worker.persist') == {'n': 1}
@@ -137,7 +137,7 @@ def test_reconnects_with_a_fresh_ticket_after_the_owner_drops_it(owner, tmp_path
 
 def test_in_flight_call_on_a_dropped_connection_fails_and_is_not_resent(owner, tmp_path):
     from websockets.exceptions import ConnectionClosed
-    from agent.runtime_session_store import WorkerRPC
+    from hermes_agent.agent.runtime_session_store import WorkerRPC
     rpc = WorkerRPC(tmp_path)
     assert rpc('worker.persist') == {'n': 1}
     owner.drop = 'before_reply'
@@ -178,7 +178,7 @@ def _owner_closes_before_the_frame_is_written(owner, monkeypatch):
 def test_owner_close_between_the_idle_check_and_the_send_redials_and_sends_once(owner, tmp_path, monkeypatch):
     """websockets raises ConnectionClosed from send only before the frame is written: nothing reached
     the owner, so the call redials once with a fresh ticket instead of failing as outcome-unknown."""
-    from agent.runtime_session_store import WorkerRPC
+    from hermes_agent.agent.runtime_session_store import WorkerRPC
     owner.sabotage = 0
     _owner_closes_before_the_frame_is_written(owner, monkeypatch)
     rpc = WorkerRPC(tmp_path)
@@ -193,7 +193,7 @@ def test_owner_close_between_the_idle_check_and_the_send_redials_and_sends_once(
 
 def test_a_redial_whose_send_also_fails_is_not_retried_again(owner, tmp_path, monkeypatch):
     from websockets.exceptions import ConnectionClosed
-    from agent.runtime_session_store import WorkerRPC
+    from hermes_agent.agent.runtime_session_store import WorkerRPC
     owner.sabotage = 0
     _owner_closes_before_the_frame_is_written(owner, monkeypatch)
     rpc = WorkerRPC(tmp_path)
@@ -209,7 +209,7 @@ def test_a_redial_whose_send_also_fails_is_not_retried_again(owner, tmp_path, mo
 def test_idle_broadcasts_past_the_receive_high_water_mark_keep_the_connection(owner, tmp_path):
     """Events pushed between calls (far over websockets' 16-frame receive mark) are consumed while the
     worker is idle, so the owner's keepalive is answered and the next call reuses the connection."""
-    from agent.runtime_session_store import WorkerRPC
+    from hermes_agent.agent.runtime_session_store import WorkerRPC
     rpc = WorkerRPC(tmp_path)
     assert rpc('flood', events=64)['n'] == 1
     assert owner.flooded.wait(10)
@@ -223,7 +223,7 @@ def test_owner_stall_shorter_than_the_receipt_budget_does_not_fail_on_a_ping_dea
     by the same stall must not close the connection first. The library defaults (20 s / 20 s) are
     scaled down so an inherited keepalive would fire inside the stall."""
     from websockets.sync import client
-    from agent.runtime_session_store import WorkerRPC
+    from hermes_agent.agent.runtime_session_store import WorkerRPC
     real = client.connect
 
     def connect(*args, **kwargs):
@@ -241,7 +241,7 @@ def test_owner_stall_shorter_than_the_receipt_budget_does_not_fail_on_a_ping_dea
 
 
 def test_concurrent_callers_are_serialized_and_each_gets_its_own_reply(owner, tmp_path):
-    from agent.runtime_session_store import WorkerRPC
+    from hermes_agent.agent.runtime_session_store import WorkerRPC
     rpc = WorkerRPC(tmp_path)
     replies, errors = {'a': [], 'b': []}, []
 
@@ -264,7 +264,7 @@ def test_concurrent_callers_are_serialized_and_each_gets_its_own_reply(owner, tm
 
 
 def test_an_owner_error_reply_keeps_the_connection_for_the_next_call(owner, tmp_path):
-    from agent.runtime_session_store import WorkerPersistenceError, WorkerRPC
+    from hermes_agent.agent.runtime_session_store import WorkerPersistenceError, WorkerRPC
     rpc = WorkerRPC(tmp_path)
     with pytest.raises(WorkerPersistenceError, match='stale_generation'):
         rpc('fail')

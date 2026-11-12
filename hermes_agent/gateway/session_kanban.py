@@ -351,7 +351,7 @@ def _bound_claim_is_live(context):
     """Retry proof for a managed worker: the frame's exact run/claim lease is live and unexpired,
     and THIS interpreter is the one ``bind_worker_context`` bound to it. The run's worker_pid is
     the dispatcher's spawned submitter here, so pid identity comes from ``worker_bound`` instead."""
-    from agent.kanban_turn_recovery import worker_claim_is_live
+    from hermes_agent.agent.kanban_turn_recovery import worker_claim_is_live
     if not worker_claim_is_live(task_id=context['task_id'], db_path=context['db'], run_id=str(context['run_id']),
                                 claim_lock=context['claim_lock'], verify_pid=False):
         return False
@@ -382,7 +382,7 @@ KANBAN_TURN_AUTHOR = {'id': 'kanban:dispatcher', 'name': 'Kanban dispatcher', 'i
 
 
 def _run_task_turns(agent, frame, history, context):
-    from agent.skill_commands import build_preloaded_skills_prompt
+    from hermes_agent.agent.skill_commands import build_preloaded_skills_prompt
     skills, loaded, missing = build_preloaded_skills_prompt(context['skills'], task_id=agent.session_id)
     if missing and not loaded:
         raise ValueError('kanban_skills_unavailable')
@@ -395,9 +395,9 @@ def _run_task_turns(agent, frame, history, context):
         result = agent.run_conversation(nudge, conversation_history=prior or
                                         agent._session_db.get_messages_as_conversation(agent.session_id),
                                         turn_author=KANBAN_TURN_AUTHOR)
-    # Same in-place retry as the one-shot CLI worker (agent/kanban_turn_recovery.py), but the
+    # Same in-place retry as the one-shot CLI worker (hermes_agent/agent/kanban_turn_recovery.py), but the
     # carrier is this frame's bound claim, never the owner process's environment.
-    from agent.kanban_turn_recovery import recover_failed_kanban_turns
+    from hermes_agent.agent.kanban_turn_recovery import recover_failed_kanban_turns
     recover_failed_kanban_turns(recover, lambda: result, task_id=context['task_id'],
                                 claim_check=lambda: _bound_claim_is_live(context))
     from hermes_cli.turn_exit import turn_exit_code

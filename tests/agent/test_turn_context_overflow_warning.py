@@ -13,8 +13,8 @@ from __future__ import annotations
 import time
 from unittest.mock import patch
 
-from agent.context_compressor import ContextCompressor
-from agent.turn_context import build_turn_context
+from hermes_agent.agent.context_compressor import ContextCompressor
+from hermes_agent.agent.turn_context import build_turn_context
 from tests.agent.test_turn_context import _FakeAgent
 
 
@@ -33,7 +33,7 @@ def _make_compressor(**kwargs) -> ContextCompressor:
     defaults.update(kwargs)
     # 96K context -> small-context floor raises threshold_percent to 0.75,
     # so threshold_tokens = 72_000. 73_000 is "over threshold".
-    with patch("agent.context_compressor.get_model_context_length", return_value=96000):
+    with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=96000):
         comp = ContextCompressor(**defaults)
         # Resolve while the mock is active (lazy init, #32221).
         _ = comp.context_length
@@ -99,9 +99,9 @@ def _run_build(agent):
     branch must run without tripping the over-window fail-closed (a no-progress pass on a request
     above the window ends the turn; that path is covered by
     ``tests/agent/test_over_window_compression_fail_closed.py``)."""
-    with patch("agent.auxiliary_client.set_runtime_main", lambda *a, **k: None), \
-         patch("agent.turn_context._should_run_preflight_estimate", return_value=True), \
-         patch("agent.turn_context.estimate_request_tokens_rough", return_value=80_000):
+    with patch("hermes_agent.agent.auxiliary_client.set_runtime_main", lambda *a, **k: None), \
+         patch("hermes_agent.agent.turn_context._should_run_preflight_estimate", return_value=True), \
+         patch("hermes_agent.agent.turn_context.estimate_request_tokens_rough", return_value=80_000):
         return build_turn_context(
             agent=agent,
             user_message="hello",
@@ -169,9 +169,9 @@ class TestTurnContextOverflowWarning:
         comp.last_prompt_tokens = 10_000
         comp._summary_failure_cooldown_until = time.monotonic() + 30
         agent = _build_warn_agent(comp)
-        with patch("agent.auxiliary_client.set_runtime_main", lambda *a, **k: None), \
-             patch("agent.turn_context._should_run_preflight_estimate", return_value=True), \
-             patch("agent.turn_context.estimate_request_tokens_rough", return_value=10_000):
+        with patch("hermes_agent.agent.auxiliary_client.set_runtime_main", lambda *a, **k: None), \
+             patch("hermes_agent.agent.turn_context._should_run_preflight_estimate", return_value=True), \
+             patch("hermes_agent.agent.turn_context.estimate_request_tokens_rough", return_value=10_000):
             build_turn_context(
                 agent=agent,
                 user_message="hello",
@@ -208,7 +208,7 @@ class TestPluginEngineDefault:
         assert result == (False, None)
 
     def test_abc_default_delegates_to_should_compress(self):
-        from agent.context_engine import ContextEngine
+        from hermes_agent.agent.context_engine import ContextEngine
 
         class _TrueEngine(ContextEngine):
             @property
@@ -240,7 +240,7 @@ class TestWarningSurvivesNoiseFilter:
     """
 
     def _emitted_warning(self, reason: str) -> str:
-        from agent.conversation_compression import (
+        from hermes_agent.agent.conversation_compression import (
             CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE,
         )
 

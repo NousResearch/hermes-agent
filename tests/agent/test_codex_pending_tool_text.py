@@ -10,8 +10,8 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from agent.codex_responses_adapter import _normalize_codex_response
-from agent.codex_runtime import _consume_codex_event_stream
+from hermes_agent.agent.codex_responses_adapter import _normalize_codex_response
+from hermes_agent.agent.codex_runtime import _consume_codex_event_stream
 
 NARRATION = "Let me read the file first."
 

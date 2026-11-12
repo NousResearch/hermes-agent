@@ -16,9 +16,9 @@ from unittest import mock
 
 import urllib.request
 
-from agent import anthropic_credentials as ac
-from agent import credential_sources
-from agent.credential_pool import load_pool
+from hermes_agent.agent import anthropic_credentials as ac
+from hermes_agent.agent import credential_sources
+from hermes_agent.agent.credential_pool import load_pool
 from hermes_cli.auth_commands import auth_list_command
 
 

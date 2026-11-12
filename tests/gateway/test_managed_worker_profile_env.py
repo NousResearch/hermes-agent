@@ -2,7 +2,7 @@
 import os
 from types import SimpleNamespace
 
-from agent.secret_scope import set_multiplex_active
+from hermes_agent.agent.secret_scope import set_multiplex_active
 
 
 def test_secondary_worker_env_drops_launch_terminal_policy_and_env_settings(tmp_path, monkeypatch):

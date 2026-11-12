@@ -11,7 +11,7 @@ from typing import Any, NamedTuple
 
 import pytest
 
-from agent.ssl_verify import resolve_httpx_verify
+from hermes_agent.agent.ssl_verify import resolve_httpx_verify
 from datetime import UTC
 
 
@@ -41,7 +41,7 @@ def test_missing_bundle_under_a_cert_env_var_shares_the_platform_context(tmp_pat
 
     import certifi
 
-    from agent import ssl_verify
+    from hermes_agent.agent import ssl_verify
 
     monkeypatch.setattr(ssl_verify, "_CA_CONTEXTS", {})
     monkeypatch.setenv("SSL_CERT_FILE", certifi.where())
@@ -80,7 +80,7 @@ def no_truststore(name, *args, **kwargs):
         raise ImportError('unavailable fixture')
     return real_import(name, *args, **kwargs)
 builtins.__import__ = no_truststore
-from agent.ssl_verify import install_truststore, resolve_httpx_verify
+from hermes_agent.agent.ssl_verify import install_truststore, resolve_httpx_verify
 assert install_truststore() is False
 assert install_truststore() is False
 assert ssl.SSLContext is original
@@ -143,7 +143,7 @@ def _private_https_server(tmp_path: Path) -> Iterator[tuple[Any, Path]]:
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     # Earlier tests may have injected truststore; its wrapper is client-only.
-    from agent.ssl_verify import _stdlib_ssl_context_class
+    from hermes_agent.agent.ssl_verify import _stdlib_ssl_context_class
     context = _stdlib_ssl_context_class()(ssl.PROTOCOL_TLS_SERVER)
     context.load_cert_chain(ca, private)
     server.socket = context.wrap_socket(server.socket, server_side=True)
@@ -178,7 +178,7 @@ def test_explicit_provider_ca_replaces_platform_trust_on_real_https(tmp_path):
     with _private_https_server(tmp_path) as (server, ca):
         script = """
 import httpx, sys
-from agent.ssl_verify import resolve_httpx_verify
+from hermes_agent.agent.ssl_verify import resolve_httpx_verify
 url, ca = sys.argv[1:]
 try:
     httpx.get(url, verify=resolve_httpx_verify(), timeout=5)
@@ -206,7 +206,7 @@ def test_explicit_bundle_works_without_truststore():
     child = subprocess.run([sys.executable, "-c", """
 import sys, ssl, certifi
 sys.modules['truststore'] = None
-from agent.ssl_verify import resolve_httpx_verify
+from hermes_agent.agent.ssl_verify import resolve_httpx_verify
 ctx = resolve_httpx_verify(ca_bundle=certifi.where())
 assert isinstance(ctx, ssl.SSLContext), ctx
 assert ctx.verify_mode == ssl.CERT_REQUIRED and ctx.check_hostname
@@ -293,7 +293,7 @@ def _rotated_certifi(tmp_path: Path, monkeypatch, *, replacement: bool) -> _Rota
 
 
 def _ssl_verify_warnings(caplog) -> list:
-    return [record for record in caplog.records if record.name == "agent.ssl_verify"]
+    return [record for record in caplog.records if record.name == "hermes_agent.agent.ssl_verify"]
 
 
 def test_replaced_install_environment_re_resolves_certifi_in_place(tmp_path, monkeypatch, caplog, no_ca_env):
@@ -310,7 +310,7 @@ def test_replaced_install_environment_re_resolves_certifi_in_place(tmp_path, mon
     rotation = _rotated_certifi(tmp_path, monkeypatch, replacement=True)
     stale_core = sys.modules["certifi.core"]
 
-    with caplog.at_level(logging.WARNING, logger="agent.ssl_verify"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.agent.ssl_verify"):
         verify = resolve_httpx_verify()
 
     assert verify is True  # httpx's own default, now backed by a bundle that exists
@@ -336,7 +336,7 @@ def test_rotation_repair_and_warning_happen_once(tmp_path, monkeypatch, caplog, 
     warning an operator needs — must not repeat per client."""
     import logging
 
-    from agent import ssl_verify
+    from hermes_agent.agent import ssl_verify
 
     _rotated_certifi(tmp_path, monkeypatch, replacement=True)
     reloads: list[int] = []
@@ -348,7 +348,7 @@ def test_rotation_repair_and_warning_happen_once(tmp_path, monkeypatch, caplog, 
 
     monkeypatch.setattr(ssl_verify, "_reload_certifi_bundle", counting_reload)
 
-    with caplog.at_level(logging.WARNING, logger="agent.ssl_verify"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.agent.ssl_verify"):
         for _ in range(5):
             assert ssl_verify.resolve_httpx_verify() is True
             ssl_verify.requests_verify()
@@ -366,7 +366,7 @@ def test_unrecoverable_bundle_hands_over_the_platform_context(tmp_path, monkeypa
 
     import httpx
 
-    from agent import ssl_verify
+    from hermes_agent.agent import ssl_verify
 
     _rotated_certifi(tmp_path, monkeypatch, replacement=False)
     attempts: list[int] = []
@@ -377,7 +377,7 @@ def test_unrecoverable_bundle_hands_over_the_platform_context(tmp_path, monkeypa
     monkeypatch.setattr(ssl_verify, "_reload_certifi_bundle", unrecoverable)
 
     verify: Any = None
-    with caplog.at_level(logging.WARNING, logger="agent.ssl_verify"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.agent.ssl_verify"):
         for _ in range(5):
             verify = resolve_httpx_verify()
 
@@ -392,7 +392,7 @@ def test_unrecoverable_bundle_hands_over_the_platform_context(tmp_path, monkeypa
 def test_requests_verify_hands_over_a_bundle_that_exists(tmp_path, monkeypatch, no_ca_env):
     """``requests`` freezes its default bundle path when it is imported, so no reload
     can reach it: its call sites ask for a live bundle instead."""
-    from agent import ssl_verify
+    from hermes_agent.agent import ssl_verify
 
     rotation = _rotated_certifi(tmp_path, monkeypatch, replacement=True)
 
@@ -406,7 +406,7 @@ def test_requests_verify_hands_over_a_bundle_that_exists(tmp_path, monkeypatch, 
 def test_requests_verify_never_hands_over_the_deleted_bundle(tmp_path, monkeypatch, no_ca_env):
     """With nothing re-resolvable the answer is OpenSSL's own bundle, or requests'
     own default — never the path the rotation deleted."""
-    from agent import ssl_verify
+    from hermes_agent.agent import ssl_verify
 
     rotation = _rotated_certifi(tmp_path, monkeypatch, replacement=False)
     dead = rotation.module.where()
@@ -444,7 +444,7 @@ sys.path.insert(0, env_b)
 sys.path.remove(env_a)
 shutil.rmtree(env_a)
 import httpx
-from agent.ssl_verify import resolve_httpx_verify
+from hermes_agent.agent.ssl_verify import resolve_httpx_verify
 response = httpx.get(url, verify=resolve_httpx_verify(), timeout=5)
 assert response.content == b'private provider', response.content
 live = Path(sys.modules['certifi'].where())
@@ -461,7 +461,7 @@ assert live.is_file() and live.parent.resolve() == Path(env_b, 'certifi').resolv
 def test_requests_verify_keeps_requests_own_ca_overrides(monkeypatch, no_ca_env):
     """requests reads ``REQUESTS_CA_BUNDLE`` only for ``verify=True``; a healthy install
     or a configured override must keep it, or a proxy CA stops being trusted."""
-    from agent import ssl_verify
+    from hermes_agent.agent import ssl_verify
 
     assert ssl_verify.requests_verify() is True
     monkeypatch.setenv("REQUESTS_CA_BUNDLE", "/corp/proxy-ca.pem")
@@ -479,7 +479,7 @@ def test_requests_verify_hands_over_the_platform_store_without_openssl_files(tmp
 
     import requests
 
-    from agent import ssl_verify
+    from hermes_agent.agent import ssl_verify
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
     monkeypatch.delenv("REQUESTS_CA_BUNDLE", raising=False)
@@ -512,7 +512,7 @@ def test_requests_verify_hands_over_the_platform_store_without_openssl_files(tmp
 def test_platform_store_bundle_survives_an_unwritable_home(tmp_path, monkeypatch):
     """A full or read-only HERMES_HOME leaves requests_verify on its ``True`` fallback
     instead of raising the disk error out of the requests call site."""
-    from agent import ssl_verify
+    from hermes_agent.agent import ssl_verify
 
     import ssl
 

@@ -1,7 +1,7 @@
 """User-facing cron failure notices: plain words, the real output path, and the exact `hermes cron`
 command to act on. Contract tests, not snapshots (root AGENTS.md).
 
-The classifier is `agent.error_classifier.classify_api_error`; these tests pin what the copy table
+The classifier is `hermes_agent.agent.error_classifier.classify_api_error`; these tests pin what the copy table
 does with its verdict, not the verdict itself.
 """
 
@@ -56,8 +56,8 @@ def test_rate_and_usage_limit_phrases_still_yield_a_provider_notice(monkeypatch)
 
 
 def test_cron_cause_gloss_is_the_shared_table():
-    """Cron, subagent and chat notices read one reason->cause table (agent/turn_failure_copy.py)."""
-    from agent.turn_failure_copy import FAILURE_CAUSE_GLOSS
+    """Cron, subagent and chat notices read one reason->cause table (hermes_agent/agent/turn_failure_copy.py)."""
+    from hermes_agent.agent.turn_failure_copy import FAILURE_CAUSE_GLOSS
     from hermes_agent.cron.scheduler_failure_copy import provider_failure_notice
 
     for reason in FAILURE_CAUSE_GLOSS:

@@ -33,9 +33,9 @@ def _submit_turns(monkeypatch, run_conversation, turns):
     monkeypatch.setattr(srv, "_session_info", lambda _agent, _session=None: {"model": "m"})
     monkeypatch.setattr(srv, "make_stream_renderer", lambda _cols: None)
     monkeypatch.setattr(srv, "render_message", lambda _raw, _cols: None)
-    fake_title = types.ModuleType("agent.title_generator")
+    fake_title = types.ModuleType("hermes_agent.agent.title_generator")
     fake_title.maybe_auto_title = lambda *args, **kwargs: None
-    monkeypatch.setitem(srv.sys.modules, "agent.title_generator", fake_title)
+    monkeypatch.setitem(srv.sys.modules, "hermes_agent.agent.title_generator", fake_title)
 
     agent = types.SimpleNamespace(
         model="m", provider="p", session_id="session-key", context_compressor=None,

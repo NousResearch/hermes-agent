@@ -17,7 +17,7 @@ import time
 from contextlib import nullcontext, suppress
 from contextvars import copy_context
 from pathlib import Path
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 from hermes_agent.gateway.config import Platform
 from hermes_agent.gateway.delivery import looks_like_telegram_private_chat_id
 from hermes_agent.gateway.platforms.base import BasePlatformAdapter
@@ -1016,7 +1016,7 @@ class GatewayStartupMixin:
             logger.debug("Initial gateway runtime-status write failed", exc_info=True)
         with _log_suppressed(logging.DEBUG, "gateway health OTLP export startup failed", exc_info=True):
             from hermes_cli.config import load_config
-            from agent.monitoring.gateway_health_export import start_gateway_health_export
+            from hermes_agent.agent.monitoring.gateway_health_export import start_gateway_health_export
             self._gateway_health_export_runtime = start_gateway_health_export(load_config())
             if getattr(self._gateway_health_export_runtime, "enabled", False):
                 logger.info("Gateway health OTLP export: enabled")
@@ -1175,7 +1175,7 @@ class GatewayStartupMixin:
         while multiplexing is on, so the launch profile needs the scope secondaries already get
         (``_start_secondary_profile_adapters``) or its ``secret_env`` targets cannot resolve.
         """
-        from agent.secret_scope import is_multiplex_active
+        from hermes_agent.agent.secret_scope import is_multiplex_active
         if not is_multiplex_active():
             GatewayStartupMixin._register_config_hooks(
                 "shell-hook/webhook registration failed at gateway startup", level=logging.WARNING)
@@ -1198,8 +1198,8 @@ class GatewayStartupMixin:
         """
         try:
             from hermes_cli.config import load_config
-            from agent.shell_hooks import register_from_config
-            from agent.outbound_webhooks import register_from_config as register_outbound_webhooks
+            from hermes_agent.agent.shell_hooks import register_from_config
+            from hermes_agent.agent.outbound_webhooks import register_from_config as register_outbound_webhooks
             _hooks_cfg = load_config()
             register_from_config(_hooks_cfg, accept_hooks=False)
             register_outbound_webhooks(_hooks_cfg)

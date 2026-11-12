@@ -221,11 +221,11 @@ def _blank_slate_minimal_toolsets(config: dict):
         configurable_tool_sets = [set(resolve_toolset(ck)) for ck, _, _ in CONFIGURABLE_TOOLSETS]
         # Plain TOOLSETS entries catch recovered toolsets like ``kanban``. Skip "hermes-*" platform
         # composites, "includes" groupings, and posture toolsets (session-level picks by
-        # agent/coding_context.py — disabling them would subtract terminal/read_file).
+        # hermes_agent/agent/coding_context.py — disabling them would subtract terminal/read_file).
         for k, tdef in TOOLSETS.items():
             if k.startswith("hermes-") or (isinstance(tdef, dict) and (tdef.get("includes") or tdef.get("posture"))):
                 continue
-            # selections made by agent/coding_context.py — not permanent user-facing disables. Adding them
+            # selections made by hermes_agent/agent/coding_context.py — not permanent user-facing disables. Adding them
             # here causes model_tools to subtract their tools (terminal, read_file, …) from the minimal
             # Blank Slate surface (#57315).
             if k not in all_keys:

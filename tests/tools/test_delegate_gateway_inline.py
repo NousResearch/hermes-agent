@@ -37,7 +37,7 @@ def _clean_queue_and_context(monkeypatch):
 
 
 def _built(inline: bool):
-    from agent.agent_init import _load_tools
+    from hermes_agent.agent.agent_init import _load_tools
     from hermes_agent.tools.delegate_tool_config import gateway_delegation_inline_scope
 
     agent = SimpleNamespace(platform="whatsapp", quiet_mode=True)
@@ -94,7 +94,7 @@ def test_a_session_keeps_its_mode_until_a_new_session():
 
 
 @pytest.mark.parametrize("refresh", [
-    {"content_aware": True},  # the compaction boundary (agent/conversation_compression.py)
+    {"content_aware": True},  # the compaction boundary (hermes_agent/agent/conversation_compression.py)
     {},  # /reload-mcp over the cached agents (hermes_agent/gateway/run_turn.py)
 ], ids=["compaction-refresh", "reload-mcp"])
 @pytest.mark.parametrize("pinned_inline", [True, False], ids=["pinned-inline", "pinned-background"])

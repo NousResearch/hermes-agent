@@ -19,8 +19,8 @@ from pathlib import Path
 import psutil
 import pytest
 
-from agent.lsp import client as lsp_client
-from agent.lsp.client import LSPClient
+from hermes_agent.agent.lsp import client as lsp_client
+from hermes_agent.agent.lsp.client import LSPClient
 from hermes_cli import process_identity
 from tests.waiting import wait_until
 
@@ -84,7 +84,7 @@ async def test_the_server_group_is_owned_on_spawn_and_released_on_shutdown(tmp_p
 async def test_a_surviving_group_member_stays_owned(tmp_path, recorded, monkeypatch):
     """Teardown that could not empty the group must not drop coverage: whatever survived still
     has to die with Hermes."""
-    monkeypatch.setattr("agent.deadline.kill_process_tree", lambda pid, **kw: True)  # kills nothing
+    monkeypatch.setattr("hermes_agent.agent.deadline.kill_process_tree", lambda pid, **kw: True)  # kills nothing
     child_pid_file = tmp_path / "child.pid"
     client = _client(tmp_path, "slow_tree", MOCK_LSP_CHILD_PID=str(child_pid_file))
     await client.start()

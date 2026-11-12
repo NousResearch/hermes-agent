@@ -7,7 +7,7 @@ import logging
 
 import hermes_yaml as yaml
 
-import agent.auxiliary_unavailable as unavailable
+import hermes_agent.agent.auxiliary_unavailable as unavailable
 from hermes_cli.auth_constants import AuthError
 
 
@@ -38,7 +38,7 @@ def test_goal_judge_reason_names_nous_auth_failure_and_still_fails_open(tmp_path
 def test_nous_credential_failure_is_remembered_and_warned_once(caplog, monkeypatch):
     _reset(monkeypatch)
     exc = AuthError("Invalid refresh token", provider="nous", code="invalid_grant", relogin_required=True)
-    with caplog.at_level(logging.WARNING, logger="agent.auxiliary_unavailable"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.agent.auxiliary_unavailable"):
         detail = unavailable.record_nous_credential_failure(exc)
         unavailable.record_nous_credential_failure(exc)
 
@@ -56,7 +56,7 @@ def test_never_logged_in_is_debug_but_a_dead_credential_warns(caplog, monkeypatc
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     not_logged_in = AuthError("Hermes is not logged into Nous Portal.", provider="nous", relogin_required=True)
     dead = AuthError("Invalid refresh token", provider="nous", code="invalid_grant", relogin_required=True)
-    with caplog.at_level(logging.DEBUG, logger="agent.auxiliary_unavailable"):
+    with caplog.at_level(logging.DEBUG, logger="hermes_agent.agent.auxiliary_unavailable"):
         quiet = unavailable.record_nous_credential_failure(not_logged_in)
         loud = unavailable.record_nous_credential_failure(dead)
 

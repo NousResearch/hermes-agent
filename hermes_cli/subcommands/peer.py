@@ -59,7 +59,7 @@ def _peer_secret(name: str) -> str:
     """The peer's API key: profile-scoped secret store first, raw env fallback."""
     env_name = _peer_key_env(name)
     try:
-        from agent.secret_scope import get_secret
+        from hermes_agent.agent.secret_scope import get_secret
 
         return (get_secret(env_name, "") or "").strip()
     except Exception:
@@ -348,7 +348,7 @@ def _peer_run_ctl(args, action: str, peer_name: str, profile: str | None, base: 
 
 def _turn_body(message: str, *, message_key: str, **extra) -> dict:
     """Request body for one turn. ``author`` is added only when a dispatcher set HERMES_TURN_AUTHOR."""
-    from agent.turn_author import turn_author_from_env
+    from hermes_agent.agent.turn_author import turn_author_from_env
 
     body = {message_key: message, **extra}
     author = turn_author_from_env()

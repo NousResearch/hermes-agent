@@ -51,7 +51,7 @@ def cron_env(tmp_path, monkeypatch):
     monkeypatch.setattr(_skills_tool, "HERMES_HOME", hermes_home)
 
     # Reset bundle cache and make bundle discovery hit this test home.
-    import agent.skill_bundles as _skill_bundles
+    import hermes_agent.agent.skill_bundles as _skill_bundles
     _skill_bundles._bundles_cache = {}
     _skill_bundles._bundles_cache_mtime = None
 
@@ -82,7 +82,7 @@ def _plant_bundle(hermes_home: Path, name: str, skills: list[str], instruction: 
         lines.append("instruction: |")
         lines.extend(f"  {line}" for line in instruction.splitlines())
     (bundles_dir / f"{name}.yaml").write_text("\n".join(lines) + "\n", encoding="utf-8")
-    import agent.skill_bundles as _skill_bundles
+    import hermes_agent.agent.skill_bundles as _skill_bundles
     _skill_bundles.scan_bundles()
 
 

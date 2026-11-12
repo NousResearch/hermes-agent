@@ -7,10 +7,10 @@ import subprocess
 import sys
 import textwrap
 
-from agent.system_prompt import build_system_prompt, invalidate_system_prompt
+from hermes_agent.agent.system_prompt import build_system_prompt, invalidate_system_prompt
 from hermes_cli import plugins
 from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 def _real_agent(*, session_id: str = "plugin-section-test") -> AIAgent:
@@ -49,7 +49,7 @@ def test_real_aiagent_freezes_section_within_life_and_rerenders_on_invalidate(mo
     # asserts (plugin sections). Byte-stability of the REAL workspace block
     # is coding_context's contract, covered by its own tests.
     monkeypatch.setattr(
-        "agent.coding_context.build_coding_workspace_block",
+        "hermes_agent.agent.coding_context.build_coding_workspace_block",
         lambda cwd=None: "Workspace (snapshot at session start):\n- Root: /pinned",
     )
     calls = []

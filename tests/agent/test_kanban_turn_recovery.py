@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-from agent.kanban_turn_recovery import (
+from hermes_agent.agent.kanban_turn_recovery import (
     DEFAULT_MAX_RECOVERY_ATTEMPTS,
     RECOVERY_DELAYS_SECONDS,
     build_recovery_nudge,
@@ -70,7 +70,7 @@ def _success() -> dict:
 
 
 def _interrupted() -> dict:
-    """``agent/turn_recovery.py::abort_turn_on_interrupt`` already persisted and cleared
+    """``hermes_agent/agent/turn_recovery.py::abort_turn_on_interrupt`` already persisted and cleared
     the interrupt — re-entering the model would resurrect cancelled work."""
     return {**_failed(), "interrupted": True, "api_calls": 4}
 
@@ -281,7 +281,7 @@ def test_missing_db_pin_never_resolves_an_ambient_board(tmp_path, monkeypatch):
     monkeypatch.delenv("HERMES_KANBAN_CLAIM_LOCK", raising=False)
     monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
 
-    import agent.kanban_turn_recovery as rec
+    import hermes_agent.agent.kanban_turn_recovery as rec
 
     consulted: list = []
     real_resolve = kb.kanban_db_path
@@ -302,7 +302,7 @@ def test_lease_expired_during_the_backoff_blocks_model_reentry(
     proof passes → the 15/45/90s sleep crosses expiry → the post-backoff re-proof must FAIL
     on the unexpired-lease check even though status/run-id/lock/pid/ended_at are all
     unchanged. No model turn is made."""
-    import agent.kanban_turn_recovery as rec
+    import hermes_agent.agent.kanban_turn_recovery as rec
 
     db = _make_board(tmp_path, task_expires=1_600, run_expires=1_600)
     _pin_carrier(clear_kanban_env, db, run_id="1", lock="lk")
@@ -450,7 +450,7 @@ def owner_worker(tmp_path, clear_kanban_env, monkeypatch):
     The owner process deliberately carries a FOREIGN env carrier: the proof must come
     from the frame, never from the owner's environment.
     """
-    import agent.kanban_turn_recovery as rec
+    import hermes_agent.agent.kanban_turn_recovery as rec
     from hermes_agent.gateway import session_kanban
     from hermes_cli import kanban_db as kb
     from hermes_cli.kanban_db_connect import connect_closing
@@ -460,7 +460,7 @@ def owner_worker(tmp_path, clear_kanban_env, monkeypatch):
                        ("HERMES_KANBAN_RUN_ID", "999"), ("HERMES_KANBAN_CLAIM_LOCK", "foreign")):
         monkeypatch.setenv(key, value)
     monkeypatch.setattr(rec, "RECOVERY_DELAYS_SECONDS", (0.0,))
-    monkeypatch.setattr("agent.skill_commands.build_preloaded_skills_prompt", lambda *a, **k: ("", [], []))
+    monkeypatch.setattr("hermes_agent.agent.skill_commands.build_preloaded_skills_prompt", lambda *a, **k: ("", [], []))
 
     def install(script, *, goal_mode=False, expires=None, recovery=None):
         if recovery is not None:
@@ -575,7 +575,7 @@ def test_claim_denial_stops_before_model_reentry(owner_worker, caplog):
     import logging
 
     run, entered, _ = owner_worker([_failed()], expires=1)
-    with caplog.at_level(logging.WARNING, logger="agent.kanban_turn_recovery"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.agent.kanban_turn_recovery"):
         assert run() == KANBAN_RATE_LIMIT_EXIT_CODE
     assert len(entered) == 1
     assert "no longer holds a live run/claim" in caplog.text
@@ -691,7 +691,7 @@ def test_goal_mode_does_not_continue(case_id, setup, script, code, entries, owne
     continuation: the goal loop's own status check sees only run identity, not the claim
     lease, so continuing would re-enter the model under an authority this worker can no
     longer prove."""
-    import agent.kanban_turn_recovery as rec
+    import hermes_agent.agent.kanban_turn_recovery as rec
 
     run, entered, _ = owner_worker(script, goal_mode=True, expires=setup.get("expires"),
                                    recovery=setup.get("recovery"))

@@ -173,7 +173,7 @@ def _redact_cron_payload(text: str, what: str) -> str:
     if not text:
         return text
     try:
-        from agent.redact import redact_sensitive_text
+        from hermes_agent.agent.redact import redact_sensitive_text
         return redact_sensitive_text(text, force=True)
     except Exception as e:
         logger.warning("Failed to redact secrets from cron %s: %s", what, e)
@@ -248,7 +248,7 @@ def _open_continuable_cron_thread(job: dict, adapter, chat_id: str, loop) -> Opt
         return None
     thread_name = f"Hermes — {_cron_display_name(job)}"
     try:
-        from agent.async_utils import safe_schedule_threadsafe
+        from hermes_agent.agent.async_utils import safe_schedule_threadsafe
         coro = create_thread(str(chat_id), thread_name)
         future = safe_schedule_threadsafe(coro, loop)  # type: ignore[arg-type]
         if future is None:
@@ -433,7 +433,7 @@ def _home_env_lookup(env_var: str, suffix: str = "", *, strip: bool = False) -> 
     job-owning profile's secret scope (run_one_job sets it), so this resolves the OWNING profile's
     value, not the host environ. ``os.getenv`` only if the scope module is missing."""
     try:
-        from agent.secret_scope import get_secret
+        from hermes_agent.agent.secret_scope import get_secret
     except Exception:
         get_secret = None  # type: ignore
 
@@ -925,7 +925,7 @@ def _send_media_via_adapter(
     in run status, not just the gateway log."""
     from hermes_agent.gateway.platforms.base import (
         BasePlatformAdapter, should_send_media_as_audio, validate_media_delivery_path)
-    from agent.async_utils import safe_schedule_threadsafe
+    from hermes_agent.agent.async_utils import safe_schedule_threadsafe
     job_ref = {"id": job.get("id", "?")}
     errors: list = []
     requested = [(str(p), v) for p, v in (media_files or [])]
@@ -1050,7 +1050,7 @@ def _is_channel_dm_topic(runtime_adapter: Any, chat_id: Any, loop: Any, job_id: 
     if not callable(get_chat_info):
         return False
     try:
-        from agent.async_utils import safe_schedule_threadsafe
+        from hermes_agent.agent.async_utils import safe_schedule_threadsafe
         coro = get_chat_info(runtime_adapter, str(chat_id))
         future = safe_schedule_threadsafe(coro, loop)  # type: ignore[arg-type]
         if future is None:
@@ -1294,7 +1294,7 @@ def _live_send_text(
 ) -> tuple[bool, bool, Any]:
     """Schedule the text send on the gateway loop; returns ``(adapter_ok, timed_out, message_id)``.
     Re-raises a real send error so the caller falls through to standalone."""
-    from agent.async_utils import safe_schedule_threadsafe
+    from hermes_agent.agent.async_utils import safe_schedule_threadsafe
     from hermes_agent.gateway.delivery import DeliveryRouter, DeliveryTarget, PartialDeliveryError
     job = t.job
     router = DeliveryRouter(t.config, t.target_adapters)
@@ -1395,7 +1395,7 @@ def _resolve_named_dm_topic(t: _TargetDelivery, topic_name: str, metadata: dict,
     """Resolve a named DM topic to its thread id through the router's resolver (cached by the
     adapter, so after a text send this is the id that send used), writing it to ``t.thread_id``
     (mirroring/seeding key on the numeric id) and ``metadata``. False = media dropped, never General."""
-    from agent.async_utils import safe_schedule_threadsafe
+    from hermes_agent.agent.async_utils import safe_schedule_threadsafe
     from hermes_agent.gateway.delivery import _ensure_named_dm_topic
     future = safe_schedule_threadsafe(
         _ensure_named_dm_topic(t.runtime_adapter, str(t.chat_id), topic_name, refresh=refresh), t.loop)

@@ -30,7 +30,7 @@ def _reset_unscoped_cache():
 
 def _install_fake_scope(monkeypatch, secrets):
     """Point build_profile_secret_scope at a fake external-secret snapshot."""
-    from agent import secret_scope
+    from hermes_agent.agent import secret_scope
 
     calls = []
 
@@ -77,7 +77,7 @@ class TestRequirementGateSeesExternalSecrets:
     def test_profile_scope_build_failure_degrades_to_not_configured(
         self, monkeypatch
     ):
-        from agent import secret_scope
+        from hermes_agent.agent import secret_scope
         from plugins.platforms.buzz import adapter
 
         monkeypatch.delenv("BUZZ_RELAY_URL", raising=False)
@@ -108,7 +108,7 @@ class TestScopedSemanticsUnchanged:
     ):
         """A scoped miss must keep returning default: the unscoped build is
         only for the no-scope startup gate, never a cross-profile borrow."""
-        from agent import secret_scope
+        from hermes_agent.agent import secret_scope
         from plugins.platforms.buzz import adapter
 
         monkeypatch.setenv("BUZZ_RELAY_URL", "wss://relay.example")

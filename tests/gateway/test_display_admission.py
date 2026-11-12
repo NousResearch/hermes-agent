@@ -111,7 +111,7 @@ def test_real_daemon_persists_hidden_rows_and_the_paste_title_preview(tmp_path, 
     [(hidden_text, hidden_kind, _)] = rows[sids['hidden']]
     assert (hidden_text, hidden_kind) == ('HIDDEN_WIDGET_INTENT', 'hidden'), 'a hidden widget intent never persists as a user bubble'
     [(_, paste_kind, paste_meta)] = rows[sids['paste']]
-    # The session titler reads the user row's display_metadata.title_preview (agent/turn_context.py).
+    # The session titler reads the user row's display_metadata.title_preview (hermes_agent/agent/turn_context.py).
     assert paste_kind is None and json.loads(paste_meta)['title_preview'] == 'Quarterly revenue notes PREVIEW_ONLY'
     # The preview is titler input only: it never reaches the model turn.
     assert model.requests and not any('PREVIEW_ONLY' in json.dumps(r['messages']) for r in model.requests)

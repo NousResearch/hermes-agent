@@ -1,13 +1,13 @@
 """Parity tests: pin the exact current transport behavior per provider.
 
-These tests document the flag-based contract between run_agent.py and
+These tests document the flag-based contract between hermes_agent/run_agent.py and
 ChatCompletionsTransport.build_kwargs(). When the next PR wires profiles
 to replace flags, every assertion here must still pass — any failure is
 a behavioral regression.
 """
 
 import pytest
-from agent.transports.chat_completions import ChatCompletionsTransport
+from hermes_agent.agent.transports.chat_completions import ChatCompletionsTransport
 from providers import get_provider_profile
 
 
@@ -89,7 +89,7 @@ class TestNousParity:
     """Nous: product tags, reasoning passthrough (disable included)."""
 
     def test_tags(self, transport):
-        from agent.portal_tags import nous_portal_tags
+        from hermes_agent.agent.portal_tags import nous_portal_tags
         kw = transport.build_kwargs(
             model="hermes-3-llama-3.1-405b",
             messages=_simple_messages(),

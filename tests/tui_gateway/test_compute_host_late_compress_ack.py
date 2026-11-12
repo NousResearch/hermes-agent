@@ -222,7 +222,7 @@ def test_slash_compress_route_reports_pending_and_adopts_late_ack(compute_host_g
 
 
 def test_compress_wait_budget_follows_config_ceiling(monkeypatch):
-    import agent.auxiliary_client as aux
+    import hermes_agent.agent.auxiliary_client as aux
 
     # The aux compression request budget floors the idle window and, with it, the ceiling (#114594): the
     # RPC waiter must outlast a compaction the host is still allowed to run.

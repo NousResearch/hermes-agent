@@ -3,7 +3,7 @@ reasoning echo pad and prompt-cache decoration for the CURRENT provider (a fallb
 differ from the primary), build ``api_kwargs``, run the surrogate/ASCII chokepoints, Codex
 preflight, OpenRouter cache bypass, provider per-request headers, the LLM request middleware,
 the ``pre_api_request`` hook and the debug dump. Nothing here imports
-``agent.conversation_loop`` at module level.
+``hermes_agent.agent.conversation_loop`` at module level.
 """
 
 from __future__ import annotations
@@ -12,11 +12,11 @@ from dataclasses import dataclass
 import logging
 from typing import Any
 
-from agent.message_sanitization import sanitize_outbound_kwargs, strip_images_for_rejecting_model
+from hermes_agent.agent.message_sanitization import sanitize_outbound_kwargs, strip_images_for_rejecting_model
 from hermes_cli.observability.shared_metrics_efficiency import observe_request_tools
 from utils import env_var_enabled
 
-logger = logging.getLogger("agent.conversation_loop")
+logger = logging.getLogger("hermes_agent.agent.conversation_loop")
 
 
 @dataclass
@@ -49,7 +49,7 @@ def _apply_user_turn_request_headers(agent: Any, api_kwargs: Any) -> None:
     if not getattr(agent, "_is_user_initiated_turn", False):
         return
     agent._is_user_initiated_turn = False
-    from agent.provider_route_hooks import route_answer
+    from hermes_agent.agent.provider_route_hooks import route_answer
     _request_headers = route_answer(
         "request_headers", provider=agent.provider or "", base_url=agent.base_url or "",
         model=agent.model or "", user_initiated=True, scope=agent)
@@ -63,7 +63,7 @@ def _fire_pre_api_request_hook(
     api_call_count: Any, api_request_id: Any, api_start_time: Any, effective_task_id: Any,
     turn_id: Any,
 ) -> None:
-    from agent.conversation_loop import _system_prompt_for_hooks
+    from hermes_agent.agent.conversation_loop import _system_prompt_for_hooks
 
     try:
         from hermes_cli.lifecycle import has_hook, invoke_hook as _invoke_hook
@@ -115,7 +115,7 @@ def build_request_payload(
     """The provider payload through the LLM request middleware, with no turn hook fired: the
     turn loop's :func:`build_api_request` and off-turn side requests (``ctx.side_question``,
     which reports through ``pre/post_auxiliary_call``) share it."""
-    from agent.conversation_loop import _redecorate_prompt_cache_for_provider
+    from hermes_agent.agent.conversation_loop import _redecorate_prompt_cache_for_provider
 
     agent._reset_stream_delivery_tracking()
     # Per-attempt first-chunk timestamp so a stale value never leaks into post_api_request.
@@ -141,7 +141,7 @@ def build_request_payload(
     # extra_body, kwargs strings) — see sanitize_outbound_kwargs for the #50959 rationale.
     sanitize_outbound_kwargs(agent, api_kwargs)
     if agent.api_mode == "codex_responses":
-        from agent.codex_responses_adapter import drops_replay_item_ids
+        from hermes_agent.agent.codex_responses_adapter import drops_replay_item_ids
 
         api_kwargs = agent._get_transport().preflight_kwargs(
             api_kwargs, allow_stream=False, drop_replay_item_ids=drops_replay_item_ids(agent.base_url),
@@ -182,7 +182,7 @@ def build_api_request(
 ) -> ApiRequestBuild:
     """Assemble the attempt's request in the original order (every mutation happens BEFORE
     middleware/hooks/debug dumps observe the payload)."""
-    from agent.conversation_loop import _moa_client_consumes_prepared_request
+    from hermes_agent.agent.conversation_loop import _moa_client_consumes_prepared_request
 
     built = build_request_payload(
         agent, api_messages=api_messages, _moa_prepared_request=_moa_prepared_request,

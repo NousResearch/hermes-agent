@@ -9,14 +9,14 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 def _make_agent(fallback_model=None):
     with (
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(
             api_key="test-key",
@@ -54,7 +54,7 @@ class TestNousFallbackLocalAvailability:
             "hermes_cli.auth.get_provider_auth_state",
             return_value={},
         ), patch(
-            "agent.auxiliary_client.resolve_provider_client",
+            "hermes_agent.agent.auxiliary_client.resolve_provider_client",
             return_value=(_mock_client(api_key="fb"), "gpt-5.5"),
         ):
             activated = agent._try_activate_fallback(None)
@@ -74,7 +74,7 @@ class TestNousFallbackLocalAvailability:
             "hermes_cli.auth.get_provider_auth_state",
             return_value={"access_token": "abc", "refresh_token": "xyz"},
         ), patch(
-            "agent.auxiliary_client.resolve_provider_client",
+            "hermes_agent.agent.auxiliary_client.resolve_provider_client",
             return_value=(_mock_client(api_key="fb"), "anthropic/claude-sonnet-4.6"),
         ):
             activated = agent._try_activate_fallback(None)

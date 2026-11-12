@@ -9,7 +9,7 @@ against a re-implementation.
 
 import pytest
 
-from agent.turn_summary import (
+from hermes_agent.agent.turn_summary import (
     TurnSummaryCollector,
     TurnTally,
     format_elapsed,
@@ -212,7 +212,7 @@ def test_content_free_diff_reports_unknown_not_zero_zero():
     Found by E2E-rendering the collector against realistic tool payloads: the
     unit suite only fed diffs that had real content lines.
     """
-    from agent.turn_summary import TurnSummaryCollector
+    from hermes_agent.agent.turn_summary import TurnSummaryCollector
 
     c = TurnSummaryCollector()
     c.begin()

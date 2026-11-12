@@ -16,7 +16,7 @@ sequences, CPR guards), `cli_shutdown.py` (exit watchdog, cleanup steps, one-sho
 Moved bodies late-bind cli-level names via `from cli import ...` at call time, so patch seams on the
 `cli` facade still intercept them; mutable module state (`_cleanup_done`, `_OUTPUT_HISTORY`,
 `_LIGHT_MODE_CACHE`, ...) and every `global`-writing function stay in `cli.py`. **Rich** renders banner/panels; **prompt_toolkit**
-handles input + autocomplete; `KawaiiSpinner` (`agent/display.py`) animates API calls and prints
+handles input + autocomplete; `KawaiiSpinner` (`hermes_agent/agent/display.py`) animates API calls and prints
 the `┊` activity feed. `load_cli_config()` in `cli.py` merges CLI defaults + user YAML.
 
 `hermes_cli/gateway.py` is the `hermes gateway` facade (process discovery, PM-aware systemd unit
@@ -30,7 +30,7 @@ generation/refresh, command dispatch); topical siblings re-exported by the facad
 `process_command()` resolves the canonical name via `resolve_command()` then dispatches through
 `HermesCLI._SLASH_DISPATCH` (`canonical -> (method name, pass_arg)`), falling back to a
 `_handle_<name>_command` method by naming convention. **There is no `elif` ladder — do not add one.**
-Skill slash commands (`agent/skill_commands.py`) scan `~/.hermes/skills/` and inject as a **user
+Skill slash commands (`hermes_agent/agent/skill_commands.py`) scan `~/.hermes/skills/` and inject as a **user
 message**, never into the system prompt (prompt caching).
 
 Rules: all interactive menu-pickers use curses (`hermes_cli/curses_ui.py`; example
@@ -77,7 +77,7 @@ Do not add a surface-specific goal parser. ACP has no goal command or goal loop 
   Top-level sections (non-exhaustive): `model, agent, terminal, compression, display, stt, tts,
 memory, security, delegation, smart_model_routing, checkpoints, auxiliary, curator, skills,
 gateway, logging, cron, profiles, plugins`. `auxiliary` = per-task side-LLM overrides
-  (`agent/AGENTS.md`); `curator` = `enabled, interval_hours, min_idle_hours, stale_after_days,
+  (`hermes_agent/agent/AGENTS.md`); `curator` = `enabled, interval_hours, min_idle_hours, stale_after_days,
 archive_after_days, backup.*`.
 - **.env = SECRETS ONLY** (keys, tokens, passwords): add to `OPTIONAL_ENV_VARS` with
   `{"description", "prompt", "url", "password": True, "category": provider|tool|messaging|setting}`.

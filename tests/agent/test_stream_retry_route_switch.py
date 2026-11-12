@@ -14,7 +14,7 @@ import pytest
 
 
 def _make_agent():
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     agent = AIAgent(
         api_key="test-key", base_url="https://openrouter.ai/api/v1", model="deepseek/deepseek-v4-flash",
@@ -44,8 +44,8 @@ def _run(agent, on_create):
     """Drive the streaming call with a request-local client whose ``create`` is ``on_create``."""
     client = MagicMock()
     client.chat.completions.create.side_effect = on_create
-    with patch("run_agent.AIAgent._create_request_openai_client", return_value=client), \
-            patch("run_agent.AIAgent._close_request_openai_client"):
+    with patch("hermes_agent.run_agent.AIAgent._create_request_openai_client", return_value=client), \
+            patch("hermes_agent.run_agent.AIAgent._close_request_openai_client"):
         return agent._interruptible_streaming_api_call(
             {"model": "deepseek/deepseek-v4-flash", "messages": [{"role": "user", "content": "hi"}]})
 
@@ -59,7 +59,7 @@ def test_stream_retry_does_not_replay_stale_route_after_switch_model():
 
     def switch_then_drop(**kwargs):
         sent.append((kwargs["model"], agent.base_url))
-        with patch("agent.model_metadata.get_model_context_length", return_value=128000):
+        with patch("hermes_agent.agent.model_metadata.get_model_context_length", return_value=128000):
             agent.switch_model("kimi-k2.6", "kimi-coding", api_key="k",
                                base_url="https://api.moonshot.ai/v1", api_mode="chat_completions")
         raise httpx.ReadError("stale stream killed")

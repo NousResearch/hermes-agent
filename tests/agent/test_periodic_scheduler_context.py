@@ -3,7 +3,7 @@
 from contextvars import ContextVar
 import threading
 
-from agent.periodic_scheduler import PeriodicScheduler
+from hermes_agent.agent.periodic_scheduler import PeriodicScheduler
 
 
 def test_periodic_callback_keeps_schedule_context():

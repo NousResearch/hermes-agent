@@ -1,15 +1,15 @@
-"""Tests for agent/insights.py — InsightsEngine analytics and reporting."""
+"""Tests for hermes_agent/agent/insights.py — InsightsEngine analytics and reporting."""
 
 import time
 import pytest
 
 from hermes_agent.hermes_state import SessionDB
-from agent.insights import (
+from hermes_agent.agent.insights import (
     InsightsEngine,
     _estimate_cost,
     _bar_chart,
 )
-from agent.usage_pricing import (
+from hermes_agent.agent.usage_pricing import (
     format_duration_compact as _format_duration,
     has_known_pricing as _has_known_pricing,
 )

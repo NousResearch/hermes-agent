@@ -35,7 +35,7 @@ class TestDeepSeekAnthropicPreservesThinking:
         DeepSeek issues its own signatures and cannot validate Anthropic's —
         the strip-signed / keep-unsigned split matches the Kimi policy.
         """
-        from agent.anthropic_message_convert import convert_messages_to_anthropic
+        from hermes_agent.agent.anthropic_message_convert import convert_messages_to_anthropic
 
         messages = [
             {"role": "user", "content": "hi"},
@@ -73,7 +73,7 @@ class TestDeepSeekAnthropicPreservesThinking:
         as ignored — cache markers interfere with signature validation on
         upstreams that do check them, so Hermes strips them everywhere.
         """
-        from agent.anthropic_message_convert import convert_messages_to_anthropic
+        from hermes_agent.agent.anthropic_message_convert import convert_messages_to_anthropic
 
         messages = [
             {"role": "user", "content": "hi"},
@@ -107,7 +107,7 @@ class TestDeepSeekAnthropicPreservesThinking:
 
 @pytest.mark.parametrize("url", [None, "https://api.anthropic.com", "https://inference-api.nousresearch.com/anthropic"])
 def test_deepseek_model_name_does_not_override_native_signature_contract(url):
-    from agent.anthropic_message_convert import _manage_thinking_signatures
+    from hermes_agent.agent.anthropic_message_convert import _manage_thinking_signatures
     block = {"type": "thinking", "thinking": "signed native reasoning", "signature": "sig"}
     messages = [{"role": "assistant", "content": [dict(block), {"type": "text", "text": "answer"}]}]
     _manage_thinking_signatures(messages, url, "deepseek-v4")
@@ -122,7 +122,7 @@ def test_deepseek_model_name_does_not_override_native_signature_contract(url):
 ])
 def test_deepseek_proxy_keeps_unsigned_thinking_in_older_tool_turns_only(model, kept):
     import copy
-    from agent.anthropic_message_convert import convert_messages_to_anthropic
+    from hermes_agent.agent.anthropic_message_convert import convert_messages_to_anthropic
     history = [
         {"role": "user", "content": "inspect"},
         {"role": "assistant", "content": "checking", "reasoning_details": [

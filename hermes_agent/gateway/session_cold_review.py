@@ -53,7 +53,7 @@ def cold_review_parent(runner, source, session_key, session_id):
     from hermes_agent.gateway.session_authorities import active_authority
     from hermes_agent.gateway.session_policy import policy_for_source, policy_scope, policy_turn_toolsets
     from hermes_agent.gateway.session_worker_construct import session_prefill, session_routing
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     policy = policy_for_source(runner, source)
     authority = active_authority(runner) if policy else None
     user_config = policy.config(authority, secrets=False) if policy else _load_gateway_config()
@@ -103,8 +103,8 @@ def start_cold_refine(runner, source, session_key, session_id, history, focus):
     this one sends it to the same chat and thread directly. Returns a future that resolves once the review
     is spawned (or raises its start error); the parent's clients are released when the review's request ends,
     on the thread that built it."""
-    from agent.async_utils import safe_schedule_threadsafe
-    from agent.memory_provider import spawn_context_thread
+    from hermes_agent.agent.async_utils import safe_schedule_threadsafe
+    from hermes_agent.agent.memory_provider import spawn_context_thread
     from hermes_agent.gateway.run import _interim_metadata, _non_conversational_metadata
     loop = asyncio.get_running_loop()
     adapter = runner._delivery_adapter_for(source)

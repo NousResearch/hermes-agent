@@ -13,9 +13,9 @@ class TestAgentCacheMemoryLifecycle:
     def _agent_with_writer_provider(session_id, events):
         """Real AIAgent + real MemoryManager whose provider owns a writer thread released only by shutdown()."""
         import queue
-        from agent.memory_manager import MemoryManager
-        from agent.memory_provider import MemoryProvider
-        from run_agent import AIAgent
+        from hermes_agent.agent.memory_manager import MemoryManager
+        from hermes_agent.agent.memory_provider import MemoryProvider
+        from hermes_agent.run_agent import AIAgent
 
         class _WriterProvider(MemoryProvider):
             def __init__(self):
@@ -74,7 +74,7 @@ class TestAgentCacheMemoryLifecycle:
     def test_release_clients_lets_queued_writes_finish_before_shutdown(self, monkeypatch):
         """Soft release must not cancel the retired agent's queued memory writes: on main the worker
         finished them in the background, and shutdown_all()'s bounded drain alone would abandon them."""
-        import agent.memory_manager as mm
+        import hermes_agent.agent.memory_manager as mm
         from tests.waiting import wait_until
 
         monkeypatch.setattr(mm, "_SYNC_DRAIN_TIMEOUT_S", 0.0)

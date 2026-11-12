@@ -11,8 +11,8 @@ import re
 import time
 from typing import Any
 
-from agent.account_usage import fetch_account_usage, render_account_usage_lines
-from agent.i18n import t
+from hermes_agent.agent.account_usage import fetch_account_usage, render_account_usage_lines
+from hermes_agent.agent.i18n import t
 from hermes_agent.gateway.config import Platform
 from hermes_agent.gateway.platforms.event import MessageEvent
 from hermes_agent.gateway.session_transcript import TranscriptReadError
@@ -55,7 +55,7 @@ def _clip(text: str, limit: int) -> str:
 
 def _transcript_estimate(history) -> tuple[int, int]:
     """``(approx_tokens, message_count)`` over the user/assistant messages of a transcript."""
-    from agent.model_metadata import estimate_messages_tokens_rough
+    from hermes_agent.agent.model_metadata import estimate_messages_tokens_rough
     msgs = [m for m in history if m.get("role") in {"user", "assistant"} and m.get("content")]
     return estimate_messages_tokens_rough(msgs), len(msgs)
 
@@ -144,7 +144,7 @@ def _context_compressor_lines(agent, ctx, used: int) -> list[str]:
     """/context full view: auto-compression threshold/headroom, compression count + last savings,
     and cumulative throughput (labelled as throughput, NOT context size)."""
     lines: list[str] = []
-    from agent.context_breakdown import context_display_source
+    from hermes_agent.agent.context_breakdown import context_display_source
     mark = "~" if context_display_source(ctx) != "provider_usage" else ""
     threshold = _n(ctx, "threshold_tokens")
     threshold_pct = f"{_n(ctx, 'threshold_percent') * 100:.0f}"
@@ -204,7 +204,7 @@ def _usage_agent_stats_lines(agent) -> list[str]:
     lines: list[str] = []
     rl_state = agent.get_rate_limit_state()
     if rl_state and rl_state.has_data:
-        from agent.rate_limit_tracker import format_rate_limit_compact
+        from hermes_agent.agent.rate_limit_tracker import format_rate_limit_compact
         lines += [t("gateway.usage.rate_limits", state=format_rate_limit_compact(rl_state)), ""]
     lines += [
         t("gateway.usage.header_session"),
@@ -217,8 +217,8 @@ def _usage_agent_stats_lines(agent) -> list[str]:
     ctx = agent.context_compressor
     if ctx.last_prompt_tokens > 0:
         pct = _pct(ctx.last_prompt_tokens, ctx.context_length)
-        from agent.context_breakdown import context_display_source
-        from agent.context_pin import agent_context_suffix
+        from hermes_agent.agent.context_breakdown import context_display_source
+        from hermes_agent.agent.context_pin import agent_context_suffix
         mark = "~" if context_display_source(ctx) != "provider_usage" else ""
         lines.append(t("gateway.usage.label_context", used=mark + _fmt(ctx.last_prompt_tokens),
                        total=_fmt(ctx.context_length), pct=f"{mark}{pct:.0f}") + agent_context_suffix(agent))
@@ -288,11 +288,11 @@ class GatewayStatusCommandsMixin:
             lines.append(t("gateway.status.model_provider", model=fields["model"], provider=fields["provider"]))
         elif fields["model"]:
             lines.append(t("gateway.status.model", model=fields["model"]))
-        from agent.context_breakdown import context_display_source
+        from hermes_agent.agent.context_breakdown import context_display_source
         mark = "~" if context_display_source(getattr(status_agent, "context_compressor", None)) != "provider_usage" else ""
         if context_total:
             pct = min(100, round((context_used / context_total) * 100))
-            from agent.context_pin import agent_context_suffix  # (pinned) / (fallback) for the agent's own window
+            from hermes_agent.agent.context_pin import agent_context_suffix  # (pinned) / (fallback) for the agent's own window
             compressor_total = _n(getattr(status_agent, "context_compressor", None), "context_length")
             suffix = agent_context_suffix(status_agent) if compressor_total and compressor_total == context_total else ""
             lines.append(t("gateway.status.context", used=mark + _fmt(context_used), total=_fmt(context_total),
@@ -323,7 +323,7 @@ class GatewayStatusCommandsMixin:
     async def _status_session_db_facts(self, session_id: str):
         """``(title, session_row, db_total_tokens, persisted_route)`` for /status; each fail-open.
 
-        Token totals come from the SQLite session DB, not SessionStore: run_agent.py persists per-turn
+        Token totals come from the SQLite session DB, not SessionStore: hermes_agent/run_agent.py persists per-turn
         token deltas into sessions_db, never into SessionEntry (its total_tokens is always 0).
         """
         db = self._session_db
@@ -361,7 +361,7 @@ class GatewayStatusCommandsMixin:
         used, context_length, model_name, window_suffix = await self._resolve_context_figures(
             agent, ctx, session_entry, source
         )
-        from agent.context_breakdown import context_display_source
+        from hermes_agent.agent.context_breakdown import context_display_source
         mark = "~" if context_display_source(ctx) != "provider_usage" else ""
         # Gauge path: preserve the provenance of the selected occupancy figure.
         if used > 0 and context_length > 0:
@@ -402,7 +402,7 @@ class GatewayStatusCommandsMixin:
         """``(used, context_length, model_name, window_suffix)`` for /context: used = compressor -> SessionStore;
         model = agent -> SessionDB row; window = compressor -> gateway model route -> model metadata. The suffix
         is `` (pinned)`` / `` (fallback)`` from whichever source supplied the window."""
-        from agent.context_pin import agent_context_suffix, context_window_suffix
+        from hermes_agent.agent.context_pin import agent_context_suffix, context_window_suffix
         used = max(0, _n(ctx, "last_prompt_tokens")) or max(0, _int_value(getattr(session_entry, "last_prompt_tokens", 0)))
         context_length = _n(ctx, "context_length")
         suffix = agent_context_suffix(agent) if context_length else ""
@@ -417,7 +417,7 @@ class GatewayStatusCommandsMixin:
                 context_length = _int_value(resolved.context_length)
                 suffix = {"config": " (pinned)", "default": " (fallback)"}.get(resolved.context_source, "")
         if not context_length and model_name:
-            from agent.model_metadata import get_model_context_length
+            from hermes_agent.agent.model_metadata import get_model_context_length
             context_length = _int_value(
                 await _quiet(lambda: asyncio.to_thread(get_model_context_length, model_name))
             )
@@ -494,7 +494,7 @@ class GatewayStatusCommandsMixin:
     async def _handle_topup_command(self, event: MessageEvent) -> str:
         """Handle /topup -- show the Nous balance and hand off to the portal. Does NOT charge, confirm,
         or track payment (that happens in the browser; the next /topup shows the new balance)."""
-        from agent.account_usage import build_credits_view
+        from hermes_agent.agent.account_usage import build_credits_view
         view = await _quiet(lambda: asyncio.to_thread(build_credits_view, markdown=True))
         if view is None or not view.logged_in:
             return t("gateway.credits.not_logged_in")
@@ -510,7 +510,7 @@ class GatewayStatusCommandsMixin:
         """/context per-category block (plain text, chars/4 estimate, same engine as /usage).
         Runs in a thread; returns [] and never raises."""
         try:
-            from agent.context_breakdown import compute_context_details, render_context_breakdown_lines
+            from hermes_agent.agent.context_breakdown import compute_context_details, render_context_breakdown_lines
             try:
                 payload = self._session_context_breakdown(agent, source)
             except TranscriptReadError:
@@ -518,7 +518,7 @@ class GatewayStatusCommandsMixin:
             if not (payload.get("categories") or []):
                 return []
             details = _quiet_sync(lambda: compute_context_details(agent), {"skills": [], "toolsets": []}) if expanded else None
-            from agent.context_file_sources import context_file_sources_for_agent, render_context_file_lines
+            from hermes_agent.agent.context_file_sources import context_file_sources_for_agent, render_context_file_lines
             file_lines = _quiet_sync(lambda: render_context_file_lines(context_file_sources_for_agent(agent)), [])
             return render_context_breakdown_lines(payload, details=details, grid=False) + ([""] + file_lines if file_lines else [])
         except Exception:
@@ -527,7 +527,7 @@ class GatewayStatusCommandsMixin:
     def _session_context_breakdown(self, agent, source) -> dict:
         """Per-category context estimate (chars/4) for *agent* over the session transcript (sync).
         Raises ``TranscriptReadError`` (unreadable rows must not pass as an empty transcript)."""
-        from agent.context_breakdown import compute_session_context_breakdown
+        from hermes_agent.agent.context_breakdown import compute_session_context_breakdown
         store = self.session_store
         try:
             history = store.load_transcript(store.get_or_create_session(source).session_id) or []
@@ -592,7 +592,7 @@ class GatewayStatusCommandsMixin:
         if wants_reset:
             if str(provider or "").strip().lower() != "openai-codex":
                 return t("gateway.usage.reset_wrong_provider")
-            from agent.account_usage import redeem_codex_reset_credit
+            from hermes_agent.agent.account_usage import redeem_codex_reset_credit
             result = await asyncio.to_thread(
                 redeem_codex_reset_credit, base_url=base_url, api_key=api_key, force="--force" in args[1:],
             )
@@ -610,14 +610,14 @@ class GatewayStatusCommandsMixin:
         # Nous credits + monthly-grant gauge (shared with CLI/TUI). Gates on "a Nous account is
         # logged in" — NOT the inference provider — so a Nous user inferring elsewhere still sees
         # a balance. Fail-open: never break /usage.
-        from agent.account_usage import nous_credits_lines
+        from hermes_agent.agent.account_usage import nous_credits_lines
         credits_state = getattr(agent, "_credits_state", None) if agent else None
         credits_lines = await _quiet(
             lambda: asyncio.to_thread(nous_credits_lines, markdown=True, credits_state=credits_state),
             [],
         )
         # Window plans: a chat's /topup has no Keep going control, so point the setting at the Portal.
-        from agent.plan_limits import portal_wording
+        from hermes_agent.agent.plan_limits import portal_wording
         credits_lines = [portal_wording(line) for line in credits_lines]
 
         def _with_account_blocks(lines: list[str]) -> str:
@@ -688,7 +688,7 @@ class GatewayStatusCommandsMixin:
                 i += 1
         try:
             from hermes_agent.hermes_state_registry import acquire
-            from agent.insights import InsightsEngine
+            from hermes_agent.agent.insights import InsightsEngine
 
             def _run_insights():
                 db = acquire()

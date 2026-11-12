@@ -5,7 +5,7 @@ browser challenge answers 403 HTML. Both used to classify as ``auth`` and print 
 """
 import pytest
 
-from agent.error_classifier import FailoverReason, classify_api_error
+from hermes_agent.agent.error_classifier import FailoverReason, classify_api_error
 
 
 class _APIError(Exception):

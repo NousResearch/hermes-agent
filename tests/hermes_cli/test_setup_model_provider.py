@@ -90,7 +90,7 @@ def test_setup_summary_local_browser_unavailable_without_chromium(
     )
     monkeypatch.setattr("hermes_cli.browser_runtime.chromium_executable", lambda **_kw: None)
     monkeypatch.setattr(
-        "agent.auxiliary_client.get_available_vision_backends", list
+        "hermes_agent.agent.auxiliary_client.get_available_vision_backends", list
     )
 
     _print_setup_summary(load_config(), tmp_path)

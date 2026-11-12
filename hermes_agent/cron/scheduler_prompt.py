@@ -204,9 +204,9 @@ def _load_cron_skill_parts(job: dict, skill_names: list[str]) -> list[str]:
     """Load each named skill/bundle into prompt parts; unknown ones are skipped with a notice."""
     from hermes_agent.tools.skills_tool import skill_view
     from hermes_agent.tools.skill_usage import bump_use
-    from agent.skill_bundles import build_bundle_invocation_message, resolve_bundle_command_key
-    from agent.skill_commands import _inject_skill_config, ambiguous_skill_label
-    from agent.skill_utils import normalize_skill_lookup_name
+    from hermes_agent.agent.skill_bundles import build_bundle_invocation_message, resolve_bundle_command_key
+    from hermes_agent.agent.skill_commands import _inject_skill_config, ambiguous_skill_label
+    from hermes_agent.agent.skill_utils import normalize_skill_lookup_name
     job_label = job.get("name", job.get("id"))
     task_id = str(job.get("id") or "") or None
     parts: list[str] = []
@@ -365,7 +365,7 @@ def _build_job_prompt(
     parts = _load_cron_skill_parts(job, skill_names)
     stable_prefix = None
     if prompt:
-        from agent.skill_commands import append_user_instruction
+        from hermes_agent.agent.skill_commands import append_user_instruction
         parts.append("")
         # Skill blocks are stable per job config; the appended instruction is volatile per-run.
         # Declare that boundary for the Anthropic cache planner.
@@ -380,7 +380,7 @@ def _build_job_prompt(
         and assembled.startswith(stable_prefix)
     ):
         # Guarded: the scanner may mutate the bytes; mismatch → whole-message caching.
-        from agent.prompt_cache_boundary import register_stable_prefix
+        from hermes_agent.agent.prompt_cache_boundary import register_stable_prefix
         register_stable_prefix(stable_prefix)
     return assembled
 

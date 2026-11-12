@@ -9,7 +9,7 @@ import pytest
 
 from pathlib import Path
 
-from agent import secret_scope as ss
+from hermes_agent.agent import secret_scope as ss
 
 
 @pytest.fixture(autouse=True)
@@ -20,10 +20,10 @@ def _reset(monkeypatch):
 
 
 class TestRuntimeProviderUsesScope:
-    """runtime_provider's credential reads (agent.secret_scope.get_secret_str) resolve through the scope."""
+    """runtime_provider's credential reads (hermes_agent.agent.secret_scope.get_secret_str) resolve through the scope."""
 
     def test_getenv_two_profiles_isolated(self, monkeypatch):
-        from agent.secret_scope import get_secret_str as _getenv
+        from hermes_agent.agent.secret_scope import get_secret_str as _getenv
         ss.set_multiplex_active(True)
 
         tok_a = ss.set_secret_scope({"OPENAI_API_KEY": "sk-A"})
@@ -97,7 +97,7 @@ def test_turn_scoped_dotenv_reload_does_not_pollute_process_env(tmp_path, monkey
     """
     import os
 
-    from agent.secret_scope import get_secret
+    from hermes_agent.agent.secret_scope import get_secret
     from hermes_agent.gateway.run import _profile_runtime_scope
     from hermes_cli.env_loader import load_hermes_dotenv
     from hermes_constants import get_hermes_home
@@ -209,10 +209,10 @@ def test_cold_profile_hydrates_external_source_without_global_env(
     """The first routed secondary turn must resolve its own source locally."""
     import os
 
-    from agent.secret_sources.base import FetchResult
-    from agent.secret_sources.registry import AppliedVar, ApplyReport, SourceReport
-    from agent.secret_sources import registry
-    from agent.secret_scope import get_secret
+    from hermes_agent.agent.secret_sources.base import FetchResult
+    from hermes_agent.agent.secret_sources.registry import AppliedVar, ApplyReport, SourceReport
+    from hermes_agent.agent.secret_sources import registry
+    from hermes_agent.agent.secret_scope import get_secret
     from hermes_cli import env_loader
     from hermes_agent.gateway.run import _profile_runtime_scope
 

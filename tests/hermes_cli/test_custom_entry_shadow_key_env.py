@@ -75,7 +75,7 @@ def test_shadowing_entry_auxiliary_client_never_borrows_builtin_key(tmp_path, mo
     _home(tmp_path, monkeypatch, name, builtin_env)
     if not entry_key_set:
         monkeypatch.delenv("ENTRY_KEY_VAR")
-    from agent.auxiliary_client import _named_custom_api_key
+    from hermes_agent.agent.auxiliary_client import _named_custom_api_key
     from hermes_cli.runtime_provider import _get_named_custom_provider
 
     entry = _get_named_custom_provider(f"custom:{name}")
@@ -115,7 +115,7 @@ def test_shadowing_entry_manual_pool_row_still_wins(tmp_path, monkeypatch):
         # The rotation pool must not reach the built-in's env-seeded row either.
         assert {e.access_token for e in pool.entries()} == {MANUAL_KEY}
     # The built-in's own pool keeps its env-seeded row on disk.
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
 
     assert BUILTIN_KEY in {e.access_token for e in load_pool("deepseek").entries()}
 
@@ -215,8 +215,8 @@ def _restorable_agent(primary: dict):
     """An agent on a cross-provider fallback (OpenRouter pool attached) whose snapshot is ``primary``."""
     from unittest.mock import MagicMock
 
-    from agent.credential_pool import CredentialPool
-    from run_agent import AIAgent
+    from hermes_agent.agent.credential_pool import CredentialPool
+    from hermes_agent.run_agent import AIAgent
 
     agent = AIAgent.__new__(AIAgent)
     agent.model, agent.provider, agent.base_url = "fallback-model", "openrouter", "https://openrouter.ai/api/v1"
@@ -307,7 +307,7 @@ def test_persisting_the_entry_view_keeps_the_builtin_rows_and_writes_no_secret(t
     manual = {"id": "m1", "label": "manual", "auth_type": "api_key", "priority": 0, "source": "manual",
               "access_token": MANUAL_KEY}
     home = _home(tmp_path, monkeypatch, "deepseek", "DEEPSEEK_API_KEY", pool={"deepseek": [manual]})
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
     from hermes_cli import runtime_provider as rp
 
     load_pool("deepseek")
@@ -340,7 +340,7 @@ def _two_entries_on_one_url(tmp_path, monkeypatch):
 
 def test_restoring_a_named_entry_never_resumes_on_a_sibling_sharing_its_url(tmp_path, monkeypatch):
     _two_entries_on_one_url(tmp_path, monkeypatch)
-    from agent.custom_entry_pool import load_runtime_pool
+    from hermes_agent.agent.custom_entry_pool import load_runtime_pool
     from hermes_cli import runtime_provider as rp
 
     pool = load_runtime_pool("custom", ENDPOINT, "custom:beta")
@@ -355,7 +355,7 @@ def test_restoring_a_named_entry_never_resumes_on_a_sibling_sharing_its_url(tmp_
 
 def test_a_genuinely_bare_custom_snapshot_still_takes_the_first_entry_on_its_url(tmp_path, monkeypatch):
     _two_entries_on_one_url(tmp_path, monkeypatch)
-    from agent.custom_entry_pool import load_runtime_pool
+    from hermes_agent.agent.custom_entry_pool import load_runtime_pool
 
     assert MANUAL_KEY in {e.access_token for e in load_runtime_pool("custom", ENDPOINT).entries()}
 
@@ -373,10 +373,10 @@ def test_aux_task_pinned_to_the_entry_sends_its_key_env(tmp_path, monkeypatch):
 
     home = _home(tmp_path, monkeypatch, "deepseek", "DEEPSEEK_API_KEY")
     _pin_title_generation(home, "custom:deepseek")
-    from agent import auxiliary_client as ac
+    from hermes_agent.agent import auxiliary_client as ac
 
     monkeypatch.setattr(ac, "_client_cache", {})
-    with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+    with patch("hermes_agent.agent.auxiliary_client.OpenAI") as mock_openai:
         mock_openai.return_value.base_url = ENDPOINT
         mock_openai.return_value.chat.completions.create.return_value = MagicMock()
         ac.call_llm(task="title_generation", messages=[{"role": "user", "content": "hi"}])
@@ -388,10 +388,10 @@ def test_aux_task_pinned_to_the_builtin_keeps_its_env_key(tmp_path, monkeypatch)
     from unittest.mock import patch
 
     _home(tmp_path, monkeypatch, "deepseek", "DEEPSEEK_API_KEY")
-    from agent import auxiliary_client as ac
+    from hermes_agent.agent import auxiliary_client as ac
 
     monkeypatch.setattr(ac, "_client_cache", {})
-    with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+    with patch("hermes_agent.agent.auxiliary_client.OpenAI") as mock_openai:
         ac._get_cached_client("deepseek", "m")
     assert mock_openai.call_args.kwargs["api_key"] == BUILTIN_KEY
 
@@ -402,8 +402,8 @@ def test_aux_auth_failure_on_the_entry_never_rotates_the_builtin_pool(tmp_path, 
     from types import SimpleNamespace
 
     _home(tmp_path, monkeypatch, "deepseek", "DEEPSEEK_API_KEY")
-    from agent import auxiliary_client as ac
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent import auxiliary_client as ac
+    from hermes_agent.agent.credential_pool import load_pool
 
     load_pool("deepseek")
     pool_provider = ac._recoverable_pool_provider("custom:deepseek", SimpleNamespace(base_url=ENDPOINT, api_key=ENTRY_KEY))
@@ -427,7 +427,7 @@ def test_bare_route_skips_an_unusable_inline_key_for_the_declared_key_env(tmp_pa
 def test_aux_named_entry_skips_an_unusable_inline_key_for_the_declared_key_env(tmp_path, monkeypatch):
     _home(tmp_path, monkeypatch, "mydeep", "DEEPSEEK_API_KEY",
           entry_extra={"key_env": "ENTRY_KEY_VAR", "api_key": "placeholder"})
-    from agent.auxiliary_client import _named_custom_api_key
+    from hermes_agent.agent.auxiliary_client import _named_custom_api_key
     from hermes_cli.runtime_provider import _get_named_custom_provider
 
     assert _named_custom_api_key(_get_named_custom_provider("custom:mydeep"), "mydeep", ENDPOINT) == ENTRY_KEY
@@ -436,13 +436,13 @@ def test_aux_named_entry_skips_an_unusable_inline_key_for_the_declared_key_env(t
 # ── review round 3: restore reads the snapshot's owner, never live config ───────────────────────
 
 def _init_snapshot(agent):
-    from agent.agent_init import _snapshot_primary_runtime
+    from hermes_agent.agent.agent_init import _snapshot_primary_runtime
     _snapshot_primary_runtime(agent)
     return agent._primary_runtime
 
 
 def _switch_snapshot(agent):
-    from agent.agent_runtime_helpers import _build_primary_runtime_snapshot
+    from hermes_agent.agent.agent_runtime_helpers import _build_primary_runtime_snapshot
     return _build_primary_runtime_snapshot(agent, agent.api_mode)
 
 
@@ -453,7 +453,7 @@ def _snapshotted_agent(builder, initial, requested, api_key=ENTRY_KEY):
     """An agent built on the resolved primary ``initial``, snapshotted by a real builder, now on a fallback."""
     from unittest.mock import MagicMock
 
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     built = AIAgent.__new__(AIAgent)
     built.model, built.provider, built.requested_provider = "m", initial["provider"], requested

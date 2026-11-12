@@ -15,7 +15,7 @@ from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 
-from agent.interrupt_scope import InterruptScope, bind_interrupt_scope
+from hermes_agent.agent.interrupt_scope import InterruptScope, bind_interrupt_scope
 from hermes_cli.active_sessions import ActiveSessionRegistryError, active_session_registry_snapshot
 from hermes_cli.pty_session import RegistryFull
 from hermes_cli.web_deps import LateState, late

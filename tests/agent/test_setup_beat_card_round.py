@@ -1,5 +1,5 @@
 """A setup_beat round in the turn loop. It never ends in the empty-response nudge: the line written with
-the card is the turn's reply when the follow-up comes back empty (agent/turn_tool_round.py
+the card is the turn's reply when the follow-up comes back empty (hermes_agent/agent/turn_tool_round.py
 ``_LINE_IS_REPLY_TOOLS``). A card the user wrote past ends the turn on its result."""
 
 from __future__ import annotations
@@ -10,13 +10,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent import onboarding_record
-from agent.agent_init import _CALLBACK_PARAMS
-from agent.onboarding_flow import Facts
-from agent.turn_empty_response import recover_empty_response
-from agent.turn_tool_round import stage_tool_call_message
+from hermes_agent.agent import onboarding_record
+from hermes_agent.agent.agent_init import _CALLBACK_PARAMS
+from hermes_agent.agent.onboarding_flow import Facts
+from hermes_agent.agent.turn_empty_response import recover_empty_response
+from hermes_agent.agent.turn_tool_round import stage_tool_call_message
 from hermes_agent.hermes_state import SessionDB
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 from tests.agent.test_run_agent import _mock_response
 from hermes_agent.tools.setup_beat_tool import SETUP_BEAT_SCHEMA
 
@@ -64,7 +64,7 @@ def test_an_empty_follow_up_after_a_card_round_keeps_the_cards_line(tool, reused
 def _loop_agent(db):
     with (patch("hermes_agent.model_tools.get_tool_definitions", return_value=[{"type": "function", "function": SETUP_BEAT_SCHEMA}]),
           patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-          patch("agent.process_bootstrap.OpenAI")):
+          patch("hermes_agent.agent.process_bootstrap.OpenAI")):
         agent = AIAgent(api_key="test-key-1234567890", base_url="https://openrouter.ai/api/v1", platform="desktop",
                         quiet_mode=True, skip_context_files=True, skip_memory=True)
     agent.client = MagicMock()

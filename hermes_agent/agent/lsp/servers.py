@@ -3,7 +3,7 @@
 Each :class:`ServerDef` matches files (by extension or basename for
 extensionless files like ``Dockerfile``), resolves a project root, and
 assembles the spawn command.  Auto-installation lives in
-:mod:`agent.lsp.install`; nothing here probes binaries until a file in
+:mod:`hermes_agent.agent.lsp.install`; nothing here probes binaries until a file in
 that language is actually edited.
 """
 from __future__ import annotations
@@ -14,9 +14,9 @@ import shutil
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
-from agent.lsp.workspace import nearest_root
+from hermes_agent.agent.lsp.workspace import nearest_root
 
-logger = logging.getLogger("agent.lsp.servers")
+logger = logging.getLogger("hermes_agent.agent.lsp.servers")
 
 # LSP languageId for ``textDocument/didOpen``, as language → extensions.  A few
 # servers (typescript-language-server, vue-language-server) refuse wrong IDs.
@@ -137,7 +137,7 @@ def _find_binary(ctx: ServerContext, server_id: str, which: Sequence[str], insta
     override = ctx.binary_overrides.get(server_id)
     bin_path = override[0] if override and override[0] and os.path.exists(override[0]) else _which(*which)
     if bin_path is None and install_pkg is not None:
-        from agent.lsp.install import try_install
+        from hermes_agent.agent.lsp.install import try_install
         bin_path = try_install(install_pkg, ctx.install_strategy)
     return bin_path
 
@@ -239,7 +239,7 @@ def _node_modules_trees(bin_path: str, root: Optional[str]) -> list[str]:
     """``node_modules`` trees that may hold a server and its TypeScript SDK: the launcher's own tree
     (symlinks resolved), Hermes staging, then the project's (``root`` None: Hermes's trees only, for
     TypeScript's SDK pin in an untrusted workspace, whose own JavaScript must not load)."""
-    from agent.lsp.install import hermes_lsp_bin_dir
+    from hermes_agent.agent.lsp.install import hermes_lsp_bin_dir
     trees = [str(hermes_lsp_bin_dir().parent / "node_modules")] + ([os.path.join(root, "node_modules")] if root else [])
     real = os.path.realpath(bin_path)
     marker = f"{os.sep}node_modules{os.sep}"

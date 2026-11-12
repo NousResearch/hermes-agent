@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.interrupt_control import InterruptControlMixin
+from hermes_agent.agent.interrupt_control import InterruptControlMixin
 from hermes_agent.gateway import session_context as sc
 from hermes_agent.tools import async_delegation, delegate_tool as dt
 from hermes_agent.tools.delegate_tool_child_run import _attach_child
@@ -267,7 +267,7 @@ def test_owner_finite_scope_overrides_history_without_leaking(harness, monkeypat
 def test_oneshot_started_session_joins_children_on_an_interactive_turn(harness, monkeypatch):
     """A ``chat -q`` session resumed interactively keeps its pinned one-shot ``delegate_task`` schema ("joined in
     this call", no list/steer/stop), so an interactive (finite=False) turn must still join, never detach."""
-    from agent.oneshot_footprint import agent_is_oneshot
+    from hermes_agent.agent.oneshot_footprint import agent_is_oneshot
     from hermes_agent.gateway.session_finite import finite_turn_scope
     from hermes_agent.gateway.session_policy import build_policy, policy_scope
 

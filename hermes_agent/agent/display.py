@@ -16,9 +16,9 @@ from typing import Any, Iterator
 from urllib.parse import urlsplit
 
 from utils import safe_json_loads
-from agent.i18n import t
-from agent.redact import redact_sensitive_text, sanitize_command_for_display
-from agent.tool_result_classification import (
+from hermes_agent.agent.i18n import t
+from hermes_agent.agent.redact import redact_sensitive_text, sanitize_command_for_display
+from hermes_agent.agent.tool_result_classification import (
     shape_failure_error, file_mutation_result_landed, has_failure_marker, is_guardrail_refusal)
 
 logger = logging.getLogger(__name__)

@@ -2,7 +2,7 @@
 
 from types import SimpleNamespace
 
-from agent.manual_compression_feedback import (
+from hermes_agent.agent.manual_compression_feedback import (
     summarize_manual_compression,
 )
 
@@ -22,7 +22,7 @@ def test_failure_reason_redaction_is_forced_at_ui_boundary(monkeypatch):
         _last_summary_fallback_used=False,
         _last_summary_error=f"provider rejected OPENAI_API_KEY={fake_secret}",
     )
-    monkeypatch.setattr("agent.redact._REDACT_ENABLED", False, raising=False)
+    monkeypatch.setattr("hermes_agent.agent.redact._REDACT_ENABLED", False, raising=False)
 
     feedback = summarize_manual_compression(
         messages,

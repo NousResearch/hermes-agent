@@ -33,7 +33,7 @@ def _run(tmp_path, *, response: str, primary_fails: bool):
          patch("hermes_cli.env_loader.reset_secret_source_cache"), \
          patch("hermes_agent.hermes_state_registry.acquire", return_value=fake_db), \
          patch("hermes_cli.runtime_provider.resolve_runtime_provider", side_effect=_resolve), \
-         patch("run_agent.AIAgent") as agent_cls:
+         patch("hermes_agent.run_agent.AIAgent") as agent_cls:
         agent_cls.return_value.run_conversation.return_value = {"final_response": response}
         # Cron turns execute inside the gateway owner: drive the production owner bridge.
         success, _output, final, error = _run_owned_job(dict(_JOB), tmp_path, fake_db)

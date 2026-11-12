@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 
 
 def approval_text_prompt(adapter: Any, chat_id: str, session_key: str, request_id: str | None, command: str,

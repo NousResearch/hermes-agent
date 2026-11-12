@@ -315,7 +315,7 @@ class TestVisionSafetyGuards:
         """A .env file must be blocked even if given an image-like path.
 
         Mirrors the video_analyze_tool regression: the local-file branch
-        must route through agent.file_safety.raise_if_read_blocked before
+        must route through hermes_agent.agent.file_safety.raise_if_read_blocked before
         vision_analyze_tool ever opens the file, not rely solely on the
         magic-byte mime check as an accidental side effect.
         """
@@ -529,7 +529,7 @@ class TestVisionRequirements:
     def test_resolver_crash_propagates_instead_of_reading_as_unconfigured(self, monkeypatch):
         """The gate must not swallow resolver exceptions into False: the registry owns the
         verdict and logs the traceback, so users can tell "misconfigured" from "crashed" (#87950)."""
-        import agent.auxiliary_client as aux
+        import hermes_agent.agent.auxiliary_client as aux
 
         def _boom(**kw):
             raise RuntimeError("named custom provider lookup failed")

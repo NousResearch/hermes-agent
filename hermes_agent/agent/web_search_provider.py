@@ -18,7 +18,7 @@ import abc
 import os
 from typing import Any, Dict, List
 
-from agent.provider_base import ProviderBase
+from hermes_agent.agent.provider_base import ProviderBase
 
 
 def get_provider_env(name: str) -> str:
@@ -37,7 +37,7 @@ def get_provider_env(name: str) -> str:
         val = get_env_value(name)
     except Exception as exc:
         try:
-            from agent.secret_scope import UnscopedSecretError
+            from hermes_agent.agent.secret_scope import UnscopedSecretError
         except ImportError:
             UnscopedSecretError = ()  # type: ignore[assignment,misc]
         if isinstance(exc, UnscopedSecretError):
@@ -45,7 +45,7 @@ def get_provider_env(name: str) -> str:
         val = None
     scope_bound, multiplex_active = _secret_scope_state()
     if val is None and multiplex_active and not scope_bound:
-        from agent.secret_scope import UnscopedSecretError
+        from hermes_agent.agent.secret_scope import UnscopedSecretError
 
         raise UnscopedSecretError(name, f"get_provider_env({name!r}) called with no active profile scope")
     if val is None and not scope_bound:
@@ -55,7 +55,7 @@ def get_provider_env(name: str) -> str:
 
 def _secret_scope_state() -> tuple[bool, bool]:
     try:
-        from agent.secret_scope import current_secret_scope, is_multiplex_active
+        from hermes_agent.agent.secret_scope import current_secret_scope, is_multiplex_active
     except Exception:
         return False, False
     return current_secret_scope() is not None, is_multiplex_active()

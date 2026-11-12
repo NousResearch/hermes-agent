@@ -10,14 +10,14 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.verify.environment import (
+from hermes_agent.agent.verify.environment import (
     load_manifest,
     load_or_detect,
     manifest_path,
     save_manifest,
 )
-from agent.verify.recipes import Recipe
-from agent.verify.runner import run_verify
+from hermes_agent.agent.verify.recipes import Recipe
+from hermes_agent.agent.verify.runner import run_verify
 
 
 class TestManifest:
@@ -168,7 +168,7 @@ class TestComposeGuard:
             MagicMock(side_effect=probe) if isinstance(probe, BaseException) else MagicMock(return_value=probe),
         )
 
-        with patch("agent.verify.runner._run_phase_command") as mock_phase:
+        with patch("hermes_agent.agent.verify.runner._run_phase_command") as mock_phase:
             mock_phase.return_value = MagicMock(ok=True, phase="build")
             run_verify(tmp_path, self._compose_recipe(), phases=("build",))
 
@@ -176,9 +176,9 @@ class TestComposeGuard:
 
     def test_guard_skipped_when_no_mutating_phase_selected(self, tmp_path, monkeypatch):
         probe = MagicMock()
-        monkeypatch.setattr("agent.verify.runner._compose_live_state_reason", probe)
+        monkeypatch.setattr("hermes_agent.agent.verify.runner._compose_live_state_reason", probe)
 
-        with patch("agent.verify.runner._run_phase_command") as mock_phase:
+        with patch("hermes_agent.agent.verify.runner._run_phase_command") as mock_phase:
             mock_phase.return_value = MagicMock(ok=True, phase="test")
             run_verify(tmp_path, Recipe(name="x", kind="compose", test=["true"]), phases=("test",))
 
@@ -273,7 +273,7 @@ class TestTerminateProcessGroupGuard:
     def test_shared_group_child_gets_terminate_only(self, monkeypatch):
         import os as _os
 
-        from agent.verify.runner import _terminate_process_group
+        from hermes_agent.agent.verify.runner import _terminate_process_group
 
         proc = MagicMock()
         proc.pid = 999
@@ -292,7 +292,7 @@ class TestTerminateProcessGroupGuard:
         be dead before the assertion. The direct child still dies."""
         import os as _os
 
-        from agent.verify.runner import _terminate_process_group
+        from hermes_agent.agent.verify.runner import _terminate_process_group
 
         proc = subprocess.Popen(
             ["sleep", "60"],
@@ -312,7 +312,7 @@ class TestTerminateProcessGroupGuard:
         through the group signal path."""
         import os as _os
 
-        from agent.verify.runner import _terminate_process_group
+        from hermes_agent.agent.verify.runner import _terminate_process_group
 
         proc = subprocess.Popen(
             ["sleep", "60"],

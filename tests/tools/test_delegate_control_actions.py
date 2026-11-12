@@ -740,7 +740,7 @@ def test_completion_notification_trims_subagent_output_wall():
 def test_control_action_not_blocked_at_spawn_cap():
     """Once the cap is hit, steer/stop must STILL work — that's when the
     user most needs to rein children in."""
-    from agent.tool_guardrails import (
+    from hermes_agent.agent.tool_guardrails import (
         LoopCapConfig,
         ToolCallGuardrailConfig,
         ToolCallGuardrailController,

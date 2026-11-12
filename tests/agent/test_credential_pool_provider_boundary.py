@@ -3,7 +3,7 @@
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from agent.credential_pool import (
+from hermes_agent.agent.credential_pool import (
     credential_pool_matches_provider,
     resolve_runtime_pool_key,
 )
@@ -18,7 +18,7 @@ def test_provider_match_requires_exact_non_custom_identity():
 
 def test_custom_pool_match_is_scoped_by_endpoint():
     with patch(
-        "agent.credential_pool.get_custom_provider_pool_key",
+        "hermes_agent.agent.credential_pool.get_custom_provider_pool_key",
         return_value="custom:lab",
     ):
         assert credential_pool_matches_provider(
@@ -40,7 +40,7 @@ def test_named_custom_pool_match_requires_configured_identity_and_endpoint():
             },
         )
     ]
-    with patch("agent.credential_pool._iter_custom_providers", return_value=configured):
+    with patch("hermes_agent.agent.credential_pool._iter_custom_providers", return_value=configured):
         assert credential_pool_matches_provider(
             "custom:gemini-display",
             "gemini-no-filter",
@@ -88,7 +88,7 @@ def test_runtime_pool_key_resolves_all_custom_runtime_identities():
             },
         )
     ]
-    with patch("agent.credential_pool._iter_custom_providers", return_value=configured):
+    with patch("hermes_agent.agent.credential_pool._iter_custom_providers", return_value=configured):
         assert resolve_runtime_pool_key("custom", endpoint) == "sibling-provider"
         assert (
             resolve_runtime_pool_key("gemini-no-filter", endpoint)
@@ -124,7 +124,7 @@ def test_runtime_pool_key_resolves_modern_provider_in_mixed_config():
         },
     }
 
-    with patch("agent.credential_pool._load_config_safe", return_value=config):
+    with patch("hermes_agent.agent.credential_pool._load_config_safe", return_value=config):
         assert (
             resolve_runtime_pool_key("gemini-no-filter", endpoint)
             == "gemini-no-filter"
@@ -153,7 +153,7 @@ def test_keyed_provider_pool_matches_runtime_aliases():
             },
         )
     ]
-    with patch("agent.credential_pool._iter_custom_providers", return_value=configured):
+    with patch("hermes_agent.agent.credential_pool._iter_custom_providers", return_value=configured):
         assert credential_pool_matches_provider(
             "b-ai", "b-ai", base_url="https://api.b.ai/v1"
         )
@@ -183,14 +183,14 @@ def test_runtime_pool_key_prefers_durable_provider_slug():
             },
         )
     ]
-    with patch("agent.credential_pool._iter_custom_providers", return_value=configured):
+    with patch("hermes_agent.agent.credential_pool._iter_custom_providers", return_value=configured):
         assert resolve_runtime_pool_key("b-ai", endpoint) == "b-ai"
         assert resolve_runtime_pool_key("custom", endpoint) == "b-ai"
         assert resolve_runtime_pool_key("custom:b.ai", endpoint) == "b-ai"
 
 
 def test_runtime_pool_key_preserves_non_custom_identity():
-    with patch("agent.credential_pool._iter_custom_providers", return_value=[]):
+    with patch("hermes_agent.agent.credential_pool._iter_custom_providers", return_value=[]):
         assert (
             resolve_runtime_pool_key("openai-codex", "https://chatgpt.com/backend-api")
             == "openai-codex"

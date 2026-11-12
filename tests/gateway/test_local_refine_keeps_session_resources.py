@@ -15,8 +15,8 @@ import pytest
 async def test_cold_refine_keeps_the_sessions_terminal(tmp_path, monkeypatch):
     refine = pytest.importorskip('hermes_agent.gateway.session_refine')
     from hermes_agent.gateway import session_tui_side, session_policy, session_local_recovery
-    from agent import background_review
-    from run_agent import AIAgent
+    from hermes_agent.agent import background_review
+    from hermes_agent.run_agent import AIAgent
     from hermes_agent.tools.environments.local import LocalEnvironment
     from hermes_agent.tools import terminal_tool
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))

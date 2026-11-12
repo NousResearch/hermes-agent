@@ -35,10 +35,10 @@ import itertools
 
 @pytest.fixture()
 def compressor():
-    from agent.context_compressor import ContextCompressor
+    from hermes_agent.agent.context_compressor import ContextCompressor
 
     with patch(
-        "agent.context_compressor.get_model_context_length",
+        "hermes_agent.agent.context_compressor.get_model_context_length",
         return_value=100_000,
     ):
         c = ContextCompressor(
@@ -85,7 +85,7 @@ class TestCompressAlwaysKeepsAUserTurn:
         user turn old enough to fall into the compressed middle. Before
         the fix, the summary was emitted as ``assistant`` and the output
         had zero user-role messages."""
-        from agent.context_compressor import SUMMARY_PREFIX
+        from hermes_agent.agent.context_compressor import SUMMARY_PREFIX
 
         c = compressor
         # A prior compaction has already happened → protect_first_n decays
@@ -112,7 +112,7 @@ class TestCompressAlwaysKeepsAUserTurn:
         consecutive user-role messages (strict alternation invariant).
         When a user survives in the tail we do NOT force, so the pinned
         summary can never collide with a user-role neighbour."""
-        from agent.context_compressor import SUMMARY_PREFIX
+        from hermes_agent.agent.context_compressor import SUMMARY_PREFIX
 
         c = compressor
         c.compression_count = 1
@@ -132,7 +132,7 @@ class TestCompressAlwaysKeepsAUserTurn:
         """When a genuine user message survives in the tail, the guard
         must NOT fire (the summary keeps its alternation-driven role) —
         the request already has a user turn."""
-        from agent.context_compressor import SUMMARY_PREFIX
+        from hermes_agent.agent.context_compressor import SUMMARY_PREFIX
 
         c = compressor
         c.compression_count = 1
@@ -164,7 +164,7 @@ def _has_nonempty_user_text(messages: list[dict]) -> bool:
     ``role="assistant"`` summary does not satisfy backends that require an
     actual user query, so checking role and content together is the point.
     """
-    from agent.context_compressor import _content_text_for_contains
+    from hermes_agent.agent.context_compressor import _content_text_for_contains
 
     return any(
         m.get("role") == "user"
@@ -183,7 +183,7 @@ class TestCompressKeepsANonEmptyUserTurn:
     """
 
     def test_image_only_tail_user_turn_still_yields_non_empty_text(self, compressor):
-        from agent.context_compressor import SUMMARY_PREFIX
+        from hermes_agent.agent.context_compressor import SUMMARY_PREFIX
 
         c = compressor
         c.compression_count = 1
@@ -220,7 +220,7 @@ class TestCompressKeepsANonEmptyUserTurn:
         (``compress_start == 0`` / ``last_head_role == "system"``) fires on
         its own — only the broadened (text-aware) survival check does.
         """
-        from agent.context_compressor import SUMMARY_PREFIX
+        from hermes_agent.agent.context_compressor import SUMMARY_PREFIX
 
         c = compressor
         c.protect_first_n = 1
@@ -253,7 +253,7 @@ class TestCompressKeepsANonEmptyUserTurn:
         and still empty, silently defeating the forced role="user" this
         block exists to guarantee.
         """
-        from agent.context_compressor import SUMMARY_PREFIX
+        from hermes_agent.agent.context_compressor import SUMMARY_PREFIX
 
         c = compressor
         c.compression_count = 1  # decays protect_first_n to 0 -> compress_start == 0

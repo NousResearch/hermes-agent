@@ -63,7 +63,7 @@ def test_qwen_medium_default_reaches_only_its_model_preset(tmp_path, monkeypatch
 
 
 def test_explicit_reasoning_choices_survive_shared_resolution_and_wire(tmp_path, monkeypatch):
-    from agent.transports.chat_completions import ChatCompletionsTransport
+    from hermes_agent.agent.transports.chat_completions import ChatCompletionsTransport
     from hermes_cli.config_effective import load_user_config_effective
     from hermes_constants import resolve_reasoning_config
     from providers import get_provider_profile

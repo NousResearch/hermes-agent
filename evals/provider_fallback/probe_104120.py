@@ -97,9 +97,9 @@ class Handler(BaseHTTPRequestHandler):
 server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
 threading.Thread(target=server.serve_forever, daemon=True).start()
 url = f"http://127.0.0.1:{server.server_port}/v1"
-from run_agent import AIAgent
-from agent.error_classifier import classify_api_error
-from agent.agent_runtime_helpers import restore_primary_runtime
+from hermes_agent.run_agent import AIAgent
+from hermes_agent.agent.error_classifier import classify_api_error
+from hermes_agent.agent.agent_runtime_helpers import restore_primary_runtime
 
 results = []
 for label, model, chain in [

@@ -10,7 +10,7 @@ from hermes_cli.nous_account import (
     NousPortalSubscriptionInfo,
     _subscription_from_payload,
 )
-from agent.account_usage import build_nous_credits_snapshot, render_account_usage_lines
+from hermes_agent.agent.account_usage import build_nous_credits_snapshot, render_account_usage_lines
 
 
 def _acct(**kwargs):

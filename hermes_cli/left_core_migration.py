@@ -133,12 +133,12 @@ def homeassistant_in_use(home: Path, *, process_env: bool = False) -> bool:
     (:func:`platform_configured_on`), or the ``homeassistant`` / ``hermes-homeassistant`` toolset selected for
     another platform or in the top-level ``toolsets`` list. *process_env* (the active home at startup only)
     also counts a ``HASS_TOKEN`` the process received from its environment (systemd unit, Docker, shell export)."""
-    from agent.secret_scope import load_env_file
+    from hermes_agent.agent.secret_scope import load_env_file
     if (load_env_file(home / ".env").get("HASS_TOKEN") or "").strip():
         return True
     if process_env:
         try:
-            from agent.secret_scope import get_secret
+            from hermes_agent.agent.secret_scope import get_secret
             if (get_secret("HASS_TOKEN", "") or "").strip():
                 return True
         except Exception:
@@ -313,7 +313,7 @@ def _home_env(home: Path, name: str, *, process_env: bool) -> str:
     """*name* as *home*'s dotenv layers resolve it (:func:`~hermes_cli.env_loader.resolve_home_dotenv`), else
     from the secret scope bound for *home* (a multiplexed secondary's external secret sources live only there),
     else, with *process_env* and for the launch home only, the process environment."""
-    from agent.secret_scope import current_secret_scope, current_secret_scope_home
+    from hermes_agent.agent.secret_scope import current_secret_scope, current_secret_scope_home
     from hermes_cli.env_loader import resolve_home_dotenv
     from hermes_constants import get_routing_process_hermes_home, hermes_home_key
     value = resolve_home_dotenv(home).get(name, "").strip()
@@ -994,7 +994,7 @@ def _turn_off_replaced(config: dict, feature: LeftCoreFeature) -> None:
     the plugin's toolsets instead (so turning core's toolset back on later stays that platform's choice),
     and ``agent.disabled_toolsets`` takes them, which also covers platforms on a default composite. One the
     user had already disabled there disables the plugin's toolsets too (they are on by default)."""
-    from agent.skill_utils import parse_config_string_list
+    from hermes_agent.agent.skill_utils import parse_config_string_list
     from hermes_cli.toolset_validation import parse_platform_toolsets_value
     replaced = set(feature.replaces_toolsets)
     saved = config.get("platform_toolsets")
@@ -1012,7 +1012,7 @@ def _turn_off_replaced(config: dict, feature: LeftCoreFeature) -> None:
 
 def _keep_legacy_disable(config: dict, feature: LeftCoreFeature) -> None:
     """``agent.disabled_toolsets`` naming one of *feature*'s ``legacy_toolsets`` also names its toolsets."""
-    from agent.skill_utils import parse_config_string_list
+    from hermes_agent.agent.skill_utils import parse_config_string_list
     agent = config.get("agent") if isinstance(config.get("agent"), dict) else {}
     disabled = parse_config_string_list(agent.get("disabled_toolsets")) if agent.get("disabled_toolsets") else []
     if set(feature.legacy_toolsets).isdisjoint(disabled):
@@ -1262,7 +1262,7 @@ def recover_at_startup(*, say: Optional[Callable[[str], None]] = None, gateway_s
     the home (:func:`_queue_notice`) for its next turn someone sees (:func:`claim_kept_notices`), in
     whichever process. *gateway_start*: the gateway itself, which needs no restart hint. Returns installed
     plugin names."""
-    from agent.safe_worker_policy import worker_config_snapshot
+    from hermes_agent.agent.safe_worker_policy import worker_config_snapshot
     if _installs_held.get():
         return []
     if worker_config_snapshot() is not None:

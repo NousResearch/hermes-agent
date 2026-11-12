@@ -15,7 +15,7 @@ from unittest.mock import patch
 import pytest
 
 from hermes_agent.tools import web_tools
-from agent import web_search_registry as registry
+from hermes_agent.agent import web_search_registry as registry
 from plugins.web import keyless_mcp
 from plugins.web.exa.provider import ExaWebSearchProvider
 from plugins.web.parallel.provider import ParallelWebSearchProvider
@@ -31,7 +31,7 @@ def _no_web_env(monkeypatch):
     ):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(
-        "agent.web_search_provider.get_provider_env", lambda name: "", raising=True
+        "hermes_agent.agent.web_search_provider.get_provider_env", lambda name: "", raising=True
     )
     monkeypatch.setattr(web_tools, "_env_value", lambda name: "", raising=True)
     monkeypatch.setattr(web_tools, "_load_web_config", dict, raising=True)
@@ -277,7 +277,7 @@ class TestProviderRouting:
 
     def test_parallel_keyed_path_skips_keyless(self, monkeypatch):
         monkeypatch.setattr(
-            "agent.web_search_provider.get_provider_env",
+            "hermes_agent.agent.web_search_provider.get_provider_env",
             lambda name: "sk-real" if name == "PARALLEL_API_KEY" else "",
         )
         provider = ParallelWebSearchProvider()
@@ -304,7 +304,7 @@ class TestProviderRouting:
 
     def test_tier_free_forces_keyless_even_with_key(self, monkeypatch):
         monkeypatch.setattr(
-            "agent.web_search_provider.get_provider_env",
+            "hermes_agent.agent.web_search_provider.get_provider_env",
             lambda name: "sk-real" if name == "PARALLEL_API_KEY" else "",
         )
         monkeypatch.setattr(keyless_mcp, "provider_tier", lambda name: "free")
@@ -404,7 +404,7 @@ class TestResolutionOrder:
         # even though parallel precedes exa in _KEYLESS_PREFERENCE.
         monkeypatch.setattr(registry, "_read_config_key", lambda *p: None)
         monkeypatch.setattr(
-            "agent.web_search_provider.get_provider_env",
+            "hermes_agent.agent.web_search_provider.get_provider_env",
             lambda name: "sk-real" if name == "EXA_API_KEY" else "",
         )
         provider = registry.get_active_search_provider()
@@ -418,7 +418,7 @@ class TestResolutionOrder:
                           "exa": ExaWebSearchProvider()}.get(name),
         )
         monkeypatch.setattr(web_tools, "_list_registered_web_providers", list)
-        from agent.web_search_registry import _keyless_preference
+        from hermes_agent.agent.web_search_registry import _keyless_preference
         expected = next(
             v for v in _keyless_preference() if v in ("exa", "parallel")
         )

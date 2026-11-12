@@ -178,7 +178,7 @@ class TestCustomReasoningWireShape:
 
         Drives the main transport so the clamp is proven where production reads it.
         """
-        from agent.transports.chat_completions import ChatCompletionsTransport
+        from hermes_agent.agent.transports.chat_completions import ChatCompletionsTransport
 
         kwargs = ChatCompletionsTransport().build_kwargs(
             model="qwen/qwen3.6-27b", messages=[{"role": "user", "content": "ping"}], tools=None,
@@ -209,7 +209,7 @@ class TestCustomResponsesEffortVocabulary:
     """
 
     def test_named_relay_keeps_configured_max_where_chat_completions_does(self, custom_profile):
-        from agent.transports.codex import _resolve_reasoning
+        from hermes_agent.agent.transports.codex import _resolve_reasoning
 
         reasoning = {"enabled": True, "effort": "max"}
         _, top_level = custom_profile.build_api_kwargs_extras(
@@ -224,7 +224,7 @@ class TestCustomResponsesEffortVocabulary:
     def test_custom_entry_at_the_official_openai_origin_keeps_the_per_model_ladder(self):
         """api.openai.com's vocabulary is known per model; the custom declaration must not
         put ``max`` on the wire for a slug OpenAI rejects it on."""
-        from agent.transports.codex import _resolve_reasoning
+        from hermes_agent.agent.transports.codex import _resolve_reasoning
 
         effort, enabled = _resolve_reasoning(
             "gpt-5.2",

@@ -21,12 +21,12 @@ now charge it in the walk too — one policy per session shape, chosen by
 ``message_sanitization.stale_thinking_reaches_wire``.
 """
 
-from agent.context_compressor import (
+from hermes_agent.agent.context_compressor import (
     ContextCompressor,
     _estimate_msg_budget_tokens,
 )
-from agent.message_sanitization import stale_thinking_reaches_wire
-from agent.model_metadata import (
+from hermes_agent.agent.message_sanitization import stale_thinking_reaches_wire
+from hermes_agent.agent.model_metadata import (
     estimate_messages_tokens_rough,
 )
 
@@ -112,7 +112,7 @@ class TestEstimatorParity:
         route_aware = estimate_messages_tokens_rough(
             msgs, charge_stale_thinking=False
         )
-        from agent.context_compressor import _last_assistant_index
+        from hermes_agent.agent.context_compressor import _last_assistant_index
 
         newest = _last_assistant_index(msgs)
         walk = sum(
@@ -146,7 +146,7 @@ class TestEstimatorParity:
         charge policy directly — for each route, the walk's per-message sum
         must land in the same size class as that route's trigger estimate."""
         msgs = _reasoning_heavy_session()
-        from agent.context_compressor import _last_assistant_index
+        from hermes_agent.agent.context_compressor import _last_assistant_index
 
         cc_echo = ContextCompressor(
             model="deepseek-reasoner",

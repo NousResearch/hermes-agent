@@ -1,4 +1,4 @@
-"""Tests for agent.models_dev — models.dev registry integration."""
+"""Tests for hermes_agent.agent.models_dev — models.dev registry integration."""
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -6,7 +6,7 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from agent.models_dev import (
+from hermes_agent.agent.models_dev import (
     PROVIDER_TO_MODELS_DEV,
     _extract_context,
     _default_model_override,
@@ -115,7 +115,7 @@ class TestExtractContext:
 
 
 class TestLookupModelsDevContext:
-    @patch("agent.models_dev.fetch_models_dev")
+    @patch("hermes_agent.agent.models_dev.fetch_models_dev")
     def test_exact_match(self, mock_fetch):
         mock_fetch.return_value = SAMPLE_REGISTRY
         assert lookup_models_dev_context("anthropic", "claude-opus-4-6") == 1000000
@@ -125,7 +125,7 @@ class TestLookupModelsDevContext:
 
 
 
-    @patch("agent.models_dev.fetch_models_dev")
+    @patch("hermes_agent.agent.models_dev.fetch_models_dev")
     def test_zero_context_filtered(self, mock_fetch):
         mock_fetch.return_value = SAMPLE_REGISTRY
         # audio-only is not a mapped provider, but test the filtering directly
@@ -137,7 +137,7 @@ class TestLookupModelsDevContext:
 class TestFetchModelsDev:
     @pytest.fixture(autouse=True)
     def _reset_fetch_state(self):
-        import agent.models_dev as md
+        import hermes_agent.agent.models_dev as md
 
         md._models_dev_cache = {}
         md._models_dev_cache_time = 0
@@ -163,10 +163,10 @@ class TestFetchModelsDev:
 
 
 
-    @patch("agent.models_dev.requests.get")
+    @patch("hermes_agent.agent.models_dev.requests.get")
     def test_stale_disk_cache_returns_without_foreground_network(self, mock_get):
         """#35838: stale disk cache should not wait on models.dev timeout."""
-        import agent.models_dev as md
+        import hermes_agent.agent.models_dev as md
         md._models_dev_cache = {}
         md._models_dev_cache_time = 0
 
@@ -183,9 +183,9 @@ class TestFetchModelsDev:
 
 
 
-    @patch("agent.models_dev.requests.get")
+    @patch("hermes_agent.agent.models_dev.requests.get")
     def test_stale_cache_failure_enters_backoff_and_suppresses_retry(self, mock_get):
-        import agent.models_dev as md
+        import hermes_agent.agent.models_dev as md
 
         mock_get.side_effect = OSError("models.dev unreachable")
         md._models_dev_cache = SAMPLE_REGISTRY
@@ -219,10 +219,10 @@ class TestFetchModelsDev:
         assert not md._models_dev_refresh_in_flight
         mock_get.assert_called_once()
 
-    @patch("agent.models_dev.requests.get")
+    @patch("hermes_agent.agent.models_dev.requests.get")
     def test_background_refresh_success_commits_registry(self, mock_get):
         """The bg worker must save disk + swap mem cache + clear backoff."""
-        import agent.models_dev as md
+        import hermes_agent.agent.models_dev as md
 
         response = self._mock_response(SAMPLE_REGISTRY, etag='"abc123"')
         mock_get.return_value = response
@@ -248,9 +248,9 @@ class TestFetchModelsDev:
         assert not md._models_dev_refresh_in_flight
 
 
-    @patch("agent.models_dev.requests.get")
+    @patch("hermes_agent.agent.models_dev.requests.get")
     def test_concurrent_refreshes_share_one_network_request(self, mock_get):
-        import agent.models_dev as md
+        import hermes_agent.agent.models_dev as md
 
         request_started = threading.Event()
         release_request = threading.Event()
@@ -275,9 +275,9 @@ class TestFetchModelsDev:
         assert results == [SAMPLE_REGISTRY] * 6
         mock_get.assert_called_once()
 
-    @patch("agent.models_dev.requests.get")
+    @patch("hermes_agent.agent.models_dev.requests.get")
     def test_force_refresh_bypasses_failure_backoff(self, mock_get):
-        import agent.models_dev as md
+        import hermes_agent.agent.models_dev as md
 
         response = self._mock_response(SAMPLE_REGISTRY)
         mock_get.side_effect = [OSError("models.dev unreachable"), response]
@@ -307,11 +307,11 @@ class TestFetchModelsDev:
         ],
         ids=["fresh-memory", "stale-memory", "missing"],
     )
-    @patch("agent.models_dev.requests.get")
+    @patch("hermes_agent.agent.models_dev.requests.get")
     def test_network_disabled_never_fetches(
         self, mock_get, cache, cache_time, disk_data, expected
     ):
-        import agent.models_dev as md
+        import hermes_agent.agent.models_dev as md
 
         md._models_dev_cache = cache
         md._models_dev_cache_time = cache_time(md)
@@ -337,7 +337,7 @@ class TestETagConditionalGet:
 
     @pytest.fixture(autouse=True)
     def _reset_fetch_state(self):
-        import agent.models_dev as md
+        import hermes_agent.agent.models_dev as md
         md._models_dev_cache = {}
         md._models_dev_cache_time = 0
         md._models_dev_retry_after = 0
@@ -348,10 +348,10 @@ class TestETagConditionalGet:
         md._models_dev_retry_after = 0
         md._models_dev_refresh_in_flight = False
 
-    @patch("agent.models_dev.requests.get")
+    @patch("hermes_agent.agent.models_dev.requests.get")
     def test_etag_sent_when_cached(self, mock_get):
         """If-None-Match header is sent when a cached ETag exists."""
-        import agent.models_dev as md
+        import hermes_agent.agent.models_dev as md
 
         response = MagicMock()
         response.status_code = 200
@@ -376,10 +376,10 @@ class TestETagConditionalGet:
         headers = call_kwargs.kwargs.get("headers", {})
         assert headers.get("If-None-Match") == '"v1"'
 
-    @patch("agent.models_dev.requests.get")
+    @patch("hermes_agent.agent.models_dev.requests.get")
     def test_304_reconfirms_cache_freshness(self, mock_get):
         """A 304 Not Modified re-confirms the existing cache without download."""
-        import agent.models_dev as md
+        import hermes_agent.agent.models_dev as md
 
         response = MagicMock()
         response.status_code = 304
@@ -405,10 +405,10 @@ class TestETagConditionalGet:
         # response.json() was never called — no body to parse
         response.json.assert_not_called()
 
-    @patch("agent.models_dev.requests.get")
+    @patch("hermes_agent.agent.models_dev.requests.get")
     def test_foreground_304_returns_existing_cache(self, mock_get):
         """Foreground fetch with 304 returns the existing cache."""
-        import agent.models_dev as md
+        import hermes_agent.agent.models_dev as md
 
         response = MagicMock()
         response.status_code = 304
@@ -428,10 +428,10 @@ class TestETagConditionalGet:
         assert md._models_dev_cache_time > 0
 
 
-    @patch("agent.models_dev.requests.get")
+    @patch("hermes_agent.agent.models_dev.requests.get")
     def test_no_etag_header_sent_without_cached_etag(self, mock_get):
         """No If-None-Match header when no cached ETag exists."""
-        import agent.models_dev as md
+        import hermes_agent.agent.models_dev as md
 
         response = MagicMock()
         response.status_code = 200
@@ -475,7 +475,7 @@ class TestCorruptCacheRejection:
         """Invalid JSON in a REAL cache file is rejected with a warning."""
         import logging
 
-        import agent.models_dev as md
+        import hermes_agent.agent.models_dev as md
 
         cache = tmp_path / "models_dev_cache.json"
         cache.write_text("not json{{{", encoding="utf-8")
@@ -491,7 +491,7 @@ class TestCorruptCacheRejection:
         """A REAL cache file containing {} is rejected with a warning."""
         import logging
 
-        import agent.models_dev as md
+        import hermes_agent.agent.models_dev as md
 
         cache = tmp_path / "models_dev_cache.json"
         cache.write_text("{}", encoding="utf-8")
@@ -510,7 +510,7 @@ class TestCorruptCacheRejection:
         conditional GET draws a 304 against nothing and the process serves
         {} forever. Clearing the sidecar forces an unconditional refetch.
         """
-        import agent.models_dev as md
+        import hermes_agent.agent.models_dev as md
 
         cache = tmp_path / "models_dev_cache.json"
         etag = tmp_path / "models_dev_cache.etag"
@@ -536,7 +536,7 @@ class TestCorruptCacheRejection:
         empty-registry loop. The header is only sent when _models_dev_cache
         is populated.
         """
-        import agent.models_dev as md
+        import hermes_agent.agent.models_dev as md
 
         captured: dict = {}
 
@@ -560,7 +560,7 @@ class TestCorruptCacheRejection:
     def test_304_with_empty_cache_arms_backoff_and_clears_etag(self, tmp_path):
         """Defense in depth: a 304 landing on an empty registry must not
         mark {} as fresh — it clears the sidecar and arms the backoff."""
-        import agent.models_dev as md
+        import hermes_agent.agent.models_dev as md
 
         etag = tmp_path / "models_dev_cache.etag"
         etag.write_text("stale", encoding="utf-8")
@@ -586,7 +586,7 @@ class TestMirrorUrlOverride:
 
     @pytest.fixture(autouse=True)
     def _reset_fetch_state(self):
-        import agent.models_dev as md
+        import hermes_agent.agent.models_dev as md
         md._models_dev_cache = {}
         md._models_dev_cache_time = 0
         md._models_dev_retry_after = 0
@@ -597,10 +597,10 @@ class TestMirrorUrlOverride:
         md._models_dev_retry_after = 0
         md._models_dev_refresh_in_flight = False
 
-    @patch("agent.models_dev.requests.get")
+    @patch("hermes_agent.agent.models_dev.requests.get")
     def test_mirror_url_used_when_configured(self, mock_get):
         """When config has models_dev.url, requests.get hits that URL."""
-        import agent.models_dev as md
+        import hermes_agent.agent.models_dev as md
 
         response = MagicMock()
         response.status_code = 200
@@ -623,10 +623,10 @@ class TestMirrorUrlOverride:
         assert "mirror.example.com" in call_args.args[0]
 
 
-    @patch("agent.models_dev.requests.get")
+    @patch("hermes_agent.agent.models_dev.requests.get")
     def test_empty_url_falls_back_to_default(self, mock_get):
         """An empty string URL in config falls back to the default."""
-        import agent.models_dev as md
+        import hermes_agent.agent.models_dev as md
 
         response = MagicMock()
         response.status_code = 200
@@ -657,27 +657,27 @@ class TestMirrorUrlOverride:
 class TestNoNetworkOnHotPaths:
     """Query functions must default to allow_network=False on hot paths."""
 
-    @patch("agent.models_dev.requests.get")
+    @patch("hermes_agent.agent.models_dev.requests.get")
     def test_get_model_capabilities_default_no_network(self, mock_get):
         """get_model_capabilities defaults to allow_network=False."""
-        with patch("agent.models_dev.fetch_models_dev") as mock_fetch:
+        with patch("hermes_agent.agent.models_dev.fetch_models_dev") as mock_fetch:
             mock_fetch.return_value = CAPS_REGISTRY
             get_model_capabilities("anthropic", "claude-sonnet-4")
         # fetch_models_dev was called with allow_network=False
         mock_fetch.assert_called_once_with(allow_network=False)
 
-    @patch("agent.models_dev.requests.get")
+    @patch("hermes_agent.agent.models_dev.requests.get")
     def test_get_model_info_default_no_network(self, mock_get):
         """get_model_info defaults to allow_network=False."""
-        with patch("agent.models_dev.fetch_models_dev") as mock_fetch:
+        with patch("hermes_agent.agent.models_dev.fetch_models_dev") as mock_fetch:
             mock_fetch.return_value = SAMPLE_REGISTRY
             get_model_info("anthropic", "claude-opus-4-6")
         mock_fetch.assert_called_once_with(allow_network=False)
 
-    @patch("agent.models_dev.requests.get")
+    @patch("hermes_agent.agent.models_dev.requests.get")
     def test_lookup_models_dev_context_default_no_network(self, mock_get):
         """lookup_models_dev_context defaults to allow_network=False."""
-        with patch("agent.models_dev.fetch_models_dev") as mock_fetch:
+        with patch("hermes_agent.agent.models_dev.fetch_models_dev") as mock_fetch:
             mock_fetch.return_value = SAMPLE_REGISTRY
             lookup_models_dev_context("anthropic", "claude-opus-4-6")
         mock_fetch.assert_called_once_with(allow_network=False)
@@ -733,7 +733,7 @@ class TestGetModelCapabilities:
 
     def test_vision_from_attachment_flag(self):
         """Models with attachment=True and no modalities should report supports_vision=True."""
-        with patch("agent.models_dev.fetch_models_dev", return_value=CAPS_REGISTRY):
+        with patch("hermes_agent.agent.models_dev.fetch_models_dev", return_value=CAPS_REGISTRY):
             caps = get_model_capabilities("anthropic", "claude-sonnet-4")
         assert caps is not None
         assert caps.supports_vision is True
@@ -752,7 +752,7 @@ class TestGetModelCapabilities:
                 },
             }},
         }
-        with patch("agent.models_dev.fetch_models_dev", return_value=registry):
+        with patch("hermes_agent.agent.models_dev.fetch_models_dev", return_value=registry):
             caps = get_model_capabilities("gemini", "weird-model")
         assert caps is not None
         assert caps.supports_vision is False
@@ -763,8 +763,8 @@ class TestGetModelCapabilities:
         """A custom provider's ``model_overrides`` entry that only corrects ``context_window`` must not
         synthesize an output cap or capability flags from the unknown-model template (#112649)."""
         overrides = {"925llm": {"deepseek-v4.1-flash": {"context_window": 1_000_000}}}
-        with patch("agent.models_dev._load_model_overrides", return_value=overrides), \
-             patch("agent.models_dev.fetch_models_dev", return_value={}):
+        with patch("hermes_agent.agent.models_dev._load_model_overrides", return_value=overrides), \
+             patch("hermes_agent.agent.models_dev.fetch_models_dev", return_value={}):
             caps = get_model_capabilities("925llm", "deepseek-v4.1-flash")
             info = get_model_info("925llm", "deepseek-v4.1-flash")
 
@@ -789,7 +789,7 @@ class TestCatalogProviderAlias:
                     return default
                 node = node[key]
             return node
-        return patch("agent.models_dev._cfg_get", side_effect=_cfg_get)
+        return patch("hermes_agent.agent.models_dev._cfg_get", side_effect=_cfg_get)
 
     def test_alias_reaches_builtin_and_catalog_metadata(self):
         config = {"providers": {"925llm": {"api": "http://gw.internal/v1", "catalog_provider": "deepseek"}}}
@@ -797,7 +797,7 @@ class TestCatalogProviderAlias:
             "deepseek-chat": {"id": "deepseek-chat", "limit": {"context": 128000, "output": 8000},
                               "tool_call": True, "reasoning": False,
                               "modalities": {"input": ["text"], "output": ["text"]}}}}}
-        with self._cfg(config), patch("agent.models_dev.fetch_models_dev", return_value=registry):
+        with self._cfg(config), patch("hermes_agent.agent.models_dev.fetch_models_dev", return_value=registry):
             builtin = get_model_capabilities("925llm", "deepseek-v4.1-flash")
             prefixed = get_model_capabilities("custom:925llm", "deepseek-v4.1-flash")
             catalog = get_model_capabilities("925llm", "deepseek-chat")
@@ -816,13 +816,13 @@ class TestCatalogProviderAlias:
         configured slug instead of leaking the typo as a vendor id."""
         import logging
 
-        import agent.models_dev as md
+        import hermes_agent.agent.models_dev as md
 
         config = {"providers": {"925llm": {"api": "http://gw.internal/v1", "catalog_provider": "deepsek"}},
                   "model_overrides": {"925llm": {"deepseek-v4.1-flash": {"context_window": 1000000}}}}
         md._UNKNOWN_CATALOG_PROVIDER_WARNED.clear()
-        with self._cfg(config), patch("agent.models_dev.fetch_models_dev", return_value={"deepseek": {"models": {}}}), \
-                caplog.at_level(logging.WARNING, logger="agent.models_dev"):
+        with self._cfg(config), patch("hermes_agent.agent.models_dev.fetch_models_dev", return_value={"deepseek": {"models": {}}}), \
+                caplog.at_level(logging.WARNING, logger="hermes_agent.agent.models_dev"):
             info = get_model_info("925llm", "deepseek-v4.1-flash")
             assert get_model_capabilities("925llm", "deepseek-v4.1-flash").supports_vision is None
             get_model_info("925llm", "deepseek-v4.1-flash")
@@ -835,7 +835,7 @@ class TestCatalogProviderAlias:
         """Control: no alias → no vendor inheritance, and a legacy ``custom_providers`` row can alias too."""
         config = {"providers": {"925llm": {"api": "http://gw.internal/v1"}},
                   "custom_providers": [{"name": "legacy-gw", "base_url": "http://x/v1", "catalog_provider": "deepseek"}]}
-        with self._cfg(config), patch("agent.models_dev.fetch_models_dev", return_value={}):
+        with self._cfg(config), patch("hermes_agent.agent.models_dev.fetch_models_dev", return_value={}):
             assert get_model_capabilities("925llm", "deepseek-v4.1-flash") is None
             legacy = get_model_capabilities("legacy-gw", "deepseek-v4.1-flash")
         assert legacy is not None and legacy.supports_vision is True
@@ -851,7 +851,7 @@ class TestModelOverrides:
 
     def _setup_overrides(self, overrides_dict):
         """Patch _load_model_overrides to return the given dict."""
-        import agent.models_dev as md
+        import hermes_agent.agent.models_dev as md
         return patch.object(md, "_load_model_overrides", return_value=overrides_dict)
 
     # --- override resolution ---
@@ -1015,7 +1015,7 @@ class TestModelOverrides:
         """Garbage values are rejected with a one-shot warning, not silence."""
         import logging
 
-        import agent.models_dev as md
+        import hermes_agent.agent.models_dev as md
         md._OVERRIDE_WARNED_KEYS.clear()
         overrides = {
             "upstage": {
@@ -1043,7 +1043,7 @@ class TestModelOverrides:
             },
         }
         with self._setup_overrides(overrides), \
-             patch("agent.models_dev.fetch_models_dev", return_value={}):
+             patch("hermes_agent.agent.models_dev.fetch_models_dev", return_value={}):
             caps = get_model_capabilities("custom:my-vllm", "my-llava-model")
         assert caps is not None
         assert caps.context_window == 8192
@@ -1068,7 +1068,7 @@ class TestModelOverrides:
             },
         }
         with self._setup_overrides(overrides), \
-             patch("agent.models_dev.fetch_models_dev", return_value={}):
+             patch("hermes_agent.agent.models_dev.fetch_models_dev", return_value={}):
             unknown = get_model_capabilities("custom-gateway", "upstream-model")
             explicit_false = get_model_capabilities("custom-gateway", "text-model")
 
@@ -1090,7 +1090,7 @@ class TestModelOverrides:
             },
         }
         with self._setup_overrides(overrides), \
-             patch("agent.models_dev.fetch_models_dev", return_value=CAPS_REGISTRY):
+             patch("hermes_agent.agent.models_dev.fetch_models_dev", return_value=CAPS_REGISTRY):
             caps = get_model_capabilities("anthropic", "claude-sonnet-4")
         assert caps is not None
         # Override wins
@@ -1107,14 +1107,14 @@ class TestModelOverrides:
             },
         }
         with self._setup_overrides(overrides), \
-             patch("agent.models_dev.fetch_models_dev", return_value=CAPS_REGISTRY):
+             patch("hermes_agent.agent.models_dev.fetch_models_dev", return_value=CAPS_REGISTRY):
             caps = get_model_capabilities("anthropic", "claude-sonnet-4")
         assert caps is not None
         assert caps.context_window != 1000
 
     def test_caps_no_override_no_catalog_returns_none(self):
         with self._setup_overrides({}), \
-             patch("agent.models_dev.fetch_models_dev", return_value={}):
+             patch("hermes_agent.agent.models_dev.fetch_models_dev", return_value={}):
             caps = get_model_capabilities("anthropic", "unknown-model")
         assert caps is None
 
@@ -1129,7 +1129,7 @@ class TestModelOverrides:
             },
         }
         with self._setup_overrides(overrides), \
-             patch("agent.models_dev.fetch_models_dev", return_value={}):
+             patch("hermes_agent.agent.models_dev.fetch_models_dev", return_value={}):
             caps = get_model_capabilities("custom:my-vllm", "some-new-model")
         assert caps is not None
         assert caps.context_window == 32768
@@ -1144,7 +1144,7 @@ class TestModelOverrides:
             },
         }
         with self._setup_overrides(overrides), \
-             patch("agent.models_dev.fetch_models_dev", return_value=SAMPLE_REGISTRY):
+             patch("hermes_agent.agent.models_dev.fetch_models_dev", return_value=SAMPLE_REGISTRY):
             ctx = lookup_models_dev_context("anthropic", "claude-opus-4-6")
         assert ctx == 500000
 
@@ -1155,7 +1155,7 @@ class TestModelOverrides:
             },
         }
         with self._setup_overrides(overrides), \
-             patch("agent.models_dev.fetch_models_dev", return_value={}):
+             patch("hermes_agent.agent.models_dev.fetch_models_dev", return_value={}):
             ctx = lookup_models_dev_context("upstage", "solar-pro4")
         assert ctx == 524288
 
@@ -1167,7 +1167,7 @@ class TestModelOverrides:
             },
         }
         with self._setup_overrides(overrides), \
-             patch("agent.models_dev.fetch_models_dev", return_value=SAMPLE_REGISTRY):
+             patch("hermes_agent.agent.models_dev.fetch_models_dev", return_value=SAMPLE_REGISTRY):
             ctx = lookup_models_dev_context("anthropic", "model-not-in-catalog")
         assert ctx == 77777
 
@@ -1179,7 +1179,7 @@ class TestModelOverrides:
             },
         }
         with self._setup_overrides(overrides), \
-             patch("agent.models_dev.fetch_models_dev", return_value=SAMPLE_REGISTRY):
+             patch("hermes_agent.agent.models_dev.fetch_models_dev", return_value=SAMPLE_REGISTRY):
             ctx = lookup_models_dev_context("anthropic", "claude-opus-4-6")
         assert ctx == 1000000  # catalog value, not the _default
 
@@ -1203,7 +1203,7 @@ class TestModelOverrides:
             },
         }
         with self._setup_overrides(overrides), \
-             patch("agent.models_dev.fetch_models_dev", return_value={}):
+             patch("hermes_agent.agent.models_dev.fetch_models_dev", return_value={}):
             info = get_model_info("custom:my-vllm", "my-llava-model")
             del overrides["custom:my-vllm"]["my-llava-model"]["max_output_tokens"]
             uncapped_info = get_model_info("custom:my-vllm", "my-llava-model")
@@ -1229,7 +1229,7 @@ class TestModelOverrides:
             },
         }
         with self._setup_overrides(overrides), \
-             patch("agent.models_dev.fetch_models_dev", return_value=SAMPLE_REGISTRY):
+             patch("hermes_agent.agent.models_dev.fetch_models_dev", return_value=SAMPLE_REGISTRY):
             info = get_model_info("anthropic", "claude-sonnet-4-6")
         assert info is not None
         # Override wins for the field it sets
@@ -1247,7 +1247,7 @@ class TestModelOverrides:
             },
         }
         with self._setup_overrides(overrides), \
-             patch("agent.models_dev.fetch_models_dev", return_value=SAMPLE_REGISTRY):
+             patch("hermes_agent.agent.models_dev.fetch_models_dev", return_value=SAMPLE_REGISTRY):
             info = get_model_info("anthropic", "claude-sonnet-4-6")
         assert info is not None
         assert info.context_window == 1000000
@@ -1286,7 +1286,7 @@ class TestModelOverrides:
             raw_cache.clear()
         importlib.reload  # no-op guard: modules stay loaded, caches cleared
 
-        with patch("agent.models_dev.fetch_models_dev", return_value={}):
+        with patch("hermes_agent.agent.models_dev.fetch_models_dev", return_value={}):
             ctx = lookup_models_dev_context("upstage", "solar-pro4")
         assert ctx == 524288
 
@@ -1311,7 +1311,7 @@ class TestModelOverrides:
             },
         }
         with self._setup_overrides(overrides), \
-             patch("agent.models_dev.fetch_models_dev", return_value=registry):
+             patch("hermes_agent.agent.models_dev.fetch_models_dev", return_value=registry):
             caps = get_model_capabilities("ollama-cloud", "kimi-k2.6")
         assert caps is not None
         assert caps.context_window == 262144  # catalog, not the _default
@@ -1327,7 +1327,7 @@ class TestModelOverrides:
             },
         }
         with self._setup_overrides(overrides), \
-             patch("agent.models_dev.fetch_models_dev", return_value={}):
+             patch("hermes_agent.agent.models_dev.fetch_models_dev", return_value={}):
             info = get_model_info("custom:my-vllm", "my-model")
         assert info is not None
         assert info.context_window == 200000
@@ -1346,7 +1346,7 @@ class TestModelOverrides:
             },
         }
         with self._setup_overrides(overrides), \
-             patch("agent.models_dev.fetch_models_dev", return_value={}):
+             patch("hermes_agent.agent.models_dev.fetch_models_dev", return_value={}):
             info = get_model_info("custom:my-vllm", "my-model")
         assert info is not None
         assert "image" in info.input_modalities
@@ -1382,7 +1382,7 @@ class TestOpenRouterRoutingVariantCatalogLookup:
 
     @pytest.mark.parametrize("suffix", ["nitro", "floor", "exacto", "online"])
     def test_routed_id_matches_base_across_consumers(self, suffix):
-        with patch("agent.models_dev.fetch_models_dev", return_value=self.REGISTRY):
+        with patch("hermes_agent.agent.models_dev.fetch_models_dev", return_value=self.REGISTRY):
             routed = f"z-ai/glm-5.3-flash:{suffix}"
             assert lookup_models_dev_context("openrouter", routed) == 1310720
             base_caps = get_model_capabilities("openrouter", "z-ai/glm-5.3-flash")
@@ -1394,7 +1394,7 @@ class TestOpenRouterRoutingVariantCatalogLookup:
             assert lookup_models_dev_context("anthropic", f"claude-x:{suffix}") is None
 
     def test_real_sku_suffix_is_not_stripped(self):
-        with patch("agent.models_dev.fetch_models_dev", return_value=self.REGISTRY):
+        with patch("hermes_agent.agent.models_dev.fetch_models_dev", return_value=self.REGISTRY):
             assert lookup_models_dev_context("openrouter", "z-ai/glm-5.2:free") == 256000
             assert lookup_models_dev_context("openrouter", "z-ai/glm-5.3-flash:free") is None
 
@@ -1405,7 +1405,7 @@ class TestOpencodeRelayVisionMarker:
 
     @pytest.mark.parametrize("provider", ["opencode-go", "opencode-zen", "opencode-go-bridge"])
     def test_vision_marker_fills_the_catalog_gap_for_opencode_family(self, provider):
-        with patch("agent.models_dev.fetch_models_dev", return_value={}):
+        with patch("hermes_agent.agent.models_dev.fetch_models_dev", return_value={}):
             caps = get_model_capabilities(provider, "deepseek-v4-flash-vision-exp")
         assert caps is not None and caps.supports_vision is True
         assert caps.supports_reasoning is None  # only vision is claimed
@@ -1414,9 +1414,9 @@ class TestOpencodeRelayVisionMarker:
         registry = {"opencode-go": {"id": "opencode-go", "models": {
             "deepseek-v4-flash-vision-exp": {"id": "deepseek-v4-flash-vision-exp", "modalities": {"input": ["text"]},
                                              "limit": {"context": 500000}}}}}
-        with patch("agent.models_dev.fetch_models_dev", return_value={}):
+        with patch("hermes_agent.agent.models_dev.fetch_models_dev", return_value={}):
             assert get_model_capabilities("opencode-go", "deepseek-v4-flash") is None
             assert get_model_capabilities("deepseek", "some-vision-model") is None
-        with patch("agent.models_dev.fetch_models_dev", return_value=registry):
+        with patch("hermes_agent.agent.models_dev.fetch_models_dev", return_value=registry):
             caps = get_model_capabilities("opencode-go", "deepseek-v4-flash-vision-exp")
         assert caps.supports_vision is False and caps.context_window == 500000

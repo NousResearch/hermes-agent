@@ -19,7 +19,7 @@ async def test_live_rows_carry_picker_fields_and_filter_by_workspace(tmp_path, m
         db.append_message(target, 'assistant', 'in the parser')
         db.append_message(target, 'assistant', '', tool_calls=[{'id': 'c1', 'type': 'function',
                           'function': {'name': 'read_file', 'arguments': '{}'}}])
-        from agent.context_compressor import SUMMARY_PREFIX
+        from hermes_agent.agent.context_compressor import SUMMARY_PREFIX
         db.append_message(target, 'assistant', f'{SUMMARY_PREFIX}\n## Goal\nnot a reply')
 
         async def listing(**params):

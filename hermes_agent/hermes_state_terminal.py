@@ -32,7 +32,7 @@ def compact_result(result, *, user_message=None):
         # is the exception: its replacement snapshot is the only immutable record of the
         # rewritten prefix for this turn. A later live transcript may include a successor.
         if not value.get('_compressed') and not value.get('_messages_are_turn_suffix'):
-            from agent.turn_context import reanchor_current_turn_user_idx
+            from hermes_agent.agent.turn_context import reanchor_current_turn_user_idx
             anchor = value.get('current_turn_user_idx')
             if not (type(anchor) is int and 0 <= anchor < len(messages)
                     and isinstance(messages[anchor], dict) and messages[anchor].get('role') == 'user'):

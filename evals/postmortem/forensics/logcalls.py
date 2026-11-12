@@ -2,7 +2,7 @@
 
 Hermes logs one line per API call::
 
-    ... INFO [<session_id>] agent.conversation_loop: API call #N: model=... in=<prompt> out=<out> total=... latency=..s cache=<hit>/<total> (pct) [write=<n>] [id=<response id>] [upstream=<name>]
+    ... INFO [<session_id>] hermes_agent.agent.conversation_loop: API call #N: model=... in=<prompt> out=<out> total=... latency=..s cache=<hit>/<total> (pct) [write=<n>] [id=<response id>] [upstream=<name>]
 
 Given the rotated logs, this reproduces: prompt-size distribution, cache hit-ratio buckets, the
 "plateau" signature of a broken cache prefix (hit count stuck at the previous call's breakpoint while

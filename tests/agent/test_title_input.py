@@ -6,7 +6,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from agent.turn_context import _maybe_title_session_at_turn_start
+from hermes_agent.agent.turn_context import _maybe_title_session_at_turn_start
 
 
 @pytest.mark.parametrize("override, content, expected", [
@@ -24,7 +24,7 @@ def test_title_input_override_is_optional_and_history_is_unchanged(monkeypatch, 
     messages = [{"role": "user", "content": content}]
     original = deepcopy(messages)
     title = Mock()
-    monkeypatch.setattr("agent.title_generator.maybe_auto_title", title)
+    monkeypatch.setattr("hermes_agent.agent.title_generator.maybe_auto_title", title)
 
     _maybe_title_session_at_turn_start(agent, messages, override)
 
@@ -43,7 +43,7 @@ def test_title_override_preserves_upstream_paste_preview(monkeypatch, override, 
                  "display_metadata": {"title_preview": "pasted topic"}}]
     original = deepcopy(messages)
     title = Mock()
-    monkeypatch.setattr("agent.title_generator.maybe_auto_title", title)
+    monkeypatch.setattr("hermes_agent.agent.title_generator.maybe_auto_title", title)
     _maybe_title_session_at_turn_start(agent, messages, override)
     assert title.call_args.args[2] == expected
     assert title.call_args.kwargs["title_preview"] == "pasted topic"
@@ -55,7 +55,7 @@ def test_title_override_preserves_upstream_paste_preview(monkeypatch, override, 
 def test_title_override_preserves_existing_control_message_eligibility(monkeypatch, text, titleable):
     agent = SimpleNamespace(_session_db=Mock(), session_id="test", _session_db_created=True)
     start = Mock()
-    monkeypatch.setattr("agent.memory_provider.spawn_context_thread", start)
+    monkeypatch.setattr("hermes_agent.agent.memory_provider.spawn_context_thread", start)
 
     _maybe_title_session_at_turn_start(agent, [{"role": "user", "content": "injected context"}], text)
 
@@ -66,7 +66,7 @@ def test_title_override_preserves_existing_control_message_eligibility(monkeypat
 def test_title_override_cannot_enable_titling_for_machine_runs(monkeypatch, platform):
     agent = SimpleNamespace(_session_db=Mock(), session_id="test", platform=platform)
     title = Mock()
-    monkeypatch.setattr("agent.title_generator.maybe_auto_title", title)
+    monkeypatch.setattr("hermes_agent.agent.title_generator.maybe_auto_title", title)
 
     _maybe_title_session_at_turn_start(agent, [], "Actual question")
 

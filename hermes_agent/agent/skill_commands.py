@@ -9,9 +9,9 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
 from hermes_constants import display_hermes_home
-from agent.prompt_cache_boundary import register_stable_prefix
-from agent.skill_preprocessing import load_skills_config as _load_skills_config, preprocess_skill_content
-from agent.skill_utils import AMBIGUOUS_SKILL_PREFIX
+from hermes_agent.agent.prompt_cache_boundary import register_stable_prefix
+from hermes_agent.agent.skill_preprocessing import load_skills_config as _load_skills_config, preprocess_skill_content
+from hermes_agent.agent.skill_utils import AMBIGUOUS_SKILL_PREFIX
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +92,7 @@ def slugify_skill_name(name: str) -> str:
 def append_user_instruction(parts: list, instruction: str) -> str:
     """Append the instruction line to ``parts``; return the stable prefix, which
     ends exactly at the instruction marker so (registered with
-    ``agent.prompt_cache_boundary``) the cache planner can break on the scaffold.
+    ``hermes_agent.agent.prompt_cache_boundary``) the cache planner can break on the scaffold.
     Single construction site guarantees the prefix is a byte-prefix of the message.
 
     Shared by every builder that ends a static skill scaffold with the caller-supplied volatile instruction
@@ -245,14 +245,14 @@ def _resolve_skill_commands_project() -> Optional[str]:
     """The project root the scan's project skills resolve from (None outside a repo). One multi-session
     host serves sessions in different repos; without this tag the first session's project skills stayed
     published for every other session's ``get_skill_commands`` lookup (#114359)."""
-    from agent.skill_utils import find_project_root
+    from hermes_agent.agent.skill_utils import find_project_root
     root = find_project_root()
     return str(root) if root is not None else None
 
 
 def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tuple[dict[str, Any], Path | None, str] | None:
     """Load a skill by name/path and return (loaded_payload, skill_dir, display_name)."""
-    from agent.safe_worker_policy import safe_worker_enabled
+    from hermes_agent.agent.safe_worker_policy import safe_worker_enabled
 
     if safe_worker_enabled():
         return None
@@ -261,7 +261,7 @@ def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tu
         return None
     try:
         from hermes_agent.tools.skills_tool import _skills_dir, skill_view
-        from agent.skill_utils import normalize_skill_lookup_name
+        from hermes_agent.agent.skill_utils import normalize_skill_lookup_name
         normalized = normalize_skill_lookup_name(raw_identifier)
         loaded_skill = json.loads(skill_view(normalized, task_id=task_id, preprocess=False))
     except Exception:
@@ -293,7 +293,7 @@ def _missing_skill_label(identifier: str) -> str:
     """Display form of an identifier that failed to load (failure path only: re-asks skill_view)."""
     try:
         from hermes_agent.tools.skills_tool import skill_view
-        from agent.skill_utils import normalize_skill_lookup_name
+        from hermes_agent.agent.skill_utils import normalize_skill_lookup_name
         payload = json.loads(skill_view(normalize_skill_lookup_name(identifier), preprocess=False))
     except Exception:
         return identifier
@@ -312,7 +312,7 @@ def _inject_skill_config(loaded_skill: dict[str, Any], parts: list[str]) -> None
     """Append a ``[Skill config: ...]`` block with resolved ``metadata.hermes.config``
     values so the agent needn't read config.yaml. Any failure leaves the message without it."""
     try:
-        from agent.skill_utils import extract_skill_config_vars, parse_frontmatter, resolve_skill_config_values
+        from hermes_agent.agent.skill_utils import extract_skill_config_vars, parse_frontmatter, resolve_skill_config_values
         raw_content = str(loaded_skill.get("raw_content") or loaded_skill.get("content") or "")
         frontmatter, _ = parse_frontmatter(raw_content)
         resolved = resolve_skill_config_values(extract_skill_config_vars(frontmatter))
@@ -518,7 +518,7 @@ def scan_skill_commands() -> dict[str, dict[str, Any]]:
     Builds a local map and publishes once at the end: writing straight into the
     global exposed partial results to overlapping scans, which then logged
     bogus "already claimed" collisions against their own incumbents."""
-    from agent.safe_worker_policy import safe_worker_enabled
+    from hermes_agent.agent.safe_worker_policy import safe_worker_enabled
 
     if safe_worker_enabled():
         return {}
@@ -593,7 +593,7 @@ def published_scopes_signature() -> tuple:
     an install in a session's repo B notifies viewers even when the gateway was launched in repo A.
     Only command maps/catalogs refetch; a conversation's stored system prompt is never rebuilt.
     """
-    from agent.runtime_cwd import reset_session_cwd, set_session_cwd
+    from hermes_agent.agent.runtime_cwd import reset_session_cwd, set_session_cwd
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     with _publish_lock:
         keys = list(_skill_commands_by_key)
@@ -634,7 +634,7 @@ def get_skill_commands() -> dict[str, dict[str, Any]]:
 
     See #14536, #88023, #114359, #104849.
     """
-    from agent.safe_worker_policy import safe_worker_enabled
+    from hermes_agent.agent.safe_worker_policy import safe_worker_enabled
 
     if safe_worker_enabled():
         return {}
@@ -678,7 +678,7 @@ def get_plugin_skill_commands() -> dict[str, dict[str, Any]]:
     Config disable lists (``skills.disabled``, ``plugins.disabled``) are applied on EVERY call, so a
     config-only disable takes effect without a rescan.
     """
-    from agent.skill_utils import get_disabled_skill_names
+    from hermes_agent.agent.skill_utils import get_disabled_skill_names
     from hermes_cli.plugins import discover_plugins, get_plugin_manager
     from hermes_cli.plugins_content import plugin_skill_owners
     from hermes_cli.plugins_discovery import _get_disabled_plugins
@@ -904,7 +904,7 @@ def build_stacked_skill_invocation_message(
 def _disabled_skill_names(platform: str | None = None) -> set:
     """Operator-disabled skill names (empty set when config is unreadable)."""
     try:
-        from agent.skill_utils import get_disabled_skill_names
+        from hermes_agent.agent.skill_utils import get_disabled_skill_names
         return get_disabled_skill_names(platform=platform)
     except Exception:
         return set()
@@ -964,7 +964,7 @@ def build_preloaded_skills_prompt(
     ``_load_skill_payload``, bypassing ``get_skill_commands()``'s scan-time disabled filter — mirrors the
     bundle-invocation gate (#59156).
     """
-    from agent.safe_worker_policy import safe_worker_enabled
+    from hermes_agent.agent.safe_worker_policy import safe_worker_enabled
 
     if safe_worker_enabled():
         return "", [], list(skill_identifiers)

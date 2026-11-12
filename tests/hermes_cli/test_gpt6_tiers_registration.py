@@ -10,13 +10,13 @@ Invariant tests only, no list snapshots. They pin what would silently regress:
    gpt-5.6 effort ladder (``max`` allowed).
 """
 
-from agent.auxiliary_client import _compression_threshold_for_model
-from agent.model_metadata import (
+from hermes_agent.agent.auxiliary_client import _compression_threshold_for_model
+from hermes_agent.agent.model_metadata import (
     _verified_codex_ctx_for_slug,
     is_codex_900k_base,
     strip_codex_context_variant_suffix,
 )
-from agent.reasoning_effort import CODEX_GPT56_EFFORTS, codex_supported_efforts
+from hermes_agent.agent.reasoning_effort import CODEX_GPT56_EFFORTS, codex_supported_efforts
 from hermes_cli.codex_models import _finalize_codex_models
 from hermes_cli.model_switch import _model_sort_key
 
@@ -44,7 +44,7 @@ def test_gpt6_tiers_share_the_codex_900k_contract_with_56():
 
 def test_gpt61_sol_takes_astra_ladder_without_astra_gating():
     """``none`` 400s on gpt-6.1-sol (live 2026-09-29), but it is not account-gated like Astra."""
-    from agent.reasoning_effort import CODEX_ASTRA_EFFORTS, is_astra_model
+    from hermes_agent.agent.reasoning_effort import CODEX_ASTRA_EFFORTS, is_astra_model
 
     for slug in ("gpt-6.1-sol", "openai/gpt-6.1-sol-pro", "gpt-6.1-sol-2026-09-29"):
         assert codex_supported_efforts(slug) == CODEX_ASTRA_EFFORTS, slug
@@ -69,8 +69,8 @@ def test_openrouter_omits_disable_the_openai_ladder_rejects(monkeypatch):
 
 
 def test_gpt61_sol_resolves_context_and_pricing_like_its_tier():
-    from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS, _CODEX_OAUTH_CONTEXT_FALLBACK
-    from agent.usage_pricing import _OFFICIAL_DOCS_PRICING
+    from hermes_agent.agent.model_metadata import DEFAULT_CONTEXT_LENGTHS, _CODEX_OAUTH_CONTEXT_FALLBACK
+    from hermes_agent.agent.usage_pricing import _OFFICIAL_DOCS_PRICING
 
     assert DEFAULT_CONTEXT_LENGTHS["gpt-6.1-sol"] == DEFAULT_CONTEXT_LENGTHS["gpt-6-sol"]
     assert _CODEX_OAUTH_CONTEXT_FALLBACK["gpt-6.1-sol"] == _CODEX_OAUTH_CONTEXT_FALLBACK["gpt-6-sol"]
@@ -80,8 +80,8 @@ def test_gpt61_sol_resolves_context_and_pricing_like_its_tier():
 
 
 def test_gpt61_sol_900k_is_opt_in_exact_and_billed_as_the_base():
-    from agent.model_metadata import _CODEX_OAUTH_STALE_ADVERTISED_CTX, is_codex_context_variant
-    from agent.usage_pricing import _OFFICIAL_DOCS_PRICING
+    from hermes_agent.agent.model_metadata import _CODEX_OAUTH_STALE_ADVERTISED_CTX, is_codex_context_variant
+    from hermes_agent.agent.usage_pricing import _OFFICIAL_DOCS_PRICING
 
     ids = _finalize_codex_models(["gpt-6.1-sol"])  # what live discovery hands the picker
     assert ids.index("gpt-6.1-sol-900k") == ids.index("gpt-6.1-sol") + 1

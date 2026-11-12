@@ -233,7 +233,7 @@ def test_a_finite_turn_answers_clarify_headless_at_once():
 
 
 def test_a_finite_managed_worker_answers_clarify_headless():
-    from agent.managed_worker import WorkerControls
+    from hermes_agent.agent.managed_worker import WorkerControls
     from hermes_agent.gateway.session_finite import finite_turn_scope
     controls = object.__new__(WorkerControls)
     controls._ask = lambda *a: pytest.fail("a finite viewer can never answer")

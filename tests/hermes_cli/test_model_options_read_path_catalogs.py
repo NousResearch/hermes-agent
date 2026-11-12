@@ -35,10 +35,10 @@ def _picker_env(monkeypatch, tmp_path, *, hung=None):
 
     monkeypatch.setattr(models_mod, "provider_model_ids", fake_provider_model_ids)
     monkeypatch.setattr(
-        "agent.models_dev.fetch_models_dev",
+        "hermes_agent.agent.models_dev.fetch_models_dev",
         lambda *a, **k: {_DEAD_PROVIDER: {"env": ["DEEPSEEK_API_KEY"], "name": "DeepSeek"}},
     )
-    monkeypatch.setattr("agent.models_dev.PROVIDER_TO_MODELS_DEV", {_DEAD_PROVIDER: _DEAD_PROVIDER})
+    monkeypatch.setattr("hermes_agent.agent.models_dev.PROVIDER_TO_MODELS_DEV", {_DEAD_PROVIDER: _DEAD_PROVIDER})
     monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
     return live_calls, release
 

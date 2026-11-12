@@ -1,4 +1,4 @@
-"""Tests for agent/deadline.py — the unified deadline layer (#85125).
+"""Tests for hermes_agent/agent/deadline.py — the unified deadline layer (#85125).
 
 Covers:
 * clamp_timeout normalization (None / non-positive / oversized / NaN / junk)
@@ -23,7 +23,7 @@ import time
 
 import pytest
 
-from agent.deadline import (
+from hermes_agent.agent.deadline import (
     MAX_SAFE_TIMEOUT_S,
     clamp_timeout,
     kill_process_tree,
@@ -92,8 +92,8 @@ class _FakeClock:
 @pytest.fixture
 def fake_clock(monkeypatch):
     clock = _FakeClock()
-    monkeypatch.setattr("agent.deadline.time.monotonic", clock.monotonic)
-    monkeypatch.setattr("agent.deadline.time.sleep", clock.sleep)
+    monkeypatch.setattr("hermes_agent.agent.deadline.time.monotonic", clock.monotonic)
+    monkeypatch.setattr("hermes_agent.agent.deadline.time.sleep", clock.sleep)
     return clock
 
 
@@ -126,7 +126,7 @@ class TestPollUntil:
 
 class TestResolveTimeout:
     def test_default_wins_when_nothing_configured(self, monkeypatch):
-        monkeypatch.setattr("agent.deadline._timeouts_section", dict)
+        monkeypatch.setattr("hermes_agent.agent.deadline._timeouts_section", dict)
         monkeypatch.delenv("HERMES_TEST_DEADLINE_X", raising=False)
         assert (
             resolve_timeout("a.b", default=42.0, env_var="HERMES_TEST_DEADLINE_X")
@@ -134,7 +134,7 @@ class TestResolveTimeout:
         )
 
     def test_env_var_beats_default(self, monkeypatch):
-        monkeypatch.setattr("agent.deadline._timeouts_section", dict)
+        monkeypatch.setattr("hermes_agent.agent.deadline._timeouts_section", dict)
         monkeypatch.setenv("HERMES_TEST_DEADLINE_X", "17.5")
         assert (
             resolve_timeout("a.b", default=42.0, env_var="HERMES_TEST_DEADLINE_X")
@@ -143,7 +143,7 @@ class TestResolveTimeout:
 
     def test_config_beats_env_var(self, monkeypatch):
         monkeypatch.setattr(
-            "agent.deadline._timeouts_section", lambda: {"a": {"b": 99}}
+            "hermes_agent.agent.deadline._timeouts_section", lambda: {"a": {"b": 99}}
         )
         monkeypatch.setenv("HERMES_TEST_DEADLINE_X", "17.5")
         assert (
@@ -153,18 +153,18 @@ class TestResolveTimeout:
 
     def test_dotted_key_walks_nested_maps(self, monkeypatch):
         monkeypatch.setattr(
-            "agent.deadline._timeouts_section",
+            "hermes_agent.agent.deadline._timeouts_section",
             lambda: {"tools": {"concurrent_batch": 300}},
         )
         assert resolve_timeout("tools.concurrent_batch", default=420.0) == 300.0
 
     def test_zero_config_value_means_unbounded(self, monkeypatch):
-        monkeypatch.setattr("agent.deadline._timeouts_section", lambda: {"a": {"b": 0}})
+        monkeypatch.setattr("hermes_agent.agent.deadline._timeouts_section", lambda: {"a": {"b": 0}})
         assert resolve_timeout("a.b", default=42.0) is None
 
     def test_invalid_config_value_falls_through_to_env(self, monkeypatch):
         monkeypatch.setattr(
-            "agent.deadline._timeouts_section", lambda: {"a": {"b": "soon"}}
+            "hermes_agent.agent.deadline._timeouts_section", lambda: {"a": {"b": "soon"}}
         )
         monkeypatch.setenv("HERMES_TEST_DEADLINE_X", "17.5")
         assert (
@@ -173,7 +173,7 @@ class TestResolveTimeout:
         )
 
     def test_invalid_env_value_falls_through_to_default(self, monkeypatch):
-        monkeypatch.setattr("agent.deadline._timeouts_section", dict)
+        monkeypatch.setattr("hermes_agent.agent.deadline._timeouts_section", dict)
         monkeypatch.setenv("HERMES_TEST_DEADLINE_X", "banana")
         assert (
             resolve_timeout("a.b", default=42.0, env_var="HERMES_TEST_DEADLINE_X")
@@ -183,21 +183,21 @@ class TestResolveTimeout:
     def test_bool_config_value_rejected(self, monkeypatch):
         # YAML `true` must not silently become a 1-second deadline.
         monkeypatch.setattr(
-            "agent.deadline._timeouts_section", lambda: {"a": {"b": True}}
+            "hermes_agent.agent.deadline._timeouts_section", lambda: {"a": {"b": True}}
         )
         assert resolve_timeout("a.b", default=42.0) == 42.0
 
     def test_nan_config_value_falls_through(self, monkeypatch):
         # NaN must fall through to the next source, not resolve as unbounded.
         monkeypatch.setattr(
-            "agent.deadline._timeouts_section", lambda: {"a": {"b": float("nan")}}
+            "hermes_agent.agent.deadline._timeouts_section", lambda: {"a": {"b": float("nan")}}
         )
         assert resolve_timeout("a.b", default=42.0) == 42.0
 
     def test_broken_config_read_never_breaks_the_protected_path(self, monkeypatch):
         # _timeouts_section swallows config-load failures internally; prove
         # the public contract by making the underlying loader raise.
-        import agent.deadline as dl
+        import hermes_agent.agent.deadline as dl
 
         def _boom():
             raise RuntimeError("config unreadable")
@@ -557,25 +557,25 @@ class TestConcurrentToolTimeoutMigration:
     """_resolve_concurrent_tool_timeout keeps its exact legacy contract."""
 
     def _resolver(self):
-        from agent import tool_executor
+        from hermes_agent.agent import tool_executor
 
         return tool_executor._resolve_concurrent_tool_timeout
 
 
     def test_env_var_still_works(self, monkeypatch):
-        monkeypatch.setattr("agent.deadline._timeouts_section", dict)
+        monkeypatch.setattr("hermes_agent.agent.deadline._timeouts_section", dict)
         monkeypatch.setenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "60")
         assert self._resolver()() == 60.0
 
     def test_env_zero_still_disables(self, monkeypatch):
-        monkeypatch.setattr("agent.deadline._timeouts_section", dict)
+        monkeypatch.setattr("hermes_agent.agent.deadline._timeouts_section", dict)
         monkeypatch.setenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "0")
         assert self._resolver()() is None
 
 
     def test_new_config_key_wins(self, monkeypatch):
         monkeypatch.setattr(
-            "agent.deadline._timeouts_section",
+            "hermes_agent.agent.deadline._timeouts_section",
             lambda: {"tools": {"concurrent_batch": 300}},
         )
         monkeypatch.setenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "60")
@@ -586,26 +586,26 @@ class TestSequentialToolTimeoutResolver:
     """_resolve_sequential_tool_timeout: own key, inherits concurrent default."""
 
     def _resolver(self):
-        from agent import tool_executor
+        from hermes_agent.agent import tool_executor
 
         return tool_executor._resolve_sequential_tool_timeout
 
     def test_inherits_concurrent_default(self, monkeypatch):
-        from agent import tool_executor
+        from hermes_agent.agent import tool_executor
 
-        monkeypatch.setattr("agent.deadline._timeouts_section", dict)
+        monkeypatch.setattr("hermes_agent.agent.deadline._timeouts_section", dict)
         monkeypatch.delenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", raising=False)
         assert self._resolver()() == tool_executor._resolve_concurrent_tool_timeout()
 
     def test_inherits_concurrent_env_bridge(self, monkeypatch):
         # No sequential-specific setting -> concurrent env var flows through.
-        monkeypatch.setattr("agent.deadline._timeouts_section", dict)
+        monkeypatch.setattr("hermes_agent.agent.deadline._timeouts_section", dict)
         monkeypatch.setenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "60")
         assert self._resolver()() == 60.0
 
     def test_own_config_key_wins_over_concurrent(self, monkeypatch):
         monkeypatch.setattr(
-            "agent.deadline._timeouts_section",
+            "hermes_agent.agent.deadline._timeouts_section",
             lambda: {"tools": {"concurrent_batch": 300, "sequential_call": 90}},
         )
         assert self._resolver()() == 90.0
@@ -613,7 +613,7 @@ class TestSequentialToolTimeoutResolver:
     def test_zero_disables_independently(self, monkeypatch):
         # Sequential bound can be disabled while the concurrent one stays on.
         monkeypatch.setattr(
-            "agent.deadline._timeouts_section",
+            "hermes_agent.agent.deadline._timeouts_section",
             lambda: {"tools": {"concurrent_batch": 300, "sequential_call": 0}},
         )
         assert self._resolver()() is None
@@ -621,7 +621,7 @@ class TestSequentialToolTimeoutResolver:
     def test_concurrent_disabled_flows_through(self, monkeypatch):
         # concurrent disabled (None default) + no sequential key -> unbounded.
         monkeypatch.setattr(
-            "agent.deadline._timeouts_section",
+            "hermes_agent.agent.deadline._timeouts_section",
             lambda: {"tools": {"concurrent_batch": 0}},
         )
         assert self._resolver()() is None
@@ -648,7 +648,7 @@ class _RecordingBackend:
 
 
 def test_async_timeout_marks_backend_once():
-    from agent.deadline import run_bounded_async
+    from hermes_agent.agent.deadline import run_bounded_async
 
     async def never():
         await asyncio.Event().wait()
@@ -667,7 +667,7 @@ def test_async_timeout_marks_backend_once():
 
 
 def test_async_completion_never_marks_backend():
-    from agent.deadline import run_bounded_async
+    from hermes_agent.agent.deadline import run_bounded_async
 
     async def quick():
         return "done"
@@ -685,7 +685,7 @@ def test_async_completion_never_marks_backend():
 
 
 def test_sync_timeout_marks_backend_once():
-    from agent.deadline import run_bounded_sync
+    from hermes_agent.agent.deadline import run_bounded_sync
 
     def block():
         time.sleep(10)
@@ -707,7 +707,7 @@ def test_non_adopting_backend_cannot_weaken_the_bound():
         await asyncio.Event().wait()
 
     async def drive():
-        from agent.deadline import run_bounded_async
+        from hermes_agent.agent.deadline import run_bounded_async
 
         return await run_bounded_async(
             never(), 0.05, label="phase3a-plain", backend=PlainBackend()
@@ -729,7 +729,7 @@ def test_mark_suspect_raising_never_corrupts_the_result():
         await asyncio.Event().wait()
 
     async def drive():
-        from agent.deadline import run_bounded_async
+        from hermes_agent.agent.deadline import run_bounded_async
 
         return await run_bounded_async(
             never(), 0.05, label="phase3a-boom", backend=ExplodingBackend()
@@ -741,7 +741,7 @@ def test_mark_suspect_raising_never_corrupts_the_result():
 
 
 def test_sync_completion_never_marks_backend():
-    from agent.deadline import run_bounded_sync
+    from hermes_agent.agent.deadline import run_bounded_sync
 
     backend = _RecordingBackend()
     result = run_bounded_sync(
@@ -755,7 +755,7 @@ def test_sync_mark_happens_before_on_timeout():
     """The review-round ordering contract: mark BEFORE owner cleanup, so a
     recycle in on_timeout never sees an unmarked backend (and a healed
     replacement never inherits a stale flag)."""
-    from agent.deadline import run_bounded_sync
+    from hermes_agent.agent.deadline import run_bounded_sync
 
     backend = _RecordingBackend()
     seen_at_cleanup: list[int] = []
@@ -779,7 +779,7 @@ def test_async_mark_happens_before_on_abandon_cleanup():
     is ensure_future'd (can't start until the next loop tick), so the
     synchronous mark always lands first. An offloaded (to_thread) mark
     would break this — this test is the guard against that 'fix'."""
-    from agent.deadline import run_bounded_async
+    from hermes_agent.agent.deadline import run_bounded_async
 
     backend = _RecordingBackend()
     seen_at_cleanup: list[int] = []

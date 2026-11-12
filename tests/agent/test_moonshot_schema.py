@@ -7,14 +7,14 @@ the JSON Schema ecosystem accepts:
 2. ``type`` at the parent of ``anyOf`` — Moonshot requires it only inside
    ``anyOf`` children.
 
-These tests cover the repairs applied by ``agent/moonshot_schema.py``.
+These tests cover the repairs applied by ``hermes_agent/agent/moonshot_schema.py``.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from agent.moonshot_schema import (
+from hermes_agent.agent.moonshot_schema import (
     is_moonshot_model,
     sanitize_moonshot_tool_parameters,
     sanitize_moonshot_tools,

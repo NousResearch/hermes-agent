@@ -122,7 +122,7 @@ def codex(args: list, prompt: str, timeout: int = 3600) -> str:
 
 
 def judge(question: str, gold: str, answer: str) -> dict:
-    from agent.auxiliary_client import call_llm
+    from hermes_agent.agent.auxiliary_client import call_llm
 
     resp = call_llm(
         messages=[{"role": "user", "content": JUDGE_PROMPT.format(

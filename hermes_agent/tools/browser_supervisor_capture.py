@@ -120,7 +120,7 @@ class CapturedCDP:
             raise RuntimeError("CapturedCDP.call() blocks and cannot run on the supervisor loop")
         if not self.is_valid():
             raise self._invalid()
-        from agent.async_utils import safe_schedule_threadsafe
+        from hermes_agent.agent.async_utils import safe_schedule_threadsafe
 
         fut = safe_schedule_threadsafe(self._send(method, params, session_id, timeout, deadline, before_send), self._loop)
         if fut is None:

@@ -43,7 +43,7 @@ def _cdp_http_reachable(parsed, timeout: float = 2.0) -> bool:
 
 def _connect_local_default(port: int, system: str, announce) -> str | None:
     """Discover (or launch) the default local debug browser → CDP URL, or None after announcing."""
-    from agent.deadline import poll_until
+    from hermes_agent.agent.deadline import poll_until
     from hermes_cli.browser_connect import (
         discover_local_cdp_url, find_free_debug_port, launch_chrome_debug, local_port_in_use,
         manual_chrome_debug_command)

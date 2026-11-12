@@ -36,7 +36,7 @@ def _load_language_packs() -> None:
 @method("i18n.languages")
 @_profile_scoped
 def _(rid, params: dict) -> dict:
-    from agent.i18n import language_options
+    from hermes_agent.agent.i18n import language_options
     try:
         _load_language_packs()
         return _ok(rid, {"languages": language_options()})
@@ -47,8 +47,8 @@ def _(rid, params: dict) -> dict:
 @method("i18n.catalog")
 @_profile_scoped
 def _(rid, params: dict) -> dict:
-    from agent.i18n import resolve_language_id, surface_catalog
-    from agent.i18n_layers import CORE_SURFACE, SURFACES
+    from hermes_agent.agent.i18n import resolve_language_id, surface_catalog
+    from hermes_agent.agent.i18n_layers import CORE_SURFACE, SURFACES
     surface = str(params.get("surface") or CORE_SURFACE)
     if surface not in SURFACES:
         return _err(rid, 4002, f"surface must be one of {', '.join(SURFACES)}")

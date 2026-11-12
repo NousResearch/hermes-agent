@@ -15,7 +15,7 @@ import logging
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
-from agent.onboarding_record import observe_tool_result
+from hermes_agent.agent.onboarding_record import observe_tool_result
 
 logger = logging.getLogger(__name__)
 

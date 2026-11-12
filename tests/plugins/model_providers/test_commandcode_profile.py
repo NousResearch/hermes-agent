@@ -9,7 +9,7 @@ CommandCode registers two profiles:
 ``commandcode-anthropic``
     ``api_mode=anthropic_messages`` — Anthropic Messages API-compatible.
     Defaults to ``claude-sonnet-4-6``.  Requires Bearer auth recognition
-    in ``agent/anthropic_adapter.py``.
+    in ``hermes_agent/agent/anthropic_adapter.py``.
 
 Both share ``COMMANDCODE_API_KEY`` and ``https://api.commandcode.ai/provider/v1``.
 """
@@ -93,20 +93,20 @@ class TestCommandCodeAnthropicProfileIdentity:
 # ── Bearer Auth Recognition ───────────────────────────────────────────────────
 
 class TestCommandCodeAnthropicBearerAuth:
-    """``agent/anthropic_adapter.py`` must recognize CommandCode as a
+    """``hermes_agent/agent/anthropic_adapter.py`` must recognize CommandCode as a
     Bearer-auth endpoint, or the chat_completions transport falls back to
     ``x-api-key`` and gets a 401.
     """
 
     def test_requires_bearer_auth_recognizes_commandcode(self):
-        from agent.anthropic_endpoints import _requires_bearer_auth
+        from hermes_agent.agent.anthropic_endpoints import _requires_bearer_auth
 
         assert _requires_bearer_auth("https://api.commandcode.ai/provider/v1") is True
         assert _requires_bearer_auth("https://api.commandcode.ai/provider/v1/models") is True
         assert _requires_bearer_auth("https://api.commandcode.ai/anthropic") is True
 
     def test_bearer_auth_does_not_affect_unrelated(self):
-        from agent.anthropic_endpoints import _requires_bearer_auth
+        from hermes_agent.agent.anthropic_endpoints import _requires_bearer_auth
 
         # Native Anthropic still uses x-api-key
         assert _requires_bearer_auth("https://api.anthropic.com") is False
@@ -114,7 +114,7 @@ class TestCommandCodeAnthropicBearerAuth:
         assert _requires_bearer_auth("https://openrouter.ai/api/v1") is False
 
     def test_bearer_auth_case_insensitive(self):
-        from agent.anthropic_endpoints import _requires_bearer_auth
+        from hermes_agent.agent.anthropic_endpoints import _requires_bearer_auth
 
         assert _requires_bearer_auth("https://API.COMMANDCODE.AI/provider/v1") is True
 

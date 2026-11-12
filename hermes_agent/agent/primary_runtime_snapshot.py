@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from agent.custom_entry_pool import SNAPSHOT_OWNER_KEY, runtime_entry_owner
+from hermes_agent.agent.custom_entry_pool import SNAPSHOT_OWNER_KEY, runtime_entry_owner
 
 
 def _snapshot_primary_runtime(agent):

@@ -20,7 +20,7 @@ import pytest
 from fastapi import HTTPException
 
 import hermes_cli.plugins as plugins_mod
-from agent.auxiliary_client import _get_auxiliary_task_config
+from hermes_agent.agent.auxiliary_client import _get_auxiliary_task_config
 from hermes_cli.plugins import PluginManager
 from hermes_cli.web_server_config import (
     _AUX_TASK_SLOTS, _apply_aux_assignment_sync, _apply_model_assignment_sync, _aux_task_slots,

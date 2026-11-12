@@ -127,7 +127,7 @@ def _forward_relay_fronted_run(job: dict[str, Any], extra_prompt: Optional[str] 
     JSON result string when forwarding engages, else None (normal in-process run)."""
     if not _relay_fronted_delivery_platforms(job):
         return None
-    from agent.secret_scope import get_secret
+    from hermes_agent.agent.secret_scope import get_secret
     key = get_secret("API_SERVER_KEY", "") or ""
     try:
         import httpx

@@ -156,7 +156,7 @@ def test_nebius_reasoning_skips_disabled_and_non_reasoning_models():
 
 
 def test_nebius_transport_emits_top_level_reasoning_effort():
-    from agent.transports.chat_completions import ChatCompletionsTransport
+    from hermes_agent.agent.transports.chat_completions import ChatCompletionsTransport
     from providers import get_provider_profile
 
     profile = get_provider_profile("nebius-token-factory")

@@ -122,7 +122,7 @@ def same_create_retry(saved_policy, retry_json, client_request):
     ``client_env`` (``client_request``: the retry's own, never stored) judged by the rules frozen with
     *saved_policy*. Used by a retry that finds the session committed, at commit, and by one overlapping
     the attempt that holds the session's key slot."""
-    from agent.session_client_env import retry_matches
+    from hermes_agent.agent.session_client_env import retry_matches
     return same_create_request(saved_policy['request_json'], retry_json) and retry_matches(saved_policy, client_request)
 
 

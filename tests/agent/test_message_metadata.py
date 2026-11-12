@@ -1,13 +1,13 @@
 import pytest
 
-from agent.message_metadata import (
+from hermes_agent.agent.message_metadata import (
     INFLIGHT_TASK_RESTATEMENT, TYPED_ASK, append_message, is_compaction_scaffolding, replay_metadata_fields,
     stamp_message_timestamp,
 )
 
 
 def test_stamp_preserves_source_timestamp(monkeypatch):
-    monkeypatch.setattr("agent.message_metadata.wall_time", lambda: 999.0)
+    monkeypatch.setattr("hermes_agent.agent.message_metadata.wall_time", lambda: 999.0)
     message = {"role": "user", "content": "hello", "timestamp": 123.0}
 
     result = stamp_message_timestamp(message)
@@ -17,7 +17,7 @@ def test_stamp_preserves_source_timestamp(monkeypatch):
 
 
 def test_append_stamps_same_mapping_at_append_time(monkeypatch):
-    monkeypatch.setattr("agent.message_metadata.wall_time", lambda: 456.0)
+    monkeypatch.setattr("hermes_agent.agent.message_metadata.wall_time", lambda: 456.0)
     messages = []
     message = {"role": "tool", "content": "ok"}
 
@@ -48,7 +48,7 @@ def _stamped(ask, role="user"):
 
 
 def _previous(rows):
-    from agent.turn_context import _previous_user_message_text
+    from hermes_agent.agent.turn_context import _previous_user_message_text
     return _previous_user_message_text([*rows, {"role": "assistant", "content": "x"}])
 
 
@@ -58,7 +58,7 @@ def _unstamped(rows):
 
 
 def _carrier(role, row=None, force_user_leading=False):
-    from agent.context_compressor import SUMMARY_PREFIX, ContextCompressor
+    from hermes_agent.agent.context_compressor import SUMMARY_PREFIX, ContextCompressor
     row = row or {"role": role, "content": "ASSISTANT TEXT" if role == "assistant" else "earlier ask"}
     if role == "assistant":
         row["tool_calls"] = [{"id": "c1", "type": "function", "function": {"name": "t", "arguments": "{}"}}]
@@ -69,18 +69,18 @@ def _carrier(role, row=None, force_user_leading=False):
 
 
 def _repair_users(first, second):
-    from agent.agent_runtime_helpers import _merge_consecutive_users
+    from hermes_agent.agent.agent_runtime_helpers import _merge_consecutive_users
     return _merge_consecutive_users([first, second, {"role": "assistant", "content": "x"}])[0][:1]
 
 
 def _repair_assistants(first, second):
-    from agent.agent_runtime_helpers import _merge_consecutive_assistants
+    from hermes_agent.agent.agent_runtime_helpers import _merge_consecutive_assistants
     return _merge_consecutive_assistants([{"role": "user", "content": "u"}, first, second])[0][-1:]
 
 
 def _micro(first, second):
     from types import SimpleNamespace
-    from agent.micro_compaction import MicroCompactionMixin
+    from hermes_agent.agent.micro_compaction import MicroCompactionMixin
     return MicroCompactionMixin._merge_adjacent_user_turns(
         SimpleNamespace(_flush_scan_cursor_invalidated=False), [first, second, {"role": "assistant", "content": "x"}])[:1]
 
@@ -132,14 +132,14 @@ def test_a_wrapped_turn_restated_by_the_next_compaction_keeps_its_typed_ask(forc
 
 
 def _summary():
-    from agent.context_compressor import SUMMARY_PREFIX, _SUMMARY_END_MARKER
+    from hermes_agent.agent.context_compressor import SUMMARY_PREFIX, _SUMMARY_END_MARKER
     return {"role": "user", "content": f"{SUMMARY_PREFIX}\nold work\n{_SUMMARY_END_MARKER}", "_compressed_summary": True}
 
 
 def test_a_restated_wrapped_turn_restated_again_keeps_its_typed_ask():
     """A turn already restated by one compaction (header row) is wrapped by the next with the summary first,
     so the next restatement rebuilds a plain row from the task text: it must keep the turn's stamp."""
-    from agent.context_compressor import _INFLIGHT_TASK_REPLAY_HEADER
+    from hermes_agent.agent.context_compressor import _INFLIGHT_TASK_REPLAY_HEADER
 
     stamped = _stamped("IMAGE ASK")
     stamped["content"] = f"{_INFLIGHT_TASK_REPLAY_HEADER}\n{stamped['content']}"

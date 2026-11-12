@@ -10,7 +10,7 @@ Regression for #113738 (found via Slack's native stop button, gateway-gateway#28
 
 import pytest
 
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 from hermes_agent.gateway.run import GatewayRunner, _AGENT_PENDING_SENTINEL
 from hermes_agent.gateway.session import SessionSource, build_session_key
 from hermes_agent.gateway.platforms.base import Platform

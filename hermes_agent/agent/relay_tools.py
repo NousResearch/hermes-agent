@@ -8,7 +8,7 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
-from agent import relay_llm, relay_runtime
+from hermes_agent.agent import relay_llm, relay_runtime
 
 logger = logging.getLogger(__name__)
 

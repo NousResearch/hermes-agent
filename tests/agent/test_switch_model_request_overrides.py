@@ -12,7 +12,7 @@ condition agent_init._merge_custom_provider_extra_body uses at build time), so a
 extra_body configured for another model.
 """
 
-import agent.agent_runtime_helpers as arh
+import hermes_agent.agent.agent_runtime_helpers as arh
 
 
 class _Agent:

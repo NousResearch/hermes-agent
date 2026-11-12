@@ -120,7 +120,7 @@ class TestProxyKeyScopeFailure:
 
     @pytest.mark.asyncio
     async def test_proxy_key_scope_failure_never_borrows_env(self, monkeypatch):
-        from agent import secret_scope as ss
+        from hermes_agent.agent import secret_scope as ss
 
         monkeypatch.setenv("GATEWAY_PROXY_KEY", "foreign-key")
         runner = _make_runner()

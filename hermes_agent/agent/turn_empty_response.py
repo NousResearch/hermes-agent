@@ -4,7 +4,7 @@ Runs when the model returned no visible text after ``<think>`` blocks. Ladder or
 load-bearing: partial-stream recovery → reuse prior turn content (housekeeping tools only)
 → one post-tool-call nudge → thinking-only completion reminder (×2) → empty-response
 retries (budgeted, deterministic-empty short-circuit) → fallback provider → terminal
-``(empty)`` sentinel. Nothing here imports ``agent.conversation_loop`` at module level.
+``(empty)`` sentinel. Nothing here imports ``hermes_agent.agent.conversation_loop`` at module level.
 """
 
 from __future__ import annotations
@@ -14,13 +14,13 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from agent import empty_response_guard as _empty_guard
-from agent.message_metadata import append_message
-from agent.message_sanitization import _sanitize_surrogates
-from agent.turn_context_compaction import _refund_api_call
-from agent.turn_recovery import interruptible_backoff_sleep
+from hermes_agent.agent import empty_response_guard as _empty_guard
+from hermes_agent.agent.message_metadata import append_message
+from hermes_agent.agent.message_sanitization import _sanitize_surrogates
+from hermes_agent.agent.turn_context_compaction import _refund_api_call
+from hermes_agent.agent.turn_recovery import interruptible_backoff_sleep
 
-logger = logging.getLogger("agent.conversation_loop")
+logger = logging.getLogger("hermes_agent.agent.conversation_loop")
 
 _INLINE_THINK_RE = re.compile(r'<think>|<thinking>|<reasoning>', re.IGNORECASE)
 
@@ -72,7 +72,7 @@ def _retry_empty(
     signature is recorded and deterministic empties stop burning paid retries (fails
     open: missing usage or any output keeps the budget). Returns
     ``(action_or_None, interrupt_result, deterministic_empty)``."""
-    from agent.retry_utils import jittered_backoff
+    from hermes_agent.agent.retry_utils import jittered_backoff
 
     if empty_candidate:
         _empty_guard.record_empty_attempt(
@@ -193,7 +193,7 @@ def recover_empty_response(
     preflight_compression_blocked: bool,
 ) -> EmptyResponseVerdict:
     """Recover without storing failed reasoning or synthetic conversation turns."""
-    from agent.conversation_loop import (
+    from hermes_agent.agent.conversation_loop import (
         _CODEX_INCOMPLETE_NUDGE, _EMPTY_TOOL_RESPONSE_NUDGE, _sync_failover_system_message,
     )
 

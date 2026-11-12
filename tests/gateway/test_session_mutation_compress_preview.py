@@ -30,7 +30,7 @@ async def test_preview_mutation_reports_without_summarizing_or_writing(tmp_path,
     from hermes_agent.gateway import run
     from hermes_agent.gateway.config import GatewayConfig
     from hermes_agent.gateway.session import SessionStore
-    from agent.context_compressor import ContextCompressor
+    from hermes_agent.agent.context_compressor import ContextCompressor
 
     monkeypatch.setattr(run, '_load_gateway_config', dict)
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
@@ -82,7 +82,7 @@ async def test_canonical_compress_runs_the_live_agents_pre_compress_memory_hook(
     from hermes_agent.gateway import run
     from hermes_agent.gateway.config import GatewayConfig
     from hermes_agent.gateway.session import SessionStore
-    from agent.context_compressor import ContextCompressor
+    from hermes_agent.agent.context_compressor import ContextCompressor
 
     monkeypatch.setattr(run, '_load_gateway_config', dict)
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
@@ -134,7 +134,7 @@ async def test_input_is_admitted_while_compress_summarizes_but_not_claimed_until
     from hermes_agent.gateway.config import GatewayConfig
     from hermes_agent.gateway.session import SessionStore
     from hermes_agent.gateway.session_contract import Submission
-    from agent.context_compressor import ContextCompressor
+    from hermes_agent.agent.context_compressor import ContextCompressor
 
     monkeypatch.setattr(run, '_load_gateway_config', dict)
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
@@ -190,7 +190,7 @@ async def test_a_compress_that_removes_nothing_reports_mains_no_changes_without_
     from hermes_agent.gateway import run
     from hermes_agent.gateway.config import GatewayConfig
     from hermes_agent.gateway.session import SessionStore
-    from agent.context_compressor import ContextCompressor
+    from hermes_agent.agent.context_compressor import ContextCompressor
 
     monkeypatch.setattr(run, '_load_gateway_config', dict)
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
@@ -232,8 +232,8 @@ async def test_no_op_compress_without_a_resident_agent_estimates_the_stored_prom
     from hermes_agent.gateway import run
     from hermes_agent.gateway.config import GatewayConfig
     from hermes_agent.gateway.session import SessionStore
-    from agent.context_compressor import ContextCompressor
-    from agent.model_metadata import estimate_request_tokens_rough
+    from hermes_agent.agent.context_compressor import ContextCompressor
+    from hermes_agent.agent.model_metadata import estimate_request_tokens_rough
 
     monkeypatch.setattr(run, '_load_gateway_config', dict)
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())

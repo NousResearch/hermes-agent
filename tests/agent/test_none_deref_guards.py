@@ -6,8 +6,8 @@ a present-but-null value sails through as None and crashes any chained
 method call.
 """
 
-from agent.anthropic_message_convert import _convert_user_message
-from agent.moa_loop import _slot_label
+from hermes_agent.agent.anthropic_message_convert import _convert_user_message
+from hermes_agent.agent.moa_loop import _slot_label
 
 
 class TestAnthropicNullTextBlock:

@@ -75,7 +75,7 @@ def _reset_background_review_read_marks() -> None:
 
 def _resolved_roots(skill_path: Path):
     """``(resolved skill_path, [(root, resolved_root), ...])`` over every resolvable skills root."""
-    from agent.skill_utils import get_all_skills_dirs
+    from hermes_agent.agent.skill_utils import get_all_skills_dirs
     try:
         resolved = skill_path.resolve()
     except OSError:
@@ -145,7 +145,7 @@ def _pinned_guard(name: str) -> Optional[str]:
     patches/edits stay allowed. ESSENTIAL_SKILLS are permanently pinned (the system prompt
     references them). Best-effort: an unreadable sidecar lets the delete through."""
     try:
-        from agent.skill_utils import ESSENTIAL_SKILLS
+        from hermes_agent.agent.skill_utils import ESSENTIAL_SKILLS
         if name in ESSENTIAL_SKILLS:
             return (
                 f"Skill '{name}' is essential to Hermes (the agent's own "
@@ -174,7 +174,7 @@ def _background_review_delete_guard(name: str, skill_dir: Path) -> Optional[dict
             f"are off-limits to autonomous maintenance. Ask the user to run `hermes curator "
             f"unpin {name}` if they want it changed.")
     try:
-        from agent.skill_utils import is_external_skill_path
+        from hermes_agent.agent.skill_utils import is_external_skill_path
         if is_external_skill_path(skill_dir):
             return _refusal(
                 f"{refuse} skill '{name}': the skill lives in skills.external_dirs, which are "

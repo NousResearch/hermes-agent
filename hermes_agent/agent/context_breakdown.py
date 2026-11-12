@@ -11,7 +11,7 @@ import json
 import re
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 
 _SKILLS_BLOCK_RE = re.compile(r"<available_skills>.*?</available_skills>", re.DOTALL)
 _SUBAGENT_TOOL_NAMES = frozenset({"delegate_task"})
@@ -57,7 +57,7 @@ _DETAILS_TABLE_LIMIT = 15  # display cap only; the underlying data keeps everyth
 
 
 def _chars_to_tokens(text: str) -> int:
-    from agent.model_metadata import estimate_tokens_rough
+    from hermes_agent.agent.model_metadata import estimate_tokens_rough
     return estimate_tokens_rough(text)
 
 
@@ -66,7 +66,7 @@ def _json_tokens(value: Any) -> int:
 
 
 def _bytes_to_tokens(size: Optional[int]) -> Optional[int]:
-    from agent.model_metadata import CHARS_PER_TOKEN
+    from hermes_agent.agent.model_metadata import CHARS_PER_TOKEN
     return None if size is None else (int(size) + 3) // CHARS_PER_TOKEN
 
 
@@ -143,7 +143,7 @@ def context_usage_fields(compressor: Any) -> dict[str, Any]:
 def _categories(system_prompt: str, skills: str, tools: Sequence[dict], messages: list[dict],
                 rules: str = "", memory: str = "") -> dict[str, Any]:
     """The category list in display order and its estimated total."""
-    from agent.model_metadata import estimate_messages_tokens_rough
+    from hermes_agent.agent.model_metadata import estimate_messages_tokens_rough
     builtin_tools, mcp_tools, subagent_tools = _split_tools(tools)
     tokens_by_id = {
         "system_prompt": _chars_to_tokens(system_prompt),
@@ -174,8 +174,8 @@ def stored_context_breakdown(system_prompt: str, tools: Sequence[dict], messages
 
 def compute_session_context_breakdown(agent: Any, messages: Optional[list[dict]] = None) -> dict[str, Any]:
     """Return a Cursor-style context usage breakdown for one live agent."""
-    from agent.usage_anchor import anchored_context_tokens
-    from agent.system_prompt import build_system_prompt_parts
+    from hermes_agent.agent.usage_anchor import anchored_context_tokens
+    from hermes_agent.agent.system_prompt import build_system_prompt_parts
 
     messages = messages or []
     parts = build_system_prompt_parts(agent)
@@ -233,7 +233,7 @@ def compute_context_details(agent: Any) -> dict[str, Any]:
     live skills block; schema bytes via the registry's tool→toolset map).
     """
     from hermes_cli.prompt_size import _compute_skills_breakdown, _compute_toolsets_breakdown
-    from agent.system_prompt import build_system_prompt_parts
+    from hermes_agent.agent.system_prompt import build_system_prompt_parts
 
     skills_block = _skills_block(build_system_prompt_parts(agent).get("stable", "") or "")
     tools = list(getattr(agent, "tools", None) or [])

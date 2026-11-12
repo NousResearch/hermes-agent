@@ -8,8 +8,8 @@ advancement through multiple providers.
 from unittest.mock import MagicMock, patch
 
 
-from agent.error_classifier import FailoverReason
-from run_agent import AIAgent
+from hermes_agent.agent.error_classifier import FailoverReason
+from hermes_agent.run_agent import AIAgent
 
 
 def _make_agent(fallback_model=None):
@@ -17,7 +17,7 @@ def _make_agent(fallback_model=None):
     with (
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(
             api_key="test-key",
@@ -80,7 +80,7 @@ class TestFallbackChainAdvancement:
             {"provider": "zai", "model": "glm-4.7"},
         ]
         agent = _make_agent(fallback_model=fbs)
-        with patch("agent.auxiliary_client.resolve_provider_client",
+        with patch("hermes_agent.agent.auxiliary_client.resolve_provider_client",
                     return_value=(_mock_client(), "gpt-4o")):
             assert agent._try_activate_fallback() is True
             assert agent._fallback_index == 1
@@ -103,7 +103,7 @@ class TestFallbackChainAdvancement:
             _mock_client(base_url="https://api.deepseek.com/v1"),
         ]
         with patch(
-            "agent.auxiliary_client.resolve_provider_client",
+            "hermes_agent.agent.auxiliary_client.resolve_provider_client",
             side_effect=[(clients[0], "glm-5.2"), (clients[1], "deepseek-v4-flash")],
         ):
             assert agent._try_activate_fallback(FailoverReason.rate_limit) is True
@@ -123,7 +123,7 @@ class TestFallbackChainAdvancement:
             {"provider": "openai", "model": "gpt-4o"},
         ]
         agent = _make_agent(fallback_model=fbs)
-        with patch("agent.auxiliary_client.resolve_provider_client") as mock_rpc:
+        with patch("hermes_agent.agent.auxiliary_client.resolve_provider_client") as mock_rpc:
             mock_rpc.side_effect = [
                 (None, None),                    # broken provider
                 (_mock_client(), "gpt-4o"),       # fallback succeeds
@@ -144,7 +144,7 @@ class TestFallbackChainAdvancement:
             {"provider": "broken", "model": "nope"}, {"provider": "zai", "model": "glm-5.2"},
         ])
         agent.provider = "nous"
-        with patch("agent.auxiliary_client.resolve_provider_client",
+        with patch("hermes_agent.agent.auxiliary_client.resolve_provider_client",
                    side_effect=[(None, None), (_mock_client(base_url="https://api.z.ai/v1"), "glm-5.2")]):
             assert agent._try_activate_fallback(FailoverReason.rate_limit) is True
 
@@ -158,7 +158,7 @@ class TestFallbackChainAdvancement:
             {"provider": "openai", "model": "gpt-4o"},
         ]
         agent = _make_agent(fallback_model=fbs)
-        with patch("agent.auxiliary_client.resolve_provider_client") as mock_rpc:
+        with patch("hermes_agent.agent.auxiliary_client.resolve_provider_client") as mock_rpc:
             mock_rpc.side_effect = [
                 RuntimeError("auth failed"),
                 (_mock_client(), "gpt-4o"),
@@ -179,7 +179,7 @@ class TestFallbackChainAdvancement:
         with (
             patch.dict("os.environ", {"MY_FALLBACK_KEY": "env-secret"}, clear=False),
             patch(
-                "agent.auxiliary_client.resolve_provider_client",
+                "hermes_agent.agent.auxiliary_client.resolve_provider_client",
                 return_value=(
                     _mock_client(
                         base_url="https://fallback.example/v1",
@@ -221,11 +221,11 @@ class TestFallbackChainAdvancement:
 
         with (
             patch(
-                "agent.chat_completion_helpers._fallback_entry_unavailable_without_network",
+                "hermes_agent.agent.chat_completion_helpers._fallback_entry_unavailable_without_network",
                 return_value=None,
             ),
             patch(
-                "agent.auxiliary_client.resolve_provider_client",
+                "hermes_agent.agent.auxiliary_client.resolve_provider_client",
                 return_value=(
                     _mock_client(base_url=portal, api_key="portal-jwt"),
                     "anthropic/claude-opus-4.8",
@@ -236,7 +236,7 @@ class TestFallbackChainAdvancement:
                 side_effect=lambda m, p: m,
             ),
             patch(
-                "agent.anthropic_adapter.build_anthropic_client",
+                "hermes_agent.agent.anthropic_adapter.build_anthropic_client",
                 side_effect=_fake_build,
             ),
         ):
@@ -257,11 +257,11 @@ class TestFallbackChainAdvancement:
         agent = _make_agent(fallback_model=fbs)
         with (
             patch(
-                "agent.chat_completion_helpers._fallback_entry_unavailable_without_network",
+                "hermes_agent.agent.chat_completion_helpers._fallback_entry_unavailable_without_network",
                 return_value=None,
             ),
             patch(
-                "agent.auxiliary_client.resolve_provider_client",
+                "hermes_agent.agent.auxiliary_client.resolve_provider_client",
                 return_value=(
                     _mock_client(base_url=portal, api_key="portal-jwt"),
                     "hermes-4-405b",
@@ -272,7 +272,7 @@ class TestFallbackChainAdvancement:
                 side_effect=lambda m, p: m,
             ),
             patch(
-                "agent.anthropic_adapter.build_anthropic_client",
+                "hermes_agent.agent.anthropic_adapter.build_anthropic_client",
                 side_effect=AssertionError("must not build Anthropic client"),
             ),
         ):
@@ -329,7 +329,7 @@ class TestFallbackChainDedup:
         def _resolve(provider, model=None, raw_codex=False, **kwargs):
             called.append((provider, model))
             return _mock_client(), model
-        with patch("agent.auxiliary_client.resolve_provider_client", side_effect=_resolve):
+        with patch("hermes_agent.agent.auxiliary_client.resolve_provider_client", side_effect=_resolve):
             with patch("hermes_cli.model_normalize.normalize_model_for_provider", side_effect=lambda m, p: m):
                 ok = agent._try_activate_fallback()
 
@@ -350,7 +350,7 @@ class TestFallbackChainDedup:
         agent.model = "z-ai/glm-4.7"
         agent.base_url = "https://openrouter.ai/api/v1"
 
-        with patch("agent.auxiliary_client.resolve_provider_client") as mock_resolve:
+        with patch("hermes_agent.agent.auxiliary_client.resolve_provider_client") as mock_resolve:
             ok = agent._try_activate_fallback()
 
         assert ok is False
@@ -381,7 +381,7 @@ class TestFallbackChainDedup:
             called.append((provider, model))
             return _mock_client(base_url="https://api.x.ai/v1"), model
 
-        with patch("agent.auxiliary_client.resolve_provider_client", side_effect=_resolve):
+        with patch("hermes_agent.agent.auxiliary_client.resolve_provider_client", side_effect=_resolve):
             with patch(
                 "hermes_cli.model_normalize.normalize_model_for_provider",
                 side_effect=lambda m, p: m,
@@ -441,10 +441,10 @@ class TestFallbackExtraBodyReResolution:
 
     def _activate(self, agent):
         with patch(
-            "agent.auxiliary_client.resolve_provider_client",
+            "hermes_agent.agent.auxiliary_client.resolve_provider_client",
             return_value=(_mock_client(base_url=self.FB_URL), "fb-model"),
         ), patch(
-            "agent.model_metadata.get_model_context_length",
+            "hermes_agent.agent.model_metadata.get_model_context_length",
             return_value=128_000,
         ):
             assert agent._try_activate_fallback() is True
@@ -503,7 +503,7 @@ def _write_moa_home(tmp_path, monkeypatch):
 
 
 def _assert_bound_to_moa_preset(agent, preset="default"):
-    from agent.conversation_loop import _moa_client_consumes_prepared_request
+    from hermes_agent.agent.conversation_loop import _moa_client_consumes_prepared_request
 
     assert (agent.provider, agent.requested_provider, agent.model) == ("moa", "moa", preset)
     assert (agent.base_url, agent.api_mode) == ("moa://local", "chat_completions")
@@ -519,7 +519,7 @@ class TestMoaPresetFallback:
         _write_moa_home(tmp_path, monkeypatch)
         agent = _make_agent(fallback_model={"provider": "moa", "model": "default"})
         aggregator_client = _mock_client(base_url="https://api.x.ai/v1/", api_key="xai-key")
-        with patch("agent.auxiliary_client.resolve_provider_client",
+        with patch("hermes_agent.agent.auxiliary_client.resolve_provider_client",
                    return_value=(aggregator_client, "grok-4.6")):
             assert agent._try_activate_fallback() is True
         _assert_bound_to_moa_preset(agent)
@@ -538,7 +538,7 @@ class TestMoaPresetFallback:
         with (
             patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
             patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-            patch("agent.auxiliary_client.resolve_provider_client", side_effect=_route),
+            patch("hermes_agent.agent.auxiliary_client.resolve_provider_client", side_effect=_route),
         ):
             agent = AIAgent(model="anthropic/claude-sonnet-4.5", provider="openrouter",
                             quiet_mode=True, skip_context_files=True, skip_memory=True,

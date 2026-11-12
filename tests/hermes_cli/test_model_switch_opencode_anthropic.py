@@ -113,11 +113,11 @@ class TestOpenCodeZenV1Strip:
 
 
 class TestAgentSwitchModelDefenseInDepth:
-    """run_agent.AIAgent.switch_model() also strips /v1 as defense-in-depth."""
+    """hermes_agent.run_agent.AIAgent.switch_model() also strips /v1 as defense-in-depth."""
 
     def test_agent_switch_model_strips_v1_for_anthropic_messages(self):
         """Even if a caller hands in a /v1 URL, the agent strips it."""
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         # Build a bare agent instance without running __init__; we only want
         # to exercise switch_model's base_url normalization logic.
@@ -152,10 +152,10 @@ class TestAgentSwitchModelDefenseInDepth:
             raise _Sentinel("strip verified")
 
         with patch(
-            "agent.anthropic_adapter.build_anthropic_client",
+            "hermes_agent.agent.anthropic_adapter.build_anthropic_client",
             side_effect=_raise_after_capture,
-        ), patch("agent.anthropic_credentials.resolve_anthropic_token", return_value=""), patch(
-            "agent.anthropic_credentials._is_oauth_token", return_value=False
+        ), patch("hermes_agent.agent.anthropic_credentials.resolve_anthropic_token", return_value=""), patch(
+            "hermes_agent.agent.anthropic_credentials._is_oauth_token", return_value=False
         ):
             with pytest.raises(_Sentinel):
                 agent.switch_model(

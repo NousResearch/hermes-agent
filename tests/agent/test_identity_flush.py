@@ -10,7 +10,7 @@ SESSION_ID = "test-identity-flush"
 
 def _make_agent(session_db, session_id=SESSION_ID):
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key",
@@ -32,7 +32,7 @@ def _contents(db, session_id=SESSION_ID):
 
 class TestIdentityFlush:
     def test_summary_flush_hides_pure_handoff_but_not_composite_live_ask(self):
-        from agent.context_compressor import (
+        from hermes_agent.agent.context_compressor import (
             COMPRESSED_SUMMARY_METADATA_KEY,
             HISTORICAL_TASK_HEADING,
             SUMMARY_PREFIX,

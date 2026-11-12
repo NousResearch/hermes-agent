@@ -62,7 +62,7 @@ def pin_env(tmp_path, monkeypatch):
     from hermes_agent.tools import skill_usage
     importlib.reload(skill_usage)
     # curator module reads config through its own loader; keep defaults.
-    from agent import curator
+    from hermes_agent.agent import curator
     importlib.reload(curator)
     monkeypatch.setattr(curator, "_load_config", dict)
     monkeypatch.setattr(skill_usage, "_prune_builtins_enabled", lambda: False)

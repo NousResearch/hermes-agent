@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from agent import relay_cwd, runtime_cwd
+from hermes_agent.agent import relay_cwd, runtime_cwd
 from hermes_agent.tools.terminal_tool import clear_session_cwd, record_session_cwd
 
 

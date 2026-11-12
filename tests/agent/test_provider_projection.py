@@ -24,7 +24,7 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__f
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from agent.provider_projection import splice_provider_projection
+from hermes_agent.agent.provider_projection import splice_provider_projection
 
 _PROJECTED = [
     {
@@ -154,10 +154,10 @@ class _FakeAgentProviderClient:
 
 def _run_turn(monkeypatch, *, projected, iterations):
     """Drive one real ``run_conversation`` turn against the fake client."""
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     monkeypatch.setattr(
-        "agent.process_bootstrap.OpenAI",
+        "hermes_agent.agent.process_bootstrap.OpenAI",
         lambda **_kw: _FakeAgentProviderClient(projected, iterations),
     )
     monkeypatch.setattr("hermes_agent.model_tools.get_tool_definitions", lambda *a, **k: [])

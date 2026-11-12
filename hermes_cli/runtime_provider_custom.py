@@ -12,8 +12,8 @@ import os
 from typing import Any, Callable, Dict, Optional, Tuple
 
 from hermes_cli.providers import custom_provider_aliases, custom_provider_slug
-from agent.custom_entry_pool import custom_entry_for_endpoint, entry_declares_credential, entry_scoped_pool
-from agent.secret_scope import get_secret_str
+from hermes_agent.agent.custom_entry_pool import custom_entry_for_endpoint, entry_declares_credential, entry_scoped_pool
+from hermes_agent.agent.secret_scope import get_secret_str
 from utils import base_url_hostname
 
 logger = logging.getLogger("hermes_cli.runtime_provider")
@@ -566,7 +566,7 @@ def _entry_credential(rp, entry: dict[str, Any], name: str) -> Any:
     A placeholder ``api_key`` never hides a working ``key_env``."""
     key_cmd = _clean(entry.get("key_cmd"))
     if key_cmd:
-        from agent.command_token_source import build_command_token_provider
+        from hermes_agent.agent.command_token_source import build_command_token_provider
         if (token_provider := build_command_token_provider(key_cmd, name)) is not None:
             return token_provider
     candidates = (_clean(entry.get("api_key")), _key_env_secret(entry, f"custom provider '{name}'"))
@@ -696,7 +696,7 @@ _DIRECT_API_BASE_URLS: dict[str, str] = {"openai": "https://api.openai.com/v1"}
 def expand_direct_api_alias(provider: Optional[str], existing_base: Optional[str]) -> tuple[Optional[str], Optional[str]]:
     """``provider: openai`` → custom + the user's OpenAI endpoint, api.openai.com/v1 only as the last resort.
 
-    The ONE normalization both aux paths (``agent.auxiliary_client`` and ``resolve_runtime_provider``)
+    The ONE normalization both aux paths (``hermes_agent.agent.auxiliary_client`` and ``resolve_runtime_provider``)
     apply, so the same ``auxiliary.<task>.provider`` value routes identically everywhere. A
     ``providers.openai`` entry keeps the provider name so the named-custom branch applies its base_url
     and key; otherwise ``OPENAI_BASE_URL`` (a proxy/gateway the OPENAI_API_KEY was issued for) wins over

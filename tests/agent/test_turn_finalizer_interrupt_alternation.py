@@ -16,8 +16,8 @@ an empty-content assistant turn. The synthetic row is hidden from the user
 """
 
 
-from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
-from agent.turn_finalizer import finalize_turn
+from hermes_agent.agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
+from hermes_agent.agent.turn_finalizer import finalize_turn
 
 
 class _StubBudget:

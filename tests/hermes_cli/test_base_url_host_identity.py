@@ -107,7 +107,7 @@ def test_azure_endpoint_detection_host_anchored():
 
 
 def test_run_agent_azure_url_predicate():
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     probe = object.__new__(AIAgent)
     assert probe._is_azure_openai_url("https://myres.openai.azure.com/openai/v1") is True
@@ -116,7 +116,7 @@ def test_run_agent_azure_url_predicate():
 
 
 def test_dotted_model_name_provider_allowlist_host_anchored():
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     probe = object.__new__(AIAgent)
     probe.provider = ""

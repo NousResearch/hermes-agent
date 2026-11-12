@@ -66,7 +66,7 @@ def completion_payload(row, settled, response, captured):
     # turn gets the one the TUI path builds from the same result, so the viewer shows the right card.
     surface = captured_result.get('error_surface')
     if not isinstance(surface, dict) and complete['status'] == 'error':
-        from agent.error_surface import build_error_surface_from_result
+        from hermes_agent.agent.error_surface import build_error_surface_from_result
         surface = build_error_surface_from_result(
             captured_result, provider=str(captured_result.get('provider') or ''),
             model=str(captured_result.get('model') or ''))
@@ -144,7 +144,7 @@ def owner_stop_notice(captured, outcome, row=None):
     if notice is not None and row is not None:
         from hermes_agent.gateway.session_unattended_unknown import is_unattended
         if is_unattended(row):
-            from agent.turn_failure_copy import AUTOMATION_INTERRUPTED_NOTICE
+            from hermes_agent.agent.turn_failure_copy import AUTOMATION_INTERRUPTED_NOTICE
             return AUTOMATION_INTERRUPTED_NOTICE
     return notice
 

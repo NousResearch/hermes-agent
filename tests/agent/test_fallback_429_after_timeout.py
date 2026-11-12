@@ -26,7 +26,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 def _make_tool_defs():
     return [
@@ -45,7 +45,7 @@ def _make_agent_with_fallback(fb_chain):
     with (
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=_make_tool_defs()),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI", return_value=MagicMock()),
     ):
         agent = AIAgent(
             api_key="primary-key-abcdef12",
@@ -129,17 +129,17 @@ class TestFallbackChainResetOnTransportRecovery:
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
-            patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()),
-            patch("agent.agent_runtime_helpers.time.sleep"),
+            patch("hermes_agent.agent.process_bootstrap.OpenAI", return_value=MagicMock()),
+            patch("hermes_agent.agent.agent_runtime_helpers.time.sleep"),
             patch(
-                "agent.auxiliary_client.resolve_provider_client",
+                "hermes_agent.agent.auxiliary_client.resolve_provider_client",
                 return_value=(mock_fb_client, "glm-4.7"),
             ) as mock_resolve,
             patch(
                 "hermes_cli.model_normalize.normalize_model_for_provider",
                 side_effect=lambda m, p: m,
             ),
-            patch("agent.model_metadata.get_model_context_length", return_value=200000),
+            patch("hermes_agent.agent.model_metadata.get_model_context_length", return_value=200000),
         ):
             result = agent.run_conversation("hello")
 

@@ -18,11 +18,11 @@ cfg = yaml.safe_load(open(f"{real_home}/config.yaml", encoding="utf-8")) or {}
 cfg.setdefault("timeouts", {}).setdefault("tools", {})["sequential_call"] = 40
 cfg.setdefault("delegation", {})["orchestrator_enabled"] = True
 yaml.safe_dump(cfg, open(f"{home}/config.yaml", "w", encoding="utf-8"))
-import agent.tool_executor as te
+import hermes_agent.agent.tool_executor as te
 assert te.__file__.startswith(root)
-from agent.deadline import resolve_timeout
+from hermes_agent.agent.deadline import resolve_timeout
 print("effective sequential deadline:", resolve_timeout("tools.sequential_call", default=te._resolve_concurrent_tool_timeout()))
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 from hermes_cli.runtime_provider import resolve_runtime_provider
 MODEL = "z-ai/glm-5.3-flash"
 rt = resolve_runtime_provider(requested="nous", target_model=MODEL)

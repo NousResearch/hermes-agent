@@ -12,7 +12,7 @@ import os
 import shutil
 import sys
 
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 from hermes_constants import get_hermes_home
 from hermes_agent.hermes_state_ids import new_session_id
 from pathlib import Path
@@ -24,8 +24,8 @@ from typing import Any, Dict, List, Optional
 def _user_turn_indices(history: list) -> list[int]:
     """Indices of *real* user turns: excludes ephemeral scaffolding, display_kind timeline
     rows and compaction handoffs — the same predicate as resume turn counting."""
-    from agent.context_compressor import user_originated_turn_view
-    from agent.session_persistence import _is_ephemeral_scaffolding
+    from hermes_agent.agent.context_compressor import user_originated_turn_view
+    from hermes_agent.agent.session_persistence import _is_ephemeral_scaffolding
 
     return [
         i for i, m in enumerate(history)
@@ -779,9 +779,9 @@ class CLISessionMixin:
             print(t("cli.session.retry_no_messages"))
             return None
 
-        from agent.context_compressor import (
+        from hermes_agent.agent.context_compressor import (
             history_before_user_originated_turn, retryable_user_text)
-        from agent.memory_context import sanitize_context
+        from hermes_agent.agent.memory_context import sanitize_context
 
         warm_history = list(self.conversation_history)
         user_indices = _user_turn_indices(warm_history)
@@ -860,7 +860,7 @@ class CLISessionMixin:
         or None after printing ``failure_key`` when the durable rewind refused (history untouched).
         """
         from cli import logger
-        from agent.context_compressor import history_before_user_originated_turn
+        from hermes_agent.agent.context_compressor import history_before_user_originated_turn
 
         warm_history = list(self.conversation_history)
         cut_idx = _user_turn_indices(warm_history)[target_ordinal]
@@ -967,8 +967,8 @@ class CLISessionMixin:
         No ``compression_enabled`` gate: that flag disables *automatic* compaction only, and
         the context-overflow error path directs users here when it is off.
         """
-        from agent.conversation_compression import finalize_context_engine_compression_notification
-        from agent.conversation_compression_manual import (
+        from hermes_agent.agent.conversation_compression import finalize_context_engine_compression_notification
+        from hermes_agent.agent.conversation_compression_manual import (
             AGGRESSIVE_UNSUPPORTED, MIN_MESSAGES, compress_now, parse_compress_args, render_compress_result)
 
         if len(self.conversation_history or ()) < MIN_MESSAGES:
@@ -1123,7 +1123,7 @@ class CLISessionMixin:
             # transcript never gets a NULL system_prompt cache entry.
             if getattr(agent, "_cached_system_prompt", None) is None:
                 try:
-                    from agent.conversation_loop import _restore_or_build_system_prompt
+                    from hermes_agent.agent.conversation_loop import _restore_or_build_system_prompt
 
                     _restore_or_build_system_prompt(agent, None, conversation_history)
                 except Exception:

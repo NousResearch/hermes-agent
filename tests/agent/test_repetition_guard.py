@@ -6,7 +6,7 @@ import random
 
 import pytest
 
-from agent.repetition_guard import MIN_FRAGMENT_LENGTH, is_repetition_dominated
+from hermes_agent.agent.repetition_guard import MIN_FRAGMENT_LENGTH, is_repetition_dominated
 
 # The exact sentence from the #86581 incident (echoed hundreds of times by
 # the model before the provider cut it off at finish_reason=length).

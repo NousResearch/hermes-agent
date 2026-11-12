@@ -14,9 +14,9 @@ from pathlib import Path
 
 import pytest
 
-from agent.lsp.manager import LSPService
-from agent.lsp.servers import SERVERS, ServerContext, ServerDef, SpawnSpec
-from agent.lsp.workspace import clear_cache
+from hermes_agent.agent.lsp.manager import LSPService
+from hermes_agent.agent.lsp.servers import SERVERS, ServerContext, ServerDef, SpawnSpec
+from hermes_agent.agent.lsp.workspace import clear_cache
 
 MOCK_SERVER = str(Path(__file__).parent / "_mock_lsp_server.py")
 

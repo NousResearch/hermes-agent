@@ -12,8 +12,8 @@ import time
 from hermes_agent.tools.delegation_redaction import redact_child_result, redact_child_text
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from typing import Any, Dict, List, Optional
-from agent.compression_marker import elide
-from agent.interrupt_compat import request_hard_interrupt
+from hermes_agent.agent.compression_marker import elide
+from hermes_agent.agent.interrupt_compat import request_hard_interrupt
 from dataclasses import dataclass, field
 from hermes_agent.tools import file_state
 from hermes_agent.tools.delegate_tool_progress import _quiet, _safe_progress
@@ -28,7 +28,7 @@ logger = logging.getLogger("hermes_agent.tools.delegate_tool")  # log-record par
 
 def _reserve_child_transcript(child: Any) -> None:
     """Make a queued child readable without completing its first-turn persistence."""
-    from agent.runtime_session_store import RuntimeSessionStore
+    from hermes_agent.agent.runtime_session_store import RuntimeSessionStore
 
     db = child._session_db
     if db is None or child._persist_disabled or isinstance(db, RuntimeSessionStore):
@@ -83,7 +83,7 @@ def _route_report(child: Any) -> Optional[dict[str, Any]]:
     route = getattr(child, "_delegate_route", None)
     if not isinstance(route, dict):
         return None
-    from agent.fast_mode import service_tier_word
+    from hermes_agent.agent.fast_mode import service_tier_word
     reasoning = getattr(child, "reasoning_config", None)
     effort = None
     if isinstance(reasoning, dict):
@@ -331,7 +331,7 @@ def _child_last_event_age(child: Any) -> Optional[float]:
 
 class _Heartbeat:
     """One child's parent-activity heartbeat via the shared periodic scheduler
-    (``agent.periodic_scheduler``) — not one daemon thread per child. NOT started at construction:
+    (``hermes_agent.agent.periodic_scheduler``) — not one daemon thread per child. NOT started at construction:
     the caller calls ``start()`` inside its ``try`` so a failed schedule (OS thread exhaustion on
     first use) leaves ``handle`` None and ``stop()`` is a no-op."""
 
@@ -349,7 +349,7 @@ class _Heartbeat:
         self.stale_threshold_seconds: Optional[float] = None
 
     def start(self) -> None:
-        from agent.periodic_scheduler import schedule
+        from hermes_agent.agent.periodic_scheduler import schedule
         from hermes_agent.tools.delegate_tool import _HEARTBEAT_INTERVAL
         self.handle = schedule(self.tick, _HEARTBEAT_INTERVAL)
 
@@ -506,7 +506,7 @@ def _lease_child_credential(child: Any) -> tuple[Any, Optional[str]]:
     child_pool = getattr(child, "_credential_pool", None)
     if child_pool is None:
         return None, None
-    from agent.credential_pool import credential_pool_entry_serves_endpoint as _entry_serves_endpoint
+    from hermes_agent.agent.credential_pool import credential_pool_entry_serves_endpoint as _entry_serves_endpoint
     from hermes_agent.tools.delegate_tool_routes import child_profile_scope
     base_url = getattr(child, "base_url", None)
     with child_profile_scope(child):
@@ -564,7 +564,7 @@ def _validate_child_output_schema(
     try:
         # Same identity as the main child turn: this runs on the parent worker's thread, and an
         # unmarked turn is misread as the dispatcher-owned worker by every HERMES_KANBAN_* gate.
-        from agent.delegation_context import delegated_child_context
+        from hermes_agent.agent.delegation_context import delegated_child_context
         from hermes_agent.tools.delegate_tool_routes import child_profile_scope
         with child_profile_scope(child), delegated_child_context(str(getattr(child, "session_id", "") or "")):
             _retry_result = child.run_conversation(
@@ -635,7 +635,7 @@ def _build_result_entry(
         # The loop's final_response is a placeholder here ("Operation interrupted…", also appended as the closing
         # assistant row); the completion must carry what the child actually had so far — its last real assistant
         # text — and keep the placeholder as the error.
-        from agent.message_content import flatten_message_text
+        from hermes_agent.agent.message_content import flatten_message_text
         placeholders = {"", summary.strip(), "Operation interrupted."}
         partial = next((t for m in reversed(result.get("messages") or []) if m.get("role") == "assistant"
                         and (t := flatten_message_text(m.get("content")).strip()) not in placeholders), "")
@@ -734,7 +734,7 @@ def _is_image_url(ref: str) -> bool:
 def _build_child_goal_message(goal: str, images: list[str], child) -> Any:
     """The child's first user message when a task forwards ``images``.
 
-    Routing reuses the inbound-image policy (``agent.image_routing``, honouring ``agent.image_input_mode``): a
+    Routing reuses the inbound-image policy (``hermes_agent.agent.image_routing``, honouring ``agent.image_input_mode``): a
     vision-capable child gets an OpenAI-style content list (text part + one ``image_url`` part per image; local files
     as data URLs behind the read guard, http(s)/data URLs verbatim); otherwise the goal gains ``[Image attached …]``
     hint lines for ``vision_analyze``. Any failure degrades to the text-only goal so image plumbing never breaks a
@@ -745,7 +745,7 @@ def _build_child_goal_message(goal: str, images: list[str], child) -> Any:
         data_urls = [s for s in images if s.startswith("data:image/")]
         urls = [s for s in images if _is_image_url(s) and s not in data_urls]
         paths = [s for s in images if not _is_image_url(s)]
-        from agent.image_routing import build_native_content_parts, decide_image_input_mode
+        from hermes_agent.agent.image_routing import build_native_content_parts, decide_image_input_mode
         cfg = None
         with _quiet(None):
             from hermes_cli.config import load_config_readonly
@@ -938,7 +938,7 @@ class _ChildRun:
 
         def _run_with_thread_capture():
             worker_thread_holder["t"] = threading.current_thread()
-            from agent.delegation_context import delegated_child_context
+            from hermes_agent.agent.delegation_context import delegated_child_context
             from hermes_agent.tools.delegate_tool_routes import child_profile_scope
             # A profile-routed child converses as that profile (config, secrets, skills, terminal policy).
             with child_profile_scope(child), delegated_child_context(str(getattr(child, "session_id", "") or "")):
@@ -1173,7 +1173,7 @@ class _ChildRun:
         # The AIAgent turn boundary normally closes the child scope itself. This fallback covers failures before that
         # boundary starts, but must not pop a scope while a timed-out child worker is still unwinding.
         with _quiet("Failed to close child Relay session after delegation"):
-            from agent import relay_runtime
+            from hermes_agent.agent import relay_runtime
             runtime = relay_runtime.get_runtime(create=False)
             child_session_id = str(getattr(child, "session_id", "") or "")
             child_turn_is_active = relay_runtime.SESSION_COORDINATOR.has_active_turn(

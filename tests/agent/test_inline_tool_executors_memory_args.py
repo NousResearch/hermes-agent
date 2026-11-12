@@ -3,14 +3,14 @@
 import json
 from types import SimpleNamespace
 
-from agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
+from hermes_agent.agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
 from hermes_agent.tools.memory_tool_store import MemoryStore
 
 
 def test_memory_alias_persists_with_content_precedence(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     store = MemoryStore(memory_char_limit=500, user_char_limit=300)
-    from agent.memory_manager import MemoryManager
+    from hermes_agent.agent.memory_manager import MemoryManager
 
     class Sink:
         name = "test-sink"

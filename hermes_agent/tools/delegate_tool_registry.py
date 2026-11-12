@@ -7,7 +7,7 @@ import json
 import threading
 import time
 from typing import Any, Dict, List, Optional
-from agent.interrupt_compat import request_hard_interrupt
+from hermes_agent.agent.interrupt_compat import request_hard_interrupt
 from hermes_agent.tools.registry import tool_error
 
 logger = logging.getLogger("hermes_agent.tools.delegate_tool")  # log-record parity with the origin module

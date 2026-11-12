@@ -18,7 +18,7 @@ def compress_request(payload):
     uses: ``--preview`` stays read-only and ``here [N]`` stays a boundary instead of becoming a
     focus topic. ``--aggressive`` has no canonical implementation and is refused before any write.
     """
-    from agent.conversation_compression_manual import CompressRequest, parse_compress_args
+    from hermes_agent.agent.conversation_compression_manual import CompressRequest, parse_compress_args
     if set(payload) <= {'focus'}:
         request = parse_compress_args(payload.get('focus', ''))
     else:
@@ -31,9 +31,9 @@ def compress_request(payload):
 
 async def prepare_compress(authority, live, payload, prepared):
     from hermes_agent.gateway.session_policy import restore_policy, policy_scope
-    from agent.context_compressor import ContextCompressor
-    from agent.agent_init import _parse_config_int
-    from agent.model_metadata import estimate_request_tokens_rough
+    from hermes_agent.agent.context_compressor import ContextCompressor
+    from hermes_agent.agent.agent_init import _parse_config_int
+    from hermes_agent.agent.model_metadata import estimate_request_tokens_rough
     from hermes_cli.partial_compress import (
         rejoin_compressed_head_and_tail, split_history_for_partial_compress, summarize_compress_preview)
     from utils import is_truthy_value
@@ -68,7 +68,7 @@ async def prepare_compress(authority, live, payload, prepared):
 
     def summarize():
         with policy_scope(policy, authority=authority):
-            from agent.conversation_compression import _pre_compress_memory_context
+            from hermes_agent.agent.conversation_compression import _pre_compress_memory_context
             memory_context = _pre_compress_memory_context(resident, head, False) if resident is not None else ''
             engine = _plugin_engine(authority, policy, config, model, runtime, resident, snapshot['target'])
             if engine is not None:
@@ -91,7 +91,7 @@ async def prepare_compress(authority, live, payload, prepared):
             return rejoin_compressed_head_and_tail(compressed, tail), compressor
     compressed, compressor = await asyncio.to_thread(summarize)
     # The same report every native /compress prints ("Compressed: N → M messages").
-    from agent.manual_compression_feedback import summarize_manual_compression
+    from hermes_agent.agent.manual_compression_feedback import summarize_manual_compression
     if compressed is None:
         if resident is None and not isinstance(compressor, ContextCompressor):
             await asyncio.to_thread(_end_engine, compressor, snapshot['target'], messages)
@@ -103,7 +103,7 @@ async def prepare_compress(authority, live, payload, prepared):
             messages, messages, tokens, tokens, compression_state=compressor)}
     summary = summarize_manual_compression(messages, compressed, estimate_request_tokens_rough(messages),
                                            estimate_request_tokens_rough(compressed), compression_state=compressor)
-    from agent.model_metadata import estimate_messages_tokens_rough
+    from hermes_agent.agent.model_metadata import estimate_messages_tokens_rough
     hook = None if policy.safe_mode else {  # same rough basis as the agent path's compaction record
         'before_tokens': estimate_messages_tokens_rough(messages),
         'after_tokens': estimate_messages_tokens_rough(compressed), 'messages_removed': len(messages) - len(compressed)}
@@ -119,8 +119,8 @@ async def prepare_compress(authority, live, payload, prepared):
 def _engine_compress(engine, head, tail, messages, request, memory_context):
     """One forced ``compress()`` on a plugin engine; None when it changed nothing or would grow the
     conversation (the agent path refuses a growing result the same way)."""
-    from agent.conversation_compression import _supported_compression_kwargs
-    from agent.model_metadata import estimate_messages_tokens_rough, estimate_request_tokens_rough
+    from hermes_agent.agent.conversation_compression import _supported_compression_kwargs
+    from hermes_agent.agent.model_metadata import estimate_messages_tokens_rough, estimate_request_tokens_rough
     from hermes_cli.partial_compress import rejoin_compressed_head_and_tail
     engine._last_compress_refused_would_grow = False
     compressed = engine.compress(json.loads(json.dumps(head)), **_supported_compression_kwargs(
@@ -145,7 +145,7 @@ def _end_engine(engine, session_id, messages):
 def _configured_context_length(config, model, provider, base_url, custom_providers):
     """The configured window agent init hands a plugin engine: ``model.context_length`` when it
     describes this runtime, else the matching custom provider's entry."""
-    from agent.agent_init import _scope_context_length_to_default_runtime
+    from hermes_agent.agent.agent_init import _scope_context_length_to_default_runtime
     from hermes_cli.config import get_custom_provider_context_length
     model_cfg = config.get('model') if isinstance(config.get('model'), dict) else {}
     try:
@@ -168,17 +168,17 @@ def _plugin_engine(authority, policy, config, model, runtime, resident, target):
     A resident agent's engine is the one bound to this session. A cold or managed-worker session
     gets the engine its frozen policy names, selected and bound the way agent init does, so a
     plugin engine compresses its own history instead of having it rewritten underneath it."""
-    from agent.context_compressor import ContextCompressor
+    from hermes_agent.agent.context_compressor import ContextCompressor
     if resident is not None:
         engine = getattr(resident, 'context_compressor', None)
         return None if engine is None or isinstance(engine, ContextCompressor) else engine
     if policy.safe_mode:
         return None
-    from agent.agent_init import _select_context_engine
+    from hermes_agent.agent.agent_init import _select_context_engine
     engine = _select_context_engine(config)
     if engine is None:
         return None
-    from agent.model_metadata import get_model_context_length
+    from hermes_agent.agent.model_metadata import get_model_context_length
     thresholds = (config.get('compression') or {}).get('model_thresholds')
     if isinstance(thresholds, dict) and thresholds:  # before update_model, like agent init
         engine.model_thresholds = {str(k): float(v) for k, v in thresholds.items()}
@@ -208,7 +208,7 @@ async def finish_compress_engine(authority, prepared, result):
     hand-off. A cold session's engine was built for this compression only, so it gets the session
     end a resident agent's boundary eviction gives, committed or not. An exact retry (no
     ``engine_owner``) notifies nothing."""
-    from agent.conversation_compression import _notify_context_engine_compression_complete
+    from hermes_agent.agent.conversation_compression import _notify_context_engine_compression_complete
     from hermes_agent.gateway.run import _async_profile_runtime_scope
     owner = (prepared or {}).get('engine_owner')
     if owner is None or (result is None and not owner.owned):
@@ -231,7 +231,7 @@ async def finish_compress_engine(authority, prepared, result):
 async def fire_post_compaction_hook(authority, prepared, result):
     """``post_compaction`` for a committed ``/compress``: this path summarizes outside the agent's
     ``compress_context``, so it fires here, after the commit, in the session's profile."""
-    from agent.compaction_events import fire_post_compaction
+    from hermes_agent.agent.compaction_events import fire_post_compaction
     from hermes_agent.gateway.run import _async_profile_runtime_scope
     target, previous = result['target_session_id'], result['previous_target_session_id']
     try:
@@ -247,7 +247,7 @@ def _request_tokens(agent, messages, row=None):
     """Main's /compress request estimate: the agent's system prompt and tool schemas plus the messages.
     No resident agent (a cold session): the prompt and tools[] pin the session row stores, which the
     next agent restores and sends, so the figure matches what main's resident agent reported."""
-    from agent.model_metadata import estimate_request_tokens_rough
+    from hermes_agent.agent.model_metadata import estimate_request_tokens_rough
     prompt = getattr(agent, '_cached_system_prompt', '') or ''
     tools = getattr(agent, 'tools', None) or None
     if agent is None and isinstance(row, dict):

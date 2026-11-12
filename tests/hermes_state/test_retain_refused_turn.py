@@ -7,7 +7,7 @@ refused turn owner-side after the turn: the whole turn (user row + any tool roun
 leaves the model read, but the user's own message stays VISIBLE in the display projection, tagged
 ``content_refused``, so a close+reopen still shows "you asked X → refused". This pins both halves.
 """
-from agent.turn_failure_copy import CONTENT_REFUSED_DISPLAY_KIND, CONTENT_REFUSED_METADATA_KEY
+from hermes_agent.agent.turn_failure_copy import CONTENT_REFUSED_DISPLAY_KIND, CONTENT_REFUSED_METADATA_KEY
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_rewind import retain_refused_turn_for_display
 
@@ -172,8 +172,8 @@ def test_retention_of_a_carrier_keeps_the_refused_label_on_reload(tmp_path):
     """788: when the refused ask is embedded in a composite compaction carrier, the display
     projection unwraps the carrier to the live ask — but must KEEP the content_refused tag so a
     reopened chat still renders the greyed refused block instead of an ordinary user bubble."""
-    from agent.compaction_display import project_compaction_message_for_display
-    from agent.context_compressor import (
+    from hermes_agent.agent.compaction_display import project_compaction_message_for_display
+    from hermes_agent.agent.context_compressor import (
         HISTORICAL_TASK_HEADING, SUMMARY_PREFIX, _SUMMARY_END_MARKER)
 
     db_path = tmp_path / "state.db"

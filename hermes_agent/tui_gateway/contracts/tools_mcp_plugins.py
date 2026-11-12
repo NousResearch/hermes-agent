@@ -234,7 +234,7 @@ class SkillCommandRef(Result):
 
 
 class SkillsReloadDiff(OpenModel):
-    """``agent.skill_commands.reload_skills``."""
+    """``hermes_agent.agent.skill_commands.reload_skills``."""
 
     added: list[SkillCommandRef] = Field(default_factory=list)
     removed: list[SkillCommandRef] = Field(default_factory=list)
@@ -262,7 +262,7 @@ class LearningFramesParams(Params):
 
 
 class LearningFrame(Result):
-    """``agent.learning_graph_render.render_graph`` projection; ``grid`` rows are lists of
+    """``hermes_agent.agent.learning_graph_render.render_graph`` projection; ``grid`` rows are lists of
     ``[text, styleKey, alpha?, hexOverride?]`` runs."""
 
     reveal: float
@@ -331,7 +331,7 @@ class LearningEditParams(LearningNodeParams):
 
 
 class LearningMutationResult(Result):
-    """``agent.learning_mutations`` — ``ok: false`` carries the reason in ``message``."""
+    """``hermes_agent.agent.learning_mutations`` — ``ok: false`` carries the reason in ``message``."""
 
     ok: bool
     message: str | None = None

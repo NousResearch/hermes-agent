@@ -320,7 +320,7 @@ def _fire_cron_job_for_profile(profile: str, job_id: str, *, force: bool = False
 
 def _profile_env_value(home: Path, key: str) -> str:
     """One value from a profile's .env (``""`` when absent/unreadable)."""
-    from agent.secret_scope import load_env_file
+    from hermes_agent.agent.secret_scope import load_env_file
 
     return load_env_file(home / ".env").get(key, "")
 

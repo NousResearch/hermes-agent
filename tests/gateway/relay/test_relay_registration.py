@@ -47,7 +47,7 @@ def test_registers_when_url_configured(monkeypatch):
 class TestConfigRegistrationAgreementUnderMultiplexScope:
     """The config loader and the relay registration path must resolve the SAME
     GATEWAY_RELAY_URL under an active multiplex profile scope — the routing
-    stamp is process-global (agent/secret_scope.py), so neither side may see a
+    stamp is process-global (hermes_agent/agent/secret_scope.py), so neither side may see a
     value the other doesn't. Regression for the split-brain states: adapter
     registered with Platform.RELAY absent from config (process stamp dropped
     by the scoped reload), and enabled RELAY config with no adapter
@@ -56,7 +56,7 @@ class TestConfigRegistrationAgreementUnderMultiplexScope:
     def test_process_stamp_agrees_on_both_sides_under_scope(
         self, tmp_path, monkeypatch
     ):
-        from agent import secret_scope as ss
+        from hermes_agent.agent import secret_scope as ss
         from hermes_agent.gateway.config import Platform, load_gateway_config
 
         hermes_home = tmp_path / ".hermes"
@@ -103,7 +103,7 @@ class TestConfigRegistrationAgreementUnderMultiplexScope:
     def test_profile_only_stamp_is_inert_on_both_sides_under_scope(
         self, tmp_path, monkeypatch
     ):
-        from agent import secret_scope as ss
+        from hermes_agent.agent import secret_scope as ss
         from hermes_agent.gateway.config import Platform, load_gateway_config
 
         hermes_home = tmp_path / ".hermes"

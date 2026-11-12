@@ -9,7 +9,7 @@ def _agent(tmp_path, monkeypatch, ratio):
     (tmp_path / "config.yaml").write_text(
         f"agent:\n  budget_warning_ratio: {ratio}\n", encoding="utf-8"
     )
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     from hermes_agent.hermes_state import SessionDB
     from hermes_agent.model_tools import _clear_tool_defs_cache
     from hermes_agent.tools.registry import invalidate_check_fn_cache
@@ -29,9 +29,9 @@ def _agent(tmp_path, monkeypatch, ratio):
 def test_checkpoint_rearms_per_turn_without_changing_budget_or_durable_rows(
     tmp_path, monkeypatch, content, interrupted
 ):
-    from agent.turn_context import _reset_per_turn_agent_state
-    from agent.turn_iteration_prep import prepare_iteration
-    from agent.tool_executor import _flush_session_db_after_tool_progress
+    from hermes_agent.agent.turn_context import _reset_per_turn_agent_state
+    from hermes_agent.agent.turn_iteration_prep import prepare_iteration
+    from hermes_agent.agent.tool_executor import _flush_session_db_after_tool_progress
 
     agent = _agent(tmp_path, monkeypatch, "0.75")
     try:

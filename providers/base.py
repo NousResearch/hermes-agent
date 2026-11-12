@@ -17,7 +17,7 @@ from dataclasses import KW_ONLY, dataclass, field
 from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
-    from agent.account_usage import AccountUsageSnapshot
+    from hermes_agent.agent.account_usage import AccountUsageSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -177,7 +177,7 @@ class ProviderProfile:
     # row — return the rotated fields (``access_token``, ``refresh_token``, ``expires_at_ms`` …) or raise.
     # Both own their own token endpoints; Hermes passes no secrets beyond the pooled row itself.
     # ``classify_api_error(error, *, status_code, error_code, message, body, model) -> Mapping | None``:
-    # consulted by ``agent.error_classifier.classify_api_error`` for THIS provider's failures only, after
+    # consulted by ``hermes_agent.agent.error_classifier.classify_api_error`` for THIS provider's failures only, after
     # the generic ``transform_api_error_classification`` plugin hooks and before the built-in pipeline.
     # Return ``{"reason": <FailoverReason name>, ...hint flags}`` to override, ``None`` to decline.
     auth_handler: Callable[[str, Any], Any] | None = None
@@ -444,7 +444,7 @@ class ProviderProfile:
 
     # ── L1 wire seams (per-model wire, endpoint-keyed headers, max-tokens param) ──
     # Endpoint-keyed hooks take the request's ``base_url``: core asks the named provider's profile first,
-    # then any registered profile overriding the hook (``agent.provider_route_hooks``), so a ``custom``
+    # then any registered profile overriding the hook (``hermes_agent.agent.provider_route_hooks``), so a ``custom``
     # route pointed at this provider's host is served too. Return None / ``{}`` for an endpoint that is
     # not yours. All four are pure: no I/O unless the docstring says so.
 

@@ -16,8 +16,8 @@ owner = reads.owner
 async def test_context_breakdown_without_a_resident_agent_estimates_the_stored_freeze(owner, monkeypatch):
     """A session not run since the gateway started (or reaped) still gets the agent path's categories,
     from its frozen system prompt and tools[] pin, over its stored transcript."""
-    from agent import system_prompt
-    from agent.context_breakdown import compute_session_context_breakdown
+    from hermes_agent.agent import system_prompt
+    from hermes_agent.agent.context_breakdown import compute_session_context_breakdown
     from hermes_agent.gateway.session_tui_reads import _stored_id
 
     sid = (await owner.call('session.create', request_id='idle', source='tui', cwd=str(owner.workdir)))['session_id']
@@ -107,8 +107,8 @@ async def test_agentless_breakdown_survives_a_swept_tools_pin(owner):
 async def test_context_breakdown_measures_only_the_compression_tips_model_history(owner, monkeypatch):
     """The runtime id still names the compressed parent; neither its superseded segment nor the tip's
     session bookkeeping is model context, in the popover or the TUI's /context table."""
-    from agent import system_prompt
-    from agent.context_breakdown import compute_session_context_breakdown, render_context_breakdown_lines
+    from hermes_agent.agent import system_prompt
+    from hermes_agent.agent.context_breakdown import compute_session_context_breakdown, render_context_breakdown_lines
     from hermes_agent.gateway.session_tui_reads import _stored_id
 
     sid = (await owner.call('session.create', request_id='lineage', source='tui', cwd=str(owner.workdir)))['session_id']

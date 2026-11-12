@@ -304,7 +304,7 @@ def fire_overdue_jobs(
     # through the existing claim_fire path. Distinct component name from the
     # ticker's "cron" so the log-once mechanism fires independently.
     with contextlib.suppress(ImportError):
-        from agent.estop import check_paused as _estop_check_paused
+        from hermes_agent.agent.estop import check_paused as _estop_check_paused
         if _estop_check_paused("cron-misfire", logger):
             return 0
 

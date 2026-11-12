@@ -50,7 +50,7 @@ def _cron_job_count() -> int:
 
 
 def _skill_count() -> int:
-    from agent.skill_utils import iter_skill_index_files
+    from hermes_agent.agent.skill_utils import iter_skill_index_files
 
     skills_dir = get_hermes_home() / "skills"
     if not skills_dir.is_dir():
@@ -71,7 +71,7 @@ def _messaging_platform_count() -> int:
 
 
 def _display_language() -> str:
-    from agent.i18n import get_language
+    from hermes_agent.agent.i18n import get_language
 
     return get_language()
 

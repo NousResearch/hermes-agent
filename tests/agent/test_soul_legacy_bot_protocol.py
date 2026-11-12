@@ -8,7 +8,7 @@ LEGACY = "# Me\n\nBe terse.\n\n## Messaging other agents\n\nold plugin text\n- `
 
 
 def test_load_soul_md_drops_legacy_protocol_section(tmp_path, monkeypatch):
-    from agent import prompt_builder
+    from hermes_agent.agent import prompt_builder
 
     home = tmp_path / ".hermes"
     home.mkdir()

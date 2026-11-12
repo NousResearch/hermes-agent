@@ -1,7 +1,7 @@
 """Rate-limit / credits header capture and low-credit notices for ``AIAgent``.
 
 Parses provider response headers into ``_rate_limit_state`` / ``_credits_state`` and emits sticky notices.
-Extracted from ``run_agent.py``; every method resolves through ``AIAgent``'s MRO unchanged.
+Extracted from ``hermes_agent/run_agent.py``; every method resolves through ``AIAgent``'s MRO unchanged.
 """
 import logging
 import os
@@ -10,7 +10,7 @@ from typing import Any
 from utils import is_truthy_value
 
 # Same logger name as the origin module so log records / caplog filters are unchanged.
-logger = logging.getLogger("run_agent")
+logger = logging.getLogger("hermes_agent.run_agent")
 
 
 
@@ -47,7 +47,7 @@ class RateLimitCreditsMixin:
         if not headers:
             return
         try:
-            from agent.rate_limit_tracker import parse_rate_limit_headers
+            from hermes_agent.agent.rate_limit_tracker import parse_rate_limit_headers
             state = parse_rate_limit_headers(headers, provider=self.provider)
             if state is not None:
                 self._rate_limit_state = state
@@ -84,7 +84,7 @@ class RateLimitCreditsMixin:
         depletion-notice bug cannot vanish silently. HERMES_DEV_CREDITS_FIXTURE injects a chosen state instead.
         """
         try:
-            from agent.credits_tracker import dev_fixture_credits_state
+            from hermes_agent.agent.credits_tracker import dev_fixture_credits_state
             fixture = dev_fixture_credits_state()
         except Exception:
             fixture = None
@@ -108,7 +108,7 @@ class RateLimitCreditsMixin:
 
         # Parse: fail-open → miss; never overwrite good state with None.
         try:
-            from agent.credits_tracker import parse_credits_headers
+            from hermes_agent.agent.credits_tracker import parse_credits_headers
             state = parse_credits_headers(headers, provider=self.provider)
         except Exception:
             return
@@ -134,7 +134,7 @@ class RateLimitCreditsMixin:
         try:
             # A reply that contradicts the cached plan (upgrade, cancel, a limit filled or reset)
             # refreshes it once in the background, so pickers catch up without a new session.
-            from agent.plan_snapshot_sync import sync_plan_snapshot
+            from hermes_agent.agent.plan_snapshot_sync import sync_plan_snapshot
             sync_plan_snapshot(state)
         except Exception:
             logger.debug("Plan snapshot sync failed", exc_info=True)
@@ -160,7 +160,7 @@ class RateLimitCreditsMixin:
         if not self._credits_notices_enabled() or state is None:
             return
         try:
-            from agent.credits_tracker import (
+            from hermes_agent.agent.credits_tracker import (
                 _remember_shown_band,
                 evaluate_credits_notices, is_free_tier_model, new_credits_latch, rewarm_pricing_before_depleted_notice,
             )
@@ -177,20 +177,20 @@ class RateLimitCreditsMixin:
             model_is_top_tier = False
             if state.is_usage_window and not model_is_free:
                 # The top-tier approach warning only matters while on a top-tier model (gateway mark).
-                from agent.plan_limits import cached_pricing, is_top_tier
+                from hermes_agent.agent.plan_limits import cached_pricing, is_top_tier
                 model_is_top_tier = is_top_tier(getattr(self, "model", "") or "",
                                                 cached_pricing(getattr(self, "base_url", "") or ""))
             session_id = getattr(self, "session_id", None)
             if state.is_usage_window:
-                from agent.credits_tracker import restore_window_notices
+                from hermes_agent.agent.credits_tracker import restore_window_notices
                 restore_window_notices(session_id, latch)
             to_show, to_clear = evaluate_credits_notices(
                 state, latch, model_is_free=model_is_free, model_is_top_tier=model_is_top_tier)
             if state.is_usage_window:
-                from agent.credits_tracker import remember_window_notices
+                from hermes_agent.agent.credits_tracker import remember_window_notices
                 remember_window_notices(session_id, latch)
             elif session_id:
-                from agent.credits_tracker import forget_window_notices
+                from hermes_agent.agent.credits_tracker import forget_window_notices
                 forget_window_notices(session_id)
             for key in to_clear:
                 self._emit_notice_clear(key)

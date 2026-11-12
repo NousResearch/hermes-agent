@@ -9,13 +9,13 @@ from __future__ import annotations
 import logging
 import threading
 
-from agent.interrupt_compat import request_hard_interrupt
-from agent.interrupt_control import interrupt_issuer, interrupt_skip_wording
+from hermes_agent.agent.interrupt_compat import request_hard_interrupt
+from hermes_agent.agent.interrupt_control import interrupt_issuer, interrupt_skip_wording
 from hermes_agent.tools.interrupt import set_interrupt
 
 
 def _bare_agent():
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     agent = AIAgent.__new__(AIAgent)
     agent._interrupt_requested = False
@@ -35,7 +35,7 @@ def test_system_producer_is_recorded_and_logged_at_publication(caplog):
     names it at the point ``_interrupt_requested`` is set."""
     agent = _bare_agent()
     try:
-        with caplog.at_level(logging.INFO, logger="run_agent"):
+        with caplog.at_level(logging.INFO, logger="hermes_agent.run_agent"):
             assert request_hard_interrupt(agent, "Cron job timed out (inactivity)", tool_reason="cron inactivity watchdog")
         assert agent._interrupt_requested is True
         assert interrupt_issuer(agent) == "cron_inactivity_watchdog"
@@ -106,7 +106,7 @@ def test_soft_interrupt_with_tool_reason_is_attributed_to_the_system():
     from types import SimpleNamespace
     from unittest.mock import patch
 
-    import agent.tool_executor as te
+    import hermes_agent.agent.tool_executor as te
 
     agent = _bare_agent()
     agent._touch_activity = lambda *_: None
@@ -115,7 +115,7 @@ def test_soft_interrupt_with_tool_reason_is_attributed_to_the_system():
     try:
         # Drive the REAL batch-timeout guard: a prepared terminal call whose worker never settles.
         with (
-            patch("agent.terminal_approval_batch.take_prepared_call", return_value=prepared),
+            patch("hermes_agent.agent.terminal_approval_batch.take_prepared_call", return_value=prepared),
             patch.object(te, "_resolve_sequential_tool_timeout", return_value=0.05),
             patch.object(te, "_emit_terminal_post_tool_call"),
         ):
@@ -135,7 +135,7 @@ def test_soft_interrupt_with_tool_reason_is_attributed_to_the_system():
         agent._pending_redirect = "use the staging db"
         prepared.future = concurrent.futures.Future()
         with (
-            patch("agent.terminal_approval_batch.take_prepared_call", return_value=prepared),
+            patch("hermes_agent.agent.terminal_approval_batch.take_prepared_call", return_value=prepared),
             patch.object(te, "_resolve_sequential_tool_timeout", return_value=60.0),
             patch.object(te, "_emit_terminal_post_tool_call"),
             patch.object(te.concurrent.futures, "wait", lambda fs, timeout=None: None),
@@ -149,7 +149,7 @@ def test_soft_interrupt_with_tool_reason_is_attributed_to_the_system():
 
         # Desktop batch PREPARATION has the same two exits: a user stop that cancels it keeps the
         # user's message/redirect, and a preparation timeout is a system stop with no message.
-        import agent.terminal_approval_batch as tab
+        import hermes_agent.agent.terminal_approval_batch as tab
 
         def _prepare(exc, during=lambda: None):
             class _Batch:

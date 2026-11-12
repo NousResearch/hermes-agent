@@ -189,7 +189,7 @@ def _catalog_plugin_commands(cat: _Catalog, module_loader) -> None:
 def _catalog_skills(cat: _Catalog, skills: dict[str, dict], module_loader) -> str:
     """Append skill pairs and fill ``skills`` = ``{key: {usage, origin}}`` (every consumer ranks by them).
     Returns the one-line notice for skills whose name is a built-in command (no ``/<name>`` entry;
-    ``agent.skill_commands`` guard), ``""`` when none."""
+    ``hermes_agent.agent.skill_commands`` guard), ``""`` when none."""
     usage, origin_of = _skill_usage_lookup()
     sc = module_loader("agent.skill_commands")
     for k, info in sorted(sc.get_interactive_skill_commands().items()):
@@ -259,8 +259,8 @@ def slash_completions(text: str = "", scope=None) -> dict:
     from hermes_cli.commands_completion import SlashCommandCompleter
     from prompt_toolkit.document import Document
     from prompt_toolkit.formatted_text import to_plain_text
-    from agent.skill_commands import get_interactive_skill_commands
-    from agent.skill_bundles import get_skill_bundles
+    from hermes_agent.agent.skill_commands import get_interactive_skill_commands
+    from hermes_agent.agent.skill_bundles import get_skill_bundles
     with scope if scope is not None else contextlib.nullcontext():
         skill_commands, skill_bundles = dict(get_interactive_skill_commands()), dict(get_skill_bundles())
     completer = SlashCommandCompleter(

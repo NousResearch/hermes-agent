@@ -70,7 +70,7 @@ def output_field(ws, name):
 def test_shell_scopes_passthrough_after_eager_activation(
     host_app, tmp_path, monkeypatch, named_launch,
 ):
-    from agent import secret_scope
+    from hermes_agent.agent import secret_scope
     from hermes_constants import get_hermes_home_override
     from hermes_agent.tools.terminal_scope import get_terminal_scope
     from hermes_agent.tui_gateway import launch_profile_policy

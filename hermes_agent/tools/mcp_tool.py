@@ -661,7 +661,7 @@ def _mcp_registry_scope() -> Optional[str]:
     session_scope = current_session_tool_scope()
     if session_scope is not None:
         return session_scope
-    from agent.secret_scope import serves_routed_profile
+    from hermes_agent.agent.secret_scope import serves_routed_profile
     if not serves_routed_profile():
         return None
     from hermes_agent.tools.registry import registry

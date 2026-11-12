@@ -280,7 +280,7 @@ def _terminate_cron_script_tree(proc: subprocess.Popen) -> None:
     try:
         # Function-local (monkeypatchable); separate try so an import problem is not
         # misreported as a kill failure.
-        from agent.deadline import kill_process_tree
+        from hermes_agent.agent.deadline import kill_process_tree
     except Exception:
         return fallback("agent.deadline.kill_process_tree unavailable", exc_info=True)
     try:
@@ -518,7 +518,7 @@ def _run_job_script(
                 # Phase 4a (#85125): a script timeout must leave ZERO living descendants. killpg only
                 # reaches the script's own process group — a grandchild that called setsid (backgrounded
                 # shell jobs, watchdogs) escapes it and keeps running after the job reports failure (#71148
-                # / #59549). agent.deadline.kill_process_tree snapshots the descendant set via psutil BEFORE
+                # / #59549). hermes_agent.agent.deadline.kill_process_tree snapshots the descendant set via psutil BEFORE
                 # signalling, so own-session grandchildren are reached too — the unified deadline layer's
                 # tree-kill (#85147, d6a5cb9725).
                 return False, f"Script timed out after {script_timeout}s: {path}"
@@ -533,7 +533,7 @@ def _run_job_script(
 
         # Redact secrets before ANY return path.
         try:
-            from agent.redact import redact_sensitive_text
+            from hermes_agent.agent.redact import redact_sensitive_text
             stdout = redact_sensitive_text(stdout)
             stderr = redact_sensitive_text(stderr)
         except Exception as e:

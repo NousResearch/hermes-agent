@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from agent.secret_sources.base import (
+from hermes_agent.agent.secret_sources.base import (
     SECRET_SOURCE_API_VERSION,
     ErrorKind,
     FetchResult,
@@ -28,8 +28,8 @@ from agent.secret_sources.base import (
     run_secret_cli,
     scrub_ansi,
 )
-from agent.secret_sources import registry as reg
-from agent.secret_sources.bitwarden import BitwardenSource
+from hermes_agent.agent.secret_sources import registry as reg
+from hermes_agent.agent.secret_sources.bitwarden import BitwardenSource
 from tests.secret_sources.conformance import SecretSourceConformance
 
 
@@ -250,7 +250,7 @@ class TestBitwardenSource:
 
     def test_fetch_delegates_to_fetch_bitwarden_secrets(self, tmp_path, monkeypatch):
         monkeypatch.setenv("BWS_ACCESS_TOKEN", "0.token")
-        import agent.secret_sources.bitwarden as bw
+        import hermes_agent.agent.secret_sources.bitwarden as bw
 
         monkeypatch.setattr(bw, "find_bws", lambda **kw: Path("/fake/bws"))
         captured = {}
@@ -276,7 +276,7 @@ class TestBitwardenSource:
     def test_e2e_through_orchestrator(self, tmp_path, monkeypatch):
         """Full path: registry → BitwardenSource → env, with fetch mocked."""
         monkeypatch.setenv("BWS_ACCESS_TOKEN", "0.token")
-        import agent.secret_sources.bitwarden as bw
+        import hermes_agent.agent.secret_sources.bitwarden as bw
 
         monkeypatch.setattr(bw, "find_bws", lambda **kw: Path("/fake/bws"))
         monkeypatch.setattr(
@@ -304,7 +304,7 @@ class TestBitwardenConformance(SecretSourceConformance):
     @pytest.fixture
     def source(self, monkeypatch):
         # Never hit the network / auto-install path in conformance runs.
-        import agent.secret_sources.bitwarden as bw
+        import hermes_agent.agent.secret_sources.bitwarden as bw
 
         monkeypatch.setattr(bw, "find_bws", lambda **kw: None)
         monkeypatch.delenv("BWS_ACCESS_TOKEN", raising=False)
@@ -328,8 +328,8 @@ class TestOnePasswordSource:
         self, tmp_path, monkeypatch
     ):
         """The headline multi-source scenario: both vaults claim the same var."""
-        import agent.secret_sources.bitwarden as bw
-        import agent.secret_sources.onepassword as op
+        import hermes_agent.agent.secret_sources.bitwarden as bw
+        import hermes_agent.agent.secret_sources.onepassword as op
 
         monkeypatch.setenv("BWS_ACCESS_TOKEN", "0.token")
         monkeypatch.setattr(bw, "find_bws", lambda **kw: Path("/fake/bws"))
@@ -366,7 +366,7 @@ class TestOnePasswordSource:
 class TestOnePasswordConformance(SecretSourceConformance):
     @pytest.fixture
     def source(self, monkeypatch):
-        import agent.secret_sources.onepassword as op
+        import hermes_agent.agent.secret_sources.onepassword as op
 
         monkeypatch.setattr(op, "find_op", lambda *_a, **_kw: None)
         monkeypatch.delenv("OP_SERVICE_ACCOUNT_TOKEN", raising=False)

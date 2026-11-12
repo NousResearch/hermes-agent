@@ -23,7 +23,7 @@ from unittest.mock import patch
 import pytest
 
 
-from agent.context_compressor import (
+from hermes_agent.agent.context_compressor import (
     COMPRESSED_SUMMARY_METADATA_KEY,
     ContextCompressor,
     _MICRO_COMPACT_MAX_CONSECUTIVE_FAILURES,
@@ -333,7 +333,7 @@ class TestMicroCompaction:
         scaffolding) and made the transcript grow every turn — the opposite
         of what compaction is for.
         """
-        from agent.model_metadata import estimate_messages_tokens_rough
+        from hermes_agent.agent.model_metadata import estimate_messages_tokens_rough
 
         cc = _compressor()
         # Cumulative summary, like the real summarizer produces.
@@ -366,7 +366,7 @@ class TestMicroCompaction:
         cc = _compressor()
         messages = _conversation(exchanges=8)
 
-        with caplog.at_level(logging.INFO, logger="agent.context_compressor"):
+        with caplog.at_level(logging.INFO, logger="hermes_agent.agent.context_compressor"):
             result = cc._micro_compact(messages)
 
         lines = [
@@ -408,7 +408,7 @@ class TestMicroCompaction:
 
         with patch.object(type(cc), "threshold_tokens",
                           property(explode, lambda s, v: None)):
-            with caplog.at_level(logging.INFO, logger="agent.context_compressor"):
+            with caplog.at_level(logging.INFO, logger="hermes_agent.agent.context_compressor"):
                 cc._emit_micro_compaction_telemetry(
                     outcome="absorbed",
                     messages_before=10,
@@ -524,7 +524,7 @@ class TestMicroCompaction:
         survive repair untouched, and no summary text leaks into real user
         messages.
         """
-        from agent.agent_runtime_helpers import repair_message_sequence
+        from hermes_agent.agent.agent_runtime_helpers import repair_message_sequence
 
         class _DummyAgent:
             session_id = "probe"
@@ -581,7 +581,7 @@ class TestMicroCompaction:
 
     def test_marker_reports_no_user_provenance(self):
         """Micro markers absorb only assistant/tool content (#64650)."""
-        from agent.context_compressor import COMPRESSED_SUMMARY_HAS_USER_TURN_KEY
+        from hermes_agent.agent.context_compressor import COMPRESSED_SUMMARY_HAS_USER_TURN_KEY
 
         cc = _compressor()
         result = cc._micro_compact(_conversation(exchanges=6))
@@ -670,7 +670,7 @@ class TestMicroCompaction:
         turns summarized rows into rewind-only active=0, compacted=0 debris
         (#118481).
         """
-        from agent.context_compressor import _DB_PERSISTED_MARKER
+        from hermes_agent.agent.context_compressor import _DB_PERSISTED_MARKER
 
         cc = _compressor()
         captured = {}
@@ -714,7 +714,7 @@ class TestMicroCompaction:
         unstamped and the next append-only flush re-inserted them all as
         duplicate active rows.
         """
-        from agent.context_compressor import _DB_PERSISTED_MARKER
+        from hermes_agent.agent.context_compressor import _DB_PERSISTED_MARKER
 
         cc = _compressor()
         messages = _conversation(exchanges=8)
@@ -741,7 +741,7 @@ class TestDefragFlushCursorInvalidation:
     identity-skipped and never re-persisted."""
 
     def _defrag_setup(self):
-        from agent.context_compressor import _DB_PERSISTED_MARKER
+        from hermes_agent.agent.context_compressor import _DB_PERSISTED_MARKER
 
         cc = _compressor(summary="FRESH DEFRAGGED SUMMARY")
         messages = _conversation(exchanges=8)
@@ -754,7 +754,7 @@ class TestDefragFlushCursorInvalidation:
         return cc, messages
 
     def test_defrag_marker_pop_raises_invalidation_flag(self):
-        from agent.context_compressor import _DB_PERSISTED_MARKER
+        from hermes_agent.agent.context_compressor import _DB_PERSISTED_MARKER
 
         cc, messages = self._defrag_setup()
         assert cc._flush_scan_cursor_invalidated is False
@@ -784,7 +784,7 @@ class TestMergeAdjacentUserTurnsPersistedMarker:
     identity-skipped and never reaches state.db."""
 
     def _spliced_merge(self):
-        from agent.context_compressor import (
+        from hermes_agent.agent.context_compressor import (
             _DB_PERSISTED_MARKER,
             COMPRESSED_SUMMARY_METADATA_KEY,
             MICRO_COMPACT_MARKER_KEY,
@@ -810,7 +810,7 @@ class TestMergeAdjacentUserTurnsPersistedMarker:
         return cc, cc._splice_micro_compact_result(messages, 3, 5, supersede=True)
 
     def test_merge_pops_persisted_marker_and_raises_flag(self):
-        from agent.context_compressor import _DB_PERSISTED_MARKER
+        from hermes_agent.agent.context_compressor import _DB_PERSISTED_MARKER
 
         cc, result = self._spliced_merge()
 
@@ -825,7 +825,7 @@ def test_superseding_marker_never_shows_a_user_input_twice_in_display_history(tm
     """A supersede merges the adjacent user turns for the model; the originals stay in display
     history as compacted rows, so no display projection (resume, REST page, legacy page, prompt
     timeline) may also paint the merged row. The model view still holds each input exactly once."""
-    from agent.context_compressor import _DB_PERSISTED_MARKER
+    from hermes_agent.agent.context_compressor import _DB_PERSISTED_MARKER
     from hermes_agent.hermes_state import SessionDB
     from hermes_agent.hermes_state_timeline import get_session_timeline
 
@@ -921,7 +921,7 @@ def test_a_stale_generation_aborts_leaving_the_winner_the_only_live_version(tmp_
     spliced list lets the finalizer's persist flush append the stale summary row as live. The pass must be a
     true no-op: the input list, the pre-pass rolling summary, and a store holding only the winner. A failed
     watermark read must take the same no-op path, never a None watermark (which archives every active row)."""
-    from agent.context_compressor import _DB_PERSISTED_MARKER
+    from hermes_agent.agent.context_compressor import _DB_PERSISTED_MARKER
 
     db, cc, held = _held_session(tmp_path, mode)
     winner = [
@@ -961,7 +961,7 @@ def test_a_generation_rewritten_in_place_aborts_a_lease_less_pass(tmp_path, mode
     blind to it. A second lease-less surface still holding the pre-prune bodies must abort anyway:
     publishing them archives rows it never compared and republishes the pruned-away text over the
     winner, undoing the prune (#124102)."""
-    from agent.context_compressor import _DB_PERSISTED_MARKER
+    from hermes_agent.agent.context_compressor import _DB_PERSISTED_MARKER
 
     db, cc, held = _held_session(tmp_path, mode)
     # Another surface commits a prune in place: same ids, same activity, different bodies.
@@ -1006,7 +1006,7 @@ def test_an_unstamped_trailing_row_does_not_suppress_the_stale_check(tmp_path, m
     """An exact persisted prefix plus an unstamped trailing message is the live-turn shape. The trailing
     row may cap the watermark, but the durable prefix the caller holds exactly must still be compared —
     a rewritten prefix aborts the pass instead of republishing the pre-rewrite text (#124102)."""
-    from agent.context_compressor import _DB_PERSISTED_MARKER
+    from hermes_agent.agent.context_compressor import _DB_PERSISTED_MARKER
 
     db, cc, held = _held_session(tmp_path, mode)
     rewritten = [m for m in db.get_resume_conversations("s")[0] if m.get("role") == "tool"][:1] or [
@@ -1035,11 +1035,11 @@ def test_a_stale_generation_held_without_row_ids_aborts_the_micro_compact(tmp_pa
     so the fence must still name its rows by ``message_uid``: after another surface pruned in place,
     micro-compaction from that stale held history must be a no-op — the pruned stubs stay the only
     live generation and the pre-prune bodies are not republished (#124102)."""
-    from agent.context_compressor import _DB_PERSISTED_MARKER
+    from hermes_agent.agent.context_compressor import _DB_PERSISTED_MARKER
 
     db, cc, _held = _held_session(tmp_path, "micro")
     held = db.get_messages_as_conversation("s", repair_alternation=True)
-    from agent.message_metadata import DB_ROW_SNAPSHOT
+    from hermes_agent.agent.message_metadata import DB_ROW_SNAPSHOT
     assert held and not any(m.get("_row_id") for m in held)
     assert all(m.get(_DB_PERSISTED_MARKER) and isinstance(m.get(DB_ROW_SNAPSHOT), str) for m in held)
     # Another surface commits a prune in place: same ids, same activity, different bodies.
@@ -1074,7 +1074,7 @@ def test_the_uid_fence_cas_against_the_newest_active_copy(tmp_path):
     bare ``fetchone()`` that lands on an older unchanged duplicate clears the held digest as
     current while another writer rewrote the newest, and the lease-less fallback then republishes
     the stale held payload over that newer generation (#124102)."""
-    from agent.context_compressor import _DB_PERSISTED_MARKER
+    from hermes_agent.agent.context_compressor import _DB_PERSISTED_MARKER
 
     db, cc, _held = _held_session(tmp_path, "micro")
     held = db.get_messages_as_conversation("s", repair_alternation=True)

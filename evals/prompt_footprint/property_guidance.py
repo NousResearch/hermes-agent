@@ -19,8 +19,8 @@ def main():
         os.environ["TERMINAL_CWD"] = temporary
         os.chdir(temporary)
         import tiktoken
-        from agent import prompt_builder
-        from agent.system_prompt import build_system_prompt
+        from hermes_agent.agent import prompt_builder
+        from hermes_agent.agent.system_prompt import build_system_prompt
         from hermes_agent.tools.skills_hub_official import OptionalSkillSource
         from hermes_agent.tools.skills_tool import skill_view
 

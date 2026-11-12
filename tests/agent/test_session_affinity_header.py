@@ -8,9 +8,9 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from agent import auxiliary_client as aux
-from agent.chat_completion_helpers import build_api_kwargs
-from run_agent import AIAgent
+from hermes_agent.agent import auxiliary_client as aux
+from hermes_agent.agent.chat_completion_helpers import build_api_kwargs
+from hermes_agent.run_agent import AIAgent
 
 _MSGS = [{"role": "user", "content": "hello"}]
 _BASE = "http://localhost:4000/v1"

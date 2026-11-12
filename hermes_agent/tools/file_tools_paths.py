@@ -13,7 +13,7 @@ import sys
 import time
 from pathlib import Path, PurePosixPath
 
-from agent.runtime_self_protection import split_entry
+from hermes_agent.agent.runtime_self_protection import split_entry
 
 logger = logging.getLogger(__name__)
 
@@ -107,7 +107,7 @@ def _configured_terminal_cwd() -> str | None:
     """Return ``$TERMINAL_CWD`` only when it names a real (absolute, non-sentinel) anchor.
     Scope-aware: under gateway multiplexing the routed profile's cwd lives in the per-turn scope."""
     # See #68559.
-    from agent.runtime_cwd import scope_terminal_cwd
+    from hermes_agent.agent.runtime_cwd import scope_terminal_cwd
 
     return _sentinel_free_abs_cwd(scope_terminal_cwd() or None)
 
@@ -181,7 +181,7 @@ def _ssh_remote_anchor(task_id: str) -> str:
     value that is neither ``~``-prefixed nor POSIX-absolute (a Windows or relative
     host path) is skipped. ``coerce_ssh_remote_cwd`` maps the host subprocess home back to ``~``.
     """
-    from agent.runtime_cwd import scope_terminal_cwd
+    from hermes_agent.agent.runtime_cwd import scope_terminal_cwd
     from hermes_agent.tools.terminal_tool import get_session_cwd, resolve_task_overrides
     from hermes_agent.tools.terminal_tool_config import coerce_ssh_remote_cwd
 

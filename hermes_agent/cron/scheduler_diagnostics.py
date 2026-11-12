@@ -3,7 +3,7 @@
 from pathlib import Path
 from traceback import format_exception
 
-from agent.redact import redact_sensitive_text
+from hermes_agent.agent.redact import redact_sensitive_text
 
 # Enough for a Python traceback's last frames plus the exception line.
 _WORKER_STDERR_TAIL_CHARS = 1500

@@ -99,14 +99,14 @@ import utils
 utils.RACY_MTIME_WINDOW_NS = int(sys.argv[1])
 home = Path(os.environ["HERMES_HOME"])
 (home / "config.yaml").write_text("agent:\n  max_turns: 17\nskills:\n  external_dirs: []\n")
-from agent.safe_worker_policy import _bind_safe_worker_policy
+from hermes_agent.agent.safe_worker_policy import _bind_safe_worker_policy
 _bind_safe_worker_policy(safe_mode=True, ignore_user_config=True, config={"agent": {"max_turns": 3}})
 opens, current = {}, [None]
 def audit(event, args):
     if event == "open" and str(args[0]).endswith("config.yaml") and current[0]:
         opens[current[0]] = opens.get(current[0], 0) + 1
 sys.addaudithook(audit)
-from agent import skill_utils
+from hermes_agent.agent import skill_utils
 import providers
 from hermes_cli import free_tier_bootstrap, model_switch, profiles
 calls = {

@@ -79,7 +79,7 @@ class TestForwardRelayFrontedRun:
         with patch.object(
             cronjob_tools, "_relay_fronted_delivery_platforms", return_value={"discord"}
         ), patch("httpx.post", side_effect=fake_post), patch(
-            "agent.secret_scope.get_secret", return_value="secret-key-16chars"
+            "hermes_agent.agent.secret_scope.get_secret", return_value="secret-key-16chars"
         ):
             cronjob_tools._forward_relay_fronted_run({"id": "abc123"})
         assert sent["url"].endswith("/api/jobs/abc123/run")

@@ -281,7 +281,7 @@ async def test_stop_during_the_inline_wait_cancels_the_children(monkeypatch, dis
 def test_each_profile_resolves_its_own_mode_under_the_multiplexer(monkeypatch, tmp_path):
     """A -> B -> A through ``_profile_scope_for_source`` (the seam every turn enters): the mode comes from the
     routed profile's own config, never from whichever profile resolved last."""
-    from agent import secret_scope
+    from hermes_agent.agent import secret_scope
     from hermes_agent.tools.delegate_tool_config import gateway_delegation_inline
 
     root = tmp_path / "hermes"

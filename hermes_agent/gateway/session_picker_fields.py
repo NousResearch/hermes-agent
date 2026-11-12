@@ -21,8 +21,8 @@ def _last_reply(candidates):
     """The newest of a segment's replies (``picker_session_facts``) that shows text, projected as a display
     read projects it (``project_compaction_message_for_display``): a pure handoff the compressor wrote as an
     assistant row shows nothing, so the reply before it stands; a carrier shows the reply it wraps."""
-    from agent.compaction_display import project_compaction_message_for_display
-    from agent.message_content import flatten_message_text
+    from hermes_agent.agent.compaction_display import project_compaction_message_for_display
+    from hermes_agent.agent.message_content import flatten_message_text
     from hermes_agent.hermes_state_common import _shape_preview
     for content, summary in candidates:
         shown = project_compaction_message_for_display(

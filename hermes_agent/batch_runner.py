@@ -29,9 +29,9 @@ import fire
 from rich.console import Console
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TextColumn, TimeRemainingColumn
 
-from agent.conversation_compression_checkpoint import checkpoint_required_from_config
+from hermes_agent.agent.conversation_compression_checkpoint import checkpoint_required_from_config
 from hermes_agent.model_tools import TOOL_TO_TOOLSET_MAP
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 from hermes_agent.toolset_distributions import (
     list_distributions,
     sample_toolsets_from_distribution,
@@ -626,7 +626,7 @@ class BatchRunner:
         """Picklable agent configuration for worker processes.
 
         ``self.api_key`` may be a zero-arg callable (Azure Foundry Entra ID bearer provider
-        from ``agent.azure_identity_adapter``), which is not safely picklable across the
+        from ``hermes_agent.agent.azure_identity_adapter``), which is not safely picklable across the
         Pool boundary. Drop it and let each worker rebuild its own provider via
         ``resolve_runtime_provider()`` from ``model.auth_mode`` in config.yaml
         (azure-identity caches in-process, so each worker gets its own short-lived cache).

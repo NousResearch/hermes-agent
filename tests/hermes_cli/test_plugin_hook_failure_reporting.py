@@ -103,7 +103,7 @@ def test_execution_chain_middleware_failure_warns_once(manager, caplog, monkeypa
 def test_stream_observer_hook_failure_warns_once(manager, caplog, monkeypatch):
     """Stream observer hooks fire once per streaming delta (far more often than per tool call);
     the per-consumer worker reports a mis-declared callback through the same warn-once path."""
-    from agent import plugin_stream_hooks as psh
+    from hermes_agent.agent import plugin_stream_hooks as psh
 
     monkeypatch.setattr("hermes_cli.plugins._plugin_manager", manager)
 

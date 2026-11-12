@@ -128,7 +128,7 @@ class TestGatewayQuickCommands:
 
         # Ensure redaction is active regardless of host HERMES_REDACT_SECRETS state
         # or test ordering
-        monkeypatch.setattr("agent.redact._REDACT_ENABLED", True)
+        monkeypatch.setattr("hermes_agent.agent.redact._REDACT_ENABLED", True)
 
         runner = GatewayRunner.__new__(GatewayRunner)
         runner.config = {"quick_commands": {"token": {"type": "exec", "command": "echo sk-ant-api03-supersecretkey1234567890"}}}

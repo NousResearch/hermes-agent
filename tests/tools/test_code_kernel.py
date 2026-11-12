@@ -250,7 +250,7 @@ class TestKernelOwnershipAndLifecycle(unittest.TestCase):
         resolution attached the child to the parent's kernel and leaked
         in-memory state across the delegation boundary (both directions,
         verified live). The owner must be qualified for child contexts."""
-        from agent.delegation_context import delegated_child_context
+        from hermes_agent.agent.delegation_context import delegated_child_context
 
         with _kernel_config():
             self._run_as("conv-a", "parent_secret = 'p'", task_id="turn-1")
@@ -272,7 +272,7 @@ class TestKernelOwnershipAndLifecycle(unittest.TestCase):
     def test_two_delegated_children_are_isolated_from_each_other(self):
         """Sibling children in one batch must not share a kernel either —
         each child context carries its own delegation session id."""
-        from agent.delegation_context import delegated_child_context
+        from hermes_agent.agent.delegation_context import delegated_child_context
 
         with _kernel_config():
             with delegated_child_context("child-A"):
@@ -292,7 +292,7 @@ class TestKernelOwnershipAndLifecycle(unittest.TestCase):
         while the schema promised persistence. A live child's kernel is pinned for the child's life."""
         import contextvars
 
-        from agent.delegation_context import delegated_child_context
+        from hermes_agent.agent.delegation_context import delegated_child_context
 
         with _kernel_config(max_session_kernels=2):
             contexts = []
@@ -317,7 +317,7 @@ class TestKernelOwnershipAndLifecycle(unittest.TestCase):
     def test_finished_children_release_their_kernels(self):
         """The pin is not a leak: when the child is torn down (the delegate_task cleanup path calls
         ``shutdown_kernels_for_delegated_child``) its kernels die and stop counting."""
-        from agent.delegation_context import delegated_child_context
+        from hermes_agent.agent.delegation_context import delegated_child_context
         from hermes_agent.tools.code_kernel import shutdown_kernels_for_delegated_child
 
         with _kernel_config():

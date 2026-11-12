@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 from typing import Any
 
-from agent.turn_finalizer import finalize_turn
+from hermes_agent.agent.turn_finalizer import finalize_turn
 
 
 class FakeAgent:
@@ -138,7 +138,7 @@ def test_fallback_timestamp_survives_delayed_sqlite_persistence(
 
     created_at = 1_781_976_577.25
     persisted_at = created_at + 600
-    monkeypatch.setattr("agent.message_metadata.wall_time", lambda: created_at)
+    monkeypatch.setattr("hermes_agent.agent.message_metadata.wall_time", lambda: created_at)
     monkeypatch.setattr("hermes_agent.hermes_state.time.time", lambda: persisted_at)
     monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
 
@@ -233,7 +233,7 @@ def test_final_response_fills_pure_tool_call_tail(monkeypatch):
 def test_final_response_fill_invalidates_flush_scan_cursor():
     """The fill's marker pop must invalidate the bounded flush-scan cursor.
 
-    The cursor (run_agent.py) skips the identity-matched prefix of its
+    The cursor (hermes_agent/run_agent.py) skips the identity-matched prefix of its
     previous snapshot assuming no live dict loses ``_db_persisted`` in place
     — the fill is the one path that pops it. Without invalidation, the
     turn-end flush skips the filled row as 'already stamped' and the

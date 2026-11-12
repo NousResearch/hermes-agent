@@ -56,7 +56,7 @@ class TestCheckRequirements:
         assert _get_bot_token() == "my-token"
 
     def test_multiplex_scope_token_wins_over_process_environment(self, monkeypatch):
-        from agent import secret_scope
+        from hermes_agent.agent import secret_scope
 
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "another-profile-token")
         secret_scope.set_multiplex_active(True)
@@ -71,7 +71,7 @@ class TestCheckRequirements:
             secret_scope.set_multiplex_active(False)
 
     def test_multiplex_scope_missing_token_fails_closed(self, monkeypatch):
-        from agent import secret_scope
+        from hermes_agent.agent import secret_scope
         from hermes_agent.tools.registry import invalidate_check_fn_cache, registry
 
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "another-profile-token")
@@ -88,7 +88,7 @@ class TestCheckRequirements:
             secret_scope.set_multiplex_active(False)
 
     def test_non_multiplex_scope_miss_keeps_environment_compatibility(self, monkeypatch):
-        from agent import secret_scope
+        from hermes_agent.agent import secret_scope
 
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "process-token")
         secret_scope.set_multiplex_active(False)
@@ -100,7 +100,7 @@ class TestCheckRequirements:
             secret_scope.reset_secret_scope(scope_token)
 
     def test_gateway_tool_prompt_gate_uses_active_profile_token(self, monkeypatch):
-        from agent import secret_scope
+        from hermes_agent.agent import secret_scope
         from hermes_agent.gateway.session import _discord_tools_loaded
 
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "another-profile-token")
@@ -475,7 +475,7 @@ class TestConfigAllowlist:
         """Restore the ``tools`` logger level after cross-test pollution.
 
         ``AIAgent(quiet_mode=True)`` globally sets ``tools`` and
-        ``tools.*`` children to ``ERROR`` (see run_agent.py quiet_mode
+        ``tools.*`` children to ``ERROR`` (see hermes_agent/run_agent.py quiet_mode
         block).  A persistent test process keeps that setting, so a
         streaming test will silence WARNING-level logs from
         ``hermes_agent.tools.discord_tool`` for every test that follows.  Reset here so

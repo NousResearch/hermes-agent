@@ -1,4 +1,4 @@
-"""Deprecated alias module: use :class:`agent.acp_client.ACPClient`.
+"""Deprecated alias module: use :class:`hermes_agent.agent.acp_client.ACPClient`.
 
 Listed catalog ACP providers were built on this module at their pinned versions
 (kimchi-acp-provider, kiro-acp, grok-acp, cursor-acp). They subclass ``CopilotACPClient``,
@@ -7,7 +7,7 @@ import former module helpers (``ACP_MARKER_BASE_URL``, ``_build_subprocess_env``
 ``subprocess.Popen`` through it. So the module keeps its whole former surface: the
 Copilot-flavoured names keep their former defaults (launch env vars, the ``copilot-acp``
 placeholder, the ``copilotEnablement`` model filter, the deprecated ``gh copilot`` extension
-diagnosis), and the generic rest is served from :mod:`agent.acp_client`. The first access of
+diagnosis), and the generic rest is served from :mod:`hermes_agent.agent.acp_client`. The first access of
 any of these names warns once per process. Remove no sooner than two minor releases after the
 deprecation (the plugin compat contract in ``plugins/AGENTS.md``).
 """
@@ -16,14 +16,14 @@ from __future__ import annotations
 
 import os
 import shlex
-# A real attribute, not served by __getattr__: plugins patch ``agent.copilot_acp_client.subprocess.Popen``
+# A real attribute, not served by __getattr__: plugins patch ``hermes_agent.agent.copilot_acp_client.subprocess.Popen``
 # (and ``.run``). It is the stdlib module itself, so such patches reach ACPClient's spawn and probe.
 import subprocess
 import warnings
 from typing import Any
 
-from agent import acp_client as _acp
-from agent.acp_client import ACPClient
+from hermes_agent.agent import acp_client as _acp
+from hermes_agent.agent.acp_client import ACPClient
 
 _warned = False
 _PLACEHOLDER = "copilot-acp"
@@ -117,7 +117,7 @@ _COMPAT: dict[str, Any] = {
     "_legacy_session_model_ids": _former_legacy_session_model_ids,
     "_model_selection_request": _former_model_selection_request,
 }
-# Former names with unchanged behaviour: the very objects agent.acp_client uses (shared caches included).
+# Former names with unchanged behaviour: the very objects hermes_agent.agent.acp_client uses (shared caches included).
 _FORWARDED = frozenset({
     "logger", "_DEFAULT_TIMEOUT_SECONDS", "_ROLE_LABELS", "_ACP_PROBE_CACHE", "_PROMPT_PREAMBLE", "_INITIALIZE_PARAMS",
     "_acp_supported", "_resolve_home_dir", "_build_subprocess_env", "_jsonrpc_result", "_jsonrpc_error",

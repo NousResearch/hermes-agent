@@ -16,15 +16,15 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from agent import compression_facade
-from agent import conversation_compression
-from agent.conversation_compression import CompressionCommitFence
+from hermes_agent.agent import compression_facade
+from hermes_agent.agent import conversation_compression
+from hermes_agent.agent.conversation_compression import CompressionCommitFence
 from hermes_agent.hermes_state import SessionDB
 
 
 def _build_agent(db: SessionDB, session_id: str):
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key",

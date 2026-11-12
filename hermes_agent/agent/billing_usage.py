@@ -53,7 +53,7 @@ def fetch_nous_account(timeout: float):
 
     Shares the one bounded implementation so a stalled portal releases the
     /billing surface at ``timeout`` too (see ``_fetch_portal_account``)."""
-    from agent.account_usage import _fetch_portal_account
+    from hermes_agent.agent.account_usage import _fetch_portal_account
     return _fetch_portal_account(timeout)
 
 
@@ -126,7 +126,7 @@ def usage_model_from_account(account_info: Any) -> UsageModel:
         # Usage-window plans have no monthly credit grant, so the credit bars don't apply;
         # /usage falls through to the percent-window renderer instead. A partial/empty block is not a
         # window plan (same completeness rule as the credits seed).
-        from agent.credits_tracker import _window_seed_fields
+        from hermes_agent.agent.credits_tracker import _window_seed_fields
         if _window_seed_fields(getattr(account_info, "usage_window", None)) is not None:
             return UsageModel(available=False)
         # Sub-structs are dataclasses or None; getattr(None, ..., None) is None, so no guards needed.

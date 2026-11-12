@@ -9,8 +9,8 @@ ceiling while the compressor had already fallen back to provider metadata / the 
 
 from types import SimpleNamespace
 
-import agent.context_compressor as cc_mod
-from agent.context_compressor import ContextCompressor
+import hermes_agent.agent.context_compressor as cc_mod
+from hermes_agent.agent.context_compressor import ContextCompressor
 from hermes_agent.tui_gateway import server
 
 PIN = 249_000

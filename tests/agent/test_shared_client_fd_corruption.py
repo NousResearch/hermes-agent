@@ -33,7 +33,7 @@ import pytest
 from tests.agent.test_streaming import _make_stream_chunk
 
 def _make_agent():
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     agent = AIAgent(
         api_key="test-key",
@@ -55,10 +55,10 @@ class TestStaleWatchdogNeverClosesSharedClient:
     @pytest.mark.filterwarnings(
         "ignore::pytest.PytestUnhandledThreadExceptionWarning"
     )
-    @patch("run_agent.AIAgent._replace_primary_openai_client")
-    @patch("run_agent.AIAgent._abort_request_openai_client")
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._replace_primary_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._abort_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
     def test_stale_stream_kill_does_not_replace_primary(
         self, mock_close, mock_create, mock_abort, mock_replace, monkeypatch,
     ):
@@ -110,9 +110,9 @@ class TestStaleWatchdogNeverClosesSharedClient:
     @pytest.mark.filterwarnings(
         "ignore::pytest.PytestUnhandledThreadExceptionWarning"
     )
-    @patch("run_agent.AIAgent._replace_primary_openai_client")
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._replace_primary_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
     def test_stream_retry_cleanup_does_not_replace_primary(
         self, mock_close, mock_create, mock_replace, monkeypatch,
     ):
@@ -150,9 +150,9 @@ class TestStaleWatchdogNeverClosesSharedClient:
     @pytest.mark.filterwarnings(
         "ignore::pytest.PytestUnhandledThreadExceptionWarning"
     )
-    @patch("run_agent.AIAgent._replace_primary_openai_client")
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._replace_primary_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
     def test_mid_tool_retry_cleanup_does_not_replace_primary(
         self, mock_close, mock_create, mock_replace, monkeypatch,
     ):
@@ -215,7 +215,7 @@ class TestReplacePrimaryRetiresInsteadOfClosing:
             agent, "_force_close_tcp_sockets",
             side_effect=lambda c: shutdown_calls.append(c) or 1,
         ):
-            with patch("agent.process_bootstrap.OpenAI", MagicMock()):
+            with patch("hermes_agent.agent.process_bootstrap.OpenAI", MagicMock()):
                 ok = agent._replace_primary_openai_client(reason="test_rotate")
 
         assert ok

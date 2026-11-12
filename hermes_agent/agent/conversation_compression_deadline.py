@@ -14,7 +14,7 @@ import contextlib
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
-    from agent.conversation_compression import CompressionCommitFence
+    from hermes_agent.agent.conversation_compression import CompressionCommitFence
 
 # Defaults for the in-agent progress-aware wrap; mirror hermes_cli.config.DEFAULT_CONFIG["compression"] keys.
 DEFAULT_CONTEXT_TIMEOUT_SECONDS = 120.0
@@ -49,7 +49,7 @@ def resolve_context_compression_timeouts(compression_cfg: Optional[dict] = None)
         # host idle watchdog defaults to 120s. Clamp the idle window up to at least the effective aux
         # compression timeout so prep/chunking work with no streamed tokens yet is not cut off. Only raises:
         # an explicit cfg value above the aux budget is kept, and idle never exceeds the ceiling.
-        from agent.auxiliary_client import _effective_aux_timeout
+        from hermes_agent.agent.auxiliary_client import _effective_aux_timeout
         _aux_budget = float(_effective_aux_timeout("compression", None))
         if _aux_budget > 0:
             ceiling = max(ceiling, _aux_budget)
@@ -69,8 +69,8 @@ def compression_deadline_scope(fence: Optional[CompressionCommitFence]):
     """Share *fence*'s deadline with the summary stream, live, and push it back while the
     server reads the prompt. A stream checks the deadline as it reads, so a later summary
     call in the same attempt sees the extended deadline too."""
-    from agent.auxiliary_client import aux_stream_deadline
-    from agent.local_prompt_progress import prompt_reading_hook
+    from hermes_agent.agent.auxiliary_client import aux_stream_deadline
+    from hermes_agent.agent.local_prompt_progress import prompt_reading_hook
 
     if fence is None:
         yield

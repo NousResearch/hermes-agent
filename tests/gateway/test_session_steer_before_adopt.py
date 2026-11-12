@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.interrupt_control import InterruptControlMixin
+from hermes_agent.agent.interrupt_control import InterruptControlMixin
 from hermes_agent.gateway.session_busy_controls import correct
 from tests.gateway.test_session_authority_cancel_settlement import ACTOR, REF, _authority, _submit, _wire_turn_agent
 

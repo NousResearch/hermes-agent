@@ -19,7 +19,7 @@ import copy
 import logging
 from typing import Any, Dict, List, Optional
 
-from agent.route_verdicts import ROUTE_VERDICT_FIELDS
+from hermes_agent.agent.route_verdicts import ROUTE_VERDICT_FIELDS
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +49,7 @@ def _route_target(agent: Any, cfg: dict[str, Any]) -> Optional[dict[str, Any]]:
             return None
     if not model:
         # Provider pinned without a model: that provider's fast auxiliary model.
-        from agent.auxiliary_client import _get_aux_model_for_provider
+        from hermes_agent.agent.auxiliary_client import _get_aux_model_for_provider
         model = _get_aux_model_for_provider(provider, prefer_fast=True) or ""
     if not (provider and model):
         return None
@@ -62,7 +62,7 @@ def _route_target(agent: Any, cfg: dict[str, Any]) -> Optional[dict[str, Any]]:
 
 
 def _fits(agent: Any, messages: list[dict[str, Any]], system_prompt: str) -> bool:
-    from agent.model_metadata import estimate_request_tokens_rough
+    from hermes_agent.agent.model_metadata import estimate_request_tokens_rough
     limit = getattr(getattr(agent, "context_compressor", None), "threshold_tokens", 0) or 0
     if not limit:
         return True
@@ -75,13 +75,13 @@ def _lowest_effort(agent: Any) -> Optional[str]:
     """The weakest enabled level the active route accepts when it cannot switch reasoning OFF, else
     None (OFF goes on the wire as configured). Static knowledge only; a route that 400s on the disable
     anyway is learned by turn_recovery and remembered by ``end_voice_turn_route``."""
-    from agent.auxiliary_reasoning_floor import REASONING_FLOOR_EFFORT, known_reasoning_floor
+    from hermes_agent.agent.auxiliary_reasoning_floor import REASONING_FLOOR_EFFORT, known_reasoning_floor
     off = {"enabled": False}
     if known_reasoning_floor(off, agent.provider, agent.base_url, agent.model, TASK) is not off:
         return REASONING_FLOOR_EFFORT
     if agent.api_mode == "codex_responses":
-        from agent.codex_responses_adapter import classify_responses_route
-        from agent.transports.codex import _resolve_reasoning
+        from hermes_agent.agent.codex_responses_adapter import classify_responses_route
+        from hermes_agent.agent.transports.codex import _resolve_reasoning
         route = classify_responses_route(agent)
         # An enabled "none" clamps to "none" where the route has it, else to its weakest level
         # (None: the route takes no reasoning field at all).
@@ -90,7 +90,7 @@ def _lowest_effort(agent: Any) -> Optional[str]:
             "is_xai_responses": route.is_xai_responses, "reasoning_config": {"enabled": True, "effort": "none"}})
         return None if effort in (None, "none") else effort
     if agent.api_mode == "anthropic_messages":
-        from agent.anthropic_adapter import _MANDATORY_THINKING_CLAUDE_SUBSTRINGS, _model_matches
+        from hermes_agent.agent.anthropic_adapter import _MANDATORY_THINKING_CLAUDE_SUBSTRINGS, _model_matches
         # Mandatory-thinking Claude omits the disable and thinks at its default effort.
         return REASONING_FLOOR_EFFORT if _model_matches(agent.model, _MANDATORY_THINKING_CLAUDE_SUBSTRINGS) else None
     return None
@@ -106,7 +106,7 @@ def _voice_reasoning(agent: Any, effort: Optional[dict[str, Any]]) -> Optional[d
 
 
 def _capture(agent: Any) -> dict[str, Any]:
-    from agent.primary_runtime_snapshot import _build_primary_runtime_snapshot
+    from hermes_agent.agent.primary_runtime_snapshot import _build_primary_runtime_snapshot
     return {
         "snapshot": _build_primary_runtime_snapshot(agent, agent.api_mode),
         **{name: getattr(agent, name, None) for name in _EXTRA_FIELDS},
@@ -114,7 +114,7 @@ def _capture(agent: Any) -> dict[str, Any]:
 
 
 def _reinstall(agent: Any, state: dict[str, Any]) -> None:
-    from agent.route_binding import reinstall_runtime_snapshot
+    from hermes_agent.agent.route_binding import reinstall_runtime_snapshot
     reinstall_runtime_snapshot(agent, state["snapshot"])
     for name in _EXTRA_FIELDS:
         setattr(agent, name, state[name])
@@ -137,7 +137,7 @@ def begin_voice_turn_route(agent: Any, messages: list[dict[str, Any]], system_pr
     if not getattr(agent, "_voice_turn_pending", False):
         return system_prompt
     agent._voice_turn_pending = False
-    from agent.auxiliary_task_config import _get_auxiliary_task_config
+    from hermes_agent.agent.auxiliary_task_config import _get_auxiliary_task_config
     from hermes_constants import parse_reasoning_effort
     cfg = _get_auxiliary_task_config(TASK)
     effort = parse_reasoning_effort(cfg.get("reasoning_effort"))
@@ -150,7 +150,7 @@ def begin_voice_turn_route(agent: Any, messages: list[dict[str, Any]], system_pr
         state.update(_capture(agent))
         reason = ""
         try:
-            from agent.route_binding import bind_route_entry
+            from hermes_agent.agent.route_binding import bind_route_entry
             if bind_route_entry(agent, target, target["provider"], target["model"]) is None:
                 reason = "provider not configured"
         except Exception as exc:  # health: allow BLE001 -- any bind failure falls back to the main model with a notice
@@ -162,7 +162,7 @@ def begin_voice_turn_route(agent: Any, messages: list[dict[str, Any]], system_pr
             _warn_once(agent, target, reason)
             agent._voice_route_state = {"reasoning_config": state["reasoning_config"]}
             return agent._cached_system_prompt or system_prompt
-        from agent.chat_completion_helpers import rewrite_prompt_model_identity
+        from hermes_agent.agent.chat_completion_helpers import rewrite_prompt_model_identity
         rewrite_prompt_model_identity(agent, agent.model, agent.provider)
         agent._turn_route_task = TASK
         logger.info("Voice turn routed to %s (%s)", agent.model, agent.provider)
@@ -207,7 +207,7 @@ def end_voice_turn_route(agent: Any) -> None:
         if "snapshot" in state:
             if getattr(agent, "_reasoning_floor_required", False):
                 # The voice model 400'd on the disable this turn: start the next voice turn at the floor.
-                from agent.auxiliary_reasoning_floor import remember_reasoning_floor
+                from hermes_agent.agent.auxiliary_reasoning_floor import remember_reasoning_floor
                 remember_reasoning_floor(agent.provider, agent.base_url, {"model": agent.model}, None)
             _reinstall(agent, state)
     except Exception:

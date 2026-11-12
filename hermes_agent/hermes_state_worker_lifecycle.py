@@ -110,7 +110,7 @@ def worker_next_title(db, conn, session_id, payload):
 
 def worker_activity(db, conn, session_id, payload):
     import math
-    from agent.session_activity import bound_activity_description, normalize_activity_provenance
+    from hermes_agent.agent.session_activity import bound_activity_description, normalize_activity_provenance
     if (set(payload) != {'ts', 'description', 'provenance'}
             or any(payload[k] is not None and not isinstance(payload[k], str)
                    for k in ('description', 'provenance'))):
@@ -127,7 +127,7 @@ def worker_activity(db, conn, session_id, payload):
 
 
 def worker_activity_clear(db, conn, session_id, payload):
-    from agent.session_activity import ActivityProvenance
+    from hermes_agent.agent.session_activity import ActivityProvenance
     if payload:
         raise RuntimeStoreError('invalid_params')
     conn.execute('UPDATE sessions SET last_activity_description=?,last_activity_provenance=? WHERE id=?',

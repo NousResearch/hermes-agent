@@ -21,7 +21,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.context_compressor import (
+from hermes_agent.agent.context_compressor import (
     ContextCompressor,
     SUMMARY_PREFIX,
     _redact_compaction_text,
@@ -37,12 +37,12 @@ OAUTH_URL = (
 @pytest.fixture(autouse=True)
 def _redaction_globally_disabled(monkeypatch):
     """Simulate security.redact_secrets: false — force=True must still win."""
-    monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+    monkeypatch.setattr("hermes_agent.agent.redact._REDACT_ENABLED", False)
 
 
 def _compressor() -> ContextCompressor:
     with patch(
-        "agent.context_compressor.get_model_context_length",
+        "hermes_agent.agent.context_compressor.get_model_context_length",
         return_value=100000,
     ):
         return ContextCompressor(model="test/model", quiet_mode=True)
@@ -117,7 +117,7 @@ def test_summary_output_redacts_llm_echoed_secrets():
     leaked = f"Summary leaked OPENAI_API_KEY {SECRET} and {OAUTH_URL}"
 
     with patch(
-        "agent.context_compressor.call_llm", return_value=_response(leaked)
+        "hermes_agent.agent.context_compressor.call_llm", return_value=_response(leaked)
     ):
         summary = c._generate_summary([{"role": "user", "content": "hi"}])
 
@@ -135,7 +135,7 @@ def test_manual_focus_topic_redacted_before_summary_prompt():
     ]
 
     with patch(
-        "agent.context_compressor.call_llm",
+        "hermes_agent.agent.context_compressor.call_llm",
         return_value=_response("## Goal\nSafe summary."),
     ) as mock_call:
         result = c._generate_summary(
@@ -167,7 +167,7 @@ def test_previous_summary_redacted_before_iterative_prompt_reentry():
     c._previous_summary = f"Old summary leaked {SECRET} and {OAUTH_URL}"
 
     with patch(
-        "agent.context_compressor.call_llm",
+        "hermes_agent.agent.context_compressor.call_llm",
         return_value=_response("updated summary"),
     ) as mock_call:
         result = c._generate_summary(
@@ -190,7 +190,7 @@ def test_previous_summary_redacted_before_iterative_prompt_reentry():
 def test_resumed_handoff_summary_redacted_before_iterative_prompt():
     """Persisted handoff messages may contain pre-fix secrets after resume."""
     with patch(
-        "agent.context_compressor.get_model_context_length",
+        "hermes_agent.agent.context_compressor.get_model_context_length",
         return_value=100000,
     ):
         c = ContextCompressor(
@@ -213,7 +213,7 @@ def test_resumed_handoff_summary_redacted_before_iterative_prompt():
     ]
 
     with patch(
-        "agent.context_compressor.call_llm",
+        "hermes_agent.agent.context_compressor.call_llm",
         return_value=_response("updated summary"),
     ) as mock_call:
         c.compress(messages)

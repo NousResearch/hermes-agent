@@ -7,8 +7,8 @@ from unittest.mock import patch
 
 import pytest
 
-from agent.browser_page_backend import BrowserPageBackend
-from agent.vault_store import VaultStore
+from hermes_agent.agent.browser_page_backend import BrowserPageBackend
+from hermes_agent.agent.vault_store import VaultStore
 
 SECRET = "s3cret-pw"
 CONTROLS = [
@@ -39,7 +39,7 @@ class FakePage(BrowserPageBackend):
 
 @pytest.fixture()
 def page(tmp_path, monkeypatch):
-    from agent import browser_page_registry
+    from hermes_agent.agent import browser_page_registry
     from hermes_agent.tools import browser_vault_tool
 
     def cdp_used(*args, **kwargs):
@@ -51,7 +51,7 @@ def page(tmp_path, monkeypatch):
     store = VaultStore(base_dir=tmp_path / "vault")
     meta = store.add_item(kind="login", label="Example", origin="https://example.com",
                           secret={"identifier_type": "email", "identifier": "a@example.com", "password": SECRET})
-    with patch("agent.vault_store.get_vault_store", return_value=store):
+    with patch("hermes_agent.agent.vault_store.get_vault_store", return_value=store):
         yield fake, meta
     browser_page_registry._reset_for_tests()
 

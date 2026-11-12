@@ -215,7 +215,7 @@ def test_the_classic_clis_new_does_not_repeat_another_clients_name():
 @pytest.mark.asyncio
 async def test_each_profile_home_sees_only_its_own_sessions_client(tmp_path, monkeypatch):
     """Multiplexed homes: two owners' turns run side by side; each plugin read answers for its own."""
-    from agent.system_prompt import _plugin_session_info
+    from hermes_agent.agent.system_prompt import _plugin_session_info
     from hermes_agent.gateway.session_policy import policy_scope
     from hermes_cli.plugin_session import session_client
     (tmp_path / 'a').mkdir()

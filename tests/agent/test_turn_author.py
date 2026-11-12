@@ -1,9 +1,9 @@
-"""Tests for agent.turn_author: the per-turn author carried from a dispatcher to memory hooks."""
+"""Tests for hermes_agent.agent.turn_author: the per-turn author carried from a dispatcher to memory hooks."""
 
 
 import pytest
 
-from agent.turn_author import (
+from hermes_agent.agent.turn_author import (
     TURN_AUTHOR_ENV,
     parse_turn_author,
     take_turn_author_from_env,

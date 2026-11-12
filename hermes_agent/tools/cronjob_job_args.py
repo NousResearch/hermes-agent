@@ -330,7 +330,7 @@ def _custom_stored_key_error(bu: str) -> Optional[str]:
     the host-gated env keys by HOSTNAME, so a base_url that would receive one must be an origin
     the operator or the provider registry names; pool and ``model.key_env`` keys already match
     their configured URL exactly."""
-    from agent.secret_scope import get_secret_str
+    from hermes_agent.agent.secret_scope import get_secret_str
     from hermes_cli import runtime_provider as rp
     from hermes_cli.auth import PROVIDER_REGISTRY
     from hermes_constants import OPENROUTER_BASE_URL
@@ -474,7 +474,7 @@ _FORMAT_JOB_OPTIONAL_KEYS = (
 
 
 def _format_job(job: dict[str, Any]) -> dict[str, Any]:
-    from agent.redact import redact_sensitive_text
+    from hermes_agent.agent.redact import redact_sensitive_text
 
     prompt = str(job.get("prompt") or "")
     skills = _canonical_skills(job.get("skill"), job.get("skills"))

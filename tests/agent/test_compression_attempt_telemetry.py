@@ -6,8 +6,8 @@ from unittest.mock import patch
 
 import pytest
 
-from agent.conversation_compression import _emit_aborted_attempt_telemetry, compress_context
-from agent.context_compressor import ContextCompressor
+from hermes_agent.agent.conversation_compression import _emit_aborted_attempt_telemetry, compress_context
+from hermes_agent.agent.context_compressor import ContextCompressor
 
 
 class _TodoStore:
@@ -65,7 +65,7 @@ def _extract_telemetry(caplog):
 
 
 def test_compression_attempt_telemetry_is_metadata_only(caplog):
-    with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
+    with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100_000):
         compressor = ContextCompressor(
             model="test/main-model",
             provider="test-provider",
@@ -77,7 +77,7 @@ def test_compression_attempt_telemetry_is_metadata_only(caplog):
     agent = _Agent(compressor)
 
     with patch.object(compressor, "_generate_summary", return_value="SANITIZED SUMMARY"):
-        with caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
+        with caplog.at_level(logging.INFO, logger="hermes_agent.agent.conversation_compression"):
             compressed, system_prompt = compress_context(
                 agent,
                 _messages(),
@@ -121,7 +121,7 @@ def test_compression_attempt_telemetry_is_metadata_only(caplog):
 
 
 def test_aux_call_telemetry_records_durations_without_content(caplog):
-    with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
+    with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100_000):
         compressor = ContextCompressor(
             model="test/main-model",
             provider="test-provider",
@@ -135,8 +135,8 @@ def test_aux_call_telemetry_records_durations_without_content(caplog):
         choices=[SimpleNamespace(message=SimpleNamespace(content="SANITIZED SUMMARY"))]
     )
 
-    with patch("agent.context_compressor.call_llm", return_value=response):
-        with caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
+    with patch("hermes_agent.agent.context_compressor.call_llm", return_value=response):
+        with caplog.at_level(logging.INFO, logger="hermes_agent.agent.conversation_compression"):
             compress_context(
                 agent,
                 _messages(),
@@ -160,7 +160,7 @@ def test_aux_call_telemetry_records_durations_without_content(caplog):
 
 
 def test_aux_call_telemetry_records_content_free_phase_timings():
-    with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
+    with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100_000):
         compressor = ContextCompressor(
             model="test/main-model",
             provider="test-provider",
@@ -209,7 +209,7 @@ def test_automatic_compaction_counts_once_in_shared_metrics(monkeypatch):
 
     calls = []
     monkeypatch.setattr(shared_metrics_events, "record_compression", lambda **kw: calls.append(kw))
-    with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
+    with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100_000):
         compressor = ContextCompressor(
             model="test/main-model", provider="test-provider", threshold_percent=0.50, quiet_mode=True,
             config_context_length=100_000,
@@ -234,7 +234,7 @@ def test_structural_no_op_is_counted_skipped_with_the_compressors_class(caplog, 
 
     recorded = []
     monkeypatch.setattr(shared_metrics_events, "record_compression", lambda **kw: recorded.append(kw))
-    with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
+    with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100_000):
         compressor = ContextCompressor(
             model="test/main-model", provider="test-provider", threshold_percent=0.50, quiet_mode=True,
             config_context_length=100_000,
@@ -243,7 +243,7 @@ def test_structural_no_op_is_counted_skipped_with_the_compressors_class(caplog, 
     messages = _messages()
 
     with patch.object(compressor, "_find_tail_cut_by_tokens", return_value=0):
-        with caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
+        with caplog.at_level(logging.INFO, logger="hermes_agent.agent.conversation_compression"):
             compressed, _ = compress_context(agent, messages, "system prompt", approx_tokens=75_000)
 
     assert compressed == messages
@@ -279,7 +279,7 @@ def test_generic_caller_verdicts_defer_to_the_recorded_failure_class(caplog, mon
         context_compressor=compressor, session_id="session-telemetry-test", _compression_attempt_id="this-attempt",
     )
 
-    with caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
+    with caplog.at_level(logging.INFO, logger="hermes_agent.agent.conversation_compression"):
         _emit_aborted_attempt_telemetry(agent, time.monotonic(), caller)
 
     assert _extract_telemetry(caplog)["failure_class"] == expected
@@ -292,11 +292,11 @@ def test_in_place_commit_preserves_seeded_telemetry_fields(caplog):
     import tempfile
     from pathlib import Path
 
-    from agent.conversation_compression import CompressionCommitFence, run_compress_context_with_progress_timeout
+    from hermes_agent.agent.conversation_compression import CompressionCommitFence, run_compress_context_with_progress_timeout
 
     with tempfile.TemporaryDirectory() as tmp:
         from hermes_agent.hermes_state import SessionDB
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         db = SessionDB(db_path=Path(tmp) / "t.db")
         sid = "20260920_234956_0c74e527"
@@ -326,7 +326,7 @@ def test_in_place_commit_preserves_seeded_telemetry_fields(caplog):
             )
 
         with patch.object(agent.context_compressor, "_generate_summary", return_value="SUMMARY"):
-            with caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
+            with caplog.at_level(logging.INFO, logger="hermes_agent.agent.conversation_compression"):
                 run_compress_context_with_progress_timeout(
                     worker=worker, messages=messages, system_prompt_fallback="system prompt",
                     idle_timeout_seconds=30, total_ceiling_seconds=120, fence=CompressionCommitFence(),
@@ -348,7 +348,7 @@ def test_in_place_commit_preserves_seeded_telemetry_fields(caplog):
 def test_an_overlapping_blocked_call_keeps_the_running_attempts_telemetry():
     """A call that stops at the automatic gate must not erase the record of an attempt still summarizing: the
     previous-attempt clear (#118580) happens only once an attempt owns the lease and dispatches its summary."""
-    with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
+    with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100_000):
         compressor = ContextCompressor(
             model="test/main-model", provider="test-provider", threshold_percent=0.50, quiet_mode=True,
             config_context_length=100_000,
@@ -359,7 +359,7 @@ def test_an_overlapping_blocked_call_keeps_the_running_attempts_telemetry():
     compressor._summary_failure_cooldown_until = time.monotonic() + 600
     agent = _Agent(compressor)
 
-    from agent.conversation_compression import compress_context
+    from hermes_agent.agent.conversation_compression import compress_context
 
     with patch.object(type(compressor), "_refresh_durable_guards"):
         compress_context(agent, [{"role": "user", "content": "hi"}] * 4, "sys", approx_tokens=80_000)
@@ -380,7 +380,7 @@ def test_a_lock_contended_call_keeps_the_running_attempts_telemetry(tmp_path):
     db.create_session("S", source="cli")
     assert db.try_acquire_compression_lock("S", "winner", ttl_seconds=60)
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key", base_url="https://openrouter.ai/api/v1", model="test/model", quiet_mode=True,
@@ -400,7 +400,7 @@ def test_a_lock_contended_call_keeps_the_running_attempts_telemetry(tmp_path):
 
 def test_pool_saturation_emit_does_not_inherit_previous_attempt_telemetry(caplog):
     """The pool-refusal emit fires before any attempt begins: no previous attempt's numbers ride along."""
-    with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
+    with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100_000):
         compressor = ContextCompressor(
             model="test/main-model", provider="test-provider", threshold_percent=0.50, quiet_mode=True,
             config_context_length=100_000,
@@ -413,10 +413,10 @@ def test_pool_saturation_emit_does_not_inherit_previous_attempt_telemetry(caplog
     compressor._active_compression_telemetry = compressor._last_compression_telemetry
     agent = _Agent(compressor)
 
-    from agent.conversation_compression import CompressionCommitFence, run_compress_context_with_progress_timeout
+    from hermes_agent.agent.conversation_compression import CompressionCommitFence, run_compress_context_with_progress_timeout
 
-    with patch("agent.conversation_compression._try_admit_compression_job", return_value=False):
-        with caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
+    with patch("hermes_agent.agent.conversation_compression._try_admit_compression_job", return_value=False):
+        with caplog.at_level(logging.INFO, logger="hermes_agent.agent.conversation_compression"):
             run_compress_context_with_progress_timeout(
                 worker=lambda fence: ([], "system prompt"), messages=[], system_prompt_fallback="system prompt",
                 idle_timeout_seconds=30, total_ceiling_seconds=120, fence=CompressionCommitFence(),
@@ -435,7 +435,7 @@ def test_late_unwinding_attempt_keeps_its_own_identity_after_a_newer_attempt_sta
     and trigger, not the newer attempt's (they overwrite the agent's current-attempt fields)."""
     import threading
 
-    with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
+    with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100_000):
         compressor = ContextCompressor(
             model="test/main-model", provider="test-provider", threshold_percent=0.50, quiet_mode=True,
             config_context_length=100_000,
@@ -454,7 +454,7 @@ def test_late_unwinding_attempt_keeps_its_own_identity_after_a_newer_attempt_sta
         return "SANITIZED SUMMARY"
 
     with patch.object(compressor, "_generate_summary", side_effect=_summary):
-        with caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
+        with caplog.at_level(logging.INFO, logger="hermes_agent.agent.conversation_compression"):
             first = threading.Thread(
                 target=compress_context, args=(agent, _messages(), "system prompt"),
                 kwargs={"approx_tokens": 80_000, "trigger": "pre_api"},

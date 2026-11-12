@@ -48,10 +48,10 @@ class _FakeClient:
 
 
 def _agent(monkeypatch, base_url: str, **kwargs):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     client = _FakeClient()
-    monkeypatch.setattr("agent.process_bootstrap.OpenAI", lambda **_kw: client)
+    monkeypatch.setattr("hermes_agent.agent.process_bootstrap.OpenAI", lambda **_kw: client)
     monkeypatch.setattr("hermes_agent.model_tools.get_tool_definitions", lambda *a, **k: [])
     agent = AIAgent(
         model="gpt-5",  # a model that would normally trigger the Responses upgrade

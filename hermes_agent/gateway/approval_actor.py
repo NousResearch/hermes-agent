@@ -164,7 +164,7 @@ def clarify_refusal(clarify_id: str, actor_id: Any, *, admin_ids: Any = (),
 
 
 def refusal_text(requester: str) -> str:
-    from agent.i18n import t
+    from hermes_agent.agent.i18n import t
 
     if requester == _NO_REQUESTER:
         return t("gateway.exec_approval.not_requester_admins_only")

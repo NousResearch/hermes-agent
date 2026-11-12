@@ -16,8 +16,8 @@ import textwrap
 import threading
 import time
 from contextlib import contextmanager, suppress
-from agent.i18n import t
-from agent.think_scrubber import THINK_TAG_NAMES
+from hermes_agent.agent.i18n import t
+from hermes_agent.agent.think_scrubber import THINK_TAG_NAMES
 from hermes_cli.banner import format_banner_version_label
 from rich.console import Console
 from rich.text import Text as _RichText
@@ -39,7 +39,7 @@ _TOOL_CALL_TAGS = ("tool_call", "tool_calls", "tool_result", "function_call", "f
 def _strip_reasoning_tags(text: str) -> str:
     """Strip reasoning blocks (closed, unterminated, orphan-close) and leaked tool-call XML from display text.
 
-    Keep in sync with ``agent.agent_runtime_helpers.strip_think_blocks`` and the stream consumer's think-tag sets.
+    Keep in sync with ``hermes_agent.agent.agent_runtime_helpers.strip_think_blocks`` and the stream consumer's think-tag sets.
 
     Also strips tool-call XML blocks some open models leak into visible content (``<tool_call>``,
     ``<function_calls>``, Gemma-style ``<function name="…">…</function>``). Ported from
@@ -62,7 +62,7 @@ def _strip_reasoning_tags(text: str) -> str:
         '', cleaned, flags=re.DOTALL | re.IGNORECASE,
     )
     # Stray closers and cut tool-call fragments share storage's compiled patterns (#101899, #102303).
-    from agent.agent_runtime_helpers import _STRAY_TOOL_CALL_CLOSER_PATTERN, _UNTERMINATED_TOOL_CALL_PATTERN
+    from hermes_agent.agent.agent_runtime_helpers import _STRAY_TOOL_CALL_CLOSER_PATTERN, _UNTERMINATED_TOOL_CALL_PATTERN
     cleaned = _STRAY_TOOL_CALL_CLOSER_PATTERN.sub('', cleaned)
     cleaned = _UNTERMINATED_TOOL_CALL_PATTERN.sub('', cleaned)
     return cleaned.strip()

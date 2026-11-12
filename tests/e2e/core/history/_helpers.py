@@ -584,7 +584,7 @@ class InProcessSession:
         from hermes_cli.config import load_config
         from hermes_cli.tools_config import _get_platform_tools
         from hermes_agent.hermes_state import SessionDB
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         self.db = SessionDB(db_path=hermes_home / "state.db")
         # The CLI entrypoints enable the platform's configured toolsets; a bare AIAgent would
@@ -607,8 +607,8 @@ class InProcessSession:
     def compress(self, args: str = "") -> Any:
         """Mirror ``hermes_cli.cli_session_mixin`` ``/compress``: install ``after_messages``, follow a
         rotated session id, re-flush the handoff on rotation, finalize the engine notification."""
-        from agent.conversation_compression import finalize_context_engine_compression_notification
-        from agent.conversation_compression_manual import compress_now, parse_compress_args
+        from hermes_agent.agent.conversation_compression import finalize_context_engine_compression_notification
+        from hermes_agent.agent.conversation_compression_manual import compress_now, parse_compress_args
 
         before_sid = self.sid
         result = compress_now(self.agent, self.history, parse_compress_args(args), task_id=before_sid)

@@ -5,7 +5,7 @@ standalone ACP hands ``result["messages"]`` straight back as history, so the ter
 paths that persist the user row and return before ``finalize_turn`` used to leave ``user`` as
 the tail. The next prompt then appended a second user row and ``repair_message_sequence``
 merged the failed request into the new one. Closed at the core seam
-(``agent/conversation_loop.py::_close_durable_failed_turn``).
+(``hermes_agent/agent/conversation_loop.py::_close_durable_failed_turn``).
 
 Driven through the real ``HermesACPAgent.prompt()`` with a real ``AIAgent`` and ``SessionDB``
 against a loopback OpenAI-compatible endpoint; assertions read SQLite rows and the request
@@ -259,7 +259,7 @@ def test_acp_refused_turn_stays_in_the_display_tagged_content_refused(acp):
     """The refused ask leaves the MODEL transcript (active-only) but is RETAINED in the durable
     DISPLAY read, tagged content_refused — so a fresh ACP session load (reopen/restart) still shows
     the greyed "you asked X → refused" block even though the model never sees it again."""
-    from agent.turn_failure_copy import CONTENT_REFUSED_DISPLAY_KIND, CONTENT_REFUSED_METADATA_KEY
+    from hermes_agent.agent.turn_failure_copy import CONTENT_REFUSED_DISPLAY_KIND, CONTENT_REFUSED_METADATA_KEY
 
     provider, prompt, conversation_rows, db, sid, _conn, _server = acp
 
@@ -290,7 +290,7 @@ def test_acp_reload_replays_the_refused_ask_and_notice_to_the_editor(acp):
     fidelity) sharing the same DB and asserts the replayed ``session/update`` stream — not just the
     DB rows — carries the refused ask plus the refusal notice, and still the prior clean exchange.
     """
-    from agent.turn_failure_copy import CONTENT_REFUSED_NOTICE
+    from hermes_agent.agent.turn_failure_copy import CONTENT_REFUSED_NOTICE
     from hermes_agent.acp_adapter.server import HermesACPAgent
     from hermes_agent.acp_adapter.session import SessionManager
 
@@ -328,8 +328,8 @@ def test_failed_turn_boundary_is_idempotent_on_the_durable_tail_and_skips_contex
     (whose repair is rotation, not a row — #1630) is never closed."""
     from types import SimpleNamespace
 
-    from agent.conversation_loop import _close_durable_failed_turn
-    from agent.turn_failure_copy import PARTIAL_FAILED_TURN_NOTICE
+    from hermes_agent.agent.conversation_loop import _close_durable_failed_turn
+    from hermes_agent.agent.turn_failure_copy import PARTIAL_FAILED_TURN_NOTICE
     from hermes_agent.hermes_state import SessionDB
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -400,7 +400,7 @@ def test_failed_turn_boundary_keeps_the_error_card_for_rehydration(tmp_path, mon
     reopening the session after a restart redraws the error card, not only the notice."""
     from types import SimpleNamespace
 
-    from agent.conversation_loop import _close_durable_failed_turn
+    from hermes_agent.agent.conversation_loop import _close_durable_failed_turn
     from hermes_agent.hermes_state import SessionDB
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -434,8 +434,8 @@ def test_failed_turn_after_a_tool_row_is_closed_with_its_error_card(tmp_path, mo
     boundary a client reopening the session has no error card to draw for the turn."""
     from types import SimpleNamespace
 
-    from agent.conversation_loop import _close_durable_failed_turn
-    from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, PARTIAL_FAILED_TURN_NOTICE
+    from hermes_agent.agent.conversation_loop import _close_durable_failed_turn
+    from hermes_agent.agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, PARTIAL_FAILED_TURN_NOTICE
     from hermes_agent.hermes_state import SessionDB
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

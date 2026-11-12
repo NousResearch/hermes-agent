@@ -1,8 +1,8 @@
-"""#125974 — ``agent.agent_init._setup_logging`` must honor the active profile scope.
+"""#125974 — ``hermes_agent.agent.agent_init._setup_logging`` must honor the active profile scope.
 
 A Desktop serve backend (hermes_agent/tui_gateway/compute_host.py) builds agents for several profiles
 inside ``set_hermes_home_override(profile_home)``. ``_setup_logging`` used to pass the
-import-time ``run_agent._hermes_home`` freeze, so the second profile's ``setup_logging``
+import-time ``hermes_agent.run_agent._hermes_home`` freeze, so the second profile's ``setup_logging``
 call saw a home it already served, never adopted it, and every profile's records kept
 landing in the launch profile's agent.log.
 """
@@ -41,7 +41,7 @@ def _witness(name: str, message: str) -> None:
 class TestSetupLoggingProfileScope:
     def test_routes_agent_records_to_profile_scope(self, tmp_path: Path) -> None:
         """L1: an agent built under override B logs into B's agent.log, not A's."""
-        from agent.agent_init import _setup_logging
+        from hermes_agent.agent.agent_init import _setup_logging
 
         home_a = tmp_path / "home-a"
         home_b = tmp_path / "home-b"
@@ -57,7 +57,7 @@ class TestSetupLoggingProfileScope:
         token = set_hermes_home_override(str(home_b))
         try:
             _setup_logging(_agent_stub())
-            _witness("agent.test_profile_scope_125974", "scoped-witness-b")
+            _witness("hermes_agent.agent.test_profile_scope_125974", "scoped-witness-b")
         finally:
             reset_hermes_home_override(token)
         hermes_logging.flush_log_queue()
@@ -76,7 +76,7 @@ class TestSetupLoggingProfileScope:
         records — exactly the leak this fix closes. Passing on both sides of the fix is
         the point: it pins the blast radius.
         """
-        from agent.agent_init import _setup_logging
+        from hermes_agent.agent.agent_init import _setup_logging
 
         home_a = tmp_path / "home-a"
         home_b = tmp_path / "home-b"
@@ -89,7 +89,7 @@ class TestSetupLoggingProfileScope:
         token = set_hermes_home_override(str(home_b))
         try:
             _setup_logging(_agent_stub())
-            _witness("agent.test_routing_guard_125974", "routing-guard-witness-b")
+            _witness("hermes_agent.agent.test_routing_guard_125974", "routing-guard-witness-b")
         finally:
             reset_hermes_home_override(token)
         hermes_logging.flush_log_queue()

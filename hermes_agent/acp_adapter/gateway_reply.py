@@ -99,7 +99,7 @@ class GatewayReplyMixin:
 
     def _final_remainder(self, aid, payload):
         """The part of the settled reply the editor has not been shown yet (exactly-once text)."""
-        from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
+        from hermes_agent.agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 
         text = _text(payload)
         streamed = self._streamed.pop(aid, "")

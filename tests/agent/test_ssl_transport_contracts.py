@@ -15,7 +15,7 @@ import httpx
 import pytest
 from truststore._ssl_constants import _original_SSLContext
 
-from agent import model_metadata, process_bootstrap, ssl_verify
+from hermes_agent.agent import model_metadata, process_bootstrap, ssl_verify
 
 
 @pytest.fixture
@@ -94,7 +94,7 @@ def test_provider_ca_reaches_the_real_probe_transport(local_tls, monkeypatch, pr
 
 @pytest.mark.parametrize("variable", ["HERMES_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "SSL_CERT_FILE", "SSL_CERT_DIR"])
 def test_ambient_ca_cannot_break_the_shared_client(variable, tmp_path, monkeypatch):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     monkeypatch.setenv(variable, str(tmp_path / "missing-ca"))
     for _ in range(2):
@@ -111,7 +111,7 @@ def test_ambient_ca_cannot_break_the_shared_client(variable, tmp_path, monkeypat
 
 @pytest.mark.parametrize("insecure", [False, True])
 def test_pinned_clients_share_transport_not_close_state(local_tls, insecure):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     url, bundle = local_tls
     first = ssl_verify.resolve_httpx_verify(ca_bundle=str(bundle), ssl_verify=not insecure)
     second = ssl_verify.resolve_httpx_verify(ca_bundle=str(bundle), ssl_verify=not insecure)

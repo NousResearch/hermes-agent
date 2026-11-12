@@ -21,7 +21,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 
 from hermes_agent.gateway.config import Platform, PlatformConfig, load_gateway_config
 
@@ -274,7 +274,7 @@ class TestEnvConfigLoading:
         """Under multiplex a scoped profile sees ONLY its own Google Chat
         settings, and the ADC branch fails closed instead of authenticating
         as the default profile's service account (#73439)."""
-        from agent.secret_scope import (
+        from hermes_agent.agent.secret_scope import (
             build_profile_secret_scope,
             set_multiplex_active,
             set_secret_scope,
@@ -300,7 +300,7 @@ class TestEnvConfigLoading:
             with pytest.raises(ValueError, match="ADC skipped"):
                 beta._load_sa_credentials()
         finally:
-            from agent.secret_scope import reset_secret_scope
+            from hermes_agent.agent.secret_scope import reset_secret_scope
 
             reset_secret_scope(token)
             set_multiplex_active(False)
@@ -312,7 +312,7 @@ class TestEnvConfigLoading:
         """The default profile's adapter is built OUTSIDE any scope while
         multiplex is active (gateway startup/reconnect); it must keep reading
         its own process env instead of raising UnscopedSecretError."""
-        from agent.secret_scope import set_multiplex_active
+        from hermes_agent.agent.secret_scope import set_multiplex_active
 
         self._clean_env(monkeypatch)
         monkeypatch.setenv("GOOGLE_CHAT_BOOTSTRAP_SPACES", "spaces/DEFAULT")

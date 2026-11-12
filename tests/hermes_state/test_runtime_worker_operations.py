@@ -3,7 +3,7 @@ import pytest
 
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_runtime import RuntimeStoreError, begin_runtime_epoch, register_worker_execution
-from agent.message_metadata import CANONICAL_ROW, DB_ROW_SNAPSHOT
+from hermes_agent.agent.message_metadata import CANONICAL_ROW, DB_ROW_SNAPSHOT
 
 
 def test_structured_worker_receipts_are_atomic_and_scoped(tmp_path):

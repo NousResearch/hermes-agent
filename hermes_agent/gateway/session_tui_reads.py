@@ -89,7 +89,7 @@ def _context(authority, ref, live, policy, agent, arg) -> str:
     breakdown: list[str] = []
     if agent is not None:
         with contextlib.suppress(Exception):
-            from agent.context_breakdown import (
+            from hermes_agent.agent.context_breakdown import (
                 compute_context_details, compute_session_context_breakdown, render_context_breakdown_lines)
             payload = compute_session_context_breakdown(agent, _model_history(authority.db, stored))
             details = None
@@ -155,8 +155,8 @@ async def context_breakdown(connection, ref, params) -> dict:
     from hermes_agent.gateway.session_commands import _session_workspace
 
     def build():
-        from agent.context_breakdown import compute_session_context_breakdown
-        from agent.context_file_sources import context_file_sources_for_agent
+        from hermes_agent.agent.context_breakdown import compute_session_context_breakdown
+        from hermes_agent.agent.context_file_sources import context_file_sources_for_agent
         with owner_scope(authority), _session_workspace(authority.runner, live.source):
             tip = _context_id(authority, ref)
             # Agentless, the categories come from the frozen prompt and tools pin, which a compute worker
@@ -183,7 +183,7 @@ async def context_breakdown(connection, ref, params) -> dict:
 def _stored_breakdown(row, conversation, usage) -> dict:
     """``stored_context_breakdown`` over the session row's frozen system prompt and tools[] pin, beside its
     stored usage. Tools are measured as the next agent restores them (``pinned_tool_defs``)."""
-    from agent.context_breakdown import stored_context_breakdown
+    from hermes_agent.agent.context_breakdown import stored_context_breakdown
     from hermes_agent.tools.mcp_tool_agent import pinned_tool_defs
     breakdown = {'categories': [], 'estimated_total': 0}
     # No prompt until an agent first built one: nothing to measure yet, the contract's pre-build shape.

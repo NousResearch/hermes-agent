@@ -31,7 +31,7 @@ class TestNormalizeVisionProvider:
         _write_config(tmp_path, {
             "model": {"default": "anthropic/claude-sonnet-4", "provider": "openrouter"},
         })
-        from agent.auxiliary_client import _normalize_vision_provider
+        from hermes_agent.agent.auxiliary_client import _normalize_vision_provider
         assert _normalize_vision_provider("main") == "openrouter"
 
 
@@ -51,7 +51,7 @@ class TestResolveProviderClientMainAlias:
                 {"name": "beans", "base_url": "http://beans.local/v1", "api_key": "k"},
             ],
         })
-        from agent.auxiliary_client import resolve_provider_client
+        from hermes_agent.agent.auxiliary_client import resolve_provider_client
         client, model = resolve_provider_client("main", "override-model")
         assert client is not None
         assert model == "override-model"
@@ -64,7 +64,7 @@ class TestResolveProviderClientMainAlias:
                 {"name": "beans", "base_url": "http://beans.local/v1", "api_key": "k"},
             ],
         })
-        from agent.auxiliary_client import resolve_provider_client
+        from hermes_agent.agent.auxiliary_client import resolve_provider_client
         client, _model = resolve_provider_client("main", "test")
         assert client is not None
         assert "beans.local" in str(client.base_url)
@@ -90,10 +90,10 @@ class TestResolveProviderClientMainAlias:
                 "api_key": "acme_test_token",
                 "base_url": "https://api.acme-hub.test/v1",
             }),
-            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+            patch("hermes_agent.agent.auxiliary_client.OpenAI") as mock_openai,
         ):
             mock_openai.return_value = MagicMock()
-            from agent.auxiliary_client import resolve_provider_client
+            from hermes_agent.agent.auxiliary_client import resolve_provider_client
 
             client, model = resolve_provider_client("main", "gpt-5.4")
 
@@ -112,7 +112,7 @@ class TestResolveProviderClientNamedCustom:
                 {"name": "beans", "base_url": "http://beans.local/v1", "api_key": "k"},
             ],
         })
-        from agent.auxiliary_client import resolve_provider_client
+        from hermes_agent.agent.auxiliary_client import resolve_provider_client
         client, model = resolve_provider_client("beans", "my-model")
         assert client is not None
         assert model == "my-model"
@@ -148,7 +148,7 @@ class TestResolveProviderClientNamedCustom:
                 ]
             },
         }))
-        from agent.auxiliary_client import resolve_provider_client
+        from hermes_agent.agent.auxiliary_client import resolve_provider_client
         client, _model = resolve_provider_client("b-ai", "b-ai-model")
         assert client is not None
         assert "api.b.ai" in str(client.base_url)
@@ -167,10 +167,10 @@ class TestResolveProviderClientModelNormalization:
                 "api_key": "glm-key",
                 "base_url": "https://api.z.ai/api/paas/v4",
             }),
-            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+            patch("hermes_agent.agent.auxiliary_client.OpenAI") as mock_openai,
         ):
             mock_openai.return_value = MagicMock()
-            from agent.auxiliary_client import resolve_provider_client
+            from hermes_agent.agent.auxiliary_client import resolve_provider_client
 
             client, model = resolve_provider_client("main", "zai/glm-5.1")
 
@@ -180,9 +180,9 @@ class TestResolveProviderClientModelNormalization:
 
     def test_aggregator_vendor_slug_is_preserved(self, monkeypatch):
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
-        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+        with patch("hermes_agent.agent.auxiliary_client.OpenAI") as mock_openai:
             mock_openai.return_value = MagicMock()
-            from agent.auxiliary_client import resolve_provider_client
+            from hermes_agent.agent.auxiliary_client import resolve_provider_client
 
             client, model = resolve_provider_client(
                 "openrouter", "anthropic/claude-sonnet-4.6"
@@ -200,15 +200,15 @@ class TestResolveVisionProviderClientModelNormalization:
             "model": {"default": "zai/glm-5.1", "provider": "zai"},
         })
         with (
-            patch("agent.auxiliary_client._read_nous_auth", return_value=None),
+            patch("hermes_agent.agent.auxiliary_client._read_nous_auth", return_value=None),
             patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value={
                 "api_key": "glm-key",
                 "base_url": "https://api.z.ai/api/paas/v4",
             }),
-            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+            patch("hermes_agent.agent.auxiliary_client.OpenAI") as mock_openai,
         ):
             mock_openai.return_value = MagicMock()
-            from agent.auxiliary_client import resolve_vision_provider_client
+            from hermes_agent.agent.auxiliary_client import resolve_vision_provider_client
 
             provider, client, model = resolve_vision_provider_client()
 
@@ -221,7 +221,7 @@ class TestAutoClientCacheModelCompatibility:
     """Auto client cache should not keep OpenRouter-format model overrides on non-OR clients."""
 
     def test_first_auto_cache_miss_drops_openrouter_model_for_named_custom_runtime(self, tmp_path):
-        from agent import auxiliary_client as ac
+        from hermes_agent.agent import auxiliary_client as ac
 
         ac._client_cache.clear()
         try:
@@ -238,7 +238,7 @@ class TestAutoClientCacheModelCompatibility:
             }
 
             with patch(
-                "agent.auxiliary_client.resolve_provider_client",
+                "hermes_agent.agent.auxiliary_client.resolve_provider_client",
                 return_value=(fake_client, "gpt-5.4"),
             ) as mock_resolve:
                 client, model = ac._get_cached_client(
@@ -289,7 +289,7 @@ class TestProvidersDictApiModeAnthropicMessages:
                 },
             },
         })
-        from agent.auxiliary_client import (
+        from hermes_agent.agent.auxiliary_client import (
             resolve_provider_client,
             AnthropicAuxiliaryClient,
             AsyncAnthropicAuxiliaryClient,
@@ -334,7 +334,7 @@ class TestCustomProviderAliasCollision:
                 },
             ],
         })
-        from agent.auxiliary_client import resolve_provider_client
+        from hermes_agent.agent.auxiliary_client import resolve_provider_client
         from openai import OpenAI
         client, model = resolve_provider_client("kimi", model="my-kimi-model", raw_codex=True)
         assert isinstance(client, OpenAI)
@@ -349,7 +349,7 @@ class TestCustomProviderAliasCollision:
             "model": {"provider": "openrouter", "default": "anthropic/claude-sonnet-4.6"},
         })
         monkeypatch.setenv("KIMI_API_KEY", "builtin-kimi-key")
-        from agent.auxiliary_client import resolve_provider_client
+        from hermes_agent.agent.auxiliary_client import resolve_provider_client
         client, _ = resolve_provider_client("kimi", model="kimi-k2-0905-preview", raw_codex=True)
         assert client is not None
         base_url = str(client.base_url)
@@ -369,7 +369,7 @@ class TestCustomProviderAliasCollision:
                 },
             },
         })
-        from agent.auxiliary_client import resolve_provider_client
+        from hermes_agent.agent.auxiliary_client import resolve_provider_client
         from openai import OpenAI
 
         client, model = resolve_provider_client(provider, model="local-model", raw_codex=True)
@@ -387,7 +387,7 @@ class TestCustomProviderAliasCollision:
             "model": {"provider": "openrouter", "default": "anthropic/claude-sonnet-4.6"},
         })
         monkeypatch.setenv("KIMI_API_KEY", "builtin-kimi-key")
-        from agent.auxiliary_client import resolve_provider_client
+        from hermes_agent.agent.auxiliary_client import resolve_provider_client
         from openai import OpenAI
         client, _ = resolve_provider_client(
             "kimi-coding", model="kimi-k2", raw_codex=True,
@@ -410,7 +410,7 @@ class TestResolveProviderClientMainRuntimeCustom:
         """main_runtime with base_url + api_key for a named custom provider
         is used directly, bypassing the _try_custom_endpoint / API-key
         fallback chain."""
-        from agent.auxiliary_client import resolve_provider_client
+        from hermes_agent.agent.auxiliary_client import resolve_provider_client
         main_runtime = {
             "provider": "custom",
             "base_url": "https://my-gateway.example.com/v1",
@@ -437,7 +437,7 @@ class TestResolveProviderClientMainRuntimeCustom:
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
-        from agent.auxiliary_client import resolve_provider_client
+        from hermes_agent.agent.auxiliary_client import resolve_provider_client
         # main_runtime with key but no base_url → must fall through
         client, _model = resolve_provider_client(
             "custom",
@@ -450,7 +450,7 @@ class TestResolveProviderClientMainRuntimeCustom:
     def test_custom_provider_main_runtime_respects_explicit_base_url(self, tmp_path):
         """explicit_base_url still wins over main_runtime — the caller's
         explicit argument is the strongest signal."""
-        from agent.auxiliary_client import resolve_provider_client
+        from hermes_agent.agent.auxiliary_client import resolve_provider_client
         main_runtime = {
             "base_url": "https://main-runtime.example.com/v1",
             "api_key": "sk-main",
@@ -499,7 +499,7 @@ class TestBareNamedAuxCredentialSurvivesAsyncRebuild:
     def test_async_task_client_carries_key_cmd_bearer_and_extra_headers(self, tmp_path):
         import asyncio
         _write_config(tmp_path, self._cfg())
-        from agent.auxiliary_client import resolve_provider_client
+        from hermes_agent.agent.auxiliary_client import resolve_provider_client
         client, _model = resolve_provider_client("hermes-gw", "aux-model", async_mode=True, task="compression")
         assert client is not None
         asyncio.run(client._refresh_api_key())
@@ -511,7 +511,7 @@ class TestBareNamedAuxCredentialSurvivesAsyncRebuild:
         """The fallback-candidate ladder rebuilds a resolved sync client through ``_to_async_client``."""
         import asyncio
         _write_config(tmp_path, self._cfg())
-        from agent.auxiliary_client import _to_async_client, resolve_provider_client
+        from hermes_agent.agent.auxiliary_client import _to_async_client, resolve_provider_client
         sync_client, model = resolve_provider_client("hermes-gw", "aux-model", task="compression")
         sync_client._refresh_api_key()  # what the SDK does in _prepare_options before each request
         assert self._wire_headers(sync_client)["authorization"] == "Bearer vk-test-1234"
@@ -540,12 +540,12 @@ class TestKeyedCustomProviderReasoningWire:
         """api.groq.com takes top-level reasoning_effort only as 'none'/'default' (#75089), so the
         configured 'medium' is clamped to 'default' — the bare-key case goes through ``call_llm``."""
         _write_config(tmp_path, self._KEYED)
-        from agent.auxiliary_client import _build_call_kwargs, call_llm
+        from hermes_agent.agent.auxiliary_client import _build_call_kwargs, call_llm
         common = dict(reasoning_config={"enabled": True, "effort": "medium"}, base_url="https://api.groq.com/openai/v1")
         if provider == "groq":
             client = MagicMock(base_url=common["base_url"])
-            with patch("agent.auxiliary_client._get_cached_client", return_value=(client, "vendor/model")), \
-                    patch("agent.auxiliary_client._validate_llm_response", side_effect=lambda resp, _t, **_kw: resp):
+            with patch("hermes_agent.agent.auxiliary_client._get_cached_client", return_value=(client, "vendor/model")), \
+                    patch("hermes_agent.agent.auxiliary_client._validate_llm_response", side_effect=lambda resp, _t, **_kw: resp):
                 call_llm(provider=provider, model="vendor/model", messages=[{"role": "user", "content": "hi"}], **common)
             kwargs = client.chat.completions.create.call_args.kwargs
         else:
@@ -555,7 +555,7 @@ class TestKeyedCustomProviderReasoningWire:
 
     def test_profile_backed_and_unknown_providers_keep_their_wire(self, tmp_path):
         _write_config(tmp_path, self._KEYED)
-        from agent.auxiliary_client import _build_call_kwargs
+        from hermes_agent.agent.auxiliary_client import _build_call_kwargs
         nested = {"reasoning": {"enabled": True, "effort": "medium"}}
         # Aggregator profile: nested extra_body.reasoning is its wire; unchanged.
         kwargs = _build_call_kwargs(
@@ -592,7 +592,7 @@ class TestAuxInheritsCustomProviderExtraBody:
         }
 
     def _sent_extra_body(self, main_runtime=None, **call):
-        from agent.auxiliary_client import call_llm
+        from hermes_agent.agent.auxiliary_client import call_llm
         sent = {}
 
         def fake_create(**kwargs):
@@ -600,7 +600,7 @@ class TestAuxInheritsCustomProviderExtraBody:
             return MagicMock()
 
         with patch("openai.resources.chat.completions.Completions.create", side_effect=fake_create), \
-                patch("agent.auxiliary_client._validate_llm_response", side_effect=lambda resp, _t, **_kw: resp):
+                patch("hermes_agent.agent.auxiliary_client._validate_llm_response", side_effect=lambda resp, _t, **_kw: resp):
             call_llm(task="approval", messages=[{"role": "user", "content": "hi"}], main_runtime=main_runtime, **call)
         assert sent, "request never reached the transport"
         return sent.get("extra_body") or {}
@@ -622,7 +622,7 @@ class TestAuxInheritsCustomProviderExtraBody:
 
     def test_other_destinations_do_not_inherit(self, tmp_path):
         _write_config(tmp_path, self._config())
-        from agent.auxiliary_client import _build_call_kwargs
+        from hermes_agent.agent.auxiliary_client import _build_call_kwargs
         msgs = [{"role": "user", "content": "hi"}]
         # A fallback to a built-in never carries the custom entry's body.
         openrouter = _build_call_kwargs("openrouter", "vendor/model", msgs, base_url="https://openrouter.ai/api/v1")

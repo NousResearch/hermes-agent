@@ -13,7 +13,7 @@ agent loop catches the TypeError, sees no HTTP status, classifies it as
 non-retryable, and aborts (#32892).
 
 These tests pin the defence:
-:func:`agent.transports.codex.ResponsesApiTransport.build_kwargs` must
+:func:`hermes_agent.agent.transports.codex.ResponsesApiTransport.build_kwargs` must
 never emit ``tools=None`` — only add the ``tools`` key when there are
 function tools to expose.  When there are no tools, the entire ``tools``
 key (plus ``tool_choice`` and ``parallel_tool_calls`` which are
@@ -47,7 +47,7 @@ sys.modules.setdefault("fal_client", types.SimpleNamespace())
 def transport():
     """Fresh ``ResponsesApiTransport`` per test (it is stateless but
     the import has side-effects on a global transport registry)."""
-    from agent.transports.codex import ResponsesApiTransport
+    from hermes_agent.agent.transports.codex import ResponsesApiTransport
 
     return ResponsesApiTransport()
 

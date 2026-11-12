@@ -1,8 +1,8 @@
 """Tests for Ollama num_ctx context length detection and injection.
 
 Covers:
-  agent/model_metadata.py — query_ollama_num_ctx()
-  run_agent.py — _ollama_num_ctx detection + extra_body injection
+  hermes_agent/agent/model_metadata.py — query_ollama_num_ctx()
+  hermes_agent/run_agent.py — _ollama_num_ctx detection + extra_body injection
 """
 
 from unittest.mock import patch, MagicMock
@@ -10,7 +10,7 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 
-from agent.model_metadata import query_ollama_num_ctx, query_ollama_supports_vision
+from hermes_agent.agent.model_metadata import query_ollama_num_ctx, query_ollama_supports_vision
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -41,7 +41,7 @@ class TestQueryOllamaNumCtx:
         }
         mock_ctx, _ = _mock_httpx_client(show_data)
 
-        with patch("agent.model_metadata.detect_local_server_type", return_value="ollama"):
+        with patch("hermes_agent.agent.model_metadata.detect_local_server_type", return_value="ollama"):
             # httpx is imported inside the function — patch the module import
             import httpx
             with patch.object(httpx, "Client", return_value=mock_ctx):
@@ -57,7 +57,7 @@ class TestQueryOllamaNumCtx:
         }
         mock_ctx, _ = _mock_httpx_client(show_data)
 
-        with patch("agent.model_metadata.detect_local_server_type", return_value="ollama"):
+        with patch("hermes_agent.agent.model_metadata.detect_local_server_type", return_value="ollama"):
             import httpx
             with patch.object(httpx, "Client", return_value=mock_ctx):
                 result = query_ollama_num_ctx("custom-model", "http://localhost:11434")
@@ -75,7 +75,7 @@ class TestQueryOllamaNumCtx:
         }
         mock_ctx, mock_client = _mock_httpx_client(show_data)
 
-        with patch("agent.model_metadata.detect_local_server_type", return_value="ollama"):
+        with patch("hermes_agent.agent.model_metadata.detect_local_server_type", return_value="ollama"):
             import httpx
             with patch.object(httpx, "Client", return_value=mock_ctx):
                 result = query_ollama_num_ctx("local:qwen2.5:7b", "http://localhost:11434/v1")
@@ -95,7 +95,7 @@ class TestQueryOllamaSupportsVision:
         show_data = {"capabilities": ["completion", "vision"]}
         mock_ctx, _ = _mock_httpx_client(show_data)
 
-        with patch("agent.model_metadata.detect_local_server_type", return_value="ollama"):
+        with patch("hermes_agent.agent.model_metadata.detect_local_server_type", return_value="ollama"):
             import httpx
             with patch.object(httpx, "Client", return_value=mock_ctx):
                 result = query_ollama_supports_vision("gemma4:e2b", "http://localhost:11434/v1")
@@ -107,7 +107,7 @@ class TestQueryOllamaSupportsVision:
         show_data = {"model_info": {"gemma3.vision.block_count": 27}}
         mock_ctx, _ = _mock_httpx_client(show_data)
 
-        with patch("agent.model_metadata.detect_local_server_type", return_value="ollama"):
+        with patch("hermes_agent.agent.model_metadata.detect_local_server_type", return_value="ollama"):
             import httpx
             with patch.object(httpx, "Client", return_value=mock_ctx):
                 result = query_ollama_supports_vision("llava", "http://localhost:11434")
@@ -115,7 +115,7 @@ class TestQueryOllamaSupportsVision:
         assert result is True
 
     def test_returns_none_for_non_ollama_server(self):
-        with patch("agent.model_metadata.detect_local_server_type", return_value="vllm"):
+        with patch("hermes_agent.agent.model_metadata.detect_local_server_type", return_value="vllm"):
             result = query_ollama_supports_vision("llava", "http://localhost:8000/v1")
         assert result is None
 
@@ -127,22 +127,22 @@ class TestQueryOllamaSupportsVision:
 
 
 def _build_agent(cfg, probed_ctx, base_url="http://localhost:11434/v1"):
-    import agent.context_compressor as cc_mod
+    import hermes_agent.agent.context_compressor as cc_mod
     with (
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
         patch("hermes_cli.config.load_config", return_value=cfg),
         patch("hermes_cli.config.load_config_readonly", return_value=cfg),
         patch(
-            "agent.model_metadata.get_model_context_length",
+            "hermes_agent.agent.model_metadata.get_model_context_length",
             return_value=probed_ctx,
         ),
         patch.object(
             cc_mod, "get_model_context_length", return_value=probed_ctx,
         ),
     ):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         return AIAgent(
             model="gemma3:27b",
             api_key="ollama",

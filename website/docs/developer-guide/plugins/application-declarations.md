@@ -133,4 +133,4 @@ Evaluation uses `locate`, optional version inspection and the cached GPU fact. I
 ## The two gates
 
 - **MCP `check_fn`** (`hermes_agent/tools/mcp_tool_handlers.py::_make_check_fn`): connection alive AND, when a declaration with `requires.app` is registered for the server, `availability(decl).offerable`. Returns a plain `bool` because the registry caches `bool(fn())`.
-- **Skill `requires_apps:` frontmatter** (`agent/skill_utils.py::skill_matches_apps`): each name resolves through `declaration.lookup`; an unknown name hides the skill (fail closed). Offer-time filter, like `environments:`.
+- **Skill `requires_apps:` frontmatter** (`hermes_agent/agent/skill_utils.py::skill_matches_apps`): each name resolves through `declaration.lookup`; an unknown name hides the skill (fail closed). Offer-time filter, like `environments:`.

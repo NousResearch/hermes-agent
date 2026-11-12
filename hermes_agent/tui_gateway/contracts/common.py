@@ -26,7 +26,7 @@ class PlanGauge(Result):
 
 
 class Usage(OpenModel):
-    """``hermes_agent/tui_gateway/server.py::_get_usage`` + ``agent/context_breakdown.py::context_usage_fields``."""
+    """``hermes_agent/tui_gateway/server.py::_get_usage`` + ``hermes_agent/agent/context_breakdown.py::context_usage_fields``."""
 
     model: str = ""
     input: int = 0

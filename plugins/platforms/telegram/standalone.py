@@ -13,7 +13,7 @@ import os
 import re
 from types import SimpleNamespace
 
-from agent.redact import redact_sensitive_text
+from hermes_agent.agent.redact import redact_sensitive_text
 from plugins.platforms.telegram.rich_code_regions import strip_code
 from plugins.platforms.telegram.telegram_send_errors import SAME_REQUEST_ATTEMPTS, is_entity_parse_error
 from pm import install_hint
@@ -435,7 +435,7 @@ async def standalone_send(pconfig, chat_id, message, *, thread_id=None, media_fi
     previews); ``notify`` rings under the ``important`` notification mode (cron.delivery.notify)."""
     token = getattr(pconfig, "token", None)
     if not token:
-        from agent.secret_scope import get_secret  # profile-scoped: never borrow another profile's token
+        from hermes_agent.agent.secret_scope import get_secret  # profile-scoped: never borrow another profile's token
         token = get_secret("TELEGRAM_BOT_TOKEN", "") or ""
     extra = getattr(pconfig, "extra", None) or {}
     return await _send_telegram(

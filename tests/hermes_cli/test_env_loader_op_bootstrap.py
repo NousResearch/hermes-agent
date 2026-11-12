@@ -34,7 +34,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from hermes_cli import env_loader
-from agent import credential_pool
+from hermes_agent.agent import credential_pool
 
 
 @pytest.fixture(autouse=True)

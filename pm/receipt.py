@@ -50,7 +50,7 @@ from typing import Any, Optional
 _RECEIPT_KEEP = 20
 
 # Scoped current receipt — per-context (threads get their own via
-# context isolation), same pattern as agent/context_compressor's pin.
+# context isolation), same pattern as hermes_agent/agent/context_compressor's pin.
 _current: contextvars.ContextVar[Optional[dict[str, Any]]] = contextvars.ContextVar(
     "pm_receipt_current", default=None
 )

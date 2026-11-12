@@ -17,23 +17,23 @@ LOCAL_URL = "http://127.0.0.1:8000/v1"
 
 @pytest.fixture(autouse=True)
 def _fresh_state(monkeypatch):
-    from agent import bedrock_adapter, context_default_record
+    from hermes_agent.agent import bedrock_adapter, context_default_record
     bedrock_adapter.reset_client_cache()
     monkeypatch.setattr(context_default_record, "_RECORDS", {})
-    monkeypatch.setattr("agent.bedrock_adapter.probe_bedrock_context_length", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_agent.agent.bedrock_adapter.probe_bedrock_context_length", lambda *a, **k: None)
     yield
     bedrock_adapter.reset_client_cache()
 
 
 def _resolve(model=UNKNOWN, provider="bedrock", base_url=RUNTIME_URL, config_context_length=None) -> int:
     """The real resolver, as the compressor / gateway / /model call it (it records a defaulted answer)."""
-    from agent.model_metadata import get_model_context_length
+    from hermes_agent.agent.model_metadata import get_model_context_length
     return get_model_context_length(model, base_url=base_url, provider=provider,
                                     config_context_length=config_context_length)
 
 
 def _resolve_and_mark(model=UNKNOWN, provider="bedrock", base_url=RUNTIME_URL, config_context_length=None):
-    from agent.context_pin import context_window_marker
+    from hermes_agent.agent.context_pin import context_window_marker
     ctx = _resolve(model, provider, base_url, config_context_length)
     return ctx, context_window_marker(ctx, config_context_length, model=model, provider=provider, base_url=base_url)
 
@@ -42,7 +42,7 @@ def _resolve_and_mark(model=UNKNOWN, provider="bedrock", base_url=RUNTIME_URL, c
 def _quiet_custom_endpoint(monkeypatch):
     """A custom endpoint whose live probes report nothing (tests opt in to a /models answer)."""
     for name in ("_resolve_endpoint_context_length", "_probe_local_context_length", "_query_ollama_api_show"):
-        monkeypatch.setattr(f"agent.model_metadata.{name}", lambda *a, **k: None)
+        monkeypatch.setattr(f"hermes_agent.agent.model_metadata.{name}", lambda *a, **k: None)
     return monkeypatch
 
 
@@ -56,17 +56,17 @@ class TestFallbackMarker:
         assert _resolve_and_mark(config_context_length=128_000) == (128_000, "pinned")
 
     def test_provider_confirmed_window_equal_to_the_default_is_not_marked_fallback(self):
-        with patch("agent.model_metadata.get_cached_context_length", return_value=128_000):
+        with patch("hermes_agent.agent.model_metadata.get_cached_context_length", return_value=128_000):
             assert _resolve_and_mark() == (128_000, "")
 
     def test_a_window_no_resolution_defaulted_is_not_marked_fallback(self):
-        from agent.context_pin import context_window_marker
+        from hermes_agent.agent.context_pin import context_window_marker
         _resolve()  # the Bedrock route defaulted; another route showing the same number did not
         assert context_window_marker(128_000, None, model=UNKNOWN, provider="openrouter",
                                      base_url="https://openrouter.ai/api/v1") == ""
 
     def test_generic_default_for_an_uncatalogued_model_is_marked_fallback(self, _quiet_custom_endpoint):
-        from agent.model_metadata import DEFAULT_FALLBACK_CONTEXT
+        from hermes_agent.agent.model_metadata import DEFAULT_FALLBACK_CONTEXT
         route = dict(provider="custom", base_url=LOCAL_URL)
         assert _resolve_and_mark("mystery-model", **route) == (DEFAULT_FALLBACK_CONTEXT, "fallback")
         # Same number from the catalog (a listed 256K model) is a known limit.
@@ -74,17 +74,17 @@ class TestFallbackMarker:
 
     def test_a_window_the_endpoint_reported_is_not_marked_fallback(self, _quiet_custom_endpoint):
         """Greptile: an uncatalogued model whose /models reports 256000 is detected, not defaulted."""
-        from agent.model_metadata import DEFAULT_FALLBACK_CONTEXT
+        from hermes_agent.agent.model_metadata import DEFAULT_FALLBACK_CONTEXT
         route = dict(provider="custom", base_url=LOCAL_URL)
         assert _resolve_and_mark("mystery-model", **route)[1] == "fallback"  # endpoint down: defaulted
-        _quiet_custom_endpoint.setattr("agent.model_metadata._resolve_endpoint_context_length",
+        _quiet_custom_endpoint.setattr("hermes_agent.agent.model_metadata._resolve_endpoint_context_length",
                                        lambda *a, **k: DEFAULT_FALLBACK_CONTEXT)
         assert _resolve_and_mark("mystery-model", **route) == (DEFAULT_FALLBACK_CONTEXT, "")  # reported: detected
 
     @pytest.mark.parametrize("defaulted_first", [True, False])
     def test_profiles_keep_their_own_label(self, tmp_path, defaulted_first):
         """Greptile: a multiplexed gateway resolves for several profiles; one profile's answer is not another's."""
-        from agent.context_pin import context_window_marker
+        from hermes_agent.agent.context_pin import context_window_marker
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
         homes = {"defaulted": tmp_path / "a", "confirmed": tmp_path / "b"}
         for home in homes.values():
@@ -98,7 +98,7 @@ class TestFallbackMarker:
                 reset_hermes_home_override(token)
 
         def confirmed():
-            with patch("agent.model_metadata.get_cached_context_length", return_value=128_000):
+            with patch("hermes_agent.agent.model_metadata.get_cached_context_length", return_value=128_000):
                 return _resolve()
         order = [("defaulted", _resolve), ("confirmed", confirmed)]
         for name, fn in order if defaulted_first else order[::-1]:
@@ -112,23 +112,23 @@ class TestFallbackSourceIsOwnedByTheCompressor:
     """Greptile on f6e7d756: the label must follow the lookup that produced the window, not the route's latest."""
 
     def test_a_later_lookup_on_the_same_route_keeps_a_live_compressors_label(self, _quiet_custom_endpoint):
-        from agent.context_compressor import ContextCompressor
-        from agent.context_pin import agent_context_marker
-        from agent.model_metadata import DEFAULT_FALLBACK_CONTEXT
+        from hermes_agent.agent.context_compressor import ContextCompressor
+        from hermes_agent.agent.context_pin import agent_context_marker
+        from hermes_agent.agent.model_metadata import DEFAULT_FALLBACK_CONTEXT
         compressor = ContextCompressor(model="mystery-model", base_url=LOCAL_URL, provider="custom", quiet_mode=True)
         agent = SimpleNamespace(model="mystery-model", provider="custom", base_url=LOCAL_URL, _config_context_length=None,
                                 context_compressor=compressor)
         assert compressor.context_length == DEFAULT_FALLBACK_CONTEXT  # endpoint down: this agent runs on the default
         assert agent_context_marker(agent) == "fallback"
-        _quiet_custom_endpoint.setattr("agent.model_metadata._resolve_endpoint_context_length",
+        _quiet_custom_endpoint.setattr("hermes_agent.agent.model_metadata._resolve_endpoint_context_length",
                                        lambda *a, **k: DEFAULT_FALLBACK_CONTEXT)
         assert _resolve_and_mark("mystery-model", provider="custom", base_url=LOCAL_URL)[1] == ""  # another session
         assert agent_context_marker(agent) == "fallback"  # still running on its own defaulted window
 
     def test_a_moa_preset_keeps_its_aggregators_fallback(self, monkeypatch):
         """The preset's window is the aggregator's; when that lookup defaulted, so did the preset's."""
-        from agent import model_metadata
-        from agent.context_pin import context_window_marker
+        from hermes_agent.agent import model_metadata
+        from hermes_agent.agent.context_pin import context_window_marker
 
         def _aggregator(model, custom_providers):
             return model_metadata.get_model_context_length(UNKNOWN, base_url=RUNTIME_URL, provider="bedrock")

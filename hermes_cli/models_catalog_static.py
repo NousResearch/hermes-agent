@@ -133,7 +133,7 @@ def _xai_curated_models() -> list[str]:
     (no network), else ``_XAI_STATIC_FALLBACK``. Any failure falls through to the static list.
     Reads through the process-wide models.dev copy, so the parse is the one every later reader shares."""
     try:
-        from agent.models_dev import fetch_models_dev
+        from hermes_agent.agent.models_dev import fetch_models_dev
         data = fetch_models_dev(allow_network=False)
         xai = data.get("xai") if isinstance(data, dict) else None
         models = xai.get("models") if isinstance(xai, dict) else None

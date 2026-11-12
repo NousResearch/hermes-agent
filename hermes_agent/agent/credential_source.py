@@ -52,6 +52,6 @@ def credential_label(key: Any) -> Optional[str]:
     """Translated label for a callable key's source (neutral when untagged); None for a non-callable."""
     if isinstance(key, str) or not callable(key):
         return None
-    from agent.i18n import t
+    from hermes_agent.agent.i18n import t
 
     return t(SOURCE_LABEL_KEYS.get(credential_source(key) or "", UNKNOWN_LABEL_KEY))

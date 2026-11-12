@@ -13,7 +13,7 @@ import contextlib
 import logging
 from pathlib import Path
 
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

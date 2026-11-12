@@ -10,8 +10,8 @@ import os
 import re
 from typing import Any, Dict, Optional
 
-from agent.azure_identity_adapter import is_token_provider
-from agent.secret_scope import get_secret_str
+from hermes_agent.agent.azure_identity_adapter import is_token_provider
+from hermes_agent.agent.secret_scope import get_secret_str
 from hermes_constants import OPENROUTER_BASE_URL
 from utils import base_url_host_matches, base_url_hostname, base_url_origin
 
@@ -29,7 +29,7 @@ def _azure_entra_credentials(cfg_entra: dict[str, Any]) -> Any:
     ``build_anthropic_client`` injects the bearer via an httpx hook)."""
     AuthError = _rp().AuthError
     try:
-        from agent.azure_identity_adapter import SCOPE_AI_AZURE_DEFAULT, EntraIdentityConfig, build_token_provider
+        from hermes_agent.agent.azure_identity_adapter import SCOPE_AI_AZURE_DEFAULT, EntraIdentityConfig, build_token_provider
     except Exception as exc:
         raise AuthError(
             "Could not load the Azure Foundry Entra ID adapter. "
@@ -214,7 +214,7 @@ def _resolve_bedrock_runtime(requested_provider: str, model_cfg: dict[str, Any],
     Claude → AnthropicBedrock SDK (prompt caching, thinking budgets); others → Converse API.
     AWS_BEARER_TOKEN_BEDROCK auth is unsupported by AnthropicBedrock (SigV4 only), so bearer users
     go through Converse regardless of model."""
-    from agent.bedrock_adapter import (bedrock_openai_base_url, bedrock_openai_uses_mantle, has_aws_credentials,
+    from hermes_agent.agent.bedrock_adapter import (bedrock_openai_base_url, bedrock_openai_uses_mantle, has_aws_credentials,
                                        is_anthropic_bedrock_model, resolve_aws_auth_env_var, resolve_bedrock_bearer_token,
                                        resolve_bedrock_runtime_region, bedrock_guardrail_config)
     from hermes_cli.config import load_config  # direct (not the origin delegate), as before

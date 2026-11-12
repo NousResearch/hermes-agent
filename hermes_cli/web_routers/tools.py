@@ -132,7 +132,7 @@ def _probe_terminal_backend(name: str, terminal_cfg: dict) -> tuple:
         if probe is not None:
             return probe(terminal_cfg)
         try:
-            from agent.terminal_env_registry import get_provider
+            from hermes_agent.agent.terminal_env_registry import get_provider
 
             provider = get_provider(name)
             if provider is not None:

@@ -23,13 +23,13 @@ def _config(chain):
 
 
 def _route_to(monkeypatch, client, sent_model=None, seen=None):
-    from agent.route_binding import RouteEntryClient
+    from hermes_agent.agent.route_binding import RouteEntryClient
 
     def route(entry, provider, model, raw_codex=True):
         if seen is not None:
             seen.append((provider, model, raw_codex))
         return RouteEntryClient(client, sent_model or model, False, "chat_completions")
-    monkeypatch.setattr("agent.route_binding.resolve_route_entry_client", route)
+    monkeypatch.setattr("hermes_agent.agent.route_binding.resolve_route_entry_client", route)
 
 
 def _openai_client(handler, calls):
@@ -142,7 +142,7 @@ def test_live_passes_the_swap_shape_and_provider_timeout(monkeypatch):
     _route_to(monkeypatch, _openai_client(lambda request: _completion("m"), calls), seen=seen)
     monkeypatch.setattr("hermes_cli.timeouts.get_provider_request_timeout", lambda provider, model: 7.0)
     sent = {}
-    import agent.auxiliary_client as aux
+    import hermes_agent.agent.auxiliary_client as aux
     real = aux._build_call_kwargs
     monkeypatch.setattr(aux, "_build_call_kwargs", lambda *a, **k: sent.update(k) or real(*a, **k))
     _config([])
@@ -178,7 +178,7 @@ def test_cli_json_exit_code_and_no_raw_entry_key(monkeypatch, capsys):
 
 def test_cli_all_ready_exits_zero_without_inference_in_static_mode(monkeypatch, capsys):
     _config([{"provider": "local-oai", "model": "good"}])
-    monkeypatch.setattr("agent.route_binding.resolve_route_entry_client",
+    monkeypatch.setattr("hermes_agent.agent.route_binding.resolve_route_entry_client",
                         lambda *a, **k: pytest.fail("static mode must not build an inference client"))
     fc.cmd_fallback_check(types.SimpleNamespace(live=False, json=False))
     assert "ready (static)" in capsys.readouterr().out
@@ -263,7 +263,7 @@ def test_live_scrubs_the_entry_key_even_without_a_known_prefix(monkeypatch):
 
 
 def test_codex_wrapper_inner_client_loses_sdk_retries():
-    from agent.auxiliary_client import CodexAuxiliaryClient
+    from hermes_agent.agent.auxiliary_client import CodexAuxiliaryClient
     wrapped = fc._without_sdk_retries(CodexAuxiliaryClient(OpenAI(api_key=_KEY, base_url="http://h/v1"), "m"))
     assert isinstance(wrapped, CodexAuxiliaryClient) and wrapped._real_client.max_retries == 0
     assert wrapped.chat.completions._model == "m"
@@ -288,7 +288,7 @@ def test_no_latency_when_no_request_was_sent(monkeypatch):
 
 def test_a_judging_error_fails_the_entry_not_the_command(monkeypatch):
     _route_to(monkeypatch, _openai_client(lambda request: _completion("m"), []))
-    monkeypatch.setattr("agent.auxiliary_client.extract_content_or_reasoning",
+    monkeypatch.setattr("hermes_agent.agent.auxiliary_client.extract_content_or_reasoning",
                         lambda response: (_ for _ in ()).throw(TypeError("odd body")))
     result = fc.check_entry_live({"provider": "local-oai", "model": "m"}, _ready())
     assert result.inference_ready is False and result.status.startswith("live_") and result.latency_ms is not None

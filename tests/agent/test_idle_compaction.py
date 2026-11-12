@@ -1,12 +1,12 @@
 """Tests for the opt-in idle-triggered compaction policy.
 
-Covers ``agent.turn_context._should_idle_compact`` — the pure predicate that
+Covers ``hermes_agent.agent.turn_context._should_idle_compact`` — the pure predicate that
 decides whether a session resuming after an idle gap should compact up front.
 The predicate is intentionally side-effect-free so the policy can be verified
 without constructing a live agent or DB.
 """
 
-from agent.turn_context import _should_idle_compact
+from hermes_agent.agent.turn_context import _should_idle_compact
 
 
 def _decide(**overrides):

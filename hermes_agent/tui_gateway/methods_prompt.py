@@ -19,7 +19,7 @@ _GROUP_PROBE_FAILED_MSG = "Could not verify this group. Try again after the gate
 
 def _history_user_indices(history: list) -> list:
     """Indices of canonical live-user turns, including composite carriers."""
-    from agent.context_compressor import user_originated_turn_view
+    from hermes_agent.agent.context_compressor import user_originated_turn_view
     return [i for i, m in enumerate(history) if user_originated_turn_view(m) is not None]
 
 
@@ -42,8 +42,8 @@ def _mem_db_pair_agrees(mem, db_msg) -> bool:
     if mem.get("role") != db_msg.get("role"):
         return False
     if mem.get("role") == "user":
-        from agent.context_compressor import user_originated_turn_view
-        from agent.memory_context import sanitize_context
+        from hermes_agent.agent.context_compressor import user_originated_turn_view
+        from hermes_agent.agent.memory_context import sanitize_context
         mem_view = user_originated_turn_view(mem)
         db_view = user_originated_turn_view(db_msg)
         if (mem_view is None) != (db_view is None):
@@ -173,8 +173,8 @@ def _merge_carrier_holds_target_text(carrier: dict, db_msg: dict) -> bool:
     empty side drops out), so the target's sanitized text either IS the carrier's
     content or appears in it as a whole ``"\\n\\n"``-delimited part. Both views are
     user-originated by construction (the caller only visits user turns)."""
-    from agent.context_compressor import user_originated_turn_view
-    from agent.memory_context import sanitize_context
+    from hermes_agent.agent.context_compressor import user_originated_turn_view
+    from hermes_agent.agent.memory_context import sanitize_context
     mem_view = user_originated_turn_view(carrier)
     db_view = user_originated_turn_view(db_msg)
     if mem_view is None or db_view is None:
@@ -462,7 +462,7 @@ def _archived_user_turns(session, sid, history, cut_index, survivor_ids) -> int:
     (#94486): its turns are counted from the physical durable rows, and every id that cannot be
     classified there counts as a turn (fail closed). On a durable-carrier cut the run's rows
     before the target survive (*survivor_ids*)."""
-    from agent.context_compressor import user_originated_turn_view
+    from hermes_agent.agent.context_compressor import user_originated_turn_view
     physical = None
     archived = 0
     for h_idx in _history_user_indices(history):
@@ -494,7 +494,7 @@ def _truncate_history_for_submit(rid, sid, session, params, requested_rebind_ids
     if err is not None:
         return err, {}
     durable_prefix = resolved[3] if len(resolved) > 3 else None
-    from agent.context_compressor import history_before_user_originated_turn
+    from hermes_agent.agent.context_compressor import history_before_user_originated_turn
     if durable_prefix is not None:
         # Durable-boundary cut: the target row is physically present but merged into
         # a repaired live carrier; the physical rows strictly before it are the
@@ -1185,7 +1185,7 @@ def _(rid, params: dict) -> dict:
         return err
 
     def body():
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         kwargs = _background_agent_kwargs(session["agent"], task_id)
         with _side_agent_session_db(kwargs.get("session_db")) as session_db:
             agent = AIAgent(**{**kwargs, "session_db": session_db})
@@ -1204,7 +1204,7 @@ def _(rid, params: dict) -> dict:
 
 @method("prompt.btw")
 def _(rid, params: dict) -> dict:
-    """Side question over a snapshot of the live conversation (``agent/side_question.py``);
+    """Side question over a snapshot of the live conversation (``hermes_agent/agent/side_question.py``);
     history, alternation and prompt cache stay untouched.  Answer: ``btw.complete``."""
     session, text, parent, task_id, err = _side_agent_args(rid, params, "btw")
     if err:
@@ -1216,7 +1216,7 @@ def _(rid, params: dict) -> dict:
         for k in ("model", "provider", "base_url", "api_key", "api_mode", "session_id")}
 
     def body():
-        from agent.side_question import answer_side_question
+        from hermes_agent.agent.side_question import answer_side_question
         return answer_side_question(
             text, snapshot, parent_agent=agent, main_runtime=main_runtime) or ""
 
@@ -1241,7 +1241,7 @@ def _(rid, params: dict) -> dict:
     preview_cwd = _validated_preview_cwd(cwd)
 
     def body():
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         from hermes_agent.tools.terminal_tool import register_task_env_overrides
         if preview_cwd:
             register_task_env_overrides(task_id, {"cwd": preview_cwd})

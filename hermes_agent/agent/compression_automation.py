@@ -3,13 +3,13 @@
 
 def carry_compression_automation(agent, old_session_id):
     # In-process state, not a sidecar: the bot-to-bot chain moves on every store (#137027).
-    from agent.bot_chain import carry_chain
+    from hermes_agent.agent.bot_chain import carry_chain
     carry_chain(old_session_id, agent.session_id)
-    from agent.runtime_session_store import RuntimeSessionStore
+    from hermes_agent.agent.runtime_session_store import RuntimeSessionStore
     if isinstance(agent._session_db, RuntimeSessionStore):
         # The owner moved these exact sidecars atomically with child publication.
         return
-    from agent.conversation_compression import _swallow
+    from hermes_agent.agent.conversation_compression import _swallow
     with _swallow('Could not migrate goal on compression: %s'):
         from hermes_cli.goals import migrate_goal_to_session
         migrate_goal_to_session(old_session_id, agent.session_id, reason='compression')

@@ -38,7 +38,7 @@ def _registry(monkeypatch):
 
 
 def test_profile_seeded_rows_land_in_the_pool_and_skip_the_generic_env_loop(monkeypatch):
-    from agent import credential_pool as cp
+    from hermes_agent.agent import credential_pool as cp
 
     _registry(monkeypatch)
     monkeypatch.setattr(cp, "_is_source_suppressed_fn", lambda: lambda provider, source: False)
@@ -51,7 +51,7 @@ def test_profile_seeded_rows_land_in_the_pool_and_skip_the_generic_env_loop(monk
 
 def test_profile_claimed_removal_suppresses_every_variant(monkeypatch):
     from hermes_cli import auth
-    from agent.credential_sources import find_removal_step
+    from hermes_agent.agent.credential_sources import find_removal_step
 
     _registry(monkeypatch)
     suppressed: list = []
@@ -65,7 +65,7 @@ def test_profile_claimed_removal_suppresses_every_variant(monkeypatch):
 
 
 def test_runtime_refresh_owner_is_found_by_name_or_by_host_of_a_custom_route(monkeypatch):
-    from agent.conversation_loop import _credential_refresh_profile
+    from hermes_agent.agent.conversation_loop import _credential_refresh_profile
 
     _registry(monkeypatch)
     assert _credential_refresh_profile(SimpleNamespace(provider="acme", base_url="")) is _ACME
@@ -75,7 +75,7 @@ def test_runtime_refresh_owner_is_found_by_name_or_by_host_of_a_custom_route(mon
 
 
 def test_endpoint_rejection_hint_reaches_any_route(monkeypatch):
-    from agent.turn_overflow import _request_rejection_hint
+    from hermes_agent.agent.turn_overflow import _request_rejection_hint
 
     _registry(monkeypatch)
     assert _request_rejection_hint(413, "https://api.acme.example/v1") == ("capped",)

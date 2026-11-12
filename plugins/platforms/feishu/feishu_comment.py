@@ -489,7 +489,7 @@ def _save_session_history(key: str, messages: list[dict[str, Any]]) -> None:
 
 def _run_comment_agent(prompt: str, client: Any, session_key: str = "") -> str:
     """Create an AIAgent with feishu tools and run the prompt; empty string on failure. *session_key*, if given, loads/saves history for cross-card memory in the same document."""
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     from hermes_agent.tools import feishu_doc_tool, feishu_drive_tool
     logger.info("[Feishu-Comment] _run_comment_agent: injecting lark client into tool thread-locals")
     tool_mods = (feishu_doc_tool, feishu_drive_tool)
@@ -502,7 +502,7 @@ def _run_comment_agent(prompt: str, client: Any, session_key: str = "") -> str:
         if history:
             logger.info("[Feishu-Comment] _run_comment_agent: loaded %d history messages from session %s", len(history), session_key)
         # skip_memory unless compression.checkpoint_required needs the provider to checkpoint with (fork scope).
-        from agent.conversation_compression_checkpoint import checkpoint_required_from_config
+        from hermes_agent.agent.conversation_compression_checkpoint import checkpoint_required_from_config
 
         agent = AIAgent(model=model, **{k: runtime_kwargs.get(k) for k in ("base_url", "api_key", "provider", "api_mode", "credential_pool", "reasoning_config")},
                         quiet_mode=True, skip_context_files=True, skip_memory=not checkpoint_required_from_config(),
@@ -581,7 +581,7 @@ async def _local_comment_prompt(client: Any, comment_id: str, reply_id: str, fro
 async def handle_drive_comment_event(client: Any, data: Any, *, self_open_id: str = "", secondary: bool = False) -> None:
     """Run a drive-comment event in its adapter's profile scope (``secondary``: the adapter belongs
     to a multiplexed secondary profile, so it never borrows the launch scope)."""
-    from agent.secret_scope import current_secret_scope, is_multiplex_active
+    from hermes_agent.agent.secret_scope import current_secret_scope, is_multiplex_active
 
     if current_secret_scope() is not None:
         return await _handle_drive_comment_event(client, data, self_open_id=self_open_id)

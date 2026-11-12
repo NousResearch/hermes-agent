@@ -1,7 +1,7 @@
 """Model metadata, context lengths, and token estimation utilities.
 
 Pure utility functions with no AIAgent dependency. Used by ContextCompressor
-and run_agent.py for pre-flight context checks.
+and hermes_agent/run_agent.py for pre-flight context checks.
 """
 
 import contextlib
@@ -17,18 +17,18 @@ from urllib.parse import urlparse
 
 import hermes_yaml as yaml
 
-from agent import model_metadata_http
-from agent.model_metadata_cache import _write_context_cache, locked_context_cache
-from agent.context_default_record import mark_context_defaulted, records_context_defaults
-from agent.model_metadata_llamacpp import llamacpp_context
-from agent.model_metadata_memo_bounds import MEMO_LOCK, bound_codex_caches, remember_endpoint_models as _remember_endpoint_models
+from hermes_agent.agent import model_metadata_http
+from hermes_agent.agent.model_metadata_cache import _write_context_cache, locked_context_cache
+from hermes_agent.agent.context_default_record import mark_context_defaulted, records_context_defaults
+from hermes_agent.agent.model_metadata_llamacpp import llamacpp_context
+from hermes_agent.agent.model_metadata_memo_bounds import MEMO_LOCK, bound_codex_caches, remember_endpoint_models as _remember_endpoint_models
 
 from utils import atomic_json_write, base_url_host_matches, base_url_hostname
 
 from hermes_constants import OPENROUTER_MODELS_URL, openrouter_variant_base
-from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS, unpriced_replay_fields, without_persistence_fields
-from agent.replayed_reasoning import codex_reasoning_replay_tokens, strip_opaque_replay_items
-from agent.model_metadata_token_memo import (  # _MSG_TOKENS_CACHE: tests and benches read it here
+from hermes_agent.agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS, unpriced_replay_fields, without_persistence_fields
+from hermes_agent.agent.replayed_reasoning import codex_reasoning_replay_tokens, strip_opaque_replay_items
+from hermes_agent.agent.model_metadata_token_memo import (  # _MSG_TOKENS_CACHE: tests and benches read it here
     _MSG_TOKENS_CACHE, MemoPins, lookup_message_tokens, remember_message_tokens,
 )
 
@@ -266,7 +266,7 @@ _FALLBACK_WARNED: set = set()  # the fallback is never cached, so dedupe its war
 def _warn_context_length_fallback(model: str, base_url: str) -> None:
     """Warn once per model+endpoint that detection failed and the hard default is used,
     so small-context models (8K, 32K) don't silently get 256K and fail at the API."""
-    mark_context_defaulted()  # the "fallback" label reads this, not a re-derivation (agent.context_default_record)
+    mark_context_defaulted()  # the "fallback" label reads this, not a re-derivation (hermes_agent.agent.context_default_record)
     key = (model, base_url or "")
     if key not in _FALLBACK_WARNED:
         _FALLBACK_WARNED.add(key)
@@ -281,7 +281,7 @@ MINIMUM_CONTEXT_LENGTH = 64_000
 _LOCAL_CTX_PROBE_TTL_SECONDS = 30.0
 _LOCAL_CTX_PROBE_CACHE: dict[tuple, tuple] = {}
 # In-process (model, region) -> monotonic_ts memo of a FAILED Bedrock context probe. That probe pads
-# prompts of 1.3M/2.2M tokens and attempts up to two converse calls (agent/bedrock_adapter.py
+# prompts of 1.3M/2.2M tokens and attempts up to two converse calls (hermes_agent/agent/bedrock_adapter.py
 # _BEDROCK_PROBE_TIERS; the second tier is sent only when the first yields no parseable limit, i.e. on
 # the failure path), and its failures are deliberately never persisted, so without a negative memo a
 # model whose probe keeps failing (un-enabled model, opaque InternalServerException, unparseable length
@@ -432,7 +432,7 @@ def _normalize_base_url(base_url: str) -> str:
 
 
 def _auth_headers(api_key: object = "") -> dict[str, str]:
-    from agent.command_token_source import materialize_probe_api_key
+    from hermes_agent.agent.command_token_source import materialize_probe_api_key
     token = materialize_probe_api_key(api_key)
     return {"Authorization": f"Bearer {token}"} if token else {}
 
@@ -1010,7 +1010,7 @@ def _apply_llamacpp_props(cache: dict[str, dict[str, Any]], request_candidate: s
 
 
 def _endpoint_memo_key(normalized: str, api_key: object) -> tuple[str, str]:
-    from agent.credential_persistence import fingerprint_secret_value
+    from hermes_agent.agent.credential_persistence import fingerprint_secret_value
     # Callable (minted) keys are not fingerprinted here: doing so would mint on every cache hit.
     return normalized, (fingerprint_secret_value(api_key) or "") if isinstance(api_key, str) else ""
 
@@ -1195,7 +1195,7 @@ def _invalidate_cached_context_length(model: str, base_url: str) -> None:
     the resolver does; a blank URL addresses the distinct generic cache key.
     In-process caches are dropped unconditionally; only the file update takes the cache lock.
     """
-    from agent.model_metadata_cache import drop_context_cache_rows
+    from hermes_agent.agent.model_metadata_cache import drop_context_cache_rows
     key = _context_cache_key(model, base_url)
     # Also drop the in-memory TTL probe entries, or the next resolution inside the TTL window reuses the stale value.
     bare, stripped = _strip_provider_prefix(model), (base_url or "").rstrip("/")
@@ -1847,7 +1847,7 @@ def _fetch_codex_oauth_context_lengths_with_source(access_token: str, base_url: 
         return cached[0], False
     # Without ChatGPT-Account-ID /backend-api/codex/models returns ``{"models":[]}`` (HTTP 200) and
     # the probe silently falls back; residency-enforced workspaces 401 without the residency header.
-    from agent.codex_headers import codex_account_headers
+    from hermes_agent.agent.codex_headers import codex_account_headers
     headers = {"Authorization": f"Bearer {access_token}", **codex_account_headers(access_token)}
     try:
         entries, status = fetch_codex_catalog_entries(
@@ -1862,7 +1862,7 @@ def _fetch_codex_oauth_context_lengths_with_source(access_token: str, base_url: 
         logger.debug("Codex /models probe failed: %s", exc)
         _remember_no_codex_catalog(cache_key)
         return {}, False
-    from agent.codex_service_tiers import remember_catalog
+    from hermes_agent.agent.codex_service_tiers import remember_catalog
     remember_catalog(cache_key, entries)
     result: dict[str, int] = {}
     max_result: dict[str, int] = {}
@@ -2018,7 +2018,7 @@ def _resolve_bedrock_context_length(model: str, base_url: str) -> Optional[int]:
     or runtime error are reused. The table answers a call, never the cache. Keys use base_url,
     or synthetic bedrock:// when absent, consistently with provider-error writers."""
     try:
-        from agent.bedrock_adapter import get_bedrock_context_length, probe_bedrock_context_length, resolve_bedrock_region
+        from hermes_agent.agent.bedrock_adapter import get_bedrock_context_length, probe_bedrock_context_length, resolve_bedrock_region
     except ImportError:
         return None  # boto3 not installed — fall through to generic resolution
     cache_key_url = base_url or "bedrock://"
@@ -2135,7 +2135,7 @@ def _config_override_context_length(model: str, base_url: str, provider: str, cu
     # custom/local models (#8731).
     if provider and model:
         with contextlib.suppress(Exception):  # fall through to other resolution paths
-            from agent.models_dev import _override_context_window
+            from hermes_agent.agent.models_dev import _override_context_window
             mo_ctx = _override_context_window(provider, model)
             if mo_ctx is not None and mo_ctx > 0:
                 return mo_ctx
@@ -2196,7 +2196,7 @@ def _resolve_provider_aware_context_length(model: str, base_url: str, api_key: s
         if isinstance(or_ctx, int) and or_ctx > 0 and not (or_ctx == 32768 and _model_name_suggests_kimi(model)):
             return or_ctx
     if effective_provider:
-        from agent.models_dev import lookup_models_dev_context
+        from hermes_agent.agent.models_dev import lookup_models_dev_context
         ctx = lookup_models_dev_context(effective_provider, model)
         if ctx:
             # MiniMax M3: models.dev reports 512K but actual context is 1M — prefer the hardcoded catalog.
@@ -2369,12 +2369,12 @@ def estimate_tokens_rough(text: str) -> int:
 
 def estimate_messages_tokens_rough(messages: list[dict[str, Any]], *, charge_stale_thinking: bool = True) -> int:
     """Rough token estimate for a message list (pre-flight only). Images cost the per-image price
-    learned from provider usage (``agent.image_token_cost``; flat default before calibration)
+    learned from provider usage (``hermes_agent.agent.image_token_cost``; flat default before calibration)
     rather than their base64 length. ``charge_stale_thinking=False`` mirrors the tail-budget
     walk (``context_compressor._estimate_msg_budget_tokens``): on non-echo routes stale reasoning
     rides the wire only for the NEWEST assistant turn, so excluding it keeps the compaction TRIGGER
     in the same size class as the walk — otherwise reasoning-heavy sessions fire preflight forever."""
-    from agent.image_token_cost import current_image_token_cost
+    from hermes_agent.agent.image_token_cost import current_image_token_cost
 
     image_cost = current_image_token_cost()
     if not charge_stale_thinking:
@@ -2384,7 +2384,7 @@ def estimate_messages_tokens_rough(messages: list[dict[str, Any]], *, charge_sta
 
 def estimate_native_anthropic_messages_tokens_rough(messages: list[dict[str, Any]]) -> int:
     """Estimate native Anthropic messages with replayed thinking charged exactly once (at its billed size)."""
-    from agent.message_sanitization import native_anthropic_accounting_projection
+    from hermes_agent.agent.message_sanitization import native_anthropic_accounting_projection
 
     projected, replayed_thinking = native_anthropic_accounting_projection(messages)
     return estimate_messages_tokens_rough(projected) + sum(replayed_thinking)
@@ -2395,7 +2395,7 @@ def estimate_native_anthropic_request_tokens_rough(
     tools: Optional[list[dict[str, Any]]] = None,
 ) -> int:
     """Request estimate for native Anthropic; opaque replay bytes never enter text accounting."""
-    from agent.message_sanitization import native_anthropic_accounting_projection
+    from hermes_agent.agent.message_sanitization import native_anthropic_accounting_projection
 
     projected, replayed_thinking = native_anthropic_accounting_projection(messages)
     return estimate_request_tokens_rough(projected, system_prompt=system_prompt, tools=tools) + sum(replayed_thinking)

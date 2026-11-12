@@ -166,7 +166,7 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
     the leader's ``session``/``always``/``deny``/timeout; a ``once`` covers only
     the leader, so the followers fall through to ONE fresh prompt they coalesce on."""
     from hermes_agent.tools import approval as _approval
-    from agent.terminal_approval_batch import approval_published, preparing_terminal_approval, register_prepared_approval
+    from hermes_agent.agent.terminal_approval_batch import approval_published, preparing_terminal_approval, register_prepared_approval
 
     primary_key = approval_data.get("pattern_key", "")
     if surface == "gateway":

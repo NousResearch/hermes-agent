@@ -282,7 +282,7 @@ class PluginDispatchMixin:
         caller thread. ``pre_llm_call`` may return ``{"context": "..."}`` (or a str) to inject, or
         ``{"action": "block", "message": "..."}`` to end the turn before any inference request.
         """
-        from agent.safe_worker_policy import safe_worker_enabled
+        from hermes_agent.agent.safe_worker_policy import safe_worker_enabled
 
         if safe_worker_enabled():
             return []
@@ -558,7 +558,7 @@ class PluginDispatchMixin:
 
     def has_hook(self, hook_name: str) -> bool:
         """Return True when at least one callback is registered for a hook."""
-        from agent.safe_worker_policy import safe_worker_enabled
+        from hermes_agent.agent.safe_worker_policy import safe_worker_enabled
 
         if safe_worker_enabled():
             return False
@@ -599,7 +599,7 @@ class PluginDispatchMixin:
         """Run a held turn's snapshotted transforms: ``(rewrite, failed)``. ``rewrite`` is the first
         non-empty string; ``failed`` is True when none came back and a callback raised or timed out,
         so the caller must not deliver the original."""
-        from agent.safe_worker_policy import safe_worker_enabled
+        from hermes_agent.agent.safe_worker_policy import safe_worker_enabled
 
         if safe_worker_enabled():
             return None, False
@@ -650,7 +650,7 @@ class PluginDispatchMixin:
 
     def iter_hook_callbacks(self, hook_name: str) -> tuple[Callable, ...]:
         """Return a stable snapshot of callbacks registered for a hook."""
-        from agent.safe_worker_policy import safe_worker_enabled
+        from hermes_agent.agent.safe_worker_policy import safe_worker_enabled
 
         if safe_worker_enabled():
             return ()
@@ -660,7 +660,7 @@ class PluginDispatchMixin:
         self, session_info: Mapping[str, Any]
     ) -> list[RenderedPluginSystemPromptSection]:
         """Render all registered sections deterministically and fail open."""
-        from agent.safe_worker_policy import safe_worker_enabled
+        from hermes_agent.agent.safe_worker_policy import safe_worker_enabled
 
         if safe_worker_enabled():
             return []
@@ -724,7 +724,7 @@ class PluginDispatchMixin:
 
     def has_middleware(self, kind: str) -> bool:
         """Return True when at least one callback is registered for middleware."""
-        from agent.safe_worker_policy import safe_worker_enabled
+        from hermes_agent.agent.safe_worker_policy import safe_worker_enabled
 
         if safe_worker_enabled():
             return False
@@ -739,7 +739,7 @@ class PluginDispatchMixin:
         next callback sees, so rewrites compose, and each callback gets its own copy of the payload and
         of ``original_<key>`` so an in-place edit cannot leak.
         """
-        from agent.safe_worker_policy import safe_worker_enabled
+        from hermes_agent.agent.safe_worker_policy import safe_worker_enabled
         from hermes_cli.middleware import _safe_copy
 
         if safe_worker_enabled():

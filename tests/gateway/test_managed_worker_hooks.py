@@ -55,9 +55,9 @@ def test_worker_hook_registration_follows_the_session_policy(tmp_path, monkeypat
     from hermes_agent.gateway.session_local import _bypass_policy
     from hermes_agent.gateway.session_policy import build_policy, register_worker_hooks
     calls = []
-    monkeypatch.setattr('agent.shell_hooks.register_from_config',
+    monkeypatch.setattr('hermes_agent.agent.shell_hooks.register_from_config',
                         lambda cfg, accept_hooks=False: calls.append(('shell', cfg['hooks'], accept_hooks)))
-    monkeypatch.setattr('agent.outbound_webhooks.register_from_config',
+    monkeypatch.setattr('hermes_agent.agent.outbound_webhooks.register_from_config',
                         lambda cfg: calls.append(('outbound', cfg['hooks'])))
     hooks = {'pre_llm_call': [{'command': 'true'}]}
     launch = {'cwd': str(tmp_path), 'model': 'm', 'provider': 'custom', 'base_url': 'http://127.0.0.1:9/v1'}

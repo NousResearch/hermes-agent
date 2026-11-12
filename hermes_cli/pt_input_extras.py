@@ -318,7 +318,7 @@ def _modify_other_keys_aliases(ANSI_SEQUENCES: dict, Keys) -> dict[str, object]:
     return aliases
 
 
-# Replies to the startup image probe (``agent.terminal_image.probe_vscode_images``): XTSMGRAPHICS
+# Replies to the startup image probe (``hermes_agent.agent.terminal_image.probe_vscode_images``): XTSMGRAPHICS
 # ``ESC[?1;<status>;<value>S`` and DA1 ``ESC[?<params>c``. No key sends either. One that lands
 # after the probe stopped reading would otherwise be typed into the prompt.
 _PROBE_REPLY_RE = re.compile(r"\x1b\[\?[\d;]*[Sc]\Z")

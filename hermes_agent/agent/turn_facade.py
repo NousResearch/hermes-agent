@@ -1,8 +1,8 @@
 """``AIAgent.run_conversation`` / ``chat`` façade.
 
 Turn admission around ``conversation_loop.run_conversation``: durable cross-process session turn lease +
-refresher thread and liveness watchdog (``agent.turn_facade_lease``), relay/accounting/portal scopes, and
-balanced start/finish marks. Extracted from ``run_agent.py``; every method resolves through ``AIAgent``'s
+refresher thread and liveness watchdog (``hermes_agent.agent.turn_facade_lease``), relay/accounting/portal scopes, and
+balanced start/finish marks. Extracted from ``hermes_agent/run_agent.py``; every method resolves through ``AIAgent``'s
 MRO unchanged.
 """
 import logging
@@ -10,10 +10,10 @@ import uuid
 from contextlib import suppress
 from typing import Any, Dict, Generator, List, Optional
 
-from agent.lazy_forward import forward as _forward
+from hermes_agent.agent.lazy_forward import forward as _forward
 
 # Same logger name as the origin module so log records / caplog filters are unchanged.
-logger = logging.getLogger("run_agent")
+logger = logging.getLogger("hermes_agent.run_agent")
 
 
 class TurnFacadeMixin:
@@ -31,29 +31,29 @@ class TurnFacadeMixin:
         title_user_message: Optional[str]=None,
         prelude: Optional[Generator]=None,
     ) -> dict[str, Any]:
-        """Forwarder — see ``agent.conversation_loop.run_conversation``."""
+        """Forwarder — see ``hermes_agent.agent.conversation_loop.run_conversation``."""
         # A review shares this session_id for cache parity: fence review startup or interrupt
         # an admitted request and await its exit before opening live-turn instrumentation.
         # Foreground priority is retained if the review does not acknowledge within the bounded deadline
         # (#84423).
-        from agent.background_review import cancel_background_review_for_live_turn
+        from hermes_agent.agent.background_review import cancel_background_review_for_live_turn
 
         cancel_background_review_for_live_turn(self)
 
-        from agent import relay_runtime
-        from agent.aux_accounting import reset_accounting_context, set_accounting_context
-        from agent.auxiliary_client import scoped_runtime_main
-        from agent.conversation_loop import run_conversation
-        from agent.portal_tags import (
+        from hermes_agent.agent import relay_runtime
+        from hermes_agent.agent.aux_accounting import reset_accounting_context, set_accounting_context
+        from hermes_agent.agent.auxiliary_client import scoped_runtime_main
+        from hermes_agent.agent.conversation_loop import run_conversation
+        from hermes_agent.agent.portal_tags import (
             reset_affinity_scope, reset_conversation_context, set_affinity_scope,
             set_conversation_context,
         )
-        from agent.prompt_cache_scope import declared_conversation_scope_safe
-        from agent.relay_cwd import resolve_relay_scope_cwds
-        from agent.review_idle_queue import QUEUE as _review_queue
-        from agent.subagent_lifecycle import bind_subagent_parent
-        from agent.interrupt_scope import track_in_interrupt_scope
-        from agent.turn_facade_lease import admit_durable_turn_lease, carry_unadmitted_user_message
+        from hermes_agent.agent.prompt_cache_scope import declared_conversation_scope_safe
+        from hermes_agent.agent.relay_cwd import resolve_relay_scope_cwds
+        from hermes_agent.agent.review_idle_queue import QUEUE as _review_queue
+        from hermes_agent.agent.subagent_lifecycle import bind_subagent_parent
+        from hermes_agent.agent.interrupt_scope import track_in_interrupt_scope
+        from hermes_agent.agent.turn_facade_lease import admit_durable_turn_lease, carry_unadmitted_user_message
         from hermes_cli.observability.relay_shared_metrics import finish_task_run, start_task_run
 
         effective_task_id = task_id or str(uuid.uuid4())
@@ -221,4 +221,4 @@ class TurnFacadeMixin:
         """Final response string of one turn; ``stream_callback`` receives each text delta."""
         return self.run_conversation(message, stream_callback=stream_callback)["final_response"]
 
-    _run_codex_app_server_turn = _forward("agent.codex_runtime", "run_codex_app_server_turn")
+    _run_codex_app_server_turn = _forward("hermes_agent.agent.codex_runtime", "run_codex_app_server_turn")

@@ -159,7 +159,7 @@ def _session_key_or_err(rid, session, module: str, label: str):
 
 def _user_turn_indices(session):
     """(history, indices of user-originated turns) minus ephemeral scaffolding. Call under history_lock."""
-    is_user = _tools_mod("agent.context_compressor").user_originated_turn_view
+    is_user = _tools_mod("hermes_agent.agent.context_compressor").user_originated_turn_view
     history = _history_without_ephemeral_scaffolding(session.get("history", []))
     return history, [i for i, m in enumerate(history) if is_user(m) is not None]
 
@@ -250,7 +250,7 @@ def _toolset_rows(params: dict, *, with_tools: bool) -> list[dict]:
 def _(rid, params: dict) -> dict:
     """Host battery for the status bar. Always resolves; ``available: false`` = no battery or read failed."""
     try:
-        battery = _tools_mod("agent.battery")
+        battery = _tools_mod("hermes_agent.agent.battery")
         batt = battery.read_battery()
         return _ok(rid, {
             "available": batt.available, "percent": batt.percent, "plugged": batt.plugged,
@@ -317,8 +317,8 @@ def _refresh_live_sessions(home=None, *, preserve_prefix: bool = False,
     ``home``: only sessions of that profile home (a session with no ``profile_home`` belongs to the
     launch home). ``preserve_prefix``: append-only rebuild inside a live conversation. ``plugin_note``:
     ``(plugin_key, text)`` queued once per session for its next tool result or turn
-    (``agent/plugin_live_notes.py``)."""
-    from agent.onboarding_session import carry_onboarding_toolset
+    (``hermes_agent/agent/plugin_live_notes.py``)."""
+    from hermes_agent.agent.onboarding_session import carry_onboarding_toolset
     from hermes_constants import hermes_home_key
     want = hermes_home_key(home) if home is not None else None
     with _sessions_lock:
@@ -336,7 +336,7 @@ def _refresh_live_sessions(home=None, *, preserve_prefix: bool = False,
         except Exception as _exc:
             logger.warning("Failed to refresh cached agent tools (session %s): %s", sid, _exc)
         if plugin_note:
-            _tools_mod("agent.plugin_live_notes").queue_plugin_notice(agent, *plugin_note)
+            _tools_mod("hermes_agent.agent.plugin_live_notes").queue_plugin_notice(agent, *plugin_note)
         _emit("session.info", sid, _session_info(agent, sess))
 
 
@@ -483,7 +483,7 @@ def _dispatch_quick(rid, params, session, name, arg):
         env = _tools_mod("hermes_agent.tools.environments.local").build_subprocess_env()
         r = subprocess.run(qc.get("command", ""), shell=True, env=env, **_capture_run_kwargs(30))
         output = _joined_output(r)[:4000]
-        output = _tools_mod("agent.redact").redact_sensitive_text(output) if output else output
+        output = _tools_mod("hermes_agent.agent.redact").redact_sensitive_text(output) if output else output
         if r.returncode != 0:
             return _err(rid, 4018, output or f"quick command failed with exit code {r.returncode}")
         return _exec_out(rid, output)
@@ -532,7 +532,7 @@ def _session_home_scope(session, cwd: str | None = None, profile: str | None = N
     record (a session-less catalog request binds the workspace a new session would be seeded with).
     ``profile`` scopes a session-less call (a Desktop draft names its rail-selected profile) (#124651)."""
     hc = _tools_mod("hermes_constants")
-    rc = _tools_mod("agent.runtime_cwd")
+    rc = _tools_mod("hermes_agent.agent.runtime_cwd")
     profile_home = session.get("profile_home") if session else None
     if not session and profile:
         profile_home = str(_profile_home(profile) or "") or None
@@ -557,7 +557,7 @@ def _profile_skill_command(session: dict, base: str) -> bool | None:
     """
     try:
         with _session_home_scope(session):
-            return f"/{base}" in _tools_mod("agent.skill_commands").get_interactive_skill_commands()
+            return f"/{base}" in _tools_mod("hermes_agent.agent.skill_commands").get_interactive_skill_commands()
     except Exception:
         return None
 
@@ -601,7 +601,7 @@ def _bundle_key_for(name: str):
     """Skill-bundle key for ``name`` when it is NOT a registry command; None otherwise / on failure."""
     try:
         if _tools_mod("hermes_cli.commands").resolve_command(name) is None:
-            return _tools_mod("agent.skill_bundles").resolve_bundle_command_key(name)
+            return _tools_mod("hermes_agent.agent.skill_bundles").resolve_bundle_command_key(name)
         return None
     except Exception:
         return None
@@ -611,7 +611,7 @@ def _dispatch_bundle(rid, params, session, name, arg):
     bundle_key = _bundle_key_for(name)
     if bundle_key is None:
         return None
-    bundles = _tools_mod("agent.skill_bundles")
+    bundles = _tools_mod("hermes_agent.agent.skill_bundles")
     try:
         bundle_result = bundles.build_bundle_invocation_message(
             bundle_key, arg, task_id=session.get("session_key", "") if session else "",
@@ -630,7 +630,7 @@ def _dispatch_bundle(rid, params, session, name, arg):
 
 def _dispatch_skill(rid, params, session, name, arg):
     with contextlib.suppress(Exception):
-        sc = _tools_mod("agent.skill_commands")
+        sc = _tools_mod("hermes_agent.agent.skill_commands")
         cmds, key = sc.get_interactive_skill_commands(), f"/{name}".lower()
         if key in cmds:
             # Stacked leading /skill tokens (up to 5, cli.py + gateway parity, #74705): the
@@ -676,8 +676,8 @@ def _prompt_builtin(module: str, fn: str, kw: str = ""):
     return cmd
 
 
-_cmd_learn = _prompt_builtin("agent.learn_prompt", "build_learn_prompt")
-_cmd_plan = _prompt_builtin("agent.plan_prompt", "build_plan_prompt")
+_cmd_learn = _prompt_builtin("hermes_agent.agent.learn_prompt", "build_learn_prompt")
+_cmd_plan = _prompt_builtin("hermes_agent.agent.plan_prompt", "build_plan_prompt")
 
 
 def _cmd_init(rid, params, session, name, arg):
@@ -758,7 +758,7 @@ def _cmd_retry(rid, params, session, name, arg):
         return _err(rid, 4001, "no active session to retry")
     if busy := _busy_error(rid, session, "retry"):
         return busy
-    cc = _tools_mod("agent.context_compressor")
+    cc = _tools_mod("hermes_agent.agent.context_compressor")
     with session["history_lock"]:
         if busy := _busy_error(rid, session, "retry"):
             return busy
@@ -862,7 +862,7 @@ def _cmd_undo(rid, params, session, name, arg):
         if err:
             return err
         active, live_view, rewound_count = rewound
-        target_text = _tools_mod("agent.message_content").flatten_message_text(live_view.get("content"))
+        target_text = _tools_mod("hermes_agent.agent.message_content").flatten_message_text(live_view.get("content"))
     # Notify memory providers (same hook /branch fires) with rewound=True so cached per-turn state invalidates.
     agent = session.get("agent")
     if agent is not None:
@@ -916,7 +916,7 @@ def _cmd_compress(rid, params, session, name, arg):
     except CompressionBusy as exc:  # a turn won the race after the unlocked pre-check above
         return _err(rid, 4009, str(exc))
     except Exception as exc:
-        _tools_mod("agent.conversation_compression").finalize_context_engine_compression_notification(
+        _tools_mod("hermes_agent.agent.conversation_compression").finalize_context_engine_compression_notification(
             session["agent"], committed=False)
         return _err(rid, 5009, f"compress failed: {exc}")
 
@@ -1222,7 +1222,7 @@ def _(rid, params: dict) -> dict:
 @_scoped_rpc("config.show", 5030)
 def _(rid, params: dict) -> dict:
     cfg = _load_cfg()
-    get_secret = _tools_mod("agent.secret_scope").get_secret
+    get_secret = _tools_mod("hermes_agent.agent.secret_scope").get_secret
     api_key = get_secret("HERMES_API_KEY", "") or cfg.get("api_key", "")
     masked = f"****{api_key[-4:]}" if len(api_key) > 4 else "(not set)"
     base_url = get_secret("HERMES_BASE_URL", "") or cfg.get("base_url", "")
@@ -1343,16 +1343,16 @@ def _(rid, params: dict) -> dict:
             int(params.get(k, d) or d) for k, d in (("cols", 80), ("rows", 24), ("frames", 48)))
     except (TypeError, ValueError):
         cols, rows, frames = 80, 24, 48
-    graph = _tools_mod("agent.learning_graph").build_learning_graph()
-    render_frames = _tools_mod("agent.learning_graph_render").render_frames
+    graph = _tools_mod("hermes_agent.agent.learning_graph").build_learning_graph()
+    render_frames = _tools_mod("hermes_agent.agent.learning_graph_render").render_frames
     return _ok(rid, render_frames(graph, cols=max(20, cols), rows=max(10, rows), frames=frames))
 
 
 def _learning_mutation(fn_name: str, arg_keys: tuple):
-    """learning.* body: ``agent.learning_mutations.<fn_name>(*str(params[k]) for k in arg_keys)``."""
+    """learning.* body: ``hermes_agent.agent.learning_mutations.<fn_name>(*str(params[k]) for k in arg_keys)``."""
 
     def body(rid, params: dict) -> dict:
-        fn = getattr(_tools_mod("agent.learning_mutations"), fn_name)
+        fn = getattr(_tools_mod("hermes_agent.agent.learning_mutations"), fn_name)
         return _ok(rid, fn(*(str(params.get(k, "")) for k in arg_keys)))
     return body
 
@@ -1433,7 +1433,7 @@ def _(rid, params: dict) -> dict:
     # project skills as "Removed" and republishes a registry without them (#114359).
     with _session_home_scope(_sessions.get(params.get("session_id", "")), cwd=_completion_cwd(params),
                              profile=params.get("profile")):
-        result = _tools_mod("agent.skill_commands").reload_skills()
+        result = _tools_mod("hermes_agent.agent.skill_commands").reload_skills()
     added, removed = result.get("added") or [], result.get("removed") or []
     lines = ["Reloading skills..."] + ([] if added or removed else ["No new skills detected."])
     for label, items in (("Added skills:", added), ("Removed skills:", removed)):
@@ -1485,7 +1485,7 @@ def _(rid, params: dict) -> dict:
     import time
     hc = _tools_mod("hermes_constants")
     configured, plugins = _mcp_server_rows()
-    include_runtime = (_tools_mod("agent.secret_scope").is_multiplex_active()
+    include_runtime = (_tools_mod("hermes_agent.agent.secret_scope").is_multiplex_active()
                        or hc.hermes_home_key() == hc.hermes_home_key(hc.get_process_hermes_home()))
     safe = ("name", "transport", "tools", "connected", "disabled", "status", "needs_auth")
     servers = _tools_mod("hermes_agent.tools.mcp_tool_discovery").get_mcp_status(configured, include_runtime=include_runtime)
@@ -1887,7 +1887,7 @@ def _plugins_settings(rid, params):
     if plugin_dir and pc._is_portable_plugin_dir(plugin_dir):
         servers = _portable_server_names(Path(str(plugin_dir)), canonical)
         if servers:
-            from agent.memory_provider import spawn_context_thread  # keeps this request's profile scope
+            from hermes_agent.agent.memory_provider import spawn_context_thread  # keeps this request's profile scope
             discovery = _tools_mod("hermes_agent.tools.mcp_tool_discovery")
             spawn_context_thread(discovery.restart_mcp_servers_with_new_inputs, args=(servers,),
                                  name=f"plugin-settings-mcp-{canonical}").start()
@@ -1964,7 +1964,7 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5001, "shell.exec unavailable: approval safety module not importable")
 
     def done(result):
-        redact = _tools_mod("agent.redact").redact_sensitive_text
+        redact = _tools_mod("hermes_agent.agent.redact").redact_sensitive_text
         # Unlike the interactive CLI, this output crosses the RPC boundary and can be persisted
         # in the transcript. Redact before tailing so a credential crossing the slice boundary
         # cannot survive as two unmatched fragments.

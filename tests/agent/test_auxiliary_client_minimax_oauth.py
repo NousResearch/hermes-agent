@@ -18,7 +18,7 @@ bearer mints a fresh access token per outbound request because MiniMax's tokens 
 MiniMax host is a third-party Anthropic-protocol endpoint, so the wrapper must NOT carry
 the Claude Code OAuth identity (mcp__ tool-name wire transforms, system-prompt rewrites,
 response prefix stripping) — those are native api.anthropic.com-only (#114967).
-The arm lives in ``agent/auxiliary_client_registry.py`` (one new module, not a
+The arm lives in ``hermes_agent/agent/auxiliary_client_registry.py`` (one new module, not a
 trampoline into a second sibling); absent/not-logged-in credentials follow the
 ``_log_once_debug`` contract (``test_auxiliary_client_resolve_dedup.py``) so a logged-out
 user gets one debug line, not a WARNING-with-traceback per aux resolution (#21521).
@@ -50,7 +50,7 @@ def test_resolve_minimax_oauth_builds_anthropic_wrapper_with_third_party_wire():
     with the callable bearer (not a static string), and the resolved model passed
     through verbatim.
     """
-    from agent.auxiliary_client import (
+    from hermes_agent.agent.auxiliary_client import (
         AnthropicAuxiliaryClient,
         resolve_provider_client,
     )
@@ -62,7 +62,7 @@ def test_resolve_minimax_oauth_builds_anthropic_wrapper_with_third_party_wire():
         "hermes_cli.auth.resolve_minimax_oauth_runtime_credentials",
         return_value=creds,
     ), patch(
-        "agent.anthropic_adapter.build_anthropic_client",
+        "hermes_agent.agent.anthropic_adapter.build_anthropic_client",
         return_value=fake_anthropic_client,
     ) as mock_build:
         client, model = resolve_provider_client("minimax-oauth", "MiniMax-M3")
@@ -102,7 +102,7 @@ def test_resolve_minimax_oauth_tool_names_unprefixed_on_wire():
     (and alias session_search/memory) on a host that never round-trips those
     names — every tool call against MiniMax would 400 or name a nonexistent tool.
     """
-    from agent.auxiliary_client import resolve_provider_client
+    from hermes_agent.agent.auxiliary_client import resolve_provider_client
 
     captured = {}
 
@@ -118,10 +118,10 @@ def test_resolve_minimax_oauth_tool_names_unprefixed_on_wire():
         "hermes_cli.auth.resolve_minimax_oauth_runtime_credentials",
         return_value=_runtime_creds(),
     ), patch(
-        "agent.anthropic_adapter.build_anthropic_client",
+        "hermes_agent.agent.anthropic_adapter.build_anthropic_client",
         return_value=MagicMock(name="anthropic_sdk_client"),
     ), patch(
-        "agent.anthropic_adapter.create_anthropic_message",
+        "hermes_agent.agent.anthropic_adapter.create_anthropic_message",
         side_effect=_fake_create,
     ):
         client, _model = resolve_provider_client("minimax-oauth", "MiniMax-M3")
@@ -152,8 +152,8 @@ def test_resolve_minimax_oauth_missing_credentials_log_once_debug(caplog):
     call, a per-call WARNING would recreate the exact log-spam complaint
     #21521 was filed about — worse once a quarantine wipes the tokens.
     """
-    import agent.auxiliary_client_registry as acr
-    from agent.auxiliary_client import resolve_provider_client
+    import hermes_agent.agent.auxiliary_client_registry as acr
+    from hermes_agent.agent.auxiliary_client import resolve_provider_client
 
     acr._LOGGED_MINIMAX_ABSENT_KEYS.clear()
     acr._LOGGED_MINIMAX_UNEXPECTED_KEYS.clear()
@@ -164,7 +164,7 @@ def test_resolve_minimax_oauth_missing_credentials_log_once_debug(caplog):
             "Not logged into MiniMax OAuth.", provider="minimax-oauth",
             code="not_logged_in", relogin_required=True),
     ):
-        with caplog.at_level(logging.DEBUG, logger="agent.auxiliary_client"):
+        with caplog.at_level(logging.DEBUG, logger="hermes_agent.agent.auxiliary_client"):
             for _ in range(5):
                 resolved = resolve_provider_client("minimax-oauth", "MiniMax-M3")
 
@@ -196,8 +196,8 @@ def test_resolve_minimax_oauth_probe_reads_raw_state_no_refresh():
     refresh that an expired token would otherwise trigger (mirrors
     ``credential_pool.py::_seed_minimax_singleton``).
     """
-    import agent.auxiliary_client as aux
-    from agent.auxiliary_client import resolve_provider_client
+    import hermes_agent.agent.auxiliary_client as aux
+    from hermes_agent.agent.auxiliary_client import resolve_provider_client
 
     expired_state = {
         "access_token": "expired-but-present",

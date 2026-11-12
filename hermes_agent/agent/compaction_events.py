@@ -18,7 +18,7 @@ import threading
 import uuid
 from typing import Any
 
-from agent.model_metadata import estimate_messages_tokens_rough
+from hermes_agent.agent.model_metadata import estimate_messages_tokens_rough
 
 logger = logging.getLogger(__name__)
 
@@ -272,7 +272,7 @@ def _publish(
     try:
         relay = True
         if require_target_session_id is not None:
-            from agent.relay_compaction import compaction_target_available
+            from hermes_agent.agent.relay_compaction import compaction_target_available
 
             relay = compaction_target_available(require_target_session_id, turn_session_id=turn_session_id)
         from hermes_cli.lifecycle import has_hook
@@ -286,7 +286,7 @@ def _publish(
             _fire_for(payload, live_session_id or payload["session_id"])
         if not relay:
             return
-        from agent.relay_compaction import emit_compaction_mark
+        from hermes_agent.agent.relay_compaction import emit_compaction_mark
 
         emit_compaction_mark(payload["session_id"], name, payload, turn_session_id=turn_session_id)
     except Exception:

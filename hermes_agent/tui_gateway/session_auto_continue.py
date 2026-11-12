@@ -564,7 +564,7 @@ def _emit_terminal_turn_error(
     agent = session.get("agent")
     if error_surface is None and isinstance(error, BaseException):
         with contextlib.suppress(Exception):
-            from agent.error_surface import build_error_surface_from_exception
+            from hermes_agent.agent.error_surface import build_error_surface_from_exception
             error_surface = build_error_surface_from_exception(
                 error, provider=str(getattr(agent, "provider", "") or ""), model=str(getattr(agent, "model", "") or ""),
                 api_key=getattr(agent, "api_key", None))

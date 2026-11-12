@@ -650,7 +650,7 @@ class WebhookAdapter(BasePlatformAdapter):
         """Inject the first matching skill via build_skill_invocation_message() directly — /skill-name slash
         commands would be intercepted by the command parser."""
         try:
-            from agent.skill_commands import build_skill_invocation_message, get_skill_commands
+            from hermes_agent.agent.skill_commands import build_skill_invocation_message, get_skill_commands
             skill_cmds = get_skill_commands()
             for skill_name in skills:
                 cmd_key = f"/{skill_name}"
@@ -998,7 +998,7 @@ class WebhookAdapter(BasePlatformAdapter):
         its own stored login). ``None`` (inherit) for bare/default-bound routes."""
         if not profile or not isinstance(profile, str) or profile == "default":
             return None
-        from agent.secret_scope import get_secret
+        from hermes_agent.agent.secret_scope import get_secret
         env = {k: v for k, v in os.environ.items() if k not in _GH_TOKEN_VARS}
         with self._profile_scope(profile):
             for name in _GH_TOKEN_VARS:

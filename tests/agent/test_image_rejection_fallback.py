@@ -6,7 +6,7 @@ verify that stripping preserves the role-alternation invariants providers
 require, and that the phrase detector fires on the expected error bodies.
 """
 
-from agent.message_sanitization import (
+from hermes_agent.agent.message_sanitization import (
     _looks_like_corrupt_image_rejection, _looks_like_image_content_rejection, _strip_images_from_messages,
     strip_images_for_rejecting_model,
 )
@@ -185,7 +185,7 @@ class TestImageRejectionPhraseIsolation:
         assert self._matches(body) is True
 
     def test_anthropic_image_too_large_does_not_trip(self):
-        # From agent/error_classifier.py _IMAGE_TOO_LARGE_PATTERNS —
+        # From hermes_agent/agent/error_classifier.py _IMAGE_TOO_LARGE_PATTERNS —
         # these must route to image_too_large / _try_shrink_image_parts_in_messages,
         # NOT to our vision-unsupported fallback.
         bodies = [
@@ -243,7 +243,7 @@ class TestStripImagesDropsStaleApiContent:
     @staticmethod
     def _wire(msg):
         """What the next turn actually sends for this history message."""
-        from agent.turn_context import substitute_api_content
+        from hermes_agent.agent.turn_context import substitute_api_content
 
         api_msg = msg.copy()
         substitute_api_content(api_msg)
@@ -340,7 +340,7 @@ class TestRejectionNeverReachesPersistedHistory:
         ]
 
     def _recover(self, agent, messages, api_messages):
-        from agent.turn_recovery import recover_before_classification
+        from hermes_agent.agent.turn_recovery import recover_before_classification
 
         return recover_before_classification(
             agent, self._Err(), messages=messages, api_messages=api_messages,
@@ -402,7 +402,7 @@ class TestRejectionNeverReachesPersistedHistory:
         echoes). When the user wrote "X is not a multimodal model" and the request carried no
         image, the phrase match must not mark the model, or every later image is stripped
         from a vision model until /new."""
-        from agent.turn_recovery import recover_before_classification
+        from hermes_agent.agent.turn_recovery import recover_before_classification
 
         class _EchoErr(Exception):
             status_code = 400
@@ -432,7 +432,7 @@ class TestRejectionNeverReachesPersistedHistory:
             status_code = 400
             body = "Invalid request: prepare image failed: failed to decode image: invalid or unsupported image format"
 
-        from agent.turn_recovery import recover_before_classification
+        from hermes_agent.agent.turn_recovery import recover_before_classification
 
         agent, history = self._agent(), self._history()
         before, wire = copy.deepcopy(history), copy.deepcopy(history)
@@ -455,9 +455,9 @@ def test_iteration_summary_strips_images_for_rejecting_model(tmp_path, monkeypat
     it must apply the same per-model strip; history keeps its image."""
     import copy
 
-    from agent.chat_completion_helpers import _iteration_summary_api_messages
-    from agent.vision_message_prep import _provider_model_key
-    from run_agent import AIAgent
+    from hermes_agent.agent.chat_completion_helpers import _iteration_summary_api_messages
+    from hermes_agent.agent.vision_message_prep import _provider_model_key
+    from hermes_agent.run_agent import AIAgent
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     agent = AIAgent(api_key="k", base_url="https://api.groq.com/openai/v1", provider="custom", model="m",

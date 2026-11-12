@@ -3,8 +3,8 @@
 import json
 from typing import Any, Dict, List
 
-from agent.context_engine import ContextEngine
-from agent.context_compressor import ContextCompressor
+from hermes_agent.agent.context_engine import ContextEngine
+from hermes_agent.agent.context_compressor import ContextCompressor
 
 # ---------------------------------------------------------------------------
 # A minimal concrete engine for testing the ABC

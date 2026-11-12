@@ -69,7 +69,7 @@ def test_prepare_agent_startup_backgrounds_blocking_mcp_for_rl(monkeypatch):
     )
     monkeypatch.setitem(
         sys.modules,
-        "agent.shell_hooks",
+        "hermes_agent.agent.shell_hooks",
         types.SimpleNamespace(register_from_config=lambda *_a, **_k: None),
     )
     # Stub mcp_oauth so the background thread doesn't pay the real (cold,
@@ -152,7 +152,7 @@ def test_prepare_agent_startup_skips_discovery_when_chat_resolves_to_tui(
     )
     monkeypatch.setitem(
         sys.modules,
-        "agent.shell_hooks",
+        "hermes_agent.agent.shell_hooks",
         types.SimpleNamespace(register_from_config=lambda *_a, **_k: None),
     )
     monkeypatch.setitem(
@@ -217,7 +217,7 @@ def test_background_mcp_discovery_suppresses_interactive_oauth(monkeypatch):
 
 def test_background_mcp_discovery_propagates_profile_secret_scope(monkeypatch):
     """A dashboard-profile discovery thread must retain that profile's secrets."""
-    from agent.secret_scope import current_secret_scope, reset_secret_scope, set_secret_scope
+    from hermes_agent.agent.secret_scope import current_secret_scope, reset_secret_scope, set_secret_scope
 
     seen = []
     monkeypatch.setitem(

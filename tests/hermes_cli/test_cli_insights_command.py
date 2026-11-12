@@ -34,7 +34,7 @@ def _run_show_insights(command: str):
     db = MagicMock()
     _InsightsEngineStub.calls = []
     with patch("hermes_agent.hermes_state.SessionDB", return_value=db), \
-         patch("agent.insights.InsightsEngine", _InsightsEngineStub):
+         patch("hermes_agent.agent.insights.InsightsEngine", _InsightsEngineStub):
         cli_obj._show_insights(command)
     return _InsightsEngineStub.calls, db
 
@@ -70,7 +70,7 @@ def test_show_insights_opens_read_only(existing_store):
     cli_obj = HermesCLI.__new__(HermesCLI)
     db = MagicMock()
     with patch("hermes_agent.hermes_state.SessionDB", return_value=db) as ctor, \
-         patch("agent.insights.InsightsEngine", _InsightsEngineStub):
+         patch("hermes_agent.agent.insights.InsightsEngine", _InsightsEngineStub):
         _InsightsEngineStub.calls = []
         cli_obj._show_insights("/insights 7")
     ctor.assert_called_once_with(db_path=existing_store, read_only=True)
@@ -80,7 +80,7 @@ def test_show_insights_opens_read_only(existing_store):
 def test_subcommand_insights_opens_read_only(existing_store):
     db = MagicMock()
     with patch("hermes_agent.hermes_state.SessionDB", return_value=db) as ctor, \
-         patch("agent.insights.InsightsEngine", _InsightsEngineStub):
+         patch("hermes_agent.agent.insights.InsightsEngine", _InsightsEngineStub):
         cmd_insights(SimpleNamespace(days=30, source=None))
     ctor.assert_called_once_with(db_path=existing_store, read_only=True)
     db.close.assert_called_once()
@@ -89,7 +89,7 @@ def test_subcommand_insights_opens_read_only(existing_store):
 def test_subcommand_insights_closes_database_when_generation_fails(capsys):
     db = MagicMock()
     with patch("hermes_agent.hermes_state.SessionDB", return_value=db), \
-         patch("agent.insights.InsightsEngine", side_effect=RuntimeError("boom")):
+         patch("hermes_agent.agent.insights.InsightsEngine", side_effect=RuntimeError("boom")):
         cmd_insights(SimpleNamespace(days=30, source=None))
 
     db.close.assert_called_once()

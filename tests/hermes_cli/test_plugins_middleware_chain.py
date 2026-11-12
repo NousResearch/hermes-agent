@@ -70,7 +70,7 @@ def test_request_middleware_in_place_mutation_does_not_leak(seen, kind, apply):
 def test_tool_request_original_args_is_the_pre_relay_call(seen, monkeypatch):
     from types import SimpleNamespace
 
-    from agent import relay_tools, tool_executor
+    from hermes_agent.agent import relay_tools, tool_executor
 
     def relay_rewrites(_name, args, callback, **_kwargs):
         relay_args = {**args, "relay": True}

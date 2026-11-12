@@ -59,7 +59,7 @@ def locked_skill_dirs() -> list[tuple[str, str]]:
     names = set(_skill_usage().locked_skill_names())
     if not names:
         return []
-    from agent.skill_utils import get_all_skills_dirs, is_excluded_skill_path
+    from hermes_agent.agent.skill_utils import get_all_skills_dirs, is_excluded_skill_path
     found: dict[str, str] = {}
     for base in get_all_skills_dirs():
         if not base.is_dir():
@@ -106,7 +106,7 @@ UNLOCK_REFUSAL = ("Only the user can unlock a skill. Ask them to run `hermes cur
 
 
 def _skills_roots() -> list[str]:
-    from agent.skill_utils import get_all_skills_dirs
+    from hermes_agent.agent.skill_utils import get_all_skills_dirs
     return [os.path.realpath(d) for d in get_all_skills_dirs()]
 
 

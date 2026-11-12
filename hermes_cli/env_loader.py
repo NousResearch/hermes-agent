@@ -88,7 +88,7 @@ _SPAWN_CREDENTIAL_KEYS: frozenset[str] = frozenset({"HERMES_DASHBOARD_SESSION_TO
 # Behavioral routing keys a parent Hermes process injects into child env that silently redirect a profile
 # onto the wrong provider path; these — and ONLY these — are scrubbed at startup when absent from the
 # profile's .env. Credentials are excluded: shell exports are a documented way to supply them, and
-# read-time secret-scope checks (agent/secret_scope.py) own cross-profile credential isolation.
+# read-time secret-scope checks (hermes_agent/agent/secret_scope.py) own cross-profile credential isolation.
 # Providers that left core keep theirs listed on their ``LEFT_CORE`` row (``profile_env``), read statically:
 # this runs before provider discovery, and with the plugin absent nothing else names them.
 _PROFILE_MANAGED_ENV_KEYS: frozenset[str] = frozenset({
@@ -99,7 +99,7 @@ _PROFILE_MANAGED_ENV_KEYS: frozenset[str] = frozenset({
 def _env_keys_defined_in_dotenv(path: Path) -> set[str]:
     """KEY names assigned in a dotenv file (including empty ``KEY=``), via the same tokenizer that installs
     profile scopes — a key the installer sees is a key the dashboard scrub sees (BOM'd first line included)."""
-    from agent.secret_scope import load_env_file
+    from hermes_agent.agent.secret_scope import load_env_file
 
     return set(load_env_file(path))
 
@@ -188,7 +188,7 @@ def hydrate_profile_secret_sources(hermes_home: str | os.PathLike) -> dict[str, 
 
 def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
     """Locked implementation for :func:`hydrate_profile_secret_sources`."""
-    from agent.safe_worker_policy import worker_config_snapshot
+    from hermes_agent.agent.safe_worker_policy import worker_config_snapshot
 
     if worker_config_snapshot() is not None:
         return {}
@@ -209,8 +209,8 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
         return {}
 
     try:
-        from agent.secret_scope import _is_global_env, load_env_file
-        from agent.secret_sources.registry import apply_all
+        from hermes_agent.agent.secret_scope import _is_global_env, load_env_file
+        from hermes_agent.agent.secret_sources.registry import apply_all
 
         local_env = {name: value for name, value in os.environ.items() if _is_global_env(name)}
         local_env.update(load_env_file(home / ".env"))
@@ -289,7 +289,7 @@ def format_secret_source_suffix(env_var: str) -> str:
         return " (from Bitwarden)"
     # Registry label (e.g. "1Password"); raw name for unknown sources (uninstalled plugin, tests).
     try:
-        from agent.secret_sources.registry import get_source
+        from hermes_agent.agent.secret_sources.registry import get_source
 
         registered = get_source(source)
         if registered is not None and registered.label:
@@ -533,7 +533,7 @@ def apply_config_bootstrap_env(backend_names, home: Path | None = None, project_
     selected and authenticated from the same deployment either way. A file deployment gets only its
     selector (the file backend needs nothing else before boot); values the process env holds and
     no file defines are left alone; ``load_hermes_dotenv`` later publishes the same values."""
-    from agent.safe_worker_policy import worker_config_snapshot
+    from hermes_agent.agent.safe_worker_policy import worker_config_snapshot
     from hermes_cli.config_backend import BACKEND_ENV
 
     # A frozen-policy worker reads no profile dotenv (``load_hermes_dotenv`` returns early there):
@@ -657,7 +657,7 @@ def load_hermes_dotenv(
 ) -> list[Path]:
     """Load Hermes env files: ``~/.hermes/.env`` overrides stale shell exports; project ``.env`` is a dev
     fallback that only fills gaps when the user env exists (and overrides shell vars when it does not)."""
-    from agent.safe_worker_policy import worker_config_snapshot
+    from hermes_agent.agent.safe_worker_policy import worker_config_snapshot
 
     # The private bootstrap supplies credentials explicitly; do not rehydrate
     # profile behavior, external secret plugins, or managed env in this worker.
@@ -678,7 +678,7 @@ def load_hermes_dotenv(
     # External sources still refresh against the profile mapping.
     # (``is_multiplex_active()`` is also true, context-locally, for a routed cron fire in the desktop
     # backend — see ``hermes_agent.cron.scheduler_provider.routed_profile_fire``.)
-    from agent.secret_scope import is_multiplex_active
+    from hermes_agent.agent.secret_scope import is_multiplex_active
     from hermes_constants import get_hermes_home, get_hermes_home_override
 
     launch_home = _process_hermes_home().resolve()
@@ -827,7 +827,7 @@ def _revoke_secret_source_writes(home_path: Path, *, keep) -> None:
     if not writes:
         return
     try:
-        from agent.secret_scope import load_env_file
+        from hermes_agent.agent.secret_scope import load_env_file
 
         owned_by_dotenv = set(load_env_file(Path(home_path) / ".env")) | _MANAGED_DOTENV_KEYS
     except Exception:
@@ -947,7 +947,7 @@ def _apply_external_secret_sources(home_path: Path) -> None:
         return
 
     try:
-        from agent.secret_sources.registry import apply_all, enabled_source_names
+        from hermes_agent.agent.secret_sources.registry import apply_all, enabled_source_names
     except ImportError:
         return
 
@@ -1050,7 +1050,7 @@ def _record_secret_source_writes(home_key: str, report, supplied: set[str], envi
 def _remediation_hint(source_name: str, error_kind, secrets_cfg: dict, *, scope: str | None = None) -> str:
     """The failed source's one-line fix-it hint; a plugin remediation() could raise and startup must not."""
     try:
-        from agent.secret_sources.registry import get_source
+        from hermes_agent.agent.secret_sources.registry import get_source
 
         source = get_source(source_name, scope=scope)
         if source is None:

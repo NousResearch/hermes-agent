@@ -129,7 +129,7 @@ class TestCollectInlineCatalog:
             )
         # SKILLS_DIR is resolved at import time — in a full-suite run it
         # points at an earlier test's HERMES_HOME, so pin it (both the
-        # scanner in agent.skill_commands and the prefix allowlist in
+        # scanner in hermes_agent.agent.skill_commands and the prefix allowlist in
         # _collect_gateway_skill_entries import it from hermes_agent.tools.skills_tool).
         from hermes_agent.tools import skills_tool
 

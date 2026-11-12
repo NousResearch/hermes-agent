@@ -15,7 +15,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
-from agent.vault_store import VaultItemMeta
+from hermes_agent.agent.vault_store import VaultItemMeta
 
 
 class UnlockRequired(Exception):
@@ -101,8 +101,8 @@ def _cfg() -> dict:
 
 
 def external_backend_classes():
-    from agent.vault_backends.bitwarden import BitwardenLoginBackend
-    from agent.vault_backends.onepassword import OnePasswordLoginBackend
+    from hermes_agent.agent.vault_backends.bitwarden import BitwardenLoginBackend
+    from hermes_agent.agent.vault_backends.onepassword import OnePasswordLoginBackend
     return (OnePasswordLoginBackend, BitwardenLoginBackend)
 
 
@@ -114,7 +114,7 @@ def is_installed(name: str) -> bool:
     if explicit:
         return Path(explicit).is_file()
     if name == "onepassword":
-        from agent.secret_sources.onepassword import find_op
+        from hermes_agent.agent.secret_sources.onepassword import find_op
         return find_op() is not None
     return shutil.which("bw") is not None
 
@@ -138,7 +138,7 @@ def _browser_profile_enabled() -> bool:
 def enabled_backends() -> list[LoginBackend]:
     """Local first (always on), then every detected external manager the user has not turned off,
     then the read-only real-profile browser source when ``browser.use_real_profile`` is on."""
-    from agent.vault_backends.local import LocalLoginBackend
+    from hermes_agent.agent.vault_backends.local import LocalLoginBackend
 
     cfg = _cfg()
     out: list[LoginBackend] = [LocalLoginBackend()]
@@ -147,9 +147,9 @@ def enabled_backends() -> list[LoginBackend]:
             section = cfg.get(cls.name) or {}
             out.append(cls(section if isinstance(section, dict) else {}))
     if _browser_profile_enabled():
-        from agent.vault_backends.browser import BrowserProfileLoginBackend
+        from hermes_agent.agent.vault_backends.browser import BrowserProfileLoginBackend
         out.append(BrowserProfileLoginBackend())
-    from agent.vault_backend_registry import enabled_plugin_backends
+    from hermes_agent.agent.vault_backend_registry import enabled_plugin_backends
     return out + enabled_plugin_backends(cfg)
 
 

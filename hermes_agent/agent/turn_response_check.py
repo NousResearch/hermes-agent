@@ -2,8 +2,8 @@
 spinner, validate the response shape (retry / eager fallback / terminal invalid-response
 result), derive ``finish_reason`` per api_mode, route content-policy refusals and
 ``length`` truncation, fold usage into the compressor, and mark the logical relay call
-complete. Nothing here imports ``agent.conversation_loop`` at module level (cycle) —
-loop-internal helpers resolve lazily so ``patch("agent.conversation_loop.X")`` keeps intercepting.
+complete. Nothing here imports ``hermes_agent.agent.conversation_loop`` at module level (cycle) —
+loop-internal helpers resolve lazily so ``patch("hermes_agent.agent.conversation_loop.X")`` keeps intercepting.
 """
 
 from __future__ import annotations
@@ -13,13 +13,13 @@ import logging
 import time
 from typing import Any, Dict, Optional
 
-from agent.error_classifier import FailoverReason
-from agent.turn_api_call import stop_thinking_spinner
-from agent.turn_failure_copy import invalid_response_failure_reason, provider_label_for, site_copy, stamp_failure
-from agent.turn_truncation import handle_content_policy_refusal, recover_from_truncation
-from agent.turn_usage import record_response_usage
+from hermes_agent.agent.error_classifier import FailoverReason
+from hermes_agent.agent.turn_api_call import stop_thinking_spinner
+from hermes_agent.agent.turn_failure_copy import invalid_response_failure_reason, provider_label_for, site_copy, stamp_failure
+from hermes_agent.agent.turn_truncation import handle_content_policy_refusal, recover_from_truncation
+from hermes_agent.agent.turn_usage import record_response_usage
 
-logger = logging.getLogger("agent.conversation_loop")
+logger = logging.getLogger("hermes_agent.agent.conversation_loop")
 
 
 @dataclass
@@ -101,7 +101,7 @@ def check_api_response(
     """Verify ``response`` in the original order. The retry buffer is NOT cleared on success
     (bytes back != usable content); ``_preflight_compression_blocked``/``_last_preflight_pressure``
     reset only when the usage fold re-arms the compression budget."""
-    from agent.turn_recovery import validate_response_shape
+    from hermes_agent.agent.turn_recovery import validate_response_shape
 
     def _verdict(action: str, result: Optional[dict[str, Any]] = None) -> ResponseCheckVerdict:
         return ResponseCheckVerdict(
@@ -151,7 +151,7 @@ def check_api_response(
     # Every row this response becomes (truncation fragments and Codex incomplete interims are built
     # before record_response_usage runs) is stamped with THIS response's reasoning count, never a
     # previous response's.
-    from agent.turn_usage import note_response_reasoning_tokens
+    from hermes_agent.agent.turn_usage import note_response_reasoning_tokens
     note_response_reasoning_tokens(agent, response)
     finish_reason = _derive_finish_reason(agent, response, messages)
     from hermes_cli.observability.shared_metrics_harness import record_reply_finish
@@ -196,7 +196,7 @@ def check_api_response(
             return _verdict(_tv.action, _tv.result)
 
     # Fold provider usage into compressor / anchors / session counters / state.db
-    # (agent/turn_usage.py). A rearmed budget also clears the preflight-block latch.
+    # (hermes_agent/agent/turn_usage.py). A rearmed budget also clears the preflight-block latch.
     _usage_outcome = record_response_usage(
         agent, response, messages=messages, api_call_count=api_call_count,
         api_duration=api_duration, compression_attempts=compression_attempts,
@@ -211,12 +211,12 @@ def check_api_response(
     # Clearing Nous rate-limit state proves the limit reset so other sessions may resume.
     if agent.provider == "nous":
         try:
-            from agent.nous_rate_guard import clear_nous_rate_limit
+            from hermes_agent.agent.nous_rate_guard import clear_nous_rate_limit
             from hermes_cli.anon_auth import is_anonymous_agent
             clear_nous_rate_limit(anonymous=is_anonymous_agent(agent))
         except Exception:
             pass
-    from agent import relay_llm
+    from hermes_agent.agent import relay_llm
 
     relay_llm.complete_logical_call(api_request_id, outcome="success")
     agent._touch_activity(f"API call #{api_call_count} completed")
@@ -248,10 +248,10 @@ def retry_invalid_response(
     """Malformed/empty provider response: fire the error hook, stop the spinner, eager
     fallback (empty responses often mean rate limiting), terminal result at max retries,
     else jittered backoff that preserves a pending redirect."""
-    from agent.conversation_loop import _arm_fallback_restart
-    from agent.retry_utils import jittered_backoff
-    from agent.turn_recovery import describe_invalid_response, interruptible_backoff_sleep
-    from agent.turn_recovery_codex import classify_codex_soft_failure
+    from hermes_agent.agent.conversation_loop import _arm_fallback_restart
+    from hermes_agent.agent.retry_utils import jittered_backoff
+    from hermes_agent.agent.turn_recovery import describe_invalid_response, interruptible_backoff_sleep
+    from hermes_agent.agent.turn_recovery_codex import classify_codex_soft_failure
 
     def _verdict(action: str, result: Optional[dict[str, Any]] = None) -> InvalidResponseVerdict:
         return InvalidResponseVerdict(

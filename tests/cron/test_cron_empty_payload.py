@@ -240,7 +240,7 @@ def test_run_job_fails_closed_and_never_builds_an_agent(hermes_env, cron_owner):
         def __init__(self, *a, **kw):  # pragma: no cover - must never run
             raise AssertionError("AIAgent must not be constructed for an empty job")
 
-    with patch("run_agent.AIAgent", _Boom):
+    with patch("hermes_agent.run_agent.AIAgent", _Boom):
         success, doc, final, error = scheduler.run_job(job)
 
     assert success is False

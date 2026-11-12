@@ -46,7 +46,7 @@ def _install_fake_llm(monkeypatch, ref_runs):
             return _response(f"advice #{len(ref_runs)}")
         return _response("acted")
 
-    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+    monkeypatch.setattr("hermes_agent.agent.moa_loop.call_llm", fake_call_llm)
 
 
 def _iteration_messages(base, iterations):
@@ -78,7 +78,7 @@ def test_every_n_cadence_runs_references_every_nth_iteration(monkeypatch, tmp_pa
     ref_runs = []
     _install_fake_llm(monkeypatch, ref_runs)
 
-    from agent.moa_loop import MoAChatCompletions
+    from hermes_agent.agent.moa_loop import MoAChatCompletions
 
     events = []
     facade = MoAChatCompletions("review", reference_callback=lambda ev, **kw: events.append(ev))
@@ -103,7 +103,7 @@ def test_every_n_off_cadence_iterations_reuse_cached_guidance(monkeypatch, tmp_p
     ref_runs = []
     _install_fake_llm(monkeypatch, ref_runs)
 
-    from agent.moa_loop import MoAChatCompletions
+    from hermes_agent.agent.moa_loop import MoAChatCompletions
 
     facade = MoAChatCompletions("review")
     base = [{"role": "user", "content": "task"}]
@@ -118,7 +118,7 @@ def test_every_n_off_cadence_iterations_reuse_cached_guidance(monkeypatch, tmp_p
     assert all(p["guidance"] for p in prepared)
     # ...and the off-cadence ones reuse iteration 1's exact advice text, marked as
     # predating the tool results they are now shown beside.
-    from agent.moa_loop import _STALE_GUIDANCE_NOTE
+    from hermes_agent.agent.moa_loop import _STALE_GUIDANCE_NOTE
 
     assert "advice #1" in prepared[0]["guidance"]
     assert _STALE_GUIDANCE_NOTE not in prepared[0]["guidance"]
@@ -147,9 +147,9 @@ def test_preset_reference_timeout_reaches_reference_calls(monkeypatch, tmp_path)
             timeouts.append(kwargs.get("timeout"))
         return _response("advice")
 
-    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
-    monkeypatch.setattr("agent.moa_loop._reference_context_length", lambda *a, **k: None)  # no metadata fetch
-    from agent.moa_loop import MoAChatCompletions
+    monkeypatch.setattr("hermes_agent.agent.moa_loop.call_llm", fake_call_llm)
+    monkeypatch.setattr("hermes_agent.agent.moa_loop._reference_context_length", lambda *a, **k: None)  # no metadata fetch
+    from hermes_agent.agent.moa_loop import MoAChatCompletions
 
     MoAChatCompletions("review").create(messages=[{"role": "user", "content": "task"}], tools=[])
     assert timeouts == [900]
@@ -164,7 +164,7 @@ def test_per_iteration_default_unchanged_by_cadence_state(monkeypatch, tmp_path)
     ref_runs = []
     _install_fake_llm(monkeypatch, ref_runs)
 
-    from agent.moa_loop import MoAChatCompletions
+    from hermes_agent.agent.moa_loop import MoAChatCompletions
 
     facade = MoAChatCompletions("review")
     base = [{"role": "user", "content": "task"}]

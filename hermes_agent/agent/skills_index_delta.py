@@ -19,9 +19,9 @@ import logging
 import re
 from typing import Any
 
-from agent.message_content import flatten_message_text
+from hermes_agent.agent.message_content import flatten_message_text
 
-logger = logging.getLogger("run_agent")
+logger = logging.getLogger("hermes_agent.run_agent")
 
 _NOTE_PREFIX = "[System: The skills available in this conversation changed after its system prompt was built."
 _ADDED_HEAD = "Now available (load with skill_view(name) when relevant, like the skills listed in the system prompt):"
@@ -113,7 +113,7 @@ def stage_skills_index_note(agent: Any, prompt: Any, conversation_history: Any) 
     if not stored:
         return False
     try:
-        from agent.system_prompt import _skills_prompt
+        from hermes_agent.agent.system_prompt import _skills_prompt
         current = index_entries(_skills_prompt(agent))
     except Exception:
         logger.debug("skills index delta: current index unavailable", exc_info=True)

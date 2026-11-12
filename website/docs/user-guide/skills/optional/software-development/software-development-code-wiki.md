@@ -326,7 +326,7 @@ sequenceDiagram
 ### Walkthrough
 
 1. **User input** — [`cli.py:HermesCLI.run_session`](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/software-development/code-wiki/<link>)
-2. **Message dispatch** — [`run_agent.py:AIAgent.chat`](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/software-development/code-wiki/<link>)
+2. **Message dispatch** — [`hermes_agent/run_agent.py:AIAgent.chat`](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/software-development/code-wiki/<link>)
 ````
 
 Don't invent participants. Every box must correspond to a real component the reader can find in the code.

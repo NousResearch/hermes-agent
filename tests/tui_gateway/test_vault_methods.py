@@ -119,7 +119,7 @@ def test_enabling_a_detected_manager_reports_it_enabled(home, monkeypatch):
     the shipped default must then agree with `is_enabled()`'s zero-config contract — an installed
     manager becomes a login source instead of silently staying off (#109546)."""
     monkeypatch.setattr(
-        "agent.vault_backends.base.is_installed", lambda name: name == "bitwarden"
+        "hermes_agent.agent.vault_backends.base.is_installed", lambda name: name == "bitwarden"
     )
     _result(
         srv._methods["vault.source.set"](80, {"name": "bitwarden", "enabled": True})
@@ -131,7 +131,7 @@ def test_enabling_a_detected_manager_reports_it_enabled(home, monkeypatch):
 
 def test_disabling_a_manager_persists_the_opt_out(home, monkeypatch):
     monkeypatch.setattr(
-        "agent.vault_backends.base.is_installed", lambda name: name == "bitwarden"
+        "hermes_agent.agent.vault_backends.base.is_installed", lambda name: name == "bitwarden"
     )
     _result(
         srv._methods["vault.source.set"](81, {"name": "bitwarden", "enabled": False})
@@ -142,7 +142,7 @@ def test_disabling_a_manager_persists_the_opt_out(home, monkeypatch):
 
 
 def test_undetected_manager_stays_off(home, monkeypatch):
-    monkeypatch.setattr("agent.vault_backends.base.is_installed", lambda name: False)
+    monkeypatch.setattr("hermes_agent.agent.vault_backends.base.is_installed", lambda name: False)
     rows = _sources_rows(home)
     assert rows["bitwarden"]["installed"] is False
 
@@ -153,7 +153,7 @@ def test_source_set_tolerates_scalar_vault_section(home, monkeypatch):
     before the opt-out is written (same YAML-shape hazard class _voice_cfg_dict
     documents for voice.*, #19835)."""
     monkeypatch.setattr(
-        "agent.vault_backends.base.is_installed", lambda name: name == "bitwarden"
+        "hermes_agent.agent.vault_backends.base.is_installed", lambda name: name == "bitwarden"
     )
     (home / "config.yaml").write_text("vault: true\n")
     _result(
@@ -180,8 +180,8 @@ def test_launch_profile_vault_rpcs_stay_scoped_once_the_process_multiplexes(home
     launch profile's vault.* calls (Desktop sends no ``profile`` for it) must still bind the launch
     secret scope — otherwise every enabled manager's token read raises UnscopedSecretError and the
     Passwords & Logins panel shows "Could not load vault items" until the gateway restarts."""
-    from agent.secret_scope import set_multiplex_active
+    from hermes_agent.agent.secret_scope import set_multiplex_active
 
-    monkeypatch.setattr("agent.vault_backends.base.is_installed", lambda name: name == "onepassword")
+    monkeypatch.setattr("hermes_agent.agent.vault_backends.base.is_installed", lambda name: name == "onepassword")
     set_multiplex_active(True)  # conftest resets the latch per test
     assert _sources_rows(home)["onepassword"]["enabled"] is True

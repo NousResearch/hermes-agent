@@ -52,13 +52,13 @@ def _notify_agents_of_screen_change(profile_key: str, payload: dict) -> None:
     The system prompt is byte-stable and only rebuilt at compaction, so a screen started or
     stopped mid-session would otherwise stay unknown to the model until then. The note rides
     the one-shot user-message channel (``_gateway_turn_context_notes``, consumed by
-    ``agent/turn_context.py``), landing behind the cached prefix. Sessions may hold a fresh
+    ``hermes_agent/agent/turn_context.py``), landing behind the cached prefix. Sessions may hold a fresh
     agent per turn, so the note is staged on every live session of the profile, not just one.
     ``payload`` is the just-broadcast display.status snapshot (``running``/``display`` and the
     lease's public view), already read under the profile's home override."""
     from hermes_constants import hermes_home_key
     try:
-        from agent.prompt_builder import bot_screen_note
+        from hermes_agent.agent.prompt_builder import bot_screen_note
         lease_view = payload.get("lease") if isinstance(payload.get("lease"), dict) else {}
         line = bot_screen_note(bool(payload.get("running")), payload.get("display"),
                                str(lease_view.get("holder") or ""))

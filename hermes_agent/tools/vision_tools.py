@@ -20,7 +20,7 @@ from urllib.parse import urlparse
 import httpx
 from hermes_dir_acl import make_user_dir
 
-# ``agent.auxiliary_client`` costs ~50 ms cold; only the handlers need it. Both names stay
+# ``hermes_agent.agent.auxiliary_client`` costs ~50 ms cold; only the handlers need it. Both names stay
 # module attributes so tests can patch ``hermes_agent.tools.vision_tools.async_call_llm`` (truthy-skip: mocks win).
 async_call_llm: Any = None
 extract_content_or_reasoning: Any = None
@@ -29,7 +29,7 @@ extract_content_or_reasoning: Any = None
 def _load_auxiliary_client() -> None:
     global async_call_llm, extract_content_or_reasoning
     if async_call_llm is None or extract_content_or_reasoning is None:
-        from agent import auxiliary_client as _aux
+        from hermes_agent.agent import auxiliary_client as _aux
         async_call_llm = async_call_llm or _aux.async_call_llm
         extract_content_or_reasoning = extract_content_or_reasoning or _aux.extract_content_or_reasoning
 
@@ -566,7 +566,7 @@ def _accepts_tool_result_images(provider: str, model: str, cfg: Optional[dict[st
         return False
     if _supports_media_in_tool_results(provider, model):
         return True
-    from agent.image_routing import _lookup_supports_vision
+    from hermes_agent.agent.image_routing import _lookup_supports_vision
     return _lookup_supports_vision(provider, model, cfg) is True
 
 
@@ -576,14 +576,14 @@ def _native_tool_result_images(provider: str, model: str, cfg: Optional[dict[str
     (``agent.image_input_mode``, an explicit ``auxiliary.vision`` backend, the catalog) AND the
     route accepts images inside tool results. One predicate, so the lane never depends on which
     tool produced the image."""
-    from agent.image_routing import decide_image_input_mode
+    from hermes_agent.agent.image_routing import decide_image_input_mode
     return decide_image_input_mode(provider, model, cfg) == "native" and _accepts_tool_result_images(provider, model, cfg)
 
 
 def _should_use_native_vision_fast_path() -> bool:
     """:func:`_native_tool_result_images` for the active main model; any failure → False."""
     try:
-        from agent.auxiliary_client import _read_main_provider, _read_main_model
+        from hermes_agent.agent.auxiliary_client import _read_main_provider, _read_main_model
         from hermes_cli.config import load_config
         return _native_tool_result_images(_read_main_provider(), _read_main_model(), load_config())
     except Exception as exc:
@@ -935,7 +935,7 @@ def check_video_requirements() -> bool:
 
     See #31179.
     """
-    from agent.auxiliary_client import aux_probe_mode, resolve_vision_provider_client
+    from hermes_agent.agent.auxiliary_client import aux_probe_mode, resolve_vision_provider_client
     # No blanket except: a resolver crash must reach the registry, which logs it with a
     # traceback; a swallowed exception reads as "no vision backend configured" (#87950).
     with aux_probe_mode():
@@ -1096,7 +1096,7 @@ async def _materialize_video(video_url: str, task_id: Optional[str], temp_paths:
         temp_paths.append(path)
         return path
     if local_path.is_file():
-        from agent.file_safety import raise_if_read_blocked
+        from hermes_agent.agent.file_safety import raise_if_read_blocked
         raise_if_read_blocked(str(local_path))
         logger.info("Using local video file: %s", video_url)
         return local_path

@@ -53,7 +53,7 @@ def _format_live_review_output(sid: str, session: Optional[dict], arg: str) -> s
     tokens = _set_session_context(session["session_key"], ui_session_id=sid)
     runtime_token = _current_runtime_session_record.set(session)
     try:
-        from agent.review_engine import format_dispatch_note, start_review
+        from hermes_agent.agent.review_engine import format_dispatch_note, start_review
         # slash.exec is off-turn (RPC pool). start_review → resolve_runtime_provider
         # reads HERMES_CODEX_BASE_URL via get_secret; under multiplex that raises
         # UnscopedSecretError unless the same runtime scope a turn binds is here
@@ -135,7 +135,7 @@ def _usage_account_blocks(session: dict) -> list[str]:
     """Provider limits then Nous credits, as CLI/messaging /usage show them; neither needs an agent.
     Both read the session profile's credentials, unreadable outside its scope when multiplexed (#132422).
     Before the first turn the route is the session's composer pick, else the profile's provider."""
-    from agent.account_usage import fetch_account_usage, nous_credits_lines, render_account_usage_lines
+    from hermes_agent.agent.account_usage import fetch_account_usage, nous_credits_lines, render_account_usage_lines
     agent = session.get("agent")
     pick = session.get("model_override") or {}
     lines: list[str] = []
@@ -229,7 +229,7 @@ def _format_live_context_output(sid: str, session: dict, arg: str) -> str:
 
     breakdown_lines: list[str] = []
     if (agent := session.get("agent")) is not None:
-        # Live agent: the desktop gauge's engine (agent.context_breakdown) —
+        # Live agent: the desktop gauge's engine (hermes_agent.agent.context_breakdown) —
         # full Cursor-style breakdown, provider-anchored, no provider calls.
         # `all` expands per-skill / per-toolset costs, matching the CLI.
         with session["history_lock"]:
@@ -239,7 +239,7 @@ def _format_live_context_output(sid: str, session: dict, arg: str) -> str:
             # prompt build inside would key its workspace pin on the backend's cwd.
             tokens = _set_session_context(session["session_key"], cwd=_session_cwd(session))
             try:
-                from agent.context_breakdown import (
+                from hermes_agent.agent.context_breakdown import (
                     compute_context_details,
                     compute_session_context_breakdown,
                     render_context_breakdown_lines)
@@ -276,7 +276,7 @@ def _format_live_context_output(sid: str, session: dict, arg: str) -> str:
     if usage.get("compressions"):
         lines.append(f"Compressions: {int(usage.get('compressions') or 0):,}")
     if (agent := session.get("agent")) is not None:
-        from agent.context_file_sources import context_file_sources_for_agent, render_context_file_lines
+        from hermes_agent.agent.context_file_sources import context_file_sources_for_agent, render_context_file_lines
         # RPC thread: bind the session cwd or the discovery walk keys on the backend's cwd, not the workspace.
         tokens = _set_session_context(session["session_key"], cwd=_session_cwd(session))
         try:
@@ -383,11 +383,11 @@ def _compress_live_with_feedback(sid: str, session: dict, agent, arg: str, *, sn
     ``_compress_session_history``; the raw arg goes through unparsed (the choke point parses
     ``here [N]`` / ``--keep N``). CompressionLockHeld is a clean no-op (skip note returned);
     other errors propagate to the caller, which finalizes the context-engine notification."""
-    from agent.conversation_compression import finalize_context_engine_compression_notification
-    from agent.conversation_compression_manual import (
+    from hermes_agent.agent.conversation_compression import finalize_context_engine_compression_notification
+    from hermes_agent.agent.conversation_compression_manual import (
         AGGRESSIVE_UNSUPPORTED, compress_now, parse_compress_args, render_compress_result)
-    from agent.manual_compression_feedback import describe_compression_lock_skip, summarize_manual_compression
-    from agent.model_metadata import estimate_request_tokens_rough
+    from hermes_agent.agent.manual_compression_feedback import describe_compression_lock_skip, summarize_manual_compression
+    from hermes_agent.agent.model_metadata import estimate_request_tokens_rough
     request = parse_compress_args(arg)
     if request.aggressive:
         return AGGRESSIVE_UNSUPPORTED
@@ -539,7 +539,7 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
         return str(e)
     except Exception as e:
         if name == "compress" and agent:
-            from agent.conversation_compression import finalize_context_engine_compression_notification
+            from hermes_agent.agent.conversation_compression import finalize_context_engine_compression_notification
             finalize_context_engine_compression_notification(agent, committed=False)
         return f"live session sync failed: {e}"
 

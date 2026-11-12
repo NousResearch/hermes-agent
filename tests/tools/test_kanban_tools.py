@@ -573,7 +573,7 @@ def test_schedule_goal_mode_refused(monkeypatch, tmp_path):
 
 def test_schedule_exposed_to_codex_runtime_workers():
     """Codex app-server workers only reach Hermes tools named in EXPOSED_TOOLS."""
-    from agent.transports.hermes_tools_mcp_server import EXPOSED_TOOLS
+    from hermes_agent.agent.transports.hermes_tools_mcp_server import EXPOSED_TOOLS
 
     assert "kanban_schedule" in EXPOSED_TOOLS
 

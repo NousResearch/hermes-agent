@@ -1,13 +1,13 @@
 """Tests for the built-in /plan command (formerly the bundled `plan` skill).
 
-Covers the shared prompt builder (agent.plan_prompt.build_plan_prompt) and the
+Covers the shared prompt builder (hermes_agent.agent.plan_prompt.build_plan_prompt) and the
 registry wiring that makes /plan a first-class command on every surface —
 CLI, gateway messengers, and TUI. The skill-to-builtin move exists precisely
 so /plan survives the Telegram/Discord command-menu caps that trimmed it as
 an alphabetical skill entry.
 """
 
-from agent.plan_prompt import build_plan_prompt
+from hermes_agent.agent.plan_prompt import build_plan_prompt
 
 class TestBuildPlanPrompt:
     def test_task_is_included_verbatim(self):

@@ -14,8 +14,8 @@ from typing import Any, Awaitable, Callable, Optional
 
 import httpx
 
-from agent.auxiliary_client import async_call_llm, extract_content_or_reasoning
-from agent.secret_scope import get_secret
+from hermes_agent.agent.auxiliary_client import async_call_llm, extract_content_or_reasoning
+from hermes_agent.agent.secret_scope import get_secret
 from hermes_constants import get_hermes_home
 from plugins.teams_pipeline.meetings import (
     download_recording_artifact,

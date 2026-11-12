@@ -7,7 +7,7 @@ lease kept renewing — so nothing ever force-aborts it and the session is
 stuck until the gateway process is killed.
 
 The fix adds a turn liveness watchdog next to the durable lease refresher in
-``AIAgent.run_conversation`` (policy lives in ``agent/turn_liveness.py``).
+``AIAgent.run_conversation`` (policy lives in ``hermes_agent/agent/turn_liveness.py``).
 It keys off the agent's activity clock (``_last_activity_ts`` — the #72039
 single progress source, which lease renewal never touches). When a turn
 shows no observable progress for the configured bound
@@ -33,7 +33,7 @@ import time
 
 import pytest
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 class _DB:
     def __init__(self, session_exists=True, acquire_result=True):
@@ -179,7 +179,7 @@ def watchdog_config(monkeypatch):
 
     `agent.turn_liveness` is the config authority the watchdog resolves
     (AGENTS.md rejects new non-secret HERMES_* env knobs); the resolver in
-    agent/turn_liveness.py validates the values and the env is never read.
+    hermes_agent/agent/turn_liveness.py validates the values and the env is never read.
     """
     import hermes_cli.config as config_module
 
@@ -196,7 +196,7 @@ def watchdog_config(monkeypatch):
 
 def _run_turn(agent, inner_loop, monkeypatch):
     """Drive AIAgent.run_conversation with a fake inner conversation loop."""
-    from agent import conversation_loop as loop_module
+    from hermes_agent.agent import conversation_loop as loop_module
 
     monkeypatch.setattr(loop_module, "run_conversation", inner_loop)
     return AIAgent.run_conversation(
@@ -229,7 +229,7 @@ def test_watchdog_force_aborts_silently_stalled_turn(watchdog_config, monkeypatc
             "interrupted": True,
         }
 
-    with caplog.at_level(logging.ERROR, logger="agent.turn_liveness"):
+    with caplog.at_level(logging.ERROR, logger="hermes_agent.agent.turn_liveness"):
         result = _run_turn(agent, stalled_loop, monkeypatch)
 
     # The turn was surfaced as interrupted, not hung.
@@ -272,7 +272,7 @@ def test_watchdog_does_not_fire_while_turn_still_making_progress(
             "completed": True,
         }
 
-    with caplog.at_level(logging.ERROR, logger="agent.turn_liveness"):
+    with caplog.at_level(logging.ERROR, logger="hermes_agent.agent.turn_liveness"):
         result = _run_turn(agent, busy_loop, monkeypatch)
 
     assert result["completed"] is True
@@ -387,7 +387,7 @@ def test_watchdog_declines_abort_when_activity_resumes_during_warning(
 
     agent._emit_warning = blocking_warning
 
-    with caplog.at_level(logging.ERROR, logger="agent.turn_liveness"):
+    with caplog.at_level(logging.ERROR, logger="hermes_agent.agent.turn_liveness"):
         result = _run_turn(agent, stalled_then_resumed_loop, monkeypatch)
 
     assert time.time() - t_start < 10.0
@@ -492,7 +492,7 @@ def test_watchdog_declines_abort_when_activity_resumes_after_revalidation(
             "completed": True,
         }
 
-    with caplog.at_level(logging.ERROR, logger="agent.turn_liveness"):
+    with caplog.at_level(logging.ERROR, logger="hermes_agent.agent.turn_liveness"):
         result = _run_turn(agent, stalled_loop, monkeypatch)
 
     assert time.time() - t_start < 10.0
@@ -569,7 +569,7 @@ def test_watchdog_declines_abort_when_activity_resumes_inside_interrupt_publicat
             "completed": True,
         }
 
-    with caplog.at_level(logging.ERROR, logger="agent.turn_liveness"):
+    with caplog.at_level(logging.ERROR, logger="hermes_agent.agent.turn_liveness"):
         result = _run_turn(agent, stalled_then_resumed_loop, monkeypatch)
 
     assert time.time() - t_start < 10.0
@@ -647,7 +647,7 @@ def test_watchdog_declines_abort_when_interrupt_publish_raises(
             "completed": True,
         }
 
-    with caplog.at_level(logging.ERROR, logger="agent.turn_liveness"):
+    with caplog.at_level(logging.ERROR, logger="hermes_agent.agent.turn_liveness"):
         result = _run_turn(agent, stalled_loop, monkeypatch)
 
     assert time.time() - t_start < 10.0
@@ -685,7 +685,7 @@ def test_declined_abort_does_not_cancel_pending_compression_commit():
     abort authority. The pre-fix tree cancelled the pending fence BEFORE
     validating the claim, so begin_commit() refused forever.
     """
-    from agent.conversation_compression import CompressionCommitFence
+    from hermes_agent.agent.conversation_compression import CompressionCommitFence
 
     agent = AIAgent.__new__(AIAgent)
     agent._turn_liveness_activity_generation = 5
@@ -762,7 +762,7 @@ def test_host_sleep_is_not_a_stalled_turn(monkeypatch, during_sample):
     from types import SimpleNamespace
     from unittest.mock import MagicMock
 
-    from agent import activity_tracking, session_activity, turn_liveness
+    from hermes_agent.agent import activity_tracking, session_activity, turn_liveness
 
     # Wall time keeps running while the host sleeps; monotonic time pauses (macOS, Linux).
     clock = SimpleNamespace(wall=1000.0, mono=1000.0)

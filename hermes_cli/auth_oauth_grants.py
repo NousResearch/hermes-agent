@@ -396,7 +396,7 @@ def consume_oauth_heal_notices() -> list[str]:
 def _oauth_stamps(
         entry: dict[str, Any]) -> tuple[Optional[float], Optional[float], Optional[float]]:
     """(JWT iat, local issue stamp, expires) epoch seconds of an OAuth pair."""
-    from agent.credential_pool_timestamps import _parse_absolute_timestamp
+    from hermes_agent.agent.credential_pool_timestamps import _parse_absolute_timestamp
     claims = _decode_jwt_claims(entry.get("access_token"))
 
     def first(*values: Any) -> Optional[float]:
@@ -809,7 +809,7 @@ def _heal_forked_single_use_oauth_grants(provider_id: str) -> Optional[dict[str,
                 _save_auth_store(root_store, target_path=root_path)
             singleton_row = run.root_singleton_row
             if summary["adopted"] and root_singleton is not None and singleton_row is not None:
-                from agent.anthropic_credentials import _write_hermes_oauth_credentials
+                from hermes_agent.agent.anthropic_credentials import _write_hermes_oauth_credentials
                 _write_hermes_oauth_credentials(
                     singleton_row.get("access_token") or "", singleton_row.get("refresh_token"),
                     singleton_row.get("expires_at_ms"), target=root_singleton)

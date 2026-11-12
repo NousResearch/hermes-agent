@@ -1,4 +1,4 @@
-"""Per-image token cost learned from provider usage (agent/image_token_cost.py, #70328).
+"""Per-image token cost learned from provider usage (hermes_agent/agent/image_token_cost.py, #70328).
 
 A flat per-image constant undercounts multimodal local models 2-4x (a GUI loop then hits
 provider 400s before compaction can fire) and overcounts providers that downscale. The
@@ -8,9 +8,9 @@ the real prompt count and ``anchor + text-only delta`` teaches the per-image cos
 
 from types import SimpleNamespace
 
-from agent import image_token_cost as itc
-from agent.model_metadata import estimate_messages_tokens_rough
-from agent.usage_anchor import anchored_context_tokens, capture_usage_anchor
+from hermes_agent.agent import image_token_cost as itc
+from hermes_agent.agent.model_metadata import estimate_messages_tokens_rough
+from hermes_agent.agent.usage_anchor import anchored_context_tokens, capture_usage_anchor
 
 
 def _img():

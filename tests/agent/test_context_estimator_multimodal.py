@@ -3,8 +3,8 @@ length (#63871 / #76411; salvage of #76471 by @crdesign8). A single native scree
 ~100K+ tokens and selected the 600-1200s giant-conversation watchdog tiers while the provider's
 real prompt was a fraction of that."""
 
-from agent.chat_completion_helpers import estimate_request_context_tokens, openai_codex_stale_timeout_floor
-from agent.image_token_cost import DEFAULT_IMAGE_TOKEN_COST, image_cost_context
+from hermes_agent.agent.chat_completion_helpers import estimate_request_context_tokens, openai_codex_stale_timeout_floor
+from hermes_agent.agent.image_token_cost import DEFAULT_IMAGE_TOKEN_COST, image_cost_context
 
 _B64 = "data:image/png;base64," + "A" * 400_000
 

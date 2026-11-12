@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from agent import relay_runtime
+from hermes_agent.agent import relay_runtime
 
 
 HOST_CONFLICT = RuntimeError(
@@ -1230,7 +1230,7 @@ def test_real_binding_keeps_two_profile_trajectories_separate_in_shared_exporter
     relay = pytest.importorskip("nemo_relay")
     if getattr(relay, "_native", None) is None:
         pytest.skip("NeMo Relay native binding is unavailable on this platform")
-    from agent import relay_llm, relay_tools
+    from hermes_agent.agent import relay_llm, relay_tools
 
     working_directory = tmp_path / "project" / "workspace"
     config_directory = tmp_path / "selected-config"

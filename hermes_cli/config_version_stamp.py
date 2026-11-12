@@ -84,7 +84,7 @@ def note_first_stamp(home, on_disk: dict, to_write: dict) -> list[str]:
     nothing reads any more. Returns those browser moves."""
     if "_config_version" in on_disk or "_config_version" not in to_write:
         return []
-    from agent.safe_worker_policy import worker_config_snapshot
+    from hermes_agent.agent.safe_worker_policy import worker_config_snapshot
     if worker_config_snapshot() is not None:
         return []  # a frozen worker never reads the profile's files; its owner migrates the home
     from hermes_cli.config_migrations_browser import adopt_agent_browser_env

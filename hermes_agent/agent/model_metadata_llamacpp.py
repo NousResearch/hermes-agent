@@ -23,7 +23,7 @@ def llamacpp_context(client, server_url: str, model: str) -> Optional[int]:
     probe must not undo an Eject or an idle unload."""
     import httpx
 
-    from agent.model_metadata import _positive_int
+    from hermes_agent.agent.model_metadata import _positive_int
 
     for props_path in (f"/props?model={quote(model)}&autoload=false", "/props"):
         try:
@@ -43,7 +43,7 @@ def router_launch_ctx(client, server_url: str, model: str) -> Optional[int]:
     """``--ctx-size`` from the router's launch args for *model* (GET /models), or None."""
     import httpx
 
-    from agent.model_metadata import _model_id_matches
+    from hermes_agent.agent.model_metadata import _model_id_matches
 
     try:
         resp = client.get(f"{server_url}/models")

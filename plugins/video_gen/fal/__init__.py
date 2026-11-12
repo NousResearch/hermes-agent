@@ -13,7 +13,7 @@ import threading
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
-from agent.video_gen_provider import VideoGenProvider, error_response, success_response
+from hermes_agent.agent.video_gen_provider import VideoGenProvider, error_response, success_response
 
 logger = logging.getLogger(__name__)
 

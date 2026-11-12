@@ -25,7 +25,7 @@ class _CapturingAgent:
 @pytest.fixture
 def acp_env(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setattr("run_agent.AIAgent", _CapturingAgent)
+    monkeypatch.setattr("hermes_agent.run_agent.AIAgent", _CapturingAgent)
     monkeypatch.setattr(
         "hermes_cli.runtime_provider.resolve_runtime_provider",
         lambda requested=None, **_kwargs: {"provider": requested or "openai-api", "api_mode": "codex_responses",

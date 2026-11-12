@@ -30,7 +30,7 @@ class ProcessOwnershipMixin:
         AIAgent) owns its jobs, and foreground commands are owned everywhere. Also not owned: every job of a
         managed worker, a per-turn interpreter whose jobs the next turn's worker adopts with their
         output log (worker_output_log); and Windows, where the layer-3 job object covers ownership."""
-        from agent.runtime_session_store import is_worker_process
+        from hermes_agent.agent.runtime_session_store import is_worker_process
         from hermes_agent.tools.process_registry import _IS_WINDOWS, _is_supervised_gateway_process
 
         return not (_IS_WINDOWS or persist_on_release or self._jobs_outlive_host

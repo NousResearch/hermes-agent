@@ -7,7 +7,7 @@ import re
 import subprocess
 from pathlib import Path
 
-from agent.compression_marker import elide
+from hermes_agent.agent.compression_marker import elide
 from hermes_cli._subprocess_compat import IS_WINDOWS, windows_hide_flags
 
 logger = logging.getLogger(__name__)
@@ -49,7 +49,7 @@ def run_inline_shell(command: str, cwd: Path | None, timeout: int) -> str:
     stdout is empty). Failures return an ``[inline-shell ...]`` marker instead
     of raising, so one bad snippet can't wreck the whole skill message."""
     _popen_kwargs = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {}
-    from agent.delegation_context import delegated_child_subprocess_env
+    from hermes_agent.agent.delegation_context import delegated_child_subprocess_env
     try:
         bash = "bash"
         if IS_WINDOWS:

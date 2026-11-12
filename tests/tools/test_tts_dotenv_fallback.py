@@ -4,7 +4,7 @@ TTS provider tools must resolve API keys from ``~/.hermes/.env`` (via
 ``hermes_cli.config.get_env_value``) and not only from ``os.environ`` —
 otherwise users who keep their keys in the dotenv file see "API key not set"
 errors even though the key is configured. Same class of bug as #15914 (auth)
-already addressed for ``agent/credential_pool`` and ``hermes_cli/auth``.
+already addressed for ``hermes_agent/agent/credential_pool`` and ``hermes_cli/auth``.
 """
 
 from unittest.mock import MagicMock, patch

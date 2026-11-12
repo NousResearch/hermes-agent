@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import pytest
 
-from agent import secret_scope
-from agent.azure_identity_adapter import _scoped_env as azure_scoped_env
+from hermes_agent.agent import secret_scope
+from hermes_agent.agent.azure_identity_adapter import _scoped_env as azure_scoped_env
 
 _READERS = {"azure": (azure_scoped_env, "AZURE_CLIENT_SECRET")}
 

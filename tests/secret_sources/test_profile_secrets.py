@@ -17,8 +17,8 @@ from pathlib import Path
 
 import pytest
 
-from agent.secret_sources import registry
-from agent.secret_sources.base import FetchResult, SecretSource
+from hermes_agent.agent.secret_sources import registry
+from hermes_agent.agent.secret_sources.base import FetchResult, SecretSource
 
 
 class _FakeBulk(SecretSource):
@@ -125,7 +125,7 @@ def test_source_fetch_reads_injected_environment_without_global_mutation(
     monkeypatch, tmp_path
 ):
     """Cold-profile bootstrap values reach sources through the local mapping."""
-    from agent.secret_sources.base import get_source_environment
+    from hermes_agent.agent.secret_sources.base import get_source_environment
 
     class _BootstrapSource(SecretSource):
         name = "bootstrap"
@@ -153,7 +153,7 @@ def test_source_fetch_reads_injected_environment_without_global_mutation(
 
 
 def test_empty_injected_environment_does_not_fall_back_to_process(monkeypatch, tmp_path):
-    from agent.secret_sources.base import get_source_environment
+    from hermes_agent.agent.secret_sources.base import get_source_environment
 
     class _CanarySource(SecretSource):
         name = "canary"

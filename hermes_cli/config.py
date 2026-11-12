@@ -922,7 +922,7 @@ def get_missing_config_fields() -> list[dict[str, Any]]:
 def get_missing_skill_config_vars() -> list[dict[str, Any]]:
     """Return skill-declared config vars (``skills.config.<key>``) that are missing or empty."""
     try:
-        from agent.skill_utils import discover_all_skill_config_vars, SKILL_CONFIG_PREFIX
+        from hermes_agent.agent.skill_utils import discover_all_skill_config_vars, SKILL_CONFIG_PREFIX
     except Exception:
         return []
 
@@ -949,8 +949,8 @@ _EXTRA_KNOWN_ROOT_KEYS = {
     "custom_providers",  # legacy list form; modern equivalent is providers: {}
     "fallback_model",    # optional single dict or chain list; omitted when disabled
     "mcp_servers",       # MCP server definitions written by setup/tools flows
-    "image_gen",         # agent/image_gen_registry.py
-    "video_gen",         # agent/video_gen_registry.py
+    "image_gen",         # hermes_agent/agent/image_gen_registry.py
+    "video_gen",         # hermes_agent/agent/video_gen_registry.py
     "plugins",           # plugin enable/disable lists (hermes_cli/plugins_cmd.py)
     "smart_model_routing",   # written by the setup wizard
     "platform_toolsets",     # written by the setup wizard
@@ -962,7 +962,7 @@ _EXTRA_KNOWN_ROOT_KEYS = {
     "stt_echo_transcripts", "reset_triggers", "always_log_local", "filter_silence_narration",
     "multiplex_profiles", "profile_routes", "platforms", "require_mention",
     "unauthorized_dm_behavior", "signal", "allow_all_users",
-    "timeouts",          # unified timeout resolution section (agent/deadline.py)
+    "timeouts",          # unified timeout resolution section (hermes_agent/agent/deadline.py)
 }
 _KNOWN_ROOT_KEYS = frozenset(DEFAULT_CONFIG.keys()) | _EXTRA_KNOWN_ROOT_KEYS
 
@@ -1338,7 +1338,7 @@ def _offer_skill_config_vars(missing_skill_config: list[dict[str, Any]], results
         return
     config = read_raw_config()
     try:
-        from agent.skill_utils import SKILL_CONFIG_PREFIX
+        from hermes_agent.agent.skill_utils import SKILL_CONFIG_PREFIX
     except Exception:
         SKILL_CONFIG_PREFIX = "skills.config"
     for var in missing_skill_config:
@@ -1410,13 +1410,13 @@ def _env_ref_lookup(name: str) -> Optional[str]:
     a profile secret scope (legacy behavior for the default profile).
 
     Inside a scope (a multiplexed gateway turn, a secondary profile's config load, a cron job) the read goes
-    through ``agent.secret_scope.get_secret`` so the ref resolves against *that* profile's ``.env``: under
+    through ``hermes_agent.agent.secret_scope.get_secret`` so the ref resolves against *that* profile's ``.env``: under
     multiplexing a miss is a miss, never another profile's ``os.environ`` value (#84079 — every profile
     "had" the default profile's ``${MATRIX_ACCESS_TOKEN}`` and fanned out). Same policy as
     ``hermes_agent.gateway.config._getenv`` and ``get_env_value``.
     """
     try:
-        from agent.secret_scope import current_secret_scope, get_secret as _get_secret
+        from hermes_agent.agent.secret_scope import current_secret_scope, get_secret as _get_secret
     except Exception:
         return os.environ.get(name)
     if current_secret_scope() is None:
@@ -1781,7 +1781,7 @@ def _worker_config_snapshot() -> Optional[dict[str, Any]]:
     (the installer's completion step ships no ``agent`` package), and without ``agent`` there
     is no worker policy to consult."""
     try:
-        from agent.safe_worker_policy import worker_config_snapshot
+        from hermes_agent.agent.safe_worker_policy import worker_config_snapshot
     except ModuleNotFoundError as exc:
         if exc.name != "agent" and not "agent".startswith(f"{exc.name}."):
             raise
@@ -2419,7 +2419,7 @@ def load_env() -> dict[str, str]:
     # through the owner-installed scope, so the .env layer is empty here.
     if _worker_config_snapshot() is not None:
         return {}
-    from agent.secret_scope import load_env_file  # the one .env tokenizer; also installs profile scopes
+    from hermes_agent.agent.secret_scope import load_env_file  # the one .env tokenizer; also installs profile scopes
 
     env = load_env_file(get_env_path())
     _note_policy("note_env_policy", env.get("HERMES_REDACT_SECRETS"))
@@ -2428,7 +2428,7 @@ def load_env() -> dict[str, str]:
 
 def _note_policy(setter: str, raw: Any) -> None:
     """Record the loaded profile's redaction policy for the log formatter, which never reads config."""
-    note = getattr(sys.modules.get("agent.redact"), setter, None)
+    note = getattr(sys.modules.get("hermes_agent.agent.redact"), setter, None)
     if note is not None:
         from hermes_constants import hermes_home_key
         note(hermes_home_key(), raw)
@@ -2438,10 +2438,10 @@ def _parse_env_value(raw_value: str) -> str:
     """Frozen compat surface name (tests/compat/old_updater_surface.json).
 
     Pre-PM updaters lazy-import ``hermes_cli.config._parse_env_value`` after the
-    checkout swap. The tokenizer moved to ``agent.secret_scope._parse_env_value``
+    checkout swap. The tokenizer moved to ``hermes_agent.agent.secret_scope._parse_env_value``
     (c849bc383a), so this forwards there — behavior-preserving by construction.
     """
-    from agent.secret_scope import _parse_env_value as _parse
+    from hermes_agent.agent.secret_scope import _parse_env_value as _parse
 
     return _parse(raw_value)
 
@@ -2449,7 +2449,7 @@ def _parse_env_value(raw_value: str) -> str:
 def invalidate_env_cache() -> None:
     """Drop the ``.env`` memo so the next ``load_env()`` sees a write even on coarse-mtime filesystems
     (save_env_value / remove_env_value / sanitize_env_file call this)."""
-    from agent.secret_scope import invalidate_env_file_cache
+    from hermes_agent.agent.secret_scope import invalidate_env_file_cache
 
     invalidate_env_file_cache()
 
@@ -2631,7 +2631,7 @@ def _publish_env_value(key: str, value: Optional[str]) -> None:
     #77490, #88441.
     """
     try:
-        from agent.secret_scope import current_secret_scope, serves_routed_profile
+        from hermes_agent.agent.secret_scope import current_secret_scope, serves_routed_profile
 
         scope, routed = current_secret_scope(), serves_routed_profile()
     except Exception:
@@ -2797,12 +2797,12 @@ def reload_env() -> int:
 
 
 def _scoped_environ_get(key: str) -> Optional[str]:
-    """Read ``key`` from ``os.environ`` through ``agent.secret_scope.get_secret`` so an active
+    """Read ``key`` from ``os.environ`` through ``hermes_agent.agent.secret_scope.get_secret`` so an active
     profile scope (multiplexed gateway turn) never leaks another profile's raw value. Falls back to
     a plain environ read when the scope module is unavailable; ``UnscopedSecretError`` and scope
     failures propagate -- a failed scoped read must never borrow the ambient env."""
     try:
-        from agent.secret_scope import get_secret as _get_secret
+        from hermes_agent.agent.secret_scope import get_secret as _get_secret
     except Exception:
         return os.environ.get(key)
     return _get_secret(key)
@@ -2811,7 +2811,7 @@ def _scoped_environ_get(key: str) -> Optional[str]:
 def get_env_value(key: str) -> Optional[str]:
     """Get a value from ``os.environ`` (scope-aware) or ``~/.hermes/.env``.
 
-    The ``os.environ`` read routes through ``agent.secret_scope.get_secret`` so that, under an active
+    The ``os.environ`` read routes through ``hermes_agent.agent.secret_scope.get_secret`` so that, under an active
     profile scope (multiplexed gateway turn), this is scope-checked rather than leaking another profile's
     raw ``os.environ`` value. ``get_secret`` encodes the whole policy: global vars pass through; scope is
     authoritative under multiplexing (miss -> None, no environ fallthrough); when multiplexing is off it
@@ -2830,7 +2830,7 @@ def get_env_value_prefer_dotenv(key: str) -> Optional[str]:
     An unresolved ``op://`` reference left in .env yields to the already-resolved value from the
     active secret scope (set by the 1Password secret source) — otherwise a provider auth attempt
     would receive a URL instead of a key. Same carve-out as
-    ``agent.credential_pool.get_env_prefer_dotenv``."""
+    ``hermes_agent.agent.credential_pool.get_env_prefer_dotenv``."""
     raw = load_env().get(key) or ""
     if str(raw).lstrip().startswith("op://"):
         scoped = _scoped_environ_get(key)
@@ -2843,7 +2843,7 @@ def get_env_value_prefer_dotenv(key: str) -> Optional[str]:
 
 def redact_key(key: str) -> str:
     """Redact an API key for display."""
-    from agent.redact import mask_secret
+    from hermes_agent.agent.redact import mask_secret
     return mask_secret(key, empty=color("(not set)", Colors.DIM))
 
 
@@ -2875,7 +2875,7 @@ def _is_secret_config_key(key: str) -> bool:
 def redact_config_value(value: Any, _depth: int = 0) -> Any:
     """Copy of ``value`` with credential-shaped keys masked. ``print`` bypasses the logging
     redactor and opaque tokens miss the vendor-prefix regexes, so structural masking is required."""
-    from agent.redact import mask_secret
+    from hermes_agent.agent.redact import mask_secret
 
     if _depth > 20:  # bound recursion for pathological/cyclic configs
         return value
@@ -3428,14 +3428,14 @@ def set_config_value(key: str, value: str, force: bool = False):
 
     _touch_skin_file(key, value)
     if key == "display.language":
-        from agent.i18n import reset_language_cache
+        from hermes_agent.agent.i18n import reset_language_cache
         reset_language_cache()
 
     # Mask the echoed value when the (possibly nested) key is credential-shaped, e.g.
     # ``model.api_key`` (lowercase, so it misses the .env routing above).
     _display_value = value
     if _is_secret_config_key(key) and isinstance(value, str) and value:
-        from agent.redact import mask_secret
+        from hermes_agent.agent.redact import mask_secret
         _display_value = mask_secret(value)
     print(f"✓ Set {key} = {_display_value} in {config_destination(config_path)}")
     if _route_notice:
@@ -3472,7 +3472,7 @@ def get_config_value(key: str, *, as_json: bool = False, raw: bool = False):
     if value is _MISSING:
         _exit_invalid(f"Config key not set: {key}")
 
-    from agent.redact import _redact_enabled, mask_secret
+    from hermes_agent.agent.redact import _redact_enabled, mask_secret
     if not raw and _redact_enabled():
         if isinstance(value, str):
             if _is_secret_config_key(key) and not _ENV_PLACEHOLDER_RE.match(value):
@@ -3821,7 +3821,7 @@ def _platform_plugin_manifests(home: Optional[Path] = None, source: PlatformMani
     parse declares nothing (its adapter cannot load either) and is skipped. Every skip is appended
     to ``skipped``, so a caller can tell a complete scan from a partial one. A safe worker reads
     no plugin manifest at all."""
-    from agent.safe_worker_policy import safe_worker_enabled
+    from hermes_agent.agent.safe_worker_policy import safe_worker_enabled
 
     if safe_worker_enabled():
         return

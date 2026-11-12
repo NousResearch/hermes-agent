@@ -10,7 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from agent.codex_runtime import run_codex_app_server_turn
+from hermes_agent.agent.codex_runtime import run_codex_app_server_turn
 from tests.fakes.redactor_plugin import RAW, REWRITE, redactor_home
 
 

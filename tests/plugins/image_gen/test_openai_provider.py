@@ -264,7 +264,7 @@ class TestGenerate:
         """gpt-image bills per token: the Images API ``usage`` block lands as one
         ``image_generation`` row keyed on the API model, not the Hermes tier label — also
         when the billed HTTP 200 carries no image data."""
-        from agent import aux_accounting
+        from hermes_agent.agent import aux_accounting
 
         recorded = []
 

@@ -26,7 +26,7 @@ from hermes_agent.gateway.platforms.base import (
 )
 from hermes_agent.gateway.platforms.event import ProcessingOutcome
 from hermes_agent.gateway.platforms.helpers import clarify_text_with_choices
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 from hermes_agent.gateway.relay.adapter_discord_interaction import RelayDiscordInteractionMixin
 from hermes_agent.gateway.relay.descriptor import CapabilityDescriptor
 from hermes_agent.gateway.relay.egress import (

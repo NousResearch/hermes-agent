@@ -115,7 +115,7 @@ class TestVideoAnalyzeTool:
         content, so without a read guard a model could point video_url at
         any credential-store file (renamed/symlinked to look like a video)
         and have its raw bytes base64-encoded and sent to the vision
-        provider. Regression for the shared agent.file_safety chokepoint
+        provider. Regression for the shared hermes_agent.agent.file_safety chokepoint
         added to video_analyze_tool's local-file branch.
         """
         secret = tmp_path / ".env"

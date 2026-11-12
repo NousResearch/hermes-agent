@@ -39,7 +39,7 @@ def test_compress_here_reappends_verbatim_tail(capsys):
     summary = [{"role": "assistant", "content": "[summary]"}]
     _wire_agent(shell, summary)
 
-    with patch("agent.model_metadata.estimate_request_tokens_rough", return_value=100):
+    with patch("hermes_agent.agent.model_metadata.estimate_request_tokens_rough", return_value=100):
         shell._manual_compress("/compress here 2")
 
     # Only the head (everything before the last 2 user-starts) is summarized.

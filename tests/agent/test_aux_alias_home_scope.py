@@ -57,7 +57,7 @@ def homes(tmp_path, monkeypatch):
 
 
 def _normalize_in(home: Path, name: str) -> str:
-    from agent.auxiliary_client import _normalize_aux_provider
+    from hermes_agent.agent.auxiliary_client import _normalize_aux_provider
 
     token = set_hermes_home_override(home)
     try:

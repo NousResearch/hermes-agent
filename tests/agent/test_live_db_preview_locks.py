@@ -9,7 +9,7 @@ import sys
 import pytest
 from fastapi import HTTPException
 
-from agent.context_references import _expand_path_reference, parse_context_references
+from hermes_agent.agent.context_references import _expand_path_reference, parse_context_references
 from hermes_agent.hermes_state import SessionDB
 from hermes_cli.web_routers.files import fs_download, fs_read_text
 from tests.posix_lock_probe import own_posix_locks

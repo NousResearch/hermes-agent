@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
-from agent.file_safety import is_write_denied as _is_write_denied
+from hermes_agent.agent.file_safety import is_write_denied as _is_write_denied
 
 
 class TestWriteDenyExactPaths:
@@ -73,7 +73,7 @@ class TestWriteDenyPrefixes:
         fake_etc.mkdir(parents=True)
         target = str(fake_etc / "evil.service")
         # Patch the prefix builder to include our tmp_path prefix
-        import agent.file_safety as _fs
+        import hermes_agent.agent.file_safety as _fs
         _orig = _fs.build_write_denied_prefixes
         _extra_prefix = str(tmp_path / "etc" / "systemd") + os.sep
         def _patched(home):

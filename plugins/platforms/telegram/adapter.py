@@ -20,8 +20,8 @@ from hermes_cli import setup_platforms
 
 logger = logging.getLogger(__name__)
 
-from agent.deadline import run_bounded_async
-from agent.ssl_verify import platform_ssl_context
+from hermes_agent.agent.deadline import run_bounded_async
+from hermes_agent.agent.ssl_verify import platform_ssl_context
 from hermes_agent.gateway.platforms._shared import (
     decode_json_list_literal as _decode_json_list_literal,
     extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret,
@@ -39,7 +39,7 @@ def _redact_telegram_error_text(error: object, proxy_url: str | None = None) -> 
         # class name so failure lines never log an empty reason (#111211).
         return f"<{type(error).__name__}>" if error is not None else text
     try:
-        from agent.redact import redact_sensitive_text
+        from hermes_agent.agent.redact import redact_sensitive_text
         return redact_sensitive_text(text, force=True)
     except Exception:
         return "<telegram error redacted>"
@@ -65,7 +65,7 @@ async def _await_with_thread_deadline(
     ``dump_on_blocked_loop=False``: the bug they bound is a shielded socket on a LIVE loop, and the init
     wrapper already reports a blocked loop, so N in-flight sends must not each arm a stack-dump timer.
 
-    Thin wrapper over :func:`agent.deadline.run_bounded_async` (#85125 Phase 2f) — this adapter's private
+    Thin wrapper over :func:`hermes_agent.agent.deadline.run_bounded_async` (#85125 Phase 2f) — this adapter's private
     implementation was the ancestor of that primitive and is now consolidated onto it. The unified layer
     keeps every property the 9 call sites here rely on: thread-timer deadline that survives a blocked event
     loop (#63309), abandonment of cancellation-shielded tasks (PTB/httpcore init inside anyio scopes),
@@ -141,7 +141,7 @@ except ImportError as _import_exc:
 import sys
 
 from hermes_agent.gateway.authz_mixin import _coerce_allow_set
-from agent.i18n import get_language, t
+from hermes_agent.agent.i18n import get_language, t
 from hermes_agent.gateway.config import Platform, PlatformConfig
 from hermes_agent.gateway.platforms.base import (
     BasePlatformAdapter, ExecApprovalPrompt, SendResult, classify_send_error, unauthorized_action_notice,

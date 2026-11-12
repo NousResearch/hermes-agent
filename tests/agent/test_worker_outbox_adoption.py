@@ -2,7 +2,7 @@
 rotation) without a second receipt, and is still refused for anything but the verified successor."""
 import pytest
 
-from agent.runtime_session_store import RuntimeSessionStore, WorkerPersistenceError
+from hermes_agent.agent.runtime_session_store import RuntimeSessionStore, WorkerPersistenceError
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_runtime import (adopt_worker_execution, begin_runtime_epoch,
                                   mutate_worker_execution, register_worker_execution)

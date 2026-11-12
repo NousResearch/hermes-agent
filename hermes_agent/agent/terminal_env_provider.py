@@ -14,7 +14,7 @@ from __future__ import annotations
 import abc
 from typing import Any, Dict, List, Optional, Tuple
 
-from agent.provider_base import ProviderBase
+from hermes_agent.agent.provider_base import ProviderBase
 
 
 class TerminalEnvironmentProvider(ProviderBase):

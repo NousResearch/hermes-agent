@@ -9,8 +9,8 @@ captured at ``initialize_all``, whether or not a provider honours the label; the
 checkpoint path stays open.
 """
 
-from agent.memory_manager import MemoryManager
-from agent.memory_provider import PRE_COMPRESS_CHECKPOINT_API_VERSION, MemoryProvider
+from hermes_agent.agent.memory_manager import MemoryManager
+from hermes_agent.agent.memory_provider import PRE_COMPRESS_CHECKPOINT_API_VERSION, MemoryProvider
 
 
 class _RecordingProvider(MemoryProvider):

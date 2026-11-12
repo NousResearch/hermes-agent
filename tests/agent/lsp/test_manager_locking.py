@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import asyncio
 
-from agent.lsp import manager
-from agent.lsp.manager import LSPService
-from agent.lsp.servers import ServerDef
+from hermes_agent.agent.lsp import manager
+from hermes_agent.agent.lsp.manager import LSPService
+from hermes_agent.agent.lsp.servers import ServerDef
 
 
 def test_reused_multiroot_client_attaches_outside_state_lock(monkeypatch):

@@ -15,7 +15,7 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from agent.context_compressor import (
+from hermes_agent.agent.context_compressor import (
     ContextCompressor,
     _LEAN_ANCHOR_HEADING,
     _LEAN_RECOVERY_HEADING,
@@ -34,7 +34,7 @@ def _mk_compressor(**overrides):
     )
     kwargs.update(overrides)
     with patch(
-        "agent.context_compressor.get_model_context_length", return_value=100_000
+        "hermes_agent.agent.context_compressor.get_model_context_length", return_value=100_000
     ):
         c = ContextCompressor(**kwargs)
         _ = c.context_length
@@ -82,10 +82,10 @@ class TestLeanSingleAuxiliaryCall:
         c = _mk_compressor()
         turns = _big_region()
         with patch(
-            "agent.context_compressor.call_llm",
+            "hermes_agent.agent.context_compressor.call_llm",
             return_value=_llm_response(SUMMARY_BODY),
         ) as main_call, patch(
-            "agent.auxiliary_client.call_llm",
+            "hermes_agent.agent.auxiliary_client.call_llm",
             return_value=_llm_response(SUMMARY_BODY),
         ) as aux_call:
             summary = c._generate_summary(turns)
@@ -97,7 +97,7 @@ class TestLeanSingleAuxiliaryCall:
         c = _mk_compressor()
         turns = _big_region(n_rounds=5)
         with patch(
-            "agent.context_compressor.call_llm",
+            "hermes_agent.agent.context_compressor.call_llm",
             return_value=_llm_response(SUMMARY_BODY),
         ):
             summary = c._generate_summary(turns)
@@ -108,7 +108,7 @@ class TestLeanSingleAuxiliaryCall:
         c = _mk_compressor()
         turns = _big_region(n_rounds=5)
         with patch(
-            "agent.context_compressor.call_llm",
+            "hermes_agent.agent.context_compressor.call_llm",
             return_value=_llm_response(SUMMARY_BODY),
         ):
             summary = c._generate_summary(turns)
@@ -120,7 +120,7 @@ class TestLeanSingleAuxiliaryCall:
         c = _mk_compressor()
         turns = _big_region(n_rounds=120, tool_chars=6_000)  # ~720K chars raw
         with patch(
-            "agent.context_compressor.call_llm",
+            "hermes_agent.agent.context_compressor.call_llm",
             return_value=_llm_response(SUMMARY_BODY),
         ) as mock_call:
             c._generate_summary(turns)
@@ -154,7 +154,7 @@ class TestSampledSummaryInput:
         c = _mk_compressor(tail_mode="legacy")
         turns = _big_region(n_rounds=120, tool_chars=6_000)
         with patch(
-            "agent.context_compressor.call_llm",
+            "hermes_agent.agent.context_compressor.call_llm",
             return_value=_llm_response("## Historical Task Snapshot\nNone."),
         ) as mock_call:
             c._generate_summary(turns)

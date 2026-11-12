@@ -6,13 +6,13 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from agent import title_generator
+from hermes_agent.agent import title_generator
 from hermes_agent.gateway.config import GatewayConfig, Platform
 from hermes_agent.gateway.platforms.event import MessageEvent
 from hermes_agent.gateway.run import GatewayRunner
 from hermes_agent.gateway.session import SessionSource, SessionEntry
 from hermes_agent.gateway.turn_context import TurnContext
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 class _TurnObserved(BaseException):
@@ -25,7 +25,7 @@ async def test_gateway_titles_original_request_without_changing_model_input(tmp_
     question = "Why does my connection pool exhaust after a deployment?"
     names = [skills] if isinstance(skills, str) else skills
     payloads = {name: f"# {name}\n" + (f"Follow {name} procedures.\n" * 100) for name in names}
-    monkeypatch.setattr("agent.skill_commands._load_skill_payload", lambda name, **kw: (
+    monkeypatch.setattr("hermes_agent.agent.skill_commands._load_skill_payload", lambda name, **kw: (
         {"name": name, "content": payloads[name]}, tmp_path / name, name,
     ))
     monkeypatch.setattr("hermes_agent.gateway.run._load_gateway_config", dict)
@@ -82,7 +82,7 @@ async def test_gateway_titles_original_request_without_changing_model_input(tmp_
         model_inputs.append(messages[-1]["content"])
         raise _TurnObserved
 
-    monkeypatch.setattr("agent.conversation_loop.begin_iteration", observe_model)
+    monkeypatch.setattr("hermes_agent.agent.conversation_loop.begin_iteration", observe_model)
 
     defaults = TurnContext()
     display = SimpleNamespace(**{name: getattr(defaults, name) for name in runner._DISPLAY_TO_TURN_CTX})
@@ -125,7 +125,7 @@ async def test_gateway_titles_original_request_without_changing_model_input(tmp_
         assert title_requests[-1] == "Explain transaction isolation"
         # Relay metadata belongs to upstream's facade, while title input belongs
         # to the conversation prologue. Both must survive the same admission.
-        from agent import relay_runtime
+        from hermes_agent.agent import relay_runtime
         from unittest.mock import Mock
         begin_turn = Mock(wraps=relay_runtime.SESSION_COORDINATOR.begin_turn)
         monkeypatch.setattr(relay_runtime.SESSION_COORDINATOR, "begin_turn", begin_turn)

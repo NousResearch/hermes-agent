@@ -1,7 +1,7 @@
 """Tests for the thinking-only assistant message sanitizer.
 
 Covers _is_thinking_only_assistant() + _drop_thinking_only_and_merge_users()
-in run_agent.py. The sanitizer runs on the per-call api_messages copy and
+in hermes_agent/run_agent.py. The sanitizer runs on the per-call api_messages copy and
 drops assistant turns that contain only reasoning (no visible content, no
 tool_calls). Adjacent user messages left behind are merged so role
 alternation is preserved for the provider.
@@ -11,7 +11,7 @@ mergeAdjacentUserMessages in src/utils/messages.ts). See #16823 for the
 backstory on why the alternative — fabricating "." stub text — was rejected.
 """
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 # ---------------------------------------------------------------------------

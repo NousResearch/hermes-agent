@@ -5,7 +5,7 @@ from __future__ import annotations
 import difflib
 from collections.abc import Iterable
 
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 
 
 def unknown_command_lines(typed: str, known: Iterable[str]) -> tuple[str, str]:

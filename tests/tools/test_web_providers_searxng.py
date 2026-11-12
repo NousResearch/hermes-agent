@@ -196,7 +196,7 @@ class TestCheckWebApiKey:
 
     def test_no_credentials_fails(self, monkeypatch):
         from hermes_agent.tools import web_tools
-        from agent import web_search_registry
+        from hermes_agent.agent import web_search_registry
         monkeypatch.setattr(web_tools, "_load_web_config", dict)
         monkeypatch.delenv("FIRECRAWL_API_KEY", raising=False)
         monkeypatch.delenv("FIRECRAWL_API_URL", raising=False)
@@ -227,7 +227,7 @@ class TestSearXNGOnlyExtractCrawlErrors:
     def _populate_web_registry(self):
         self._register_providers()
         yield
-        from agent.web_search_registry import _reset_for_tests
+        from hermes_agent.agent.web_search_registry import _reset_for_tests
         _reset_for_tests()
 
     def test_web_extract_searxng_returns_clear_error(self, monkeypatch):

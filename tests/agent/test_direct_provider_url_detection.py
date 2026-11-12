@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 def _agent_with_base_url(base_url: str) -> AIAgent:

@@ -231,7 +231,7 @@ def test_registry_mutations_are_visible_and_notify_once(monkeypatch):
 
 
 def test_skill_requires_apps_gate(tmp_path, monkeypatch):
-    from agent import skill_utils
+    from hermes_agent.agent import skill_utils
     from hermes_platform import declaration
 
     monkeypatch.setattr(declaration, "_REGISTRY", {})

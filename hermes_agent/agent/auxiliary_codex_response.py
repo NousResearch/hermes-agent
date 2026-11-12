@@ -13,7 +13,7 @@ def _parse_codex_final_response(
     final: Any, *, issuer_kind: Optional[str] = None, issuer_model: Optional[str] = None,
 ) -> tuple[list[str], list[Any], Any, str]:
     """Normalize Responses output without losing phase or completion state for aux callers."""
-    from agent.codex_responses_adapter import _lower_or_none, _normalize_codex_response
+    from hermes_agent.agent.codex_responses_adapter import _lower_or_none, _normalize_codex_response
 
     # The shared normalizer reads SDK-style items. Keep support for compatible hosts
     # returning dict items, and the aux adapter's legacy empty completed response.

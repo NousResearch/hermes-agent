@@ -20,7 +20,7 @@ import threading
 from typing import Any, Iterable, Optional
 
 from utils import env_var_enabled, is_truthy_value
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 from hermes_agent.tools import approval_context
 from hermes_agent.tools.approval_context import (
     _get_session_platform, _is_cron_approval_context,
@@ -923,7 +923,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
     owner override reduces every surface to once/deny and persists nothing. ``pending_body`` is a thunk, built only once a human is
     actually asked, so a smart APPROVE never pays for redacting a large script.
     """
-    from agent.redact import redact_approval_display
+    from hermes_agent.agent.redact import redact_approval_display
 
     smart_denied = False
     if smart:
@@ -1171,7 +1171,7 @@ def _should_skip_container_guards(env_type: str, has_host_access: bool = False) 
     # fail-soft to False so an unknown or raising backend — or a raising registry
     # lookup — keeps the guards on rather than propagating out of the approval predicate.
     try:
-        from agent.terminal_env_registry import provider_flag
+        from hermes_agent.agent.terminal_env_registry import provider_flag
         return bool(provider_flag(env_type, "skip_container_guards", False))
     except Exception:
         return False
@@ -1196,7 +1196,7 @@ def _floor_block(command: str, *, sudo_guard: bool = False) -> dict | None:
     deletion of the Python interpreter/venv this very runtime boots from (a
     delete the agent cannot walk back — the next start fails before any tool
     can run, #58748)."""
-    from agent.runtime_self_protection import command_deletes_runtime
+    from hermes_agent.agent.runtime_self_protection import command_deletes_runtime
 
     is_hardline, hardline_desc = detect_hardline_command(command)
     if is_hardline:
@@ -1288,7 +1288,7 @@ def check_all_command_guards(command: str, env_type: str,
     if blocked is not None:
         return blocked
 
-    from agent.terminal_approval_batch import consume_prepared_guard
+    from hermes_agent.agent.terminal_approval_batch import consume_prepared_guard
     prepared = consume_prepared_guard(command, env_type, has_host_access)
     if prepared is not None:
         return prepared
@@ -1338,7 +1338,7 @@ def _is_local_viewer_turn() -> bool:
     async; they inherit the parent's policy), and the turn's approval notifier is registered under the bound
     session key. The notifier is registered for every session turn, so it only tells side tasks (their own task
     key, none registered) apart; it does not show anyone is attached."""
-    from agent.delegation_context import is_delegated_child_process_context
+    from hermes_agent.agent.delegation_context import is_delegated_child_process_context
     return (approval_context.is_local_interactive_session() and approval_context.is_viewer_turn_with_approver()
             and not is_delegated_child_process_context()
             and _gateway_notify_cb(get_current_session_key()) is not None)
@@ -1407,7 +1407,7 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
     # Smart mode: an APPROVE only suppresses the redundant whole-script prompt; the per-call terminal() guards still
     # run independently. The gateway renders the pending payload to Discord/Slack, so the script body is redacted for
     # display; the raw code is what gets assessed and run.
-    from agent.redact import redact_approval_display
+    from hermes_agent.agent.redact import redact_approval_display
     return _human_decision(
         _EXECUTE_CODE_GATE, command=command, description=description, pattern_key=pattern_key,
         pattern_keys=[pattern_key], session_key=session_key,

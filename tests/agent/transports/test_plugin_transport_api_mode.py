@@ -60,7 +60,7 @@ def install_dialect_plugin(tmp_path, monkeypatch):
     yield _install
 
     import providers as _pkg
-    from agent.transports import _REGISTRY
+    from hermes_agent.agent.transports import _REGISTRY
     for name, mode in installed:
         _pkg._REGISTRY.pop(name, None)
         _REGISTRY.pop(mode, None)
@@ -71,7 +71,7 @@ def install_dialect_plugin(tmp_path, monkeypatch):
 
 
 def _agent_ladder_mode(provider: str, base_url: str, api_mode: str) -> str:
-    from agent.agent_init import _resolve_api_mode
+    from hermes_agent.agent.agent_init import _resolve_api_mode
     agent = SimpleNamespace(provider=provider, model="example-model", _base_url_hostname="relay.example.test",
                             _base_url_lower=base_url.lower(), api_mode=None)
     _resolve_api_mode(agent, api_mode, provider, base_url)

@@ -14,7 +14,7 @@ import json
 import logging
 from typing import Any, Optional
 
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 from hermes_agent.gateway.platforms.base import SendResult, describe_proxy_error, env_proxy_for_redaction
 
 logger = logging.getLogger(__name__)

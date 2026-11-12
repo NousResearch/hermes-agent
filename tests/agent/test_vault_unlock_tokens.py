@@ -17,7 +17,7 @@ import uuid
 
 import pytest
 
-from agent.vault_backends import unlock
+from hermes_agent.agent.vault_backends import unlock
 from tests.waiting import wait_until
 
 _CONTAINERS = (dict, list, tuple, set, frozenset)
@@ -125,7 +125,7 @@ sys.exit(2)
 
 @pytest.mark.platforms("posix")  # the fake manager is a shebang script; the env contract is host-agnostic
 def test_session_token_reaches_only_the_manager_call_that_uses_it(tmp_path):
-    from agent.vault_backends.bitwarden import BitwardenLoginBackend
+    from hermes_agent.agent.vault_backends.bitwarden import BitwardenLoginBackend
     from hermes_agent.tools.environments.local import build_subprocess_env
 
     exe = tmp_path / "bw"

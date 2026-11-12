@@ -5,9 +5,9 @@ Scoped port of superagent-ai/grok-cli's verify subsystem (``src/verify/recipes.t
 environment manifest, and a smoke-test runner used by ``hermes verify``.
 """
 
-from agent.verify.environment import load_manifest, load_or_detect, manifest_path, save_manifest
-from agent.verify.recipes import Recipe, detect_package_manager, detect_recipe
-from agent.verify.runner import PhaseResult, ReadinessResult, VerifyResult, run_verify
+from hermes_agent.agent.verify.environment import load_manifest, load_or_detect, manifest_path, save_manifest
+from hermes_agent.agent.verify.recipes import Recipe, detect_package_manager, detect_recipe
+from hermes_agent.agent.verify.runner import PhaseResult, ReadinessResult, VerifyResult, run_verify
 
 __all__ = [
     "PhaseResult",

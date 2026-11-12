@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from hermes_agent.hermes_state import SessionDB
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 def _rewriting_hook(calls):
@@ -42,7 +42,7 @@ def db_agent(tmp_path, monkeypatch):
     with (
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(
             api_key="test-key-1234567890", base_url="https://openrouter.ai/api/v1", model="fake/model",
@@ -75,7 +75,7 @@ def test_transformed_reply_is_the_stored_and_replayed_text(db_agent, monkeypatch
 def test_recovery_path_tail_row_carries_transformed_text(db_agent, monkeypatch):
     """A recovery ``break`` returns ``final_response`` with no closing assistant row; the row
     finalize_turn appends must be the transformed text, and the hook still fires once."""
-    from agent.turn_finalizer import finalize_turn
+    from hermes_agent.agent.turn_finalizer import finalize_turn
 
     agent, _db = db_agent
     calls = []

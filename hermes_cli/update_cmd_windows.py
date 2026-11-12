@@ -15,7 +15,7 @@ import time as _time
 from datetime import datetime, timezone, UTC
 from pathlib import Path
 
-from agent.deadline import poll_until
+from hermes_agent.agent.deadline import poll_until
 from hermes_cli.update_cmd_common import _best_effort
 
 logger = logging.getLogger("hermes_cli.update_cmd")  # log-record parity with the origin module

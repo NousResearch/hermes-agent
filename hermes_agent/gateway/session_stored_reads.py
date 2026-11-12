@@ -303,7 +303,7 @@ def _bounded(message, budget):
 def _call_uids(calls, uids):
     """Each call's own durable uid, in order: ``tool_call_uids`` maps a provider id to its uid, or to a list
     of uids, one per occurrence, when folded turns repeat the id in one row (``index_tool_call_uids``)."""
-    from agent.message_sanitization import coalesce_tool_call_id
+    from hermes_agent.agent.message_sanitization import coalesce_tool_call_id
     seen, out = {}, []
     for call in calls:
         call_id = coalesce_tool_call_id(call)
@@ -318,7 +318,7 @@ def _call_uids(calls, uids):
 def _paired_call(calls, uids, result_id, result_uid):
     """The call of *calls* (one stored row) that a result with *result_id* / *result_uid* answers: the one
     whose own uid it carries, else (a result without a uid) the row's last call naming its id."""
-    from agent.message_sanitization import tool_call_id_variants, tool_result_id_variants
+    from hermes_agent.agent.message_sanitization import tool_call_id_variants, tool_result_id_variants
     variants = set(tool_result_id_variants(result_id))
     matches = [(call, uid) for call, uid in zip(calls, _call_uids(calls, uids))
                if variants & set(tool_call_id_variants(call))]

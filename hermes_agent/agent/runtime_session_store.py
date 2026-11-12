@@ -207,10 +207,10 @@ class WorkerRPC:
             return response['result']
 
 
-from agent.runtime_session_compression import RuntimeSessionCompressionMixin
+from hermes_agent.agent.runtime_session_compression import RuntimeSessionCompressionMixin
 
 
-from agent.runtime_session_lifecycle import RuntimeSessionLifecycleMixin
+from hermes_agent.agent.runtime_session_lifecycle import RuntimeSessionLifecycleMixin
 
 
 class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycleMixin):

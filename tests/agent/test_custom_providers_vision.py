@@ -21,7 +21,7 @@ class TestCustomProvidersVisionOverride:
 
     def test_custom_providers_supports_vision_true(self):
         """custom_providers entry with supports_vision=true → native routing."""
-        from agent.image_routing import _supports_vision_override
+        from hermes_agent.agent.image_routing import _supports_vision_override
         cfg = {
             "custom_providers": [
                 {
@@ -46,7 +46,7 @@ class TestCustomProvidersVisionOverride:
 
     def test_custom_providers_empty_list(self):
         """Empty custom_providers list → no override."""
-        from agent.image_routing import _supports_vision_override
+        from hermes_agent.agent.image_routing import _supports_vision_override
         cfg = {"custom_providers": []}
         result = _supports_vision_override(cfg, "any", "any")
         assert result is None
@@ -67,7 +67,7 @@ class TestDecideImageInputMode:
 
     def test_providers_dict_takes_precedence(self):
         """providers.<name>.models takes precedence over custom_providers."""
-        from agent.image_routing import decide_image_input_mode
+        from hermes_agent.agent.image_routing import decide_image_input_mode
         cfg = {
             "providers": {
                 "my-provider": {
@@ -91,7 +91,7 @@ class TestDecideImageInputMode:
 
     def test_cli_named_provider_explicit_false_is_not_shadowed_by_default(self):
         """A selected false override wins even when the configured default is true."""
-        from agent.image_routing import decide_image_input_mode
+        from hermes_agent.agent.image_routing import decide_image_input_mode
 
         cfg = {
             "model": {"provider": "default-proxy"},
@@ -115,8 +115,8 @@ class TestDecideImageInputMode:
 
     def test_runtime_provider_identity_does_not_leak_to_another_model(self):
         """Context identity is only evidence for its exact runtime provider/model."""
-        from agent.auxiliary_client import clear_runtime_main, set_runtime_main
-        from agent.image_routing import decide_image_input_mode
+        from hermes_agent.agent.auxiliary_client import clear_runtime_main, set_runtime_main
+        from hermes_agent.agent.image_routing import decide_image_input_mode
 
         cfg = {
             "custom_providers": [

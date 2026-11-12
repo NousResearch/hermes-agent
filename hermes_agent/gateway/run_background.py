@@ -5,7 +5,7 @@ import logging
 import os
 from typing import Optional
 
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 from hermes_agent.gateway.media_repair import repair_explicit_computer_use_media_paths
 from hermes_agent.gateway.platforms.base import BasePlatformAdapter
 from hermes_agent.gateway.session import SessionSource
@@ -41,7 +41,7 @@ class GatewayBackgroundMixin:
             _checkpoint_agent_kwargs, _current_max_iterations, _load_gateway_config,
             _platform_config_key,
         )
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         media_urls = media_urls or []
         media_types = media_types or []
         adapter = self._delivery_adapter_for(source)

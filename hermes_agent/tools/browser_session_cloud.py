@@ -12,7 +12,7 @@ import logging
 import threading
 from typing import Any, Callable, Optional
 
-from agent.browser_provider import BrowserProvider
+from hermes_agent.agent.browser_provider import BrowserProvider
 from hermes_constants import get_hermes_home_override, hermes_home_key
 from hermes_agent.tools.tool_backend_helpers import normalize_browser_cloud_provider
 from utils import is_truthy_value
@@ -162,7 +162,7 @@ def allow_private_urls() -> bool:
 
 def _registry_generation(scope: str):
     try:
-        from agent.browser_registry import registry_generation
+        from hermes_agent.agent.browser_registry import registry_generation
     except ImportError:  # isolated compat stubs ship only get_provider
         return (0, 0)
     return registry_generation(scope=scope)
@@ -180,7 +180,7 @@ def _ensure_browser_plugins_loaded() -> None:
 def _instantiate_explicit_provider(provider_key: str) -> Optional[BrowserProvider]:
     """The provider named by ``browser.cloud_provider``. An unregistered name raises ``ValueError`` (never a
     silent reroute to auto-detect); any other instantiation error yields None so the next call retries."""
-    from agent.browser_registry import get_provider
+    from hermes_agent.agent.browser_registry import get_provider
     try:
         _ensure_browser_plugins_loaded()
         resolved = get_provider(provider_key)

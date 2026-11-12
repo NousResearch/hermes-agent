@@ -7,7 +7,7 @@ GLM-4.5+ defaults to thinking ON, so ``reasoning_config`` is translated to
 import re
 from typing import Any
 
-from agent import reasoning_effort as re_
+from hermes_agent.agent import reasoning_effort as re_
 from providers import register_provider
 from providers.base import ProviderProfile
 

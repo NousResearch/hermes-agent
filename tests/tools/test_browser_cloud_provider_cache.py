@@ -51,7 +51,7 @@ class TestCloudProviderCachePolicy:
             return providers[home]
 
         monkeypatch.setattr("hermes_agent.tools.browser_session_cloud._ensure_browser_plugins_loaded", lambda: None)
-        monkeypatch.setattr("agent.browser_registry.get_provider", resolve)
+        monkeypatch.setattr("hermes_agent.agent.browser_registry.get_provider", resolve)
         home_a = tmp_path / "browser-a"
         home_b = tmp_path / "browser-b"
         providers[str(home_a)] = Mock(name="provider-a")
@@ -72,8 +72,8 @@ class TestCloudProviderCachePolicy:
     def test_same_profile_registry_replacement_invalidates_cache(
         self, tmp_path, monkeypatch
     ):
-        from agent.browser_provider import BrowserProvider
-        from agent import browser_registry
+        from hermes_agent.agent.browser_provider import BrowserProvider
+        from hermes_agent.agent import browser_registry
         from hermes_constants import (
             reset_hermes_home_override,
             set_hermes_home_override,
@@ -129,8 +129,8 @@ class TestCloudProviderCachePolicy:
         from concurrent.futures import ThreadPoolExecutor
         from threading import Event
 
-        from agent.browser_provider import BrowserProvider
-        from agent import browser_registry
+        from hermes_agent.agent.browser_provider import BrowserProvider
+        from hermes_agent.agent import browser_registry
         from hermes_constants import (
             reset_hermes_home_override,
             set_hermes_home_override,
@@ -178,7 +178,7 @@ class TestCloudProviderCachePolicy:
             lambda: {"browser": {"cloud_provider": "cache-race"}},
         )
         monkeypatch.setattr("hermes_agent.tools.browser_session_cloud._ensure_browser_plugins_loaded", lambda: None)
-        monkeypatch.setattr("agent.browser_registry.get_provider", racing_get)
+        monkeypatch.setattr("hermes_agent.agent.browser_registry.get_provider", racing_get)
         browser_registry.register_provider(first, scope=home)
 
         def resolve():
@@ -260,7 +260,7 @@ class TestCloudProviderCachePolicy:
             raise RuntimeError("missing dependency")
 
         monkeypatch.setattr("hermes_agent.tools.browser_session_cloud._ensure_browser_plugins_loaded", lambda: None)
-        monkeypatch.setattr("agent.browser_registry.get_provider", exploding_factory)
+        monkeypatch.setattr("hermes_agent.agent.browser_registry.get_provider", exploding_factory)
         monkeypatch.setattr(
             "hermes_cli.config_effective.load_user_config_effective",
             lambda: {"browser": {"cloud_provider": "browser-use"}},

@@ -3,7 +3,7 @@ grows with the rows asked about, not with their product with the rows stored: a 
 about every row before its window. It finds what the one join it replaced found."""
 import json
 
-from agent.context_compressor import SUMMARY_PREFIX
+from hermes_agent.agent.context_compressor import SUMMARY_PREFIX
 from hermes_agent.hermes_state import SessionDB
 
 # The join the lookup replaced: each shown row, and every earlier row of the lineage with its message_uid,

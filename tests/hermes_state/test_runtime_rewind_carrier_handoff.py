@@ -1,5 +1,5 @@
 """An owner ``rewind`` of a composite compaction carrier keeps its handoff (main parity)."""
-from agent.context_compressor import HISTORICAL_TASK_HEADING, SUMMARY_PREFIX, _SUMMARY_END_MARKER
+from hermes_agent.agent.context_compressor import HISTORICAL_TASK_HEADING, SUMMARY_PREFIX, _SUMMARY_END_MARKER
 from hermes_agent.hermes_state import SessionDB
 import hermes_agent.hermes_state_runtime as rt
 

@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-from agent.credential_pool import (
+from hermes_agent.agent.credential_pool import (
     AUTH_TYPE_API_KEY,
     AUTH_TYPE_OAUTH,
     CredentialPool,
@@ -34,7 +34,7 @@ def test_load_heals_legacy_row_and_exposes_it_to_resolver(tmp_path, monkeypatch)
     for key in ("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setattr(
-        "agent.anthropic_credentials.read_claude_code_credentials",
+        "hermes_agent.agent.anthropic_credentials.read_claude_code_credentials",
         lambda: None,
     )
     token = "sk-ant-oat-legacy-manual"
@@ -53,8 +53,8 @@ def test_load_heals_legacy_row_and_exposes_it_to_resolver(tmp_path, monkeypatch)
         },
     }))
 
-    from agent.anthropic_credentials import resolve_anthropic_token
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.anthropic_credentials import resolve_anthropic_token
+    from hermes_agent.agent.credential_pool import load_pool
 
     entry = load_pool("anthropic").entries()[0]
     persisted = json.loads(auth_file.read_text())

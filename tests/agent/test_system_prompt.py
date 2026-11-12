@@ -1,4 +1,4 @@
-"""Tests for agent/system_prompt.py — context-file cwd wiring."""
+"""Tests for hermes_agent/agent/system_prompt.py — context-file cwd wiring."""
 
 import json
 import os
@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from agent.system_prompt import build_system_prompt, build_system_prompt_parts
+from hermes_agent.agent.system_prompt import build_system_prompt, build_system_prompt_parts
 
 
 def _make_agent(**overrides):
@@ -52,9 +52,9 @@ def _captured_context_cwd(agent):
         return ""
 
     with (
-        patch("agent.prompt_builder.load_soul_md", return_value=""),
-        patch("agent.prompt_builder.build_environment_hints", return_value=""),
-        patch("agent.prompt_builder.build_context_files_prompt", side_effect=fake_context_files),
+        patch("hermes_agent.agent.prompt_builder.load_soul_md", return_value=""),
+        patch("hermes_agent.agent.prompt_builder.build_environment_hints", return_value=""),
+        patch("hermes_agent.agent.prompt_builder.build_context_files_prompt", side_effect=fake_context_files),
     ):
         build_system_prompt_parts(agent)
     return captured["cwd"]
@@ -63,8 +63,8 @@ def _captured_context_cwd(agent):
 @pytest.mark.parametrize("task_id, expected", [(None, False), ("t_worker", True)])
 def test_kanban_guidance_requires_worker_task_at_agent_init(monkeypatch, task_id, expected):
     """A profile can expose kanban tools without making the session a worker."""
-    from agent.agent_init import _load_tools
-    from agent.prompt_builder import KANBAN_GUIDANCE
+    from hermes_agent.agent.agent_init import _load_tools
+    from hermes_agent.agent.prompt_builder import KANBAN_GUIDANCE
     from hermes_agent import model_tools
 
     if task_id is None:
@@ -94,9 +94,9 @@ def test_kanban_guidance_fallback_requires_owned_worker_task(monkeypatch, task_i
     is not identity, and an inherited HERMES_KANBAN_TASK is not ownership (#112486)."""
     from contextlib import nullcontext
 
-    from agent.delegation_context import non_dispatcher_owned_context
-    from agent.prompt_builder import KANBAN_GUIDANCE
-    from agent.system_prompt import _tool_guidance_block
+    from hermes_agent.agent.delegation_context import non_dispatcher_owned_context
+    from hermes_agent.agent.prompt_builder import KANBAN_GUIDANCE
+    from hermes_agent.agent.system_prompt import _tool_guidance_block
 
     if task_id is None:
         monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
@@ -140,7 +140,7 @@ class TestContextFileCwd:
     def test_desktop_launch_artifact_does_not_load_bundled_agents_md(
         self, monkeypatch, tmp_path
     ):
-        from agent import runtime_cwd
+        from hermes_agent.agent import runtime_cwd
 
         monkeypatch.setattr(runtime_cwd, "_PACKAGE_ROOT", tmp_path.resolve())
         monkeypatch.chdir(tmp_path)
@@ -151,9 +151,9 @@ class TestContextFileCwd:
             _context_cwd_is_launch_artifact=True,
         )
         with (
-            patch("agent.prompt_builder.load_soul_md", return_value=""),
-            patch("agent.prompt_builder.build_environment_hints", return_value=""),
-            patch("agent.system_prompt.resolve_context_cwd", return_value=None),
+            patch("hermes_agent.agent.prompt_builder.load_soul_md", return_value=""),
+            patch("hermes_agent.agent.prompt_builder.build_environment_hints", return_value=""),
+            patch("hermes_agent.agent.system_prompt.resolve_context_cwd", return_value=None),
         ):
             context = build_system_prompt_parts(agent)["context"]
 
@@ -162,7 +162,7 @@ class TestContextFileCwd:
     def test_desktop_launch_artifact_uses_profile_configured_cwd(
         self, monkeypatch, tmp_path
     ):
-        from agent import runtime_cwd
+        from hermes_agent.agent import runtime_cwd
 
         launch = tmp_path / "launch"
         workspace = tmp_path / "workspace"
@@ -181,8 +181,8 @@ class TestContextFileCwd:
                 _context_cwd_is_launch_artifact=True,
             )
             with (
-                patch("agent.prompt_builder.load_soul_md", return_value=""),
-                patch("agent.prompt_builder.build_environment_hints", return_value=""),
+                patch("hermes_agent.agent.prompt_builder.load_soul_md", return_value=""),
+                patch("hermes_agent.agent.prompt_builder.build_environment_hints", return_value=""),
             ):
                 context = build_system_prompt_parts(agent)["context"]
         finally:
@@ -194,7 +194,7 @@ class TestContextFileCwd:
     def test_desktop_explicit_install_tree_workspace_still_loads_agents_md(
         self, monkeypatch, tmp_path
     ):
-        from agent import runtime_cwd
+        from hermes_agent.agent import runtime_cwd
 
         monkeypatch.setattr(runtime_cwd, "_PACKAGE_ROOT", tmp_path.resolve())
         monkeypatch.chdir(tmp_path)
@@ -205,9 +205,9 @@ class TestContextFileCwd:
             _context_cwd_is_launch_artifact=False,
         )
         with (
-            patch("agent.prompt_builder.load_soul_md", return_value=""),
-            patch("agent.prompt_builder.build_environment_hints", return_value=""),
-            patch("agent.system_prompt.resolve_context_cwd", return_value=tmp_path),
+            patch("hermes_agent.agent.prompt_builder.load_soul_md", return_value=""),
+            patch("hermes_agent.agent.prompt_builder.build_environment_hints", return_value=""),
+            patch("hermes_agent.agent.system_prompt.resolve_context_cwd", return_value=tmp_path),
         ):
             context = build_system_prompt_parts(agent)["context"]
 
@@ -216,18 +216,18 @@ class TestContextFileCwd:
 
 def _stable_prompt(agent):
     with (
-        patch("agent.prompt_builder.load_soul_md", return_value=""),
-        patch("agent.prompt_builder.build_environment_hints", return_value=""),
-        patch("agent.prompt_builder.build_context_files_prompt", return_value=""),
+        patch("hermes_agent.agent.prompt_builder.load_soul_md", return_value=""),
+        patch("hermes_agent.agent.prompt_builder.build_environment_hints", return_value=""),
+        patch("hermes_agent.agent.prompt_builder.build_context_files_prompt", return_value=""),
     ):
         return build_system_prompt_parts(agent)["stable"]
 
 
 def _prompt_parts(agent):
     with (
-        patch("agent.prompt_builder.load_soul_md", return_value=""),
-        patch("agent.prompt_builder.build_environment_hints", return_value=""),
-        patch("agent.prompt_builder.build_context_files_prompt", return_value=""),
+        patch("hermes_agent.agent.prompt_builder.load_soul_md", return_value=""),
+        patch("hermes_agent.agent.prompt_builder.build_environment_hints", return_value=""),
+        patch("hermes_agent.agent.prompt_builder.build_context_files_prompt", return_value=""),
     ):
         return build_system_prompt_parts(agent)
 
@@ -255,7 +255,7 @@ class TestCodingContextBlock:
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
         agent = _make_agent(valid_tool_names=["read_file"], platform="cli")
         # Drive the real path: force the resolved mode to "off" via config.
-        with patch("agent.coding_context._coding_mode", return_value="off"):
+        with patch("hermes_agent.agent.coding_context._coding_mode", return_value="off"):
             stable = _stable_prompt(agent)
         assert "coding agent" not in stable
 
@@ -288,7 +288,7 @@ def test_shared_project_context_precedes_worktree_bytes(monkeypatch, tmp_path):
 
 
 def test_stored_prompt_cwd_ignores_project_host_decoys(monkeypatch, tmp_path):
-    from agent.conversation_loop import _stored_prompt_matches_runtime
+    from hermes_agent.agent.conversation_loop import _stored_prompt_matches_runtime
 
     cwd = tmp_path / "worktree"
     cwd.mkdir()
@@ -317,7 +317,7 @@ def test_stored_prompt_cwd_ignores_project_host_decoys(monkeypatch, tmp_path):
 def test_stored_prompt_stamped_for_another_session_is_not_restored(monkeypatch, tmp_path):
     """With the Session ID trailer on, a prompt persisted for another session (a /branch child
     copies its parent's bytes) must rebuild instead of telling the model the parent's id."""
-    from agent.conversation_loop import _stored_prompt_matches_runtime
+    from hermes_agent.agent.conversation_loop import _stored_prompt_matches_runtime
 
     monkeypatch.setenv("TERMINAL_ENV", "local")
     monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
@@ -418,7 +418,7 @@ class TestNamedProfileHintIntegration:
         monkeypatch.delenv("TERMINAL_CWD", raising=False)
 
         # Sanity-check the real chain before asserting on the prompt.
-        from agent.file_safety import _resolve_active_profile_name
+        from hermes_agent.agent.file_safety import _resolve_active_profile_name
         from hermes_constants import get_default_hermes_root, get_hermes_home
 
         assert _resolve_active_profile_name() == "coder"
@@ -426,7 +426,7 @@ class TestNamedProfileHintIntegration:
         assert get_default_hermes_root() == root
 
         agent = _make_agent(valid_tool_names=["read_file"])
-        with patch("agent.coding_context._coding_mode", return_value="off"):
+        with patch("hermes_agent.agent.coding_context._coding_mode", return_value="off"):
             prompt = "\n\n".join(_prompt_parts(agent).values())
 
         assert "Active Hermes profile: coder." in prompt
@@ -446,12 +446,12 @@ class TestNamedProfileHintIntegration:
         monkeypatch.setenv("HERMES_HOME", str(root))
         monkeypatch.delenv("TERMINAL_CWD", raising=False)
 
-        from agent.file_safety import _resolve_active_profile_name
+        from hermes_agent.agent.file_safety import _resolve_active_profile_name
 
         assert _resolve_active_profile_name() == "default"
 
         agent = _make_agent(valid_tool_names=["read_file"])
-        with patch("agent.coding_context._coding_mode", return_value="off"):
+        with patch("hermes_agent.agent.coding_context._coding_mode", return_value="off"):
             prompt = "\n\n".join(_prompt_parts(agent).values())
 
         assert "Active Hermes profile: default." in prompt
@@ -468,7 +468,7 @@ def test_stable_tier_is_identical_across_homes(tmp_path, monkeypatch):
         root.mkdir(parents=True)
         monkeypatch.setattr(Path, "home", lambda root=root: root.parent)
         monkeypatch.setenv("HERMES_HOME", str(root))
-        with patch("agent.coding_context._coding_mode", return_value="off"):
+        with patch("hermes_agent.agent.coding_context._coding_mode", return_value="off"):
             parts = _prompt_parts(_make_agent(valid_tool_names=["read_file"]))
         assert f"under {root}/profiles/<name>/." in parts["volatile"]
         tiers.append(parts["stable"])
@@ -478,9 +478,9 @@ def test_stable_tier_is_identical_across_homes(tmp_path, monkeypatch):
 def test_build_system_prompt_records_stable_prefix():
     agent = _make_agent()
     with (
-        patch("agent.prompt_builder.load_soul_md", return_value=""),
-        patch("agent.prompt_builder.build_environment_hints", return_value=""),
-        patch("agent.prompt_builder.build_context_files_prompt", return_value="context"),
+        patch("hermes_agent.agent.prompt_builder.load_soul_md", return_value=""),
+        patch("hermes_agent.agent.prompt_builder.build_environment_hints", return_value=""),
+        patch("hermes_agent.agent.prompt_builder.build_context_files_prompt", return_value="context"),
     ):
         prompt = build_system_prompt(agent)
 
@@ -490,7 +490,7 @@ def test_build_system_prompt_records_stable_prefix():
 
 def test_coding_prompt_orders_shared_context_before_workspace(monkeypatch):
     """Keep workspace guidance intact after the shared context."""
-    from agent import system_prompt
+    from hermes_agent.agent import system_prompt
 
     agent = _make_agent(
         valid_tool_names=["read_file"],
@@ -527,18 +527,18 @@ def test_coding_prompt_orders_shared_context_before_workspace(monkeypatch):
     ))
 
     with (
-        patch("agent.prompt_builder.load_soul_md", return_value=""),
-        patch("agent.prompt_builder.build_environment_hints", return_value=""),
-        patch("agent.prompt_builder.build_context_files_prompt", return_value="CONTEXT_FILES"),
+        patch("hermes_agent.agent.prompt_builder.load_soul_md", return_value=""),
+        patch("hermes_agent.agent.prompt_builder.build_environment_hints", return_value=""),
+        patch("hermes_agent.agent.prompt_builder.build_context_files_prompt", return_value="CONTEXT_FILES"),
         patch(
-            "agent.coding_context.coding_system_prompt_parts",
+            "hermes_agent.agent.coding_context.coding_system_prompt_parts",
             return_value=(
                 ["CODING_STABLE"],
                 ["WORKSPACE"],
                 ["Operator instructions (from config):\nOPERATOR"],
             ),
         ),
-        patch("agent.file_safety._resolve_active_profile_name", return_value="default"),
+        patch("hermes_agent.agent.file_safety._resolve_active_profile_name", return_value="default"),
         patch("hermes_time.now", return_value=datetime(2026, 1, 2)),
     ):
         prompt = build_system_prompt(agent, system_message="SYSTEM_MESSAGE")
@@ -665,11 +665,11 @@ def _build(builder, **overrides):
     """Run a build_* function with skills + context files present."""
     agent = _make_agent(valid_tool_names=["skills_list"], **overrides)
     with (
-        patch("agent.prompt_builder.load_soul_md", return_value=""),
-        patch("agent.prompt_builder.build_environment_hints", return_value=""),
-        patch("agent.prompt_builder.build_context_files_prompt", return_value=_CONTEXT),
+        patch("hermes_agent.agent.prompt_builder.load_soul_md", return_value=""),
+        patch("hermes_agent.agent.prompt_builder.build_environment_hints", return_value=""),
+        patch("hermes_agent.agent.prompt_builder.build_context_files_prompt", return_value=_CONTEXT),
         patch("hermes_agent.model_tools.get_toolset_for_tool", return_value=None),
-        patch("agent.prompt_builder.build_skills_system_prompt", return_value=_SKILLS),
+        patch("hermes_agent.agent.prompt_builder.build_skills_system_prompt", return_value=_SKILLS),
     ):
         return builder(agent)
 
@@ -761,7 +761,7 @@ class TestSessionStartLike:
     chat drift 'started' forward across midnight."""
 
     def test_uses_session_id_embedded_timestamp(self):
-        from agent.system_prompt import _session_start_like
+        from hermes_agent.agent.system_prompt import _session_start_like
 
         now = datetime(2026, 1, 2, 9, 0, tzinfo=ZoneInfo("UTC"))
         agent = SimpleNamespace(
@@ -777,7 +777,7 @@ class TestSessionStartLike:
         mint time. The birth date must come from the lineage ROOT so a
         Bot Mode forever-chat keeps knowing when it was first born
         (#98426)."""
-        from agent.system_prompt import _session_start_like
+        from hermes_agent.agent.system_prompt import _session_start_like
 
         class _Db:
             def get_conversation_root(self, sid):
@@ -794,7 +794,7 @@ class TestSessionStartLike:
         assert start.strftime("%Y-%m-%d") == "2026-01-01"
 
     def test_lineage_walk_failure_falls_open_to_segment_id(self):
-        from agent.system_prompt import _session_start_like
+        from hermes_agent.agent.system_prompt import _session_start_like
 
         class _Db:
             def get_conversation_root(self, sid):
@@ -812,7 +812,7 @@ class TestSessionStartLike:
     def test_nontimestamp_root_falls_through_to_segment_id(self):
         """A root id without an embedded stamp (legacy/imported lineage)
         must not break the ladder — rung 1 still applies."""
-        from agent.system_prompt import _session_start_like
+        from hermes_agent.agent.system_prompt import _session_start_like
 
         class _Db:
             def get_conversation_root(self, sid):
@@ -828,7 +828,7 @@ class TestSessionStartLike:
         assert start.strftime("%Y-%m-%d") == "2026-06-15"
 
     def test_falls_back_to_session_start(self):
-        from agent.system_prompt import _session_start_like
+        from hermes_agent.agent.system_prompt import _session_start_like
 
         now = datetime(2026, 1, 2, 9, 0, tzinfo=ZoneInfo("UTC"))
         agent = SimpleNamespace(session_id="", session_start=datetime(2026, 1, 1, 12, 0))
@@ -836,13 +836,13 @@ class TestSessionStartLike:
         assert start.strftime("%Y-%m-%d") == "2026-01-01"
 
     def test_falls_back_to_now_when_no_start_known(self):
-        from agent.system_prompt import _session_start_like
+        from hermes_agent.agent.system_prompt import _session_start_like
 
         now = datetime(2026, 1, 2, 9, 0, tzinfo=ZoneInfo("UTC"))
         assert _session_start_like(SimpleNamespace(session_id=""), now) == now
 
     def test_nonmatching_session_id_uses_session_start(self):
-        from agent.system_prompt import _session_start_like
+        from hermes_agent.agent.system_prompt import _session_start_like
 
         now = datetime(2026, 1, 2, 9, 0, tzinfo=ZoneInfo("UTC"))
         agent = SimpleNamespace(
@@ -857,7 +857,7 @@ class TestSessionStartLike:
         """A naive stamp takes the UTC offset in force at that stamp, not today's:
         a January 00:30 London session read on a summer day rendered as January 14.
         Both halves are checked so the test bites whichever season it runs in."""
-        from agent.system_prompt import _session_start_like
+        from hermes_agent.agent.system_prompt import _session_start_like
 
         london = ZoneInfo("Europe/London")
         original_tz = os.environ.get("TZ")
@@ -882,7 +882,7 @@ def test_conversation_start_uses_session_start_not_build_time(monkeypatch):
     """Regression: a session that started on Jan 1 must still read
     'Conversation started: Thursday, January 01' even when the prompt is
     rebuilt on Jan 2 (the rebuild-drift bug)."""
-    from agent import system_prompt
+    from hermes_agent.agent import system_prompt
 
     agent = _make_agent(
         valid_tool_names=["read_file"],
@@ -896,14 +896,14 @@ def test_conversation_start_uses_session_start_not_build_time(monkeypatch):
     monkeypatch.setattr(system_prompt, "get_hermes_home", lambda: Path("/hermes"))
 
     with (
-        patch("agent.prompt_builder.load_soul_md", return_value=""),
-        patch("agent.prompt_builder.build_environment_hints", return_value=""),
-        patch("agent.prompt_builder.build_context_files_prompt", return_value="CONTEXT_FILES"),
+        patch("hermes_agent.agent.prompt_builder.load_soul_md", return_value=""),
+        patch("hermes_agent.agent.prompt_builder.build_environment_hints", return_value=""),
+        patch("hermes_agent.agent.prompt_builder.build_context_files_prompt", return_value="CONTEXT_FILES"),
         patch(
-            "agent.coding_context.coding_system_prompt_parts",
+            "hermes_agent.agent.coding_context.coding_system_prompt_parts",
             return_value=([], [], []),
         ),
-        patch("agent.file_safety._resolve_active_profile_name", return_value="default"),
+        patch("hermes_agent.agent.file_safety._resolve_active_profile_name", return_value="default"),
         # The system prompt is rebuilt a day LATER than the session start.
         patch("hermes_time.now", return_value=datetime(2026, 1, 2, 9, 0)),
     ):
@@ -925,7 +925,7 @@ class TestConversationStartedTwoLine:
         )
 
     def _volatile(self, agent):
-        import agent.system_prompt as sp
+        import hermes_agent.agent.system_prompt as sp
         parts = sp.build_system_prompt_parts(agent)
         return parts["volatile"]
 

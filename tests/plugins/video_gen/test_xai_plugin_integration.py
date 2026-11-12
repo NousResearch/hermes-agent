@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 
 import pytest
 
-from agent import video_gen_registry
+from hermes_agent.agent import video_gen_registry
 
 
 @pytest.fixture(autouse=True)

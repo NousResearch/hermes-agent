@@ -29,7 +29,7 @@ def _built_prefill(monkeypatch, home):
         captured.update(kwargs)
         return types.SimpleNamespace(model=kwargs.get("model"))
 
-    monkeypatch.setattr("run_agent.AIAgent", fake_agent)
+    monkeypatch.setattr("hermes_agent.run_agent.AIAgent", fake_agent)
     token = set_hermes_home_override(home)
     try:
         server._make_agent("sid", "session-key")

@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.turn_facade_lease import DurableTurnLease
+from hermes_agent.agent.turn_facade_lease import DurableTurnLease
 from hermes_agent.hermes_state_runtime import mutate_worker_execution
 
 

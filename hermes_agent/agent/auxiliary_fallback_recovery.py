@@ -20,7 +20,7 @@ def reapply_repairs(kwargs: dict[str, Any], repairs: tuple) -> dict[str, Any]:
 def _parameter_ladder(first_err: Exception, client: Any, kwargs: dict[str, Any], *,
                       task: Optional[str], tag: str, provider: str, base_url: str):
     """Returns ``(response, None, repairs)`` or ``(None, failure, repairs)``: ``repairs``, the strips that ran."""
-    from agent.auxiliary_client import _failure, _LadderRoute, _ladder_parameter_rungs
+    from hermes_agent.agent.auxiliary_client import _failure, _LadderRoute, _ladder_parameter_rungs
     # Keyword construction: the route tuple grows with every new ladder rung (a positional 13-tuple
     # broke the moment a sibling PR added ``timeout``); fields this ladder never reads stay None.
     route = _LadderRoute(**{**dict.fromkeys(_LadderRoute._fields), "client": client, "task": task,
@@ -39,7 +39,7 @@ def send_with_parameter_rungs(
     """``send(client, kwargs)``; on a parameter 400, retry through the parameter rungs. Returns
     ``(response, None, repairs)`` or ``(None, failure, repairs)`` for the caller's own handling; ``repairs`` are the
     strips that ran, so a rebuilt request can carry them and a failure after them is judged as after a spent rung."""
-    from agent.auxiliary_client import _drive_ladder, _outcome
+    from hermes_agent.agent.auxiliary_client import _drive_ladder, _outcome
     resp, first_err = _outcome(send, client, kwargs)
     if first_err is None:
         return resp, None, ()
@@ -52,7 +52,7 @@ async def send_with_parameter_rungs_async(
     task: Optional[str], provider: str = "", base_url: str = "",
 ) -> Any:
     """Async twin of :func:`send_with_parameter_rungs`."""
-    from agent.auxiliary_client import _aoutcome, _drive_ladder_async
+    from hermes_agent.agent.auxiliary_client import _aoutcome, _drive_ladder_async
     resp, first_err = await _aoutcome(send(client, kwargs))
     if first_err is None:
         return resp, None, ()

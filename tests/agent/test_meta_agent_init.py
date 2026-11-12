@@ -3,7 +3,7 @@
 
 
 def test_agent_init_meta_base_url_implies_codex_responses():
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     agent = AIAgent(
         provider="meta",
@@ -20,7 +20,7 @@ def test_agent_init_meta_base_url_implies_codex_responses():
 
 
 def test_agent_init_explicit_chat_wins_over_mandate():
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     agent = AIAgent(
         provider="meta",
@@ -37,7 +37,7 @@ def test_agent_init_explicit_chat_wins_over_mandate():
 
 
 def test_agent_init_custom_with_meta_url_also_mandates():
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     agent = AIAgent(
         provider="custom",
@@ -52,7 +52,7 @@ def test_agent_init_custom_with_meta_url_also_mandates():
 
 
 def test_agent_init_meta_url_case_insensitive():
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     agent = AIAgent(
         provider="meta",
@@ -75,12 +75,12 @@ def test_agent_init_anthropic_url_preserves_credential_pool():
     from types import SimpleNamespace
     from unittest.mock import MagicMock, patch
 
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     pool = SimpleNamespace(provider="anthropic")
 
-    with patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()), patch(
-        "agent.anthropic_credentials._is_oauth_token", return_value=False
+    with patch("hermes_agent.agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()), patch(
+        "hermes_agent.agent.anthropic_credentials._is_oauth_token", return_value=False
     ):
         agent = AIAgent(
             provider=None,
@@ -99,7 +99,7 @@ def test_agent_init_anthropic_url_preserves_credential_pool():
 
 
 def test_agent_init_meta_url_without_provider_implies_codex_responses():
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     agent = AIAgent(
         provider=None,
@@ -120,7 +120,7 @@ def test_agent_init_meta_provider_without_meta_url_falls_through_to_chat_complet
     The Meta wire protocol is URL-driven by design so custom OpenAI-compatible
     endpoints configured under `providers.meta` are not broken by forcing Responses API.
     """
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     monkeypatch.setenv("META_API_KEY", "sk-test-meta")
 

@@ -60,7 +60,7 @@ from hermes_agent.gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt, SendResult, cache_image_from_url, cache_media_bytes_async,
     describe_proxy_error, env_proxy_for_redaction)
 from hermes_agent.gateway.platforms.base_exec_approval import approval_timeout_seconds, format_approval_deadline_line
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 from hermes_agent.gateway.platforms._shared import (
     coerce_port, extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret,

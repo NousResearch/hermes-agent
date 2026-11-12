@@ -1,7 +1,7 @@
 """Regression for #64333 — auxiliary client must survive a version-skewed
-agent.process_bootstrap that lacks build_keepalive_http_client.
+hermes_agent.agent.process_bootstrap that lacks build_keepalive_http_client.
 
-Desktop installs can run a runtime whose agent/process_bootstrap.py predates
+Desktop installs can run a runtime whose hermes_agent/agent/process_bootstrap.py predates
 the helper while newer callers (cron scheduler → auxiliary_client) expect it.
 Before the fix the module-level import made every cron job die with
 ImportError before any agent logic ran.
@@ -10,7 +10,7 @@ ImportError before any agent logic ran.
 import builtins
 import logging
 
-import agent.auxiliary_client as aux
+import hermes_agent.agent.auxiliary_client as aux
 
 
 def test_missing_bootstrap_helper_degrades_instead_of_raising(monkeypatch, caplog):
@@ -28,7 +28,7 @@ def test_missing_bootstrap_helper_degrades_instead_of_raising(monkeypatch, caplo
     monkeypatch.setattr(builtins, "__import__", _fail_bootstrap)
     monkeypatch.setattr(aux, "_WARNED_KEEPALIVE_IMPORT_SKEW", False)
 
-    with caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.agent.auxiliary_client"):
         result = aux._openai_http_client_kwargs("https://api.example.com/v1")
         again = aux._openai_http_client_kwargs("https://api.example.com/v1")
 

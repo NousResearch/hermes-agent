@@ -23,7 +23,7 @@ def _keyless_rescue_enabled() -> bool:
     if not _load_web_config().get("keyless_rescue", True):
         return False
     try:
-        from agent.web_search_registry import _keyless_tier_enabled
+        from hermes_agent.agent.web_search_registry import _keyless_tier_enabled
         return _keyless_tier_enabled()
     except Exception as exc:
         logger.debug("keyless rescue tier check failed: %s", exc)
@@ -41,7 +41,7 @@ def _ring_vendor_keyless(name: str) -> bool:
     if name == "firecrawl":
         from plugins.web.firecrawl.provider import _use_keyless_ring
         return _use_keyless_ring()
-    from agent.web_search_provider import get_provider_env
+    from hermes_agent.agent.web_search_provider import get_provider_env
     from plugins.web.keyless_mcp import use_keyless
     key_var = _RING_KEY_VARS.get(name, "")
     return use_keyless(name, get_provider_env(key_var) if key_var else "")
@@ -50,14 +50,14 @@ def _ring_vendor_keyless(name: str) -> bool:
 def _managed_search_fallback(provider, original_error: str, query: str, limit: int):
     """Try managed Firecrawl for this call only; None leaves the original error for keyless rescue.
     Managed Firecrawl is billed, so a caller on free fast search alone never reaches it."""
-    from agent.web_search_provider import get_provider_env
+    from hermes_agent.agent.web_search_provider import get_provider_env
     from hermes_agent.tools import web_tools as _wt
     if (getattr(provider, "name", "") != "perplexity"
             or get_provider_env("PERPLEXITY_API_KEY") or not _wt._managed_web_search() or not _wt._is_tool_gateway_ready()):
         return None
     logger.warning("web_search managed Perplexity failed (%s); serving this call from managed Firecrawl", (original_error or "")[:200])
     try:
-        from agent.web_search_registry import get_provider
+        from hermes_agent.agent.web_search_registry import get_provider
         resp = get_provider("firecrawl").search(query, limit)
     except Exception as exc:
         resp = {"success": False, "error": str(exc)}

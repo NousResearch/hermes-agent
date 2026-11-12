@@ -257,7 +257,7 @@ and update `to_dict()`, `from_dict()`, and `build_source()` in base.py.
 ## 6. System Prompt Hints (`platform_hint`)
 
 Declare `platform_hint=` on `ctx.register_platform` (keep the text in a light sibling such as
-`adapter_hint.py`) so the agent knows what platform it's on. `agent/prompt_builder.py::PLATFORM_HINTS`
+`adapter_hint.py`) so the agent knows what platform it's on. `hermes_agent/agent/prompt_builder.py::PLATFORM_HINTS`
 holds only core surfaces (CLI, TUI, API server, ...):
 
 ```python
@@ -390,10 +390,10 @@ from the standard `bool(get_env_value(token_var))`.
 
 ---
 
-## 14. Phone/ID Redaction (`agent/redact.py`)
+## 14. Phone/ID Redaction (`hermes_agent/agent/redact.py`)
 
 If your platform uses sensitive identifiers (phone numbers, etc.), add a
-regex pattern and redaction function to `agent/redact.py`. This ensures
+regex pattern and redaction function to `hermes_agent/agent/redact.py`. This ensures
 identifiers are masked in ALL log output, not just your adapter's logs.
 
 ---

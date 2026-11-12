@@ -1,8 +1,8 @@
 """A configured memory provider that cannot be recovered at agent start is shown to the user,
 never only logged (#119769): the CLI prints it; other drivers get a warn notice, which a
 messaging-gateway agent (callbacks wired per turn) replays on its first turn."""
-from agent.agent_init import _init_memory
-from agent.status_output import StatusOutputMixin
+from hermes_agent.agent.agent_init import _init_memory
+from hermes_agent.agent.status_output import StatusOutputMixin
 from hermes_cli import memory_provider_migration as mig
 
 

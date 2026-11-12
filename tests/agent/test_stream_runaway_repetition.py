@@ -20,7 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from agent.repetition_guard import STOP_PATH_MIN_CHARS
+from hermes_agent.agent.repetition_guard import STOP_PATH_MIN_CHARS
 
 _TURN_BOUND_S = 30.0
 # Reasoning whose plain field loops while the structured details beside it keep changing.
@@ -163,7 +163,7 @@ def endpoint(monkeypatch):
 
 
 def _run_turn(server: _FakeEndpoint, api_mode: str) -> dict:
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     agent = AIAgent(
         model="fixture-local", provider="custom", base_url=server.url, api_key="fixture", api_mode=api_mode,

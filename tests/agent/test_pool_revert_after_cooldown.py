@@ -9,9 +9,9 @@ its whole life. Credential-only: it must not touch the model/base_url/compressor
 
 import time
 
-import agent.credential_pool as cp
-from agent.agent_runtime_helpers import recover_with_credential_pool, restore_primary_runtime
-from agent.credential_pool import EXHAUSTED_TTL_429_SECONDS, CredentialPool, PooledCredential
+import hermes_agent.agent.credential_pool as cp
+from hermes_agent.agent.agent_runtime_helpers import recover_with_credential_pool, restore_primary_runtime
+from hermes_agent.agent.credential_pool import EXHAUSTED_TTL_429_SECONDS, CredentialPool, PooledCredential
 
 _BASE = "https://api.anthropic.com"
 

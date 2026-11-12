@@ -1,5 +1,5 @@
 """Inline-shell snippets never turn a silent failure into an empty (looks-fine) result."""
-from agent.skill_preprocessing import run_inline_shell
+from hermes_agent.agent.skill_preprocessing import run_inline_shell
 
 
 def test_silent_nonzero_exit_returns_marker(tmp_path):

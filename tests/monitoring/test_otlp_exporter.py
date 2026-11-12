@@ -11,8 +11,8 @@ import pytest
 
 otel = pytest.importorskip("opentelemetry.sdk.trace", reason="otlp extra not installed")
 
-import agent.monitoring.otlp_exporter as OE
-from agent.monitoring.emitter import MonitoringEmitter
+import hermes_agent.agent.monitoring.otlp_exporter as OE
+from hermes_agent.agent.monitoring.emitter import MonitoringEmitter
 
 
 def _mem_provider():

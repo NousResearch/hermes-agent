@@ -24,8 +24,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.session_persistence import SessionPersistenceMixin
-from agent.turn_context import _stamp_api_content_sidecar, compose_user_api_content
+from hermes_agent.agent.session_persistence import SessionPersistenceMixin
+from hermes_agent.agent.turn_context import _stamp_api_content_sidecar, compose_user_api_content
 from hermes_agent.hermes_state import SessionDB
 from tests.agent.test_api_content_sidecar import _FakeAgent, _build
 
@@ -120,7 +120,7 @@ class TestRealEarlyFlushAndOverrideLifecycle:
         """A real session row makes the prologue start auto-titling, which sent a title request
         to openrouter.ai with the stand-in agent's fake key on every test. Titling is not under
         test here."""
-        monkeypatch.setattr("agent.title_generator.maybe_auto_title", lambda *args, **kwargs: None)
+        monkeypatch.setattr("hermes_agent.agent.title_generator.maybe_auto_title", lambda *args, **kwargs: None)
 
     def test_real_close_flush_syncs_row_id_and_prologue_backfills(self, tmp_path):
         """Proof that the real _flush_messages_to_session_db path syncs _row_id onto
@@ -202,7 +202,7 @@ class TestRealEarlyFlushAndOverrideLifecycle:
             conv = db.get_messages_as_conversation(sid)
             assert conv[0]["content"] == clean_text
             assert conv[0]["api_content"] == api_text
-            from agent.turn_context import substitute_api_content
+            from hermes_agent.agent.turn_context import substitute_api_content
             substitute_api_content(conv[0])
             assert conv[0]["content"] == api_text
         finally:

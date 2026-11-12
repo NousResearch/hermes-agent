@@ -19,7 +19,7 @@ from unittest.mock import patch
 
 import pytest
 
-from agent.auxiliary_client import (
+from hermes_agent.agent.auxiliary_client import (
     _ClassifiedAttempt,
     _affordable_max_tokens_from_error,
     _build_call_kwargs,

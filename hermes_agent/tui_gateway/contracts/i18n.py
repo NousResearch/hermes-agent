@@ -19,7 +19,7 @@ class LocaleSurface(WireEnum):
 
 
 class LanguageOption(Result):
-    """``agent.i18n_languages.language_options`` row. ``source`` is ``bundled``, ``overlay`` or
+    """``hermes_agent.agent.i18n_languages.language_options`` row. ``source`` is ``bundled``, ``overlay`` or
     ``plugin:<name>`` — the highest layer that supplies the language. ``surfaces`` are the surfaces some
     layer has strings for; a renderer leaves out a language it does not bundle and that lacks its surface,
     since picking it would only show English."""

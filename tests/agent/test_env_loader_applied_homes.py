@@ -15,7 +15,7 @@ def _reset():
     env_loader.reset_secret_source_cache()
     yield
     env_loader.reset_secret_source_cache()
-    from agent.secret_sources import registry
+    from hermes_agent.agent.secret_sources import registry
     registry._reset_registry_for_tests()
 
 
@@ -41,7 +41,7 @@ def test_malformed_config_does_not_permanently_skip(tmp_path, monkeypatch):
     _write_enabled_config(home)
     monkeypatch.setenv("BWS_ACCESS_TOKEN", "0.t")
 
-    import agent.secret_sources.bitwarden as bw
+    import hermes_agent.agent.secret_sources.bitwarden as bw
     calls = {"n": 0}
 
     def fake_fetch(**kwargs):
@@ -52,7 +52,7 @@ def test_malformed_config_does_not_permanently_skip(tmp_path, monkeypatch):
     monkeypatch.setattr(bw, "fetch_bitwarden_secrets", fake_fetch)
     monkeypatch.delenv("NEW_KEY_40597", raising=False)
 
-    from agent.secret_sources import registry
+    from hermes_agent.agent.secret_sources import registry
     registry._reset_registry_for_tests()
 
     env_loader._apply_external_secret_sources(home)
@@ -75,7 +75,7 @@ def test_disabled_sources_do_not_mark_applied(tmp_path):
     (home / "config.yaml").write_text(
         "secrets:\n  bitwarden:\n    enabled: false\n    project_id: p\n"
     )
-    from agent.secret_sources import registry
+    from hermes_agent.agent.secret_sources import registry
     registry._reset_registry_for_tests()
     env_loader._apply_external_secret_sources(home)
     assert str(home.resolve()) not in env_loader._APPLIED_HOMES
@@ -90,7 +90,7 @@ def test_fetch_error_still_marks_applied(tmp_path, monkeypatch):
     _write_enabled_config(home)
     monkeypatch.setenv("BWS_ACCESS_TOKEN", "0.dead")
 
-    import agent.secret_sources.bitwarden as bw
+    import hermes_agent.agent.secret_sources.bitwarden as bw
     calls = {"n": 0}
 
     def boom(**kwargs):
@@ -100,7 +100,7 @@ def test_fetch_error_still_marks_applied(tmp_path, monkeypatch):
     monkeypatch.setattr(bw, "find_bws", lambda install_if_missing=True: home / "bws")
     monkeypatch.setattr(bw, "fetch_bitwarden_secrets", boom)
 
-    from agent.secret_sources import registry
+    from hermes_agent.agent.secret_sources import registry
     registry._reset_registry_for_tests()
 
     env_loader._apply_external_secret_sources(home)
@@ -116,7 +116,7 @@ def test_success_marks_applied_and_second_call_noop(tmp_path, monkeypatch):
     monkeypatch.setenv("BWS_ACCESS_TOKEN", "0.t")
     monkeypatch.delenv("KEY_OK_40597", raising=False)
 
-    import agent.secret_sources.bitwarden as bw
+    import hermes_agent.agent.secret_sources.bitwarden as bw
     calls = {"n": 0}
 
     def fake_fetch(**kwargs):
@@ -126,7 +126,7 @@ def test_success_marks_applied_and_second_call_noop(tmp_path, monkeypatch):
     monkeypatch.setattr(bw, "find_bws", lambda install_if_missing=True: home / "bws")
     monkeypatch.setattr(bw, "fetch_bitwarden_secrets", fake_fetch)
 
-    from agent.secret_sources import registry
+    from hermes_agent.agent.secret_sources import registry
     registry._reset_registry_for_tests()
 
     env_loader._apply_external_secret_sources(home)

@@ -49,7 +49,7 @@ def resolve_latest_session(authority, actor, family, workspace=None):
     classic ``hermes -c`` / ``--resume latest`` rule (``hermes_cli.main._resolve_last_session``),
     applied by the owner so the client opens no database. Only a local session the actor may read
     counts; another principal's sessions are skipped, never confirmed."""
-    from agent.session_source import CLI_FAMILY_SOURCES
+    from hermes_agent.agent.session_source import CLI_FAMILY_SOURCES
     families = {'cli': sorted(CLI_FAMILY_SOURCES), 'tui': ['tui']}
     if family not in families or (workspace is not None and (not isinstance(workspace, str) or not workspace)):
         raise RuntimeStoreError('invalid_params')

@@ -105,7 +105,7 @@ def _text_response(text: str, input_tokens: int, *, compaction_chars: int = 0) -
 
 
 def _make_agent(base_url: str, session_id: str | None = None):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     agent = AIAgent(
         api_key="test-key", base_url=base_url, provider="openai-codex", model="gpt-5.6",
@@ -141,7 +141,7 @@ def _request_facts(req: dict) -> dict:
 
 
 def _preflight_estimate(agent, messages) -> int | None:
-    from agent.codex_responses_adapter import estimate_native_responses_preflight_tokens
+    from hermes_agent.agent.codex_responses_adapter import estimate_native_responses_preflight_tokens
 
     return estimate_native_responses_preflight_tokens(agent, messages, system_prompt="", tools=None)
 

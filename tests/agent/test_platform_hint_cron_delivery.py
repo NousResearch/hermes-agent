@@ -10,8 +10,8 @@ import types
 
 import pytest
 
-from agent.prompt_builder import PLATFORM_HINTS
-from agent.system_prompt import platform_hint
+from hermes_agent.agent.prompt_builder import PLATFORM_HINTS
+from hermes_agent.agent.system_prompt import platform_hint
 from hermes_agent.gateway.platform_registry import platform_registry
 from hermes_agent.gateway.session_context import _VAR_MAP
 from hermes_cli.plugins import discover_plugins

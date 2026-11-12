@@ -303,7 +303,7 @@ def _secure_state_db_files(db_path: Path, *, create_main: bool = False) -> None:
         os.chmod(path, 0o600)
 
 
-# Openings of the background-review harness prompts (agent/background_review.py).
+# Openings of the background-review harness prompts (hermes_agent/agent/background_review.py).
 _REVIEW_HARNESS_PREFIXES = (
     "Review the conversation above and update the skill library",
     "Review the conversation above and consider saving to memory",
@@ -1516,7 +1516,7 @@ class SessionDB(
         retires after an idle window and the atexit hook holds only a weak reference, so abandoned handles
         are eventually collectible — but "eventually, after the idle window and a GC cycle" is not a release
         policy. Call sites owning a handle are still expected to close it deterministically (see the
-        ownership comments in ``run_agent.py`` and ``hermes_agent/tui_gateway/methods_session.py``).
+        ownership comments in ``hermes_agent/run_agent.py`` and ``hermes_agent/tui_gateway/methods_session.py``).
         """
         return self
 
@@ -1635,7 +1635,7 @@ class SessionDB(
     REACTIONS_METADATA_KEY = "reactions"
     # Columns every conversation projection decodes; ``active`` rides along so a display read
     # can split compaction-archived rows without a second query. Contract: must include every
-    # ``agent.transcript_repair._OWNED_COLUMNS`` column, because replay stamps
+    # ``hermes_agent.agent.transcript_repair._OWNED_COLUMNS`` column, because replay stamps
     # ``transcript_row_snapshot(row)`` from these rows (token_count is hashed there, not decoded).
     _CONVERSATION_ROW_COLUMNS = (
         "id, role, content, tool_call_id, tool_calls, tool_name, effect_disposition, "

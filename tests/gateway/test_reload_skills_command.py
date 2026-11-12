@@ -3,7 +3,7 @@
 Verifies:
   * dispatcher routes ``/reload-skills`` to ``_handle_reload_skills_command``
   * the underscored alias ``/reload_skills`` is not flagged as unknown
-  * the handler invokes ``agent.skill_commands.reload_skills`` and renders a
+  * the handler invokes ``hermes_agent.agent.skill_commands.reload_skills`` and renders a
     human-readable diff
   * when any skills changed, a one-shot note is queued on
     ``runner._pending_skills_reload_notes[session_key]`` (the agent loop
@@ -103,7 +103,7 @@ async def test_reload_skills_handler_queues_note_on_diff(monkeypatch):
         "commands": 3,
     }
 
-    import agent.skill_commands as skill_commands_mod
+    import hermes_agent.agent.skill_commands as skill_commands_mod
     monkeypatch.setattr(skill_commands_mod, "reload_skills", lambda: fake_result)
 
     runner = _make_runner()

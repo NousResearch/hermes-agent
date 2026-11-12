@@ -49,7 +49,7 @@ def test_judge_goal_resolves_timeout_from_config(monkeypatch):
 
     import sys
 
-    monkeypatch.setitem(sys.modules, "agent.auxiliary_client", _FakeAux)
+    monkeypatch.setitem(sys.modules, "hermes_agent.agent.auxiliary_client", _FakeAux)
     _patch_config(monkeypatch, {"auxiliary": {"goal_judge": {"timeout": 120}}})
 
     verdict, _, _, _, transport_failed = goals.judge_goal(
@@ -73,7 +73,7 @@ def test_judge_goal_explicit_timeout_wins(monkeypatch):
 
     import sys
 
-    monkeypatch.setitem(sys.modules, "agent.auxiliary_client", _FakeAux)
+    monkeypatch.setitem(sys.modules, "hermes_agent.agent.auxiliary_client", _FakeAux)
     _patch_config(monkeypatch, {"auxiliary": {"goal_judge": {"timeout": 120}}})
 
     goals.judge_goal("g", "r", timeout=7.5)

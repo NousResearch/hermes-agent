@@ -17,8 +17,8 @@ guard lives there, next to ``_ensure_compressed_has_user_turn``.
 
 import pytest
 
-from agent.context_compressor import SUMMARY_PREFIX
-from agent.conversation_compression_reply_anchor import (
+from hermes_agent.agent.context_compressor import SUMMARY_PREFIX
+from hermes_agent.agent.conversation_compression_reply_anchor import (
     _ensure_compressed_keeps_last_assistant_reply,
 )
 import itertools
@@ -118,7 +118,7 @@ def _seed(tmp_path, tail_rows, fold, follower):
     assert isinstance(messages[-2].get("_row_id"), int) and messages[-2].get("timestamp") is not None
 
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key",
@@ -146,7 +146,7 @@ def _seed(tmp_path, tail_rows, fold, follower):
 
 
 def _compress(agent, messages):
-    from agent.conversation_compression import CompressionCommitFence
+    from hermes_agent.agent.conversation_compression import CompressionCommitFence
 
     agent._persist_user_message_idx = len(messages) - 1
     out_messages, _ = agent._compress_context(
@@ -226,7 +226,7 @@ class TestEngineDropsReplyEndToEnd:
         # The tool rounds already live after the new user turn; the engine keeps them.
         messages += fold[1:]
 
-        with caplog.at_level("WARNING", logger="agent.conversation_compression_reply_anchor"):
+        with caplog.at_level("WARNING", logger="hermes_agent.agent.conversation_compression_reply_anchor"):
             live, _ = self._compress_and_read(db, session_id, agent, messages, tail_role="tool")
 
         # No legal slot: the reply is not recovered, the chain is untouched, and the skip is

@@ -111,7 +111,7 @@ def _ask_human(command: str, description: str, timeout_seconds: int, allow_perma
                approval_callback, allow_session: bool, smart_denied: bool, title: str | None = None) -> str:
     # Redact before any user-visible rendering; the original `command` still executes after approval. Same redactor as
     # memory/log sanitization so tokens mask consistently across surfaces.
-    from agent.redact import redact_approval_display
+    from hermes_agent.agent.redact import redact_approval_display
     display_command = redact_approval_display(command)
     display_description = redact_approval_display(description)
     # Smart DENY and a session-less gate both reduce the menu to once/deny.
@@ -137,7 +137,7 @@ def _ask_human(command: str, description: str, timeout_seconds: int, allow_perma
         # Fail fast and log loudly so the caller can surface a real error to the agent. Any thread
         # that needs interactive approval must install a callback via
         # hermes_agent.tools.terminal_tool.set_approval_callback() before reaching this point (see delegate_tool.py,
-        # run_agent.py _execute_tool_calls_concurrent / _spawn_background_review for the established
+        # hermes_agent/run_agent.py _execute_tool_calls_concurrent / _spawn_background_review for the established
         # pattern). See #15216.
         from prompt_toolkit.application.current import get_app_or_none
         if get_app_or_none() is not None:
@@ -151,7 +151,7 @@ def _ask_human(command: str, description: str, timeout_seconds: int, allow_perma
 
     os.environ["HERMES_SPINNER_PAUSE"] = "1"
     try:
-        from agent.i18n import t
+        from hermes_agent.agent.i18n import t
         # (prompt key, menu key) by menu shape: once/deny, full, or no [a]lways.
         shape = "smart_deny" if once_only else "long" if allow_permanent else "short"
         prompt_key, menu_key = f"approval.prompt_{shape}", f"approval.choose_{shape}"
@@ -219,7 +219,7 @@ def _present_with_selected_transport(*, command: str, description: str, pattern_
         return _attempt(name, "deny", "unavailable", fallback)
 
     try:
-        from agent.redact import redact_approval_display
+        from hermes_agent.agent.redact import redact_approval_display
         from hermes_cli.approval_transport import ApprovalRequest, invoke_approval_transport
 
         timeout_seconds = _ctx._get_approval_timeout()

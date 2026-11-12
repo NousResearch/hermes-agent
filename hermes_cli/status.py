@@ -95,7 +95,7 @@ def _effective_provider_label() -> str:
 def _estop_status_line():
     """One-line pause banner for `hermes status`, or None when not paused."""
     try:
-        from agent.estop import get_state
+        from hermes_agent.agent.estop import get_state
     except ImportError:
         return None
     state = get_state()
@@ -182,7 +182,7 @@ def _render_terminal(ctx):
         try:
             from hermes_cli.plugins import discover_plugins
             discover_plugins()
-            from agent.terminal_env_registry import get_provider
+            from hermes_agent.agent.terminal_env_registry import get_provider
             provider = get_provider(terminal_env)
             if provider is not None:
                 for ok, label, text in provider.doctor_checks():

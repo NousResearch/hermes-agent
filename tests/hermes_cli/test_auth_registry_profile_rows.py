@@ -85,7 +85,7 @@ def test_profile_declares_its_registry_row_shape_and_place(plugin, monkeypatch, 
 def test_auth_list_shows_a_plugin_provider_once_not_per_alias(plugin, monkeypatch, capsys):
     from hermes_cli.auth_commands import auth_list_command
 
-    from agent import secret_scope
+    from hermes_agent.agent import secret_scope
 
     plugin(_token_profile("listco", ambient=False))
     token = secret_scope.set_secret_scope({"LISTCO_TOKEN": "tok-list-1234567890"})

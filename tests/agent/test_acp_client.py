@@ -1,4 +1,4 @@
-"""Contracts of the public ACP stdio client (``agent.acp_client.ACPClient``) and its deprecated alias."""
+"""Contracts of the public ACP stdio client (``hermes_agent.agent.acp_client.ACPClient``) and its deprecated alias."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from agent.acp_client import ACPClient
+from hermes_agent.agent.acp_client import ACPClient
 
 _REPO = Path(__file__).resolve().parents[2]
 
@@ -153,9 +153,9 @@ with warnings.catch_warnings(record=True) as caught:
     warnings.simplefilter("always")
     import providers
     client = providers.get_provider_profile("frozen-acp").create_client()
-    import agent.copilot_acp_client as alias
+    import hermes_agent.agent.copilot_acp_client as alias
     alias.CopilotACPClient
-from agent.acp_client import ACPClient
+from hermes_agent.agent.acp_client import ACPClient
 reply = client.chat.completions.create(model="copilot-acp", messages=[{"role": "user", "content": "hi"}], timeout=30)
 print(json.dumps({
     "warnings": [str(w.message) for w in caught if w.category is DeprecationWarning and "acp_client" in str(w.message)],

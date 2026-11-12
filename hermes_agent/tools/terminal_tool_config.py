@@ -157,14 +157,14 @@ _BUILTIN_BACKENDS = _CONTAINER_BACKENDS | {"local", "ssh", "managed_modal"}
 
 
 def _plugin_registry_lookup(env_type: str, fn_name: str, default, *args):
-    """Call ``agent.terminal_env_registry.<fn_name>(env_type, *args)`` for a
+    """Call ``hermes_agent.agent.terminal_env_registry.<fn_name>(env_type, *args)`` for a
     plugin backend. Fail-soft: *default* for built-in/empty backends, when the
     registry is unavailable, or when the provider raises — a misbehaving plugin
     must never take the terminal tool down."""
     if not env_type or env_type in _BUILTIN_BACKENDS:
         return default
     try:
-        import agent.terminal_env_registry as reg
+        import hermes_agent.agent.terminal_env_registry as reg
 
         return getattr(reg, fn_name)(env_type, *args)
     except Exception:

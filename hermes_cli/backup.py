@@ -24,7 +24,7 @@ from hermes_constants import (
 from hermes_agent.hermes_state_dbfile import RETIRED_GENERATION_DIR_SUFFIX
 from hermes_agent.hermes_state_holders import read_only_db_uri
 
-from agent.provider_media import GENERATED_SUBDIR
+from hermes_agent.agent.provider_media import GENERATED_SUBDIR
 from hermes_cli.archive_safe import normalize_archive_parts
 from hermes_cli.backup_sqlite import _close_quietly, _safe_copy_db
 from hermes_cli.config_backend import require_file_tooling, supports_file_tooling
@@ -72,7 +72,7 @@ def _snapshot_recovery_hint() -> str:
 # the root (``_should_exclude``) so skill dirs like ``skills/.../hermes-agent/`` survive. The
 # dependency/cache entries matter: one plugin venv or pip/uv cache under HERMES_HOME walked
 # file-by-file balloons a backup to hundreds of thousands of entries ("backup stuck for days").
-# Mostly mirrors ``agent.skill_utils.EXCLUDED_SKILL_DIRS``; ``.cache`` is backup-only. ``.archive``
+# Mostly mirrors ``hermes_agent.agent.skill_utils.EXCLUDED_SKILL_DIRS``; ``.cache`` is backup-only. ``.archive``
 # is deliberately NOT excluded: the curator's ``skills/.archive/`` holds restorable user skills.
 _EXCLUDED_DIRS = {
     "hermes-agent",     # the codebase repo — re-clone instead
@@ -163,7 +163,7 @@ _ZIP_MEMBER_READ_ERRORS: tuple[type[BaseException], ...] = (
     zipfile.BadZipFile, zlib.error, EOFError, *_LZMA_ERRORS)
 
 # zipfile.open() drops Unix mode bits on extract; restore tightens these to 0600.
-# vault.key / vault.json.enc: the local credential vault (agent/vault_store.py)
+# vault.key / vault.json.enc: the local credential vault (hermes_agent/agent/vault_store.py)
 # IS included in backups (user-entered secrets, not regenerable — unlike the
 # excluded browser-profile/ snapshot) but must come back owner-only.
 _SECRET_FILE_NAMES = {".env", "auth.json", "state.db", "vault.key", "vault.json.enc"}

@@ -1,10 +1,10 @@
-"""agent/periodic_scheduler: one timer thread dispatches isolated callbacks."""
+"""hermes_agent/agent/periodic_scheduler: one timer thread dispatches isolated callbacks."""
 
 import threading
 import time
 
-from agent import periodic_scheduler
-from agent.periodic_scheduler import PeriodicScheduler, schedule
+from hermes_agent.agent import periodic_scheduler
+from hermes_agent.agent.periodic_scheduler import PeriodicScheduler, schedule
 
 
 def _wait_until(pred, timeout=3.0):

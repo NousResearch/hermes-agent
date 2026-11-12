@@ -6,8 +6,8 @@ variants of one OpenAI family read each other's blobs.
 """
 import pytest
 
-from agent.context_compressor import _prune_stale_reasoning_replay
-from agent.transports.codex import ResponsesApiTransport
+from hermes_agent.agent.context_compressor import _prune_stale_reasoning_replay
+from hermes_agent.agent.transports.codex import ResponsesApiTransport
 
 _OPENAI = "https://api.openai.com/v1"
 
@@ -81,7 +81,7 @@ def test_first_invalid_encrypted_rejection_drops_only_unverified_items():
 def test_encrypted_rejection_rung_keeps_items_the_request_never_sent():
     """The first invalid_encrypted_content rung strips only blobs the failing request replayed without an exact
     stamp; another issuer's or model family's items were never sent and stay for a switch back."""
-    from agent.codex_responses_adapter import strip_unverified_reasoning_items
+    from hermes_agent.agent.codex_responses_adapter import strip_unverified_reasoning_items
 
     own = f"other:{_OPENAI}"
     items = [

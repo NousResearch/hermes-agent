@@ -7,7 +7,7 @@ terminal/file/approval/prompt surfaces. Unlike the image/video/web/browser regis
 is **no active-provider resolution**: the active backend is whatever ``TERMINAL_ENV`` /
 ``terminal.backend`` names. Built-in names are reserved (registration raises) so a plugin can
 never shadow the in-tree docker/modal/... implementations. Scope semantics mirror
-:mod:`agent.browser_registry` (per-profile scope or the global base map).
+:mod:`hermes_agent.agent.browser_registry` (per-profile scope or the global base map).
 """
 
 from __future__ import annotations
@@ -15,8 +15,8 @@ from __future__ import annotations
 import logging
 from typing import List, Optional
 
-from agent.provider_registry import ProviderRegistry, lower_key
-from agent.terminal_env_provider import TerminalEnvironmentProvider
+from hermes_agent.agent.provider_registry import ProviderRegistry, lower_key
+from hermes_agent.agent.terminal_env_provider import TerminalEnvironmentProvider
 
 logger = logging.getLogger(__name__)
 

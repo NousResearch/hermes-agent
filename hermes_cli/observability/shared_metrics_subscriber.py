@@ -7,7 +7,7 @@ import platform
 import threading
 from typing import Any
 
-from agent.relay_runtime import RUNTIME_INSTANCE_KEY
+from hermes_agent.agent.relay_runtime import RUNTIME_INSTANCE_KEY
 from hermes_constants import get_hermes_home
 
 from . import shared_metrics_engagement as engagement

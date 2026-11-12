@@ -19,13 +19,13 @@ from unittest.mock import patch
 
 import pytest
 
-from agent.conversation_compression import CompressionCommitFence
+from hermes_agent.agent.conversation_compression import CompressionCommitFence
 from hermes_agent.hermes_state import SessionDB
 
 
 def _build_agent(db: SessionDB, session_id: str):
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key",
@@ -113,7 +113,7 @@ def test_refused_candidate_from_mutating_engine_returns_original_transcript(
             db, "archive_and_compact", wraps=db.archive_and_compact
         ) as archive_and_compact:
             # A caller-owned fence selects the direct path that gateway session hygiene uses.
-            with caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
+            with caplog.at_level(logging.INFO, logger="hermes_agent.agent.conversation_compression"):
                 returned, _sp = agent._compress_context(
                     messages, "sys", approx_tokens=120_000, commit_fence=CompressionCommitFence()
                 )

@@ -5,8 +5,8 @@ from __future__ import annotations
 from math import isfinite
 from typing import Any
 
-from agent.error_classifier import FailoverReason
-from agent.relay_runtime import (
+from hermes_agent.agent.error_classifier import FailoverReason
+from hermes_agent.agent.relay_runtime import (
     LOGICAL_LLM_SCOPE,
     RUNTIME_INSTANCE_KEY,
     RUNTIME_SCHEMA_KEY,
@@ -235,7 +235,7 @@ TTFT_BUCKETS = frozenset({
 COMPRESSION_TRIGGERS = frozenset({"auto", "manual", "other", "overflow"})
 COMPRESSION_OUTCOMES = frozenset({"failed", "skipped", "success"})
 # Why an attempt was skipped or failed: the attempt log's own ``failure_class`` names
-# (agent/conversation_compression*.py, agent/context_compressor.py). Skips are attempts that ended
+# (hermes_agent/agent/conversation_compression*.py, hermes_agent/agent/context_compressor.py). Skips are attempts that ended
 # before anything could fail (another path held the lock, nothing summarizable so no model call, the
 # user stopped it, a newer attempt replaced it). ``exception:<Type>`` / ``rollback:<Type>`` keep only
 # their prefix; any other value reads ``other``, a failure with no class ``unknown``.

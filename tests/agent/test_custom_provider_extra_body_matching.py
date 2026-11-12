@@ -7,7 +7,7 @@ July 2026 incident: a custom provider with a multi-model catalog
 was silently dropped — every request billed at standard tier (~2.3x).
 """
 
-from agent.agent_init import (
+from hermes_agent.agent.agent_init import (
     _custom_provider_extra_body_for_agent,
     _custom_provider_model_matches,
 )

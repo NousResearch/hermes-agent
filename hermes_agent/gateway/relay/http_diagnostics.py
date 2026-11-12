@@ -22,7 +22,7 @@ import json
 import urllib.error
 from typing import Iterable
 
-from agent.redact import redact_sensitive_text
+from hermes_agent.agent.redact import redact_sensitive_text
 
 # Response headers that name the hop that answered.
 _ORIGIN_HEADERS = ("Server", "Via", "Proxy-Status", "X-Squid-Error")

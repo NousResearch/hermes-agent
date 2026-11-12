@@ -31,14 +31,14 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.turn_context import build_turn_context
+from hermes_agent.agent.turn_context import build_turn_context
 from tests.agent.test_turn_context import _FakeAgent
 
 
 @pytest.fixture(autouse=True)
 def _stub_runtime_main():
     """Keep the aux runtime-main global from leaking into sibling tests."""
-    with patch("agent.auxiliary_client.set_runtime_main", lambda *a, **k: None):
+    with patch("hermes_agent.agent.auxiliary_client.set_runtime_main", lambda *a, **k: None):
         yield
 
 
@@ -146,8 +146,8 @@ def test_builtin_compressor_default_sub_threshold_path_unchanged(tmp_path):
     sub-threshold behavior at all: no compress call, no status emission,
     no blocking flag.
     """
-    from agent.context_compressor import ContextCompressor
-    from agent.context_engine import ContextEngine
+    from hermes_agent.agent.context_compressor import ContextCompressor
+    from hermes_agent.agent.context_engine import ContextEngine
 
     # The default really is False (the dead-code premise of #20316).
     assert ContextEngine.should_compress_preflight(
@@ -155,7 +155,7 @@ def test_builtin_compressor_default_sub_threshold_path_unchanged(tmp_path):
     ) is False
 
     with patch(
-        "agent.context_compressor.get_model_context_length", return_value=1_000_000
+        "hermes_agent.agent.context_compressor.get_model_context_length", return_value=1_000_000
     ):
         compressor = ContextCompressor(
             model="test/model",

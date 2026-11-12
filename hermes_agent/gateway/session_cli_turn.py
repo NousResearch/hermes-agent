@@ -26,7 +26,7 @@ def admit_cli_turn(params):
     """Wire fields -> committed ``cli_turn_v1`` (``{}`` when absent); malformed values are refused."""
     committed = {}
     if params.get('turn_author') is not None:
-        from agent.turn_author import parse_turn_author
+        from hermes_agent.agent.turn_author import parse_turn_author
         author = parse_turn_author(params['turn_author'])
         if author is None:
             raise RuntimeStoreError('invalid_params')

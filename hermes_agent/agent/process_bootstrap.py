@@ -1,7 +1,7 @@
 """Process-level bootstrap helpers for ``run_agent``.
 
 Lazy OpenAI SDK import (``_OpenAIProxy`` keeps ``isinstance`` and
-``patch("agent.process_bootstrap.OpenAI")`` working), crash-resistant stdio
+``patch("hermes_agent.agent.process_bootstrap.OpenAI")`` working), crash-resistant stdio
 (``_SafeWriter``), env-only HTTP proxy resolution, and the httpcore backend that
 runs sync httpx connects through the process-wide Happy Eyeballs racer
 (``hermes_bootstrap``).
@@ -17,8 +17,8 @@ from typing import Any, Optional
 
 from hermes_bootstrap import _happy_eyeballs_create_connection
 from utils import base_url_hostname, normalize_proxy_url
-from agent.proxy_bypass import first_proxy_env_value, should_bypass_proxy
-from agent.thread_scoped_output import _ThreadRoutingStream
+from hermes_agent.agent.proxy_bypass import first_proxy_env_value, should_bypass_proxy
+from hermes_agent.agent.thread_scoped_output import _ThreadRoutingStream
 
 
 _OPENAI_CLS_CACHE = None
@@ -294,7 +294,7 @@ def build_keepalive_http_client(base_url: str = "", *, async_mode: bool = False,
         client_cls = httpx.AsyncClient if async_mode else httpx.Client
         mounts = None
         # Official Codex backend only: zstd request bodies when the stdlib codec exists (None otherwise).
-        from agent.codex_headers import codex_request_compression_hooks
+        from hermes_agent.agent.codex_headers import codex_request_compression_hooks
         hooks = codex_request_compression_hooks(base_url, async_mode=async_mode)
         if hooks:
             client_cls = functools.partial(client_cls, event_hooks=hooks)

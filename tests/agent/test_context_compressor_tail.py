@@ -3,8 +3,8 @@ import json
 
 import pytest
 
-import agent.context_compressor as cc
-from agent.context_compressor_tail import _LEAN_TAIL_KEEP_TOOL_ROUNDS
+import hermes_agent.agent.context_compressor as cc
+from hermes_agent.agent.context_compressor_tail import _LEAN_TAIL_KEEP_TOOL_ROUNDS
 
 SKILL = "synthetic-tail-skill"
 BODY = "Skill instructions " + "s" * 2000

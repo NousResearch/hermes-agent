@@ -2,7 +2,7 @@
 
 from unittest.mock import MagicMock, patch
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 _TEST_KEY = "test-" + "key-12345678"
 
@@ -11,9 +11,9 @@ def _make_agent():
     with (
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
-        patch("agent.context_compressor.get_model_context_length", return_value=200_000),
-        patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=200_000),
+        patch("hermes_agent.agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
     ):
         agent = AIAgent(
             api_key=_TEST_KEY,
@@ -35,11 +35,11 @@ def _restore_after_fallback(primary_model):
     fb_client = MagicMock()
     fb_client.api_key = "fallback-" + "key-1234"
     fb_client.base_url = "https://fallback.example.com/v1"
-    with patch("agent.auxiliary_client.resolve_provider_client", return_value=(fb_client, None)):
+    with patch("hermes_agent.agent.auxiliary_client.resolve_provider_client", return_value=(fb_client, None)):
         assert agent._try_activate_fallback() is True
     emitted = []
     agent._emit_status = emitted.append
-    with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
+    with patch("hermes_agent.agent.process_bootstrap.OpenAI", return_value=MagicMock()):
         restored = agent._restore_primary_runtime()
     return agent, restored, emitted
 

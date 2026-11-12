@@ -20,7 +20,7 @@ async def probe(peer, target, kind):
     from hermes_agent.gateway.session_contract import SessionRef
     from hermes_agent.gateway.run_api import start_gateway_api, stop_gateway_api
     from hermes_cli import web_server
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     from hermes_agent.tools.approval import resolve_gateway_approval
 
     runner = GatewayRunner()

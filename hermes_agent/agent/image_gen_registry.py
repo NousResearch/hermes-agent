@@ -12,8 +12,8 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from agent.image_gen_provider import ImageGenProvider
-from agent.provider_registry import ProviderRegistry, configured_provider_name, is_available_safe
+from hermes_agent.agent.image_gen_provider import ImageGenProvider
+from hermes_agent.agent.provider_registry import ProviderRegistry, configured_provider_name, is_available_safe
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +26,7 @@ _registry.export(globals())
 
 def get_active_provider() -> Optional[ImageGenProvider]:
     """Resolve the currently-active provider. Availability semantics (mirrors
-    :mod:`agent.web_search_registry`): an explicitly configured provider is returned
+    :mod:`hermes_agent.agent.web_search_registry`): an explicitly configured provider is returned
     even if ``is_available()`` is False, so the dispatcher surfaces a precise
     "X_API_KEY is not set" error instead of silently switching backends; only the
     unconfigured fallback path is filtered by availability."""

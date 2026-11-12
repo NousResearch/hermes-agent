@@ -112,7 +112,7 @@ def service_tier_config(connection, ref, params):
     """Session-scoped ``/fast`` (the classic CLI's tier pick, ``normal`` clears to normal): the
     session's service-tier override the next turn's agent reads (``current_service_tier``), never a
     settings write. ``--global`` persistence stays the client's own config.yaml write."""
-    from agent.fast_mode import parse_exact_service_tier
+    from hermes_agent.agent.fast_mode import parse_exact_service_tier
     try:
         tier = parse_exact_service_tier(params.get('value')) if isinstance(params.get('value'), str) else None
     except ValueError:

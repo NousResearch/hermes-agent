@@ -14,7 +14,7 @@ from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Mapping
 
 from utils import safe_json_loads
-from agent.tool_result_classification import (
+from hermes_agent.agent.tool_result_classification import (
     shape_failure_error, file_mutation_result_landed, has_failure_marker, is_guardrail_refusal, is_rate_limited)
 
 
@@ -218,14 +218,14 @@ def canonical_tool_args(args: Mapping[str, Any]) -> str:
 
 def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]:
     """Fallback classifier used only when callers don't pass ``failed``; mirrors
-    ``agent.display._detect_tool_failure`` so the guardrail never disagrees with the CLI's ``[error]`` tag."""
+    ``hermes_agent.agent.display._detect_tool_failure`` so the guardrail never disagrees with the CLI's ``[error]`` tag."""
     if result is None or file_mutation_result_landed(tool_name, result):
         return False, ""
 
     # A harness REFUSAL of a redundant call (repeated identical read/search) carries
     # ``"error"`` for the model's benefit -- exactly what the substring test below keys
     # on -- but nothing failed; counting it lets the cheap refusal feed the streak that
-    # fires the next, harder one. Mirrored in ``agent.display._detect_tool_failure``.
+    # fires the next, harder one. Mirrored in ``hermes_agent.agent.display._detect_tool_failure``.
     if is_guardrail_refusal(result):
         return False, ""
 

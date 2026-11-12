@@ -4,13 +4,13 @@ import json
 import pytest
 from types import SimpleNamespace
 
-from agent.transports import get_transport
-from agent.transports.types import NormalizedResponse
+from hermes_agent.agent.transports import get_transport
+from hermes_agent.agent.transports.types import NormalizedResponse
 
 
 @pytest.fixture
 def transport():
-    import agent.transports.codex
+    import hermes_agent.agent.transports.codex
     return get_transport("codex_responses")
 
 
@@ -113,7 +113,7 @@ class TestCodexBuildKwargs:
         official API, the Codex backend, and custom Responses endpoints alike. The
         ``extra_body`` escape hatch the warning points to still reaches the wire, and
         the warning fires once per process rather than every turn."""
-        import agent.transports.codex as codex_mod
+        import hermes_agent.agent.transports.codex as codex_mod
 
         monkeypatch.setattr(codex_mod, "_PROMPT_CACHE_OPTIONS_DROP_WARNED", False)
         caplog.set_level("WARNING", logger=codex_mod.logger.name)
@@ -580,7 +580,7 @@ class TestCodexBuildKwargs:
         assert not any(i.get("type") == "reasoning" for i in other["input"])
 
     def test_newest_reasoning_only_keeps_compaction_checkpoints(self):
-        from agent.transports.codex import _newest_reasoning_only
+        from hermes_agent.agent.transports.codex import _newest_reasoning_only
 
         checkpoint = {"type": "compaction", "encrypted_content": "ckpt", "summary": []}
         messages = [
@@ -941,7 +941,7 @@ class TestCodexBuildKwargs:
         completes (otherwise the turn stalls as incomplete → 3 retries).
         Non-conflicting client tools are preserved.
         """
-        import agent.transports.codex as codex_mod
+        import hermes_agent.agent.transports.codex as codex_mod
 
         monkeypatch.setattr(codex_mod, "_xai_prefers_native_web_search", lambda: True)
         messages = [{"role": "user", "content": "Find current prices."}]
@@ -971,7 +971,7 @@ class TestCodexBuildKwargs:
         """Configured Firecrawl (or any non-xai backend) must keep Hermes
         dispatch — rename the wire tool so Grok cannot hijack ``web_search``.
         """
-        import agent.transports.codex as codex_mod
+        import hermes_agent.agent.transports.codex as codex_mod
 
         monkeypatch.setattr(codex_mod, "_xai_prefers_native_web_search", lambda: False)
         messages = [{"role": "user", "content": "Find current prices."}]
@@ -1051,7 +1051,7 @@ class TestCodexBuildKwargs:
         function with the provider-executed built-in. ``web_extract`` is a
         separate capability and must survive — native search covers search only.
         """
-        import agent.transports.codex as codex_mod
+        import hermes_agent.agent.transports.codex as codex_mod
 
         monkeypatch.setattr(codex_mod, "_openai_prefers_native_web_search", lambda: True)
         kw = transport.build_kwargs(
@@ -1083,7 +1083,7 @@ class TestCodexBuildKwargs:
     def test_openai_native_not_selected_keeps_client_web_search(self, transport, monkeypatch):
         """A Codex turn that has not selected ``openai-native`` keeps Hermes
         dispatch — the built-in must never be granted additively."""
-        import agent.transports.codex as codex_mod
+        import hermes_agent.agent.transports.codex as codex_mod
 
         monkeypatch.setattr(codex_mod, "_openai_prefers_native_web_search", lambda: False)
         kw = transport.build_kwargs(
@@ -1105,7 +1105,7 @@ class TestCodexBuildKwargs:
         ``chatgpt.com/backend-api/codex``. A custom OpenAI-compatible endpoint
         must keep the client tool even when the search backend says native.
         """
-        import agent.transports.codex as codex_mod
+        import hermes_agent.agent.transports.codex as codex_mod
 
         monkeypatch.setattr(codex_mod, "_openai_prefers_native_web_search", lambda: True)
         kw = transport.build_kwargs(
@@ -1151,7 +1151,7 @@ class TestResponsesReservedToolAliases:
 
     @pytest.fixture
     def transport(self):
-        from agent.transports.codex import ResponsesApiTransport
+        from hermes_agent.agent.transports.codex import ResponsesApiTransport
         return ResponsesApiTransport()
 
     _TOOLS = [
@@ -1275,7 +1275,7 @@ class TestResponsesReservedToolAliases:
             reasoning_details=None,
         )
         monkeypatch.setattr(
-            "agent.codex_responses_adapter._normalize_codex_response",
+            "hermes_agent.agent.codex_responses_adapter._normalize_codex_response",
             lambda resp, issuer_kind=None, issuer_model=None: (msg, "tool_calls"),
         )
         normalized = transport.normalize_response(SimpleNamespace(output=[], status="completed"))
@@ -1325,7 +1325,7 @@ class TestResponsesReservedToolAliases:
         )
         response = SimpleNamespace(output=[], status="completed")
         monkeypatch.setattr(
-            "agent.codex_responses_adapter._normalize_codex_response",
+            "hermes_agent.agent.codex_responses_adapter._normalize_codex_response",
             lambda resp, issuer_kind=None, issuer_model=None: (msg, "tool_calls"),
         )
         normalized = transport.normalize_response(response)
@@ -1340,7 +1340,7 @@ class TestXaiReservedToolSearchAlias:
 
     @pytest.fixture
     def transport(self):
-        from agent.transports.codex import ResponsesApiTransport
+        from hermes_agent.agent.transports.codex import ResponsesApiTransport
         return ResponsesApiTransport()
 
     _TOOLS = [
@@ -1400,7 +1400,7 @@ class TestXaiReservedToolSearchAlias:
 
     def test_alias_composes_with_native_web_search_swap(self, transport, monkeypatch):
         """The bridge alias must survive the xAI web_search branch (#48108)."""
-        import agent.transports.codex as codex_mod
+        import hermes_agent.agent.transports.codex as codex_mod
 
         monkeypatch.setattr(codex_mod, "_xai_prefers_native_web_search", lambda: True)
         tools = list(self._TOOLS) + [
@@ -1439,7 +1439,7 @@ class TestXaiReservedToolSearchAlias:
         )
         response = SimpleNamespace(output=[], status="completed")
         monkeypatch.setattr(
-            "agent.codex_responses_adapter._normalize_codex_response",
+            "hermes_agent.agent.codex_responses_adapter._normalize_codex_response",
             lambda resp, issuer_kind=None, issuer_model=None: (msg, "tool_calls"),
         )
         # Pair the response with a real request so provenance is recorded.
@@ -1469,7 +1469,7 @@ class TestXaiReservedToolSearchAlias:
         )
         response = SimpleNamespace(output=[], status="completed")
         monkeypatch.setattr(
-            "agent.codex_responses_adapter._normalize_codex_response",
+            "hermes_agent.agent.codex_responses_adapter._normalize_codex_response",
             lambda resp, issuer_kind=None, issuer_model=None: (msg, "tool_calls"),
         )
         return transport.normalize_response(response)
@@ -1537,19 +1537,19 @@ class TestXaiWebSearchBackendPreference:
     """``_xai_prefers_native_web_search`` must honor web backend config."""
 
     def test_explicit_firecrawl_prefers_client(self, monkeypatch):
-        import agent.transports.codex as codex_mod
+        import hermes_agent.agent.transports.codex as codex_mod
 
         monkeypatch.setattr(
-            "agent.web_search_registry.get_active_search_provider",
+            "hermes_agent.agent.web_search_registry.get_active_search_provider",
             lambda: SimpleNamespace(name="firecrawl"),
         )
         assert codex_mod._xai_prefers_native_web_search() is False
 
     def test_explicit_search_backend_xai_prefers_native(self, monkeypatch):
-        import agent.transports.codex as codex_mod
+        import hermes_agent.agent.transports.codex as codex_mod
 
         monkeypatch.setattr(
-            "agent.web_search_registry.get_active_search_provider",
+            "hermes_agent.agent.web_search_registry.get_active_search_provider",
             lambda: SimpleNamespace(name="xai"),
         )
         assert codex_mod._xai_prefers_native_web_search() is True
@@ -1557,10 +1557,10 @@ class TestXaiWebSearchBackendPreference:
 
     def test_no_provider_legacy_fallback_xai(self, monkeypatch):
         """When no provider is registered, fall back to _get_search_backend."""
-        import agent.transports.codex as codex_mod
+        import hermes_agent.agent.transports.codex as codex_mod
 
         monkeypatch.setattr(
-            "agent.web_search_registry.get_active_search_provider",
+            "hermes_agent.agent.web_search_registry.get_active_search_provider",
             lambda: None,
         )
         monkeypatch.setattr(
@@ -1571,10 +1571,10 @@ class TestXaiWebSearchBackendPreference:
 
     def test_no_provider_legacy_fallback_non_xai(self, monkeypatch):
         """When no provider is registered and backend isn't xai, keep client."""
-        import agent.transports.codex as codex_mod
+        import hermes_agent.agent.transports.codex as codex_mod
 
         monkeypatch.setattr(
-            "agent.web_search_registry.get_active_search_provider",
+            "hermes_agent.agent.web_search_registry.get_active_search_provider",
             lambda: None,
         )
         monkeypatch.setattr(
@@ -1726,7 +1726,7 @@ class TestCodexTransportTimeout:
 class TestCodexTransportXaiReasoningEffort:
     @pytest.fixture
     def transport(self):
-        from agent.transports.codex import ResponsesApiTransport
+        from hermes_agent.agent.transports.codex import ResponsesApiTransport
         return ResponsesApiTransport()
 
     def test_grok_46_preserves_xhigh(self, transport):
@@ -1793,7 +1793,7 @@ class TestCodexTransportXaiServiceTierStrip:
 
     @pytest.fixture
     def transport(self):
-        from agent.transports.codex import ResponsesApiTransport
+        from hermes_agent.agent.transports.codex import ResponsesApiTransport
         return ResponsesApiTransport()
 
     def test_xai_strips_service_tier_from_request_overrides(self, transport):
@@ -1901,7 +1901,7 @@ class TestPreflightSlashEnumStrip:
     def test_grok_model_strips_slash_enum_values(self):
         """When the model name is Grok-family, slash-containing enum
         values are stripped so xAI doesn't 400 on the tool schema."""
-        from agent.codex_responses_adapter import _preflight_codex_api_kwargs
+        from hermes_agent.agent.codex_responses_adapter import _preflight_codex_api_kwargs
         kwargs = self._make_kwargs(
             "grok-4.3",
             ["Qwen/Qwen3.5-0.8B", "openai/gpt-oss-20b", "plain-id"],
@@ -1917,7 +1917,7 @@ class TestPreflightSlashEnumStrip:
 
     def test_aggregator_prefixed_grok_also_strips(self):
         """Aggregator-prefixed (x-ai/grok-*) names hit the same path."""
-        from agent.codex_responses_adapter import _preflight_codex_api_kwargs
+        from hermes_agent.agent.codex_responses_adapter import _preflight_codex_api_kwargs
         kwargs = self._make_kwargs(
             "x-ai/grok-4.3",
             ["Qwen/Qwen3.5-0.8B"],
@@ -1930,7 +1930,7 @@ class TestPreflightSlashEnumStrip:
         enums.  The safety-net must NOT strip there or we silently
         degrade tool-schema constraints on every codex_responses
         provider that isn't xAI."""
-        from agent.codex_responses_adapter import _preflight_codex_api_kwargs
+        from hermes_agent.agent.codex_responses_adapter import _preflight_codex_api_kwargs
         kwargs = self._make_kwargs(
             "gpt-5.5",
             ["Qwen/Qwen3.5-0.8B", "plain-id"],
@@ -1950,7 +1950,7 @@ def test_text_verbosity_reaches_responses_body_only_when_configured(transport):
     (its /responses rejects unknown top-level fields), and the chat_completions
     transport has no such field at all.
     """
-    from agent.transports import chat_completions
+    from hermes_agent.agent.transports import chat_completions
 
     msgs = [{"role": "user", "content": "hi"}]
     assert transport.build_kwargs(model="gpt-5.1", messages=msgs, text_verbosity="low")["text"] == {"verbosity": "low"}
@@ -1986,13 +1986,13 @@ class TestOpenAIReasoningWireProjection:
         """#75227: a disable the vocabulary cannot carry (Astra has no ``none``) is reported as an unsupported
         configuration — the model's default effort stays on — instead of silently omitted; once per model."""
         import logging
-        from agent.transports import codex as codex_transport
+        from hermes_agent.agent.transports import codex as codex_transport
         codex_transport._UNPROJECTABLE_DISABLE_WARNED.discard("gpt-6-astra")
-        with caplog.at_level(logging.WARNING, logger="agent.transports.codex"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.agent.transports.codex"):
             for _ in range(2):
                 assert self._reasoning(transport, "gpt-6-astra", {"enabled": False}) is None
         warned = [r.getMessage() for r in caplog.records
-                  if r.name == "agent.transports.codex" and r.levelno >= logging.WARNING]
+                  if r.name == "hermes_agent.agent.transports.codex" and r.levelno >= logging.WARNING]
         assert len(warned) == 1 and "gpt-6-astra" in warned[0], caplog.text
 
     @pytest.mark.parametrize("model", ["gpt-4o-mini", "gpt-4.1-mini", "openai/gpt-4o", "ft:gpt-4o-mini:acme::abc1"])

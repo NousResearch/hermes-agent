@@ -18,14 +18,14 @@ RUNTIME_URL = "https://bedrock-runtime.us-east-1.amazonaws.com"
 
 @pytest.fixture(autouse=True)
 def _fresh_state(monkeypatch):
-    from agent import context_default_record
+    from hermes_agent.agent import context_default_record
     monkeypatch.setattr(context_default_record, "_RECORDS", {})
-    monkeypatch.setattr("agent.bedrock_adapter.probe_bedrock_context_length", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_agent.agent.bedrock_adapter.probe_bedrock_context_length", lambda *a, **k: None)
 
 
 def _resolve_unknown_bedrock() -> int:
     """What the agent's compressor does when it builds the window."""
-    from agent.model_metadata import get_model_context_length
+    from hermes_agent.agent.model_metadata import get_model_context_length
     return get_model_context_length(UNKNOWN, base_url=RUNTIME_URL, provider="bedrock")
 
 

@@ -18,7 +18,7 @@ from hermes_agent.tui_gateway.compute_host import ComputeHost
 def test_routed_session_build_sees_the_profiles_external_secret_source(monkeypatch, tmp_path):
     """Two routed homes A→B→A, each with a ``secrets.command`` helper that is the ONLY holder of its
     provider key. Inside each build the scope resolves that profile's key and not the other's."""
-    from agent.secret_scope import get_secret, set_multiplex_active
+    from hermes_agent.agent.secret_scope import get_secret, set_multiplex_active
     from hermes_cli import env_loader
 
     launch = tmp_path / ".hermes"
@@ -26,7 +26,7 @@ def test_routed_session_build_sees_the_profiles_external_secret_source(monkeypat
     monkeypatch.setenv("HERMES_HOME", str(launch))
     monkeypatch.setenv("VAULT_ONLY_KEY", "from-launch-env")
     env_loader.reset_secret_source_cache()
-    monkeypatch.setattr("agent.secret_scope._MULTIPLEX_ACTIVE", False)
+    monkeypatch.setattr("hermes_agent.agent.secret_scope._MULTIPLEX_ACTIVE", False)
     set_multiplex_active(True)
 
     homes = {}

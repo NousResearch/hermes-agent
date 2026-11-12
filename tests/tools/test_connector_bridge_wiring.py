@@ -10,7 +10,7 @@ import logging
 
 import pytest
 
-from agent.tool_dispatch_helpers import _peel_bridge_call
+from hermes_agent.agent.tool_dispatch_helpers import _peel_bridge_call
 from hermes_agent.tools.connectors.gateway.bridge import ConnectorLeg, connector_describe
 from hermes_agent.tools.connectors.gateway.errors import GatewayAuthError
 from hermes_agent.tools.tool_search import (

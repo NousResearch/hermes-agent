@@ -13,8 +13,8 @@ from decimal import Decimal
 
 
 import hermes_agent.tui_gateway.server as srv
-import agent.billing_view as bv
-from agent.billing_view import BillingState, CardInfo, MonthlyCap, PaymentMethodInfo
+import hermes_agent.agent.billing_view as bv
+from hermes_agent.agent.billing_view import BillingState, CardInfo, MonthlyCap, PaymentMethodInfo
 
 
 def _call(method: str, params: dict) -> dict:

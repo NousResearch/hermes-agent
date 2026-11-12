@@ -12,7 +12,7 @@ import time
 from typing import Any, Dict, Iterable, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from agent.credential_pool import PooledCredential
+    from hermes_agent.agent.credential_pool import PooledCredential
 
 # A Codex ChatGPT-account model entitlement 400 is a plan property, not a window: bench the
 # (credential, model) pair until an explicit ``hermes auth reset`` clears model_cooldowns (#71970).
@@ -25,11 +25,11 @@ FAILURE_REASON_USAGE_WINDOW = "usage_window"
 def pool_failure_reason(reason: Any, error_context: Optional[dict[str, Any]], billing_unverified: bool) -> str:
     """The pool's failure reason for a rotation (*reason* is a ``FailoverReason``). A usage-window 402
     benches only the refused model; an ambiguous billing body is sized as transient, not a 1-hour bench."""
-    from agent.error_classifier import FailoverReason
+    from hermes_agent.agent.error_classifier import FailoverReason
     if reason == FailoverReason.billing and (error_context or {}).get("usage_window"):
         return FAILURE_REASON_USAGE_WINDOW
     if reason == FailoverReason.billing and billing_unverified:
-        from agent.credential_pool import FAILURE_REASON_BILLING_UNVERIFIED
+        from hermes_agent.agent.credential_pool import FAILURE_REASON_BILLING_UNVERIFIED
         return FAILURE_REASON_BILLING_UNVERIFIED
     return reason.value
 
@@ -78,7 +78,7 @@ class CredentialPoolModelCooldownMixin:
     ) -> bool:
         """Anthropic per-model 429s, and a Codex ChatGPT-account model entitlement 400: the
         account cannot use *model*, but the credential stays valid for every other model (#71970)."""
-        from agent.credential_pool import FAILURE_REASON_BILLING, FAILURE_REASON_BILLING_UNVERIFIED
+        from hermes_agent.agent.credential_pool import FAILURE_REASON_BILLING, FAILURE_REASON_BILLING_UNVERIFIED
 
         if not model:
             return False
@@ -102,7 +102,7 @@ class CredentialPoolModelCooldownMixin:
         would otherwise be re-selected for the very model that just failed.
         Caller holds the lock.
         """
-        from agent.credential_pool import _exhausted_ttl, _normalize_error_context
+        from hermes_agent.agent.credential_pool import _exhausted_ttl, _normalize_error_context
 
         if failure_reason == "model_entitlement":
             until = time.time() + MODEL_ENTITLEMENT_BENCH_SECONDS
@@ -127,7 +127,7 @@ class CredentialPoolModelCooldownMixin:
         ends. Entitlement benches (a year: the plan lacks the model) aren't windows that reset, so
         they're left out. Read-only: never clears or persists a cooldown.
         """
-        from agent.credential_pool import STATUS_DEAD, _exhausted_until
+        from hermes_agent.agent.credential_pool import STATUS_DEAD, _exhausted_until
 
         now = time.time()
         with self._lock:

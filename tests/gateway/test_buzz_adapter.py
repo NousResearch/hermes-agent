@@ -141,7 +141,7 @@ def multiplex_scope():
     tokens = []
 
     def install(scope=None):
-        from agent.secret_scope import set_multiplex_active, set_secret_scope
+        from hermes_agent.agent.secret_scope import set_multiplex_active, set_secret_scope
 
         set_multiplex_active(True)
         tokens.append(set_secret_scope(scope or {}))
@@ -149,7 +149,7 @@ def multiplex_scope():
 
     yield install
 
-    from agent.secret_scope import reset_secret_scope, set_multiplex_active
+    from hermes_agent.agent.secret_scope import reset_secret_scope, set_multiplex_active
 
     for token in reversed(tokens):
         reset_secret_scope(token)
@@ -238,7 +238,7 @@ class TestMultiplexProfileScope:
     ):
         """Multiplex ON but no scope (the DEFAULT profile constructs
         unscoped): env is its own bridge output and still wins."""
-        from agent.secret_scope import set_multiplex_active
+        from hermes_agent.agent.secret_scope import set_multiplex_active
         from hermes_agent.gateway.config import PlatformConfig
 
         set_multiplex_active(True)
@@ -484,7 +484,7 @@ class TestMultiplexProfileScope:
         its env-provided auth tag still applies (legacy behavior kept)."""
         import asyncio as _asyncio
 
-        from agent.secret_scope import set_multiplex_active
+        from hermes_agent.agent.secret_scope import set_multiplex_active
 
         set_multiplex_active(True)
         try:
@@ -2944,7 +2944,7 @@ class TestCredentialResolution:
             _resolve_auth_tag()
 
     def test_scoped_credentials_and_tag_do_not_borrow_ambient_profile(self, monkeypatch, tmp_path):
-        from agent import secret_scope as ss
+        from hermes_agent.agent import secret_scope as ss
 
         ambient_tag = ["auth", "a" * 64, "", "d" * 128]
         scoped_tag = ["auth", "b" * 64, "", "c" * 128]
@@ -2972,7 +2972,7 @@ class TestCredentialResolution:
         assert json.loads(_resolve_auth_tag()) == tag
 
     def test_empty_multiplex_scope_never_autodiscovers_ambient_credentials(self, monkeypatch, tmp_path):
-        from agent import secret_scope as ss
+        from hermes_agent.agent import secret_scope as ss
 
         tag = ["auth", "a" * 64, "", "d" * 128]
         (tmp_path / "general_credentials.json").write_text(

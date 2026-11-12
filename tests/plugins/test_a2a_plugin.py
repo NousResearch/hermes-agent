@@ -54,7 +54,7 @@ class TestConnectionGateScope:
     def test_secondary_profile_never_borrows_launch_env_port(self, tmp_path, monkeypatch):
         """A→B→A under multiplex: profile A (own A2A_PORT) connects, profile B (none) does not even though
         os.environ carries the launch value, then A again. The tools gate follows the same scope."""
-        import agent.secret_scope as ss
+        import hermes_agent.agent.secret_scope as ss
         import hermes_constants
         from plugins.platforms import a2a
 
@@ -275,9 +275,9 @@ class TestInjectionFilter:
 class TestOutboundRedaction:
     def test_every_canonical_credential_class_is_scrubbed(self):
         """Invariant: redact_outbound masks everything redact_sensitive_text masks. A2A ships text to a
-        REMOTE peer, so a private subset here silently drops every prefix later added to agent/redact.py.
+        REMOTE peer, so a private subset here silently drops every prefix later added to hermes_agent/agent/redact.py.
         Corpus: one synthetic token per registered prefix pattern, built from the pattern's literal prefix."""
-        from agent import redact as R
+        from hermes_agent.agent import redact as R
 
         bodies = ("Qq7zP2mX9vLk4nRt8wYb1cDf6gHj3sA0", "QQ7ZP2MX9VLK4NRT", "b-Qq7zP2mX9vLk4nRt8wYb1cDf6gHj3sA0",
                   ".Qq7zP2mX9vLk4nRt8wYb1cDf6gHj3sA0", "1-Qq7zP2mX9vLk4nRt8wYb1cDf6gHj3sA0",
@@ -1281,7 +1281,7 @@ class TestInboundRoundTrip:
 
     def test_multiplex_adapter_keeps_profile_scoped_peer_tokens(self, monkeypatch):
         """A secondary listener must not authenticate with the default profile's tokens."""
-        from agent.secret_scope import (
+        from hermes_agent.agent.secret_scope import (
             reset_secret_scope,
             set_multiplex_active,
             set_secret_scope,
@@ -1890,7 +1890,7 @@ def multiplex_scope():
     tokens = []
 
     def install(scope=None):
-        from agent.secret_scope import set_multiplex_active, set_secret_scope
+        from hermes_agent.agent.secret_scope import set_multiplex_active, set_secret_scope
 
         set_multiplex_active(True)
         tokens.append(set_secret_scope(scope or {}))
@@ -1898,7 +1898,7 @@ def multiplex_scope():
 
     yield install
 
-    from agent.secret_scope import reset_secret_scope, set_multiplex_active
+    from hermes_agent.agent.secret_scope import reset_secret_scope, set_multiplex_active
 
     for token in reversed(tokens):
         reset_secret_scope(token)
@@ -1943,7 +1943,7 @@ class TestMultiplexConstructionScope:
     ):
         """Multiplex ON but no scope (the DEFAULT profile constructs
         unscoped): env is its own bridge output and still wins."""
-        from agent.secret_scope import set_multiplex_active
+        from hermes_agent.agent.secret_scope import set_multiplex_active
         from plugins.platforms.a2a.adapter import A2AAdapter
         from hermes_agent.gateway.config import PlatformConfig
 

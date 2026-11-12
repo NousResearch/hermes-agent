@@ -14,7 +14,7 @@ import tempfile
 import threading
 import time
 
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 from hermes_constants import is_termux as _is_termux_environment
 from typing import Optional
 

@@ -68,7 +68,7 @@ def _env_timezone() -> str:
     """``HERMES_TIMEZONE`` when it may speak for the active profile. Under the multiplexed
     gateway the env var holds only the DEFAULT profile's value (bridged from its config.yaml at
     startup), so every routed profile must read its own config.yaml instead."""
-    from agent.secret_scope import is_multiplex_active  # lazy: secret_scope pulls in more than a clock needs
+    from hermes_agent.agent.secret_scope import is_multiplex_active  # lazy: secret_scope pulls in more than a clock needs
 
     if is_multiplex_active():
         return ""

@@ -142,7 +142,7 @@ def _session_toolsets(authority, ref):
     agent = authority.agent(ref)
     if agent is not None:
         return getattr(agent, 'enabled_toolsets', None), getattr(agent, 'disabled_toolsets', None)
-    from agent.skill_utils import parse_config_string_list
+    from hermes_agent.agent.skill_utils import parse_config_string_list
     from hermes_agent.gateway.session_policy import policy_for_source
     from hermes_agent.toolsets import session_disabled_toolsets
     policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)

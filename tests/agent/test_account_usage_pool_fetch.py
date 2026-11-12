@@ -16,8 +16,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import httpx
 import pytest
 
-from agent import account_usage
-from agent.account_usage import fetch_account_usage
+from hermes_agent.agent import account_usage
+from hermes_agent.agent.account_usage import fetch_account_usage
 
 
 def _b64(part: dict) -> str:
@@ -170,7 +170,7 @@ def test_anthropic_fetch_honors_explicit_api_key_and_marks_model_scoped_windows(
 def test_read_only_fetch_remembered_under_identity_slot(monkeypatch, tmp_path):
     """A per-credential fetch's result lands in THAT account's cache slot (readable by
     ``cached_account_usage(identity_id=...)``) and never in the provider-wide legacy slot."""
-    from agent.account_usage_cache import _snapshots, cached_account_usage
+    from hermes_agent.agent.account_usage_cache import _snapshots, cached_account_usage
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
     _snapshots.clear()

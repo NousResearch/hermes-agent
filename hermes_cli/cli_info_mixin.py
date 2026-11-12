@@ -15,7 +15,7 @@ import threading
 import time
 from typing import Any, NamedTuple
 
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 from hermes_constants import is_termux as _is_termux_environment
 from rich.markup import escape as _escape
 from utils import base_url_hostname
@@ -105,7 +105,7 @@ class BannerPlan(NamedTuple):
 def banner_plan(cli, console) -> BannerPlan:
     """The welcome banner's plan. The compact banner (``banner_kw`` None) is for a narrow terminal,
     ``display.compact``, or a gateway session with no snapshot yet."""
-    from agent.context_pin import agent_context_marker
+    from hermes_agent.agent.context_pin import agent_context_marker
     from hermes_cli.gateway_tools_notify import gateway_store
     store = gateway_store(cli)
     inventory = store.banner_inventory() if store is not None else None
@@ -222,7 +222,7 @@ class CLIInfoMixin:
                 self._show_tool_availability_warnings()
 
         # Low context warning — tied to the runtime guard so guidance cannot drift.
-        from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, is_local_endpoint
+        from hermes_agent.agent.model_metadata import MINIMUM_CONTEXT_LENGTH, is_local_endpoint
         if ctx_len and ctx_len < MINIMUM_CONTEXT_LENGTH:
             self._console_print()
             self._console_print(f"[yellow]{t('cli.banner.context_too_low', tokens=f'{ctx_len:,}')}[/]")
@@ -254,7 +254,7 @@ class CLIInfoMixin:
         # Project-local skills one-liner: trusted → count; untrusted-with-skills → point at
         # `hermes skills trust`. Never raises.
         try:
-            from agent.skill_utils import (
+            from hermes_agent.agent.skill_utils import (
                 get_project_skills_dirs, get_untrusted_project_skills_root, iter_skill_index_files)
             _proj_dirs = get_project_skills_dirs()
             if _proj_dirs:
@@ -311,7 +311,7 @@ class CLIInfoMixin:
                     _row(cmd, info['description'], 22)
             else:
                 _cprint(f"\n  {t('cli.help.no_skill_commands')}")
-            # Skills whose name is a built-in command never get a /<name> (agent.skill_commands guard).
+            # Skills whose name is a built-in command never get a /<name> (hermes_agent.agent.skill_commands guard).
             for note in gateway_plugin_commands.skill_notes(self):
                 _cprint(f"    {_DIM}⚠ {note}{_RST}")
             _cprint("")
@@ -635,7 +635,7 @@ class CLIInfoMixin:
             print(f"  {t('cli.usage.reset_wrong_provider')}")
             print(f"  {t('cli.usage.reset_switch_hint')}")
             return
-        from agent.account_usage import redeem_codex_reset_credit
+        from hermes_agent.agent.account_usage import redeem_codex_reset_credit
 
         print(f"  {t('cli.usage.checking_reset_credits')}")
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _pool:
@@ -652,7 +652,7 @@ class CLIInfoMixin:
     def _show_context_breakdown(self, cmd_original: str = ""):
         """`/context [all]` — 5×20 glyph grid (cell ≈ 1% of the window) plus an estimated
         per-category table; `all` appends per-skill / per-toolset costs. Read-only: same chars/4
-        engine as the desktop popover (agent.context_breakdown) — no provider calls, no cache impact."""
+        engine as the desktop popover (hermes_agent.agent.context_breakdown) — no provider calls, no cache impact."""
         from hermes_cli.gateway_side import connection_for
         if (connection := connection_for(self)) is not None:
             return self._show_gateway_context_breakdown(connection)
@@ -663,7 +663,7 @@ class CLIInfoMixin:
         args = cmd_original.split(maxsplit=1)[1].strip().lower() if " " in cmd_original else ""
         expanded = args in {"all", "full", "details"}
 
-        from agent.context_breakdown import (
+        from hermes_agent.agent.context_breakdown import (
             compute_context_details, compute_session_context_breakdown,
             render_context_breakdown_lines)
         try:
@@ -679,7 +679,7 @@ class CLIInfoMixin:
             except Exception:
                 details = {"skills": [], "toolsets": []}
 
-        from agent.context_file_sources import context_file_sources_for_agent, render_context_file_lines
+        from hermes_agent.agent.context_file_sources import context_file_sources_for_agent, render_context_file_lines
         try:
             file_lines = render_context_file_lines(context_file_sources_for_agent(self.agent))
         except Exception:
@@ -695,8 +695,8 @@ class CLIInfoMixin:
     def _show_gateway_context_breakdown(self, connection):
         """Main's ``/context`` grid and table over the gateway agent's own breakdown
         (``session.context_breakdown``): the session's prompt, tools and transcript live there."""
-        from agent.context_breakdown import render_context_breakdown_lines
-        from agent.context_file_sources import render_context_file_lines
+        from hermes_agent.agent.context_breakdown import render_context_breakdown_lines
+        from hermes_agent.agent.context_file_sources import render_context_file_lines
         from hermes_cli.gateway_client import GatewayClientError
         try:
             payload = connection.call("session.context_breakdown", session_id=self.session_id)
@@ -742,7 +742,7 @@ class CLIInfoMixin:
 
         rl_state = agent.get_rate_limit_state()
         if rl_state and rl_state.has_data:
-            from agent.rate_limit_tracker import format_rate_limit_display
+            from hermes_agent.agent.rate_limit_tracker import format_rate_limit_display
             print()
             print(format_rate_limit_display(rl_state))
             print()
@@ -773,9 +773,9 @@ class CLIInfoMixin:
         _label_row("cli.usage.label_api_calls", f"{calls:>10,}")
         _label_row("cli.usage.label_session_duration", f"{elapsed:>10}")
         print(f"  {'─' * 40}")
-        from agent.context_breakdown import context_display_source
+        from hermes_agent.agent.context_breakdown import context_display_source
         mark = "~" if context_display_source(compressor) != "provider_usage" else ""
-        from agent.context_pin import agent_context_suffix
+        from hermes_agent.agent.context_pin import agent_context_suffix
         pin_suffix = agent_context_suffix(agent)  # " (pinned)" / " (fallback)"
         print(f"  {t('cli.usage.label_current_context'):<17} {mark}{last_prompt:,} / {ctx_len:,} ({mark}{pct:.0f}%){pin_suffix}")
         print(f"  {t('cli.usage.label_messages'):<17} {len(self.conversation_history)}")
@@ -804,7 +804,7 @@ class CLIInfoMixin:
         provider = self._agent_or_self("provider")
         if not provider:
             return False
-        from agent.account_usage import fetch_account_usage, render_account_usage_lines
+        from hermes_agent.agent.account_usage import fetch_account_usage, render_account_usage_lines
         account_snapshot = None
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _pool:
             try:
@@ -1048,7 +1048,7 @@ class CLIInfoMixin:
                 from hermes_cli.gateway_plugin_commands import invalidate
                 invalidate(self)  # /help, completion and dispatch read the rescanned list
             else:
-                from agent.skill_commands import reload_skills
+                from hermes_agent.agent.skill_commands import reload_skills
                 result = reload_skills()
             added = result.get("added", [])      # [{"name", "description"}, ...]
             removed = result.get("removed", [])

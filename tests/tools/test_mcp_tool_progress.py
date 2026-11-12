@@ -34,7 +34,7 @@ def test_mcp_progress_notifications_reach_tool_progress_callback(monkeypatch, tm
         encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(home))
 
-    from agent.tool_progress_relay import bound_tool_progress
+    from hermes_agent.agent.tool_progress_relay import bound_tool_progress
     from hermes_agent.tools import mcp_tool_discovery as disc
     from hermes_agent.tools import mcp_tool_loop as _loop
     from hermes_agent.tools.registry import registry
@@ -59,7 +59,7 @@ def test_mcp_progress_notifications_reach_tool_progress_callback(monkeypatch, tm
 
 
 def test_progress_throttle_is_per_call_and_always_passes_first_and_final(monkeypatch):
-    from agent import tool_progress_relay as relay
+    from hermes_agent.agent import tool_progress_relay as relay
 
     clock = [0.0]
     monkeypatch.setattr(relay.time, "monotonic", lambda: 100.0 + clock[0] / 8)

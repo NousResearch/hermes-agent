@@ -43,7 +43,7 @@ def test_editor_freeze_follows_the_connection_owner_not_the_callers_scope(server
     outside the session's context still publishes into the editor scope the key names, so the
     freeze must be judged by that same owner, never by the bare name in the caller's scope."""
     import threading
-    from agent.secret_scope import reset_multiplex_context, set_multiplex_context
+    from hermes_agent.agent.secret_scope import reset_multiplex_context, set_multiplex_context
     from hermes_agent.tools.registry import registry
     from hermes_agent.tools.mcp_tool import _servers
     from hermes_agent.tools.mcp_tool_registration import _register_server_tools

@@ -6,10 +6,10 @@ import re
 
 from typing import Any, Dict, Optional
 
-from agent.context_compressor import (
+from hermes_agent.agent.context_compressor import (
     _LEAN_RECOVERY_HEADING, _LEAN_USER_MESSAGES_HEADING, ContextCompressor, is_compaction_summary_message,
 )
-from agent.message_content import flatten_message_text
+from hermes_agent.agent.message_content import flatten_message_text
 
 
 _COMPACTION_INTERNAL_FIELDS = (
@@ -59,7 +59,7 @@ def project_compaction_message_for_display(message: dict[str, Any]) -> Optional[
     # the unwrap, or a reopened chat would redraw it as an ordinary user bubble with no refused notice
     # (#149708 review): the model-facing handoff is gone, the user's live ask survives as a greyed
     # refused block. Every other carrier drops its internal ``display_kind`` as before.
-    from agent.turn_failure_copy import CONTENT_REFUSED_DISPLAY_KIND
+    from hermes_agent.agent.turn_failure_copy import CONTENT_REFUSED_DISPLAY_KIND
     if projected.get("display_kind") != CONTENT_REFUSED_DISPLAY_KIND:
         projected.pop("display_kind", None)
     return projected

@@ -151,7 +151,7 @@ def _emit_execution_state(
 ) -> None:
     """Project durable state to monitoring without affecting ledger behavior."""
     try:
-        from agent.monitoring.cron_health import emit_execution_state
+        from hermes_agent.agent.monitoring.cron_health import emit_execution_state
 
         emit_execution_state(record, delivery_outcome=delivery_outcome)
     except Exception:

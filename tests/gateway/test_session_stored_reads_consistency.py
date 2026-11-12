@@ -12,7 +12,7 @@ from tests.gateway.test_session_stored_reads_bounds import _session
 
 @pytest.mark.asyncio
 async def test_a_compaction_between_the_cursor_lookup_and_the_page_read_skips_nothing(tmp_path, monkeypatch):
-    from agent.context_compressor import SUMMARY_PREFIX
+    from hermes_agent.agent.context_compressor import SUMMARY_PREFIX
     with _session(tmp_path, monkeypatch) as (db, _authority, owner, ref, target):
         for i in (1, 2, 3):
             db.append_message(target, 'user', f'question {i}')
@@ -72,7 +72,7 @@ async def test_a_cursor_past_sqlites_integer_range_is_invalid_params(tmp_path, m
 
 @pytest.mark.asyncio
 async def test_a_reply_a_later_compaction_wraps_in_a_summary_carrier_is_not_shown_twice(tmp_path, monkeypatch):
-    from agent.context_compressor import (
+    from hermes_agent.agent.context_compressor import (
         SUMMARY_PREFIX, _MERGED_PRIOR_CONTEXT_HEADER, _MERGED_SUMMARY_DELIMITER, _SUMMARY_END_MARKER,
     )
     with _session(tmp_path, monkeypatch) as (db, _authority, owner, ref, target):
@@ -158,7 +158,7 @@ class _Rows:
 async def test_a_compaction_committing_inside_a_lineage_read_drops_nothing(tmp_path, monkeypatch):
     """A rotated lineage reads its display rows and its removed rows' identities; a compaction that carries
     the tip's last reply commits between those two statements. Both must see one generation."""
-    from agent.context_compressor import SUMMARY_PREFIX
+    from hermes_agent.agent.context_compressor import SUMMARY_PREFIX
     from hermes_agent.gateway.session_authority import initialize_session_authority
     from tests.gateway.test_session_stored_reads import _legacy_owner, _native
 

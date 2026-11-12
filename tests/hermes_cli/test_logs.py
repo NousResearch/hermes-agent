@@ -166,7 +166,7 @@ class TestReadTail:
 def _python_log_line(logger_name: str) -> str:
     import logging
 
-    from agent.redact import RedactingFormatter
+    from hermes_agent.agent.redact import RedactingFormatter
     from hermes_logging import _LOG_FORMAT
 
     record = logging.LogRecord(logger_name, logging.WARNING, __file__, 1, "sample", None, None)
@@ -207,8 +207,8 @@ def _handoff_log_line() -> str:
 def _log_file_samples() -> dict:
     """One line per LOG_FILES entry, produced by that file's real writer where Python can run it."""
     return {
-        "agent": _python_log_line("run_agent"),
-        "errors": _python_log_line("run_agent"),
+        "agent": _python_log_line("hermes_agent.run_agent"),
+        "errors": _python_log_line("hermes_agent.run_agent"),
         "gateway": _python_log_line("hermes_agent.gateway.run"),
         "gui": _python_log_line("hermes_cli.web_server"),
         # Written by TypeScript; apps/desktop/electron/desktop-log-line.test.ts pins the same shape.

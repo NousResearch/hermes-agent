@@ -47,7 +47,7 @@ def test_recovery_cleanup_never_restores_a_sidecar(timestamps, embedded, real_te
 def responses_agent(tmp_path, monkeypatch):
     """Use the real agent/Responses converter; replace only the network call."""
     from hermes_agent.hermes_state import SessionDB
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     captured = []
     responses = []
@@ -59,7 +59,7 @@ def responses_agent(tmp_path, monkeypatch):
     )
     # Titling is not under test; its daemon thread would outlive the turn holding ``db`` and race
     # the close below (a cross-thread sqlite reopen at interpreter shutdown crashed CI: #113186).
-    monkeypatch.setattr("agent.title_generator.maybe_auto_title", lambda *args, **kwargs: None)
+    monkeypatch.setattr("hermes_agent.agent.title_generator.maybe_auto_title", lambda *args, **kwargs: None)
 
     def respond(kwargs, **unused):
         captured.append(deepcopy(kwargs))

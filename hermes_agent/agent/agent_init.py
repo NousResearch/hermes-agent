@@ -22,25 +22,25 @@ from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import parse_qs, urlparse, urlunparse
 
-from agent.context_compressor import ContextCompressor
-from agent.agent_init_fallback import _fallback_entries, _init_fallback_chain, recompute_init_fallback_api_mode
-from agent.agent_init_params import _CALLBACK_PARAMS, _GATEWAY_IDENTITY_PARAMS, _PASSTHROUGH_PARAMS
-from agent.agent_runtime_helpers import _ra
-from agent.iteration_budget import IterationBudget, normalize_budget_warning_ratio
-from agent.memory_context import StreamingContextScrubber
-from agent.memory_provider import is_core_memory_provider
-from agent.session_activity import ActivityProvenance
-from agent.model_metadata import (
+from hermes_agent.agent.context_compressor import ContextCompressor
+from hermes_agent.agent.agent_init_fallback import _fallback_entries, _init_fallback_chain, recompute_init_fallback_api_mode
+from hermes_agent.agent.agent_init_params import _CALLBACK_PARAMS, _GATEWAY_IDENTITY_PARAMS, _PASSTHROUGH_PARAMS
+from hermes_agent.agent.agent_runtime_helpers import _ra
+from hermes_agent.agent.iteration_budget import IterationBudget, normalize_budget_warning_ratio
+from hermes_agent.agent.memory_context import StreamingContextScrubber
+from hermes_agent.agent.memory_provider import is_core_memory_provider
+from hermes_agent.agent.session_activity import ActivityProvenance
+from hermes_agent.agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH, fetch_model_metadata, is_local_endpoint
 )
-from agent.agent_init_ollama import _clamp_compressor_to_ollama_num_ctx, _configure_ollama_num_ctx
-from agent.agent_init_compression_notice import _emit_compression_summary
-from agent.primary_runtime_snapshot import _snapshot_primary_runtime
-from agent.process_bootstrap import _install_safe_stdio
-from agent.subdirectory_hints import SubdirectoryHintTracker
-from agent.agent_init_memory_provider import _memory_provider_init_kwargs, resolve_memory_provider
-from agent.think_scrubber import StreamingThinkScrubber
-from agent.tool_guardrails import (
+from hermes_agent.agent.agent_init_ollama import _clamp_compressor_to_ollama_num_ctx, _configure_ollama_num_ctx
+from hermes_agent.agent.agent_init_compression_notice import _emit_compression_summary
+from hermes_agent.agent.primary_runtime_snapshot import _snapshot_primary_runtime
+from hermes_agent.agent.process_bootstrap import _install_safe_stdio
+from hermes_agent.agent.subdirectory_hints import SubdirectoryHintTracker
+from hermes_agent.agent.agent_init_memory_provider import _memory_provider_init_kwargs, resolve_memory_provider
+from hermes_agent.agent.think_scrubber import StreamingThinkScrubber
+from hermes_agent.agent.tool_guardrails import (
     ToolCallGuardrailConfig, ToolCallGuardrailController
 )
 from hermes_cli.config import DEFAULT_CONFIG, cfg_get
@@ -51,7 +51,7 @@ from hermes_agent.hermes_state_ids import new_session_id
 from utils import base_url_host_matches, is_truthy_value
 
 # Same logger name as run_agent so caplog/patches on "run_agent" see our records.
-logger = logging.getLogger("run_agent")
+logger = logging.getLogger("hermes_agent.run_agent")
 
 
 def _provider_default_routes(provider: str) -> set[str]:
@@ -277,7 +277,7 @@ _EXPLICIT_API_MODES = {
 def _resolve_api_mode(agent, api_mode, provider_name, base_url):
     """Set ``agent.api_mode`` (and provider rewrites) — ordered ladder, first match wins."""
     from hermes_cli.providers import is_actual_route
-    from agent.transports import registered_api_modes
+    from hermes_agent.agent.transports import registered_api_modes
     host, url = agent._base_url_hostname, agent._base_url_lower
     if is_actual_route(agent.provider, base_url):
         agent.api_mode = "chat_completions"
@@ -333,7 +333,7 @@ def _finalize_routing(agent, api_mode, credential_pool):
     # #63425).
     if credential_pool is not None:
         try:
-            from agent.credential_pool import credential_pool_matches_provider
+            from hermes_agent.agent.credential_pool import credential_pool_matches_provider
             if not credential_pool_matches_provider(
                 credential_pool, agent.provider, base_url=agent.base_url,
             ):
@@ -448,7 +448,7 @@ _CONTROL_STATE: dict[str, Any] = {
     "_delegate_depth": 0,
     "_active_children": list,
     "_active_children_lock": threading.Lock,
-    # Background review (agent/background_review.py): the run is installed before the worker
+    # Background review (hermes_agent/agent/background_review.py): the run is installed before the worker
     # starts and fences its first provider phase; the agent pointer enables interrupt fan-out.
     "_background_review_agent": None,
     "_background_review_run": None,
@@ -573,8 +573,8 @@ def _init_prompt_cache_config(agent):
     agent._cache_ttl = "5m"
     try:
         from hermes_cli.config import load_config_readonly as _load_pc_cfg
-        from agent.agent_runtime_helpers import cache_ttl_means_disabled
-        from agent.prompt_caching import AUTO_CACHE_TTL, auto_cache_ttl_for_source
+        from hermes_agent.agent.agent_runtime_helpers import cache_ttl_means_disabled
+        from hermes_agent.agent.prompt_caching import AUTO_CACHE_TTL, auto_cache_ttl_for_source
         _pc_cfg = _load_pc_cfg().get("prompt_caching", {}) or {}
         _ttl = _pc_cfg.get("cache_ttl", "5m")
         if _ttl in {"5m", "1h"}:
@@ -582,7 +582,7 @@ def _init_prompt_cache_config(agent):
         elif _ttl == AUTO_CACHE_TTL:
             # Decided once per session from its source (a delegated child is clamped to 5m again
             # in delegate_tool regardless).
-            from agent.session_source import session_source_for
+            from hermes_agent.agent.session_source import session_source_for
             agent._cache_ttl = auto_cache_ttl_for_source(session_source_for(getattr(agent, "platform", None)))
         elif cache_ttl_means_disabled(_ttl):
             agent._use_prompt_caching = False
@@ -605,7 +605,7 @@ def _init_turn_state(agent, run_budget_seconds):
     # Wall-clock run budget per turn: constructor arg wins, else agent.run_budget_seconds
     # (in _apply_agent_section). None = fully off (no clock reads, injection, or capping).
     agent.run_budget_seconds = _normalize_run_budget_seconds(run_budget_seconds)
-    from agent.credits_tracker import new_credits_latch
+    from hermes_agent.agent.credits_tracker import new_credits_latch
     agent._credits_latch = new_credits_latch()  # threshold-notice latch (sticky keys + gates)
 
 
@@ -629,7 +629,7 @@ def _setup_logging(agent):
 def _print_key_banner(key, label: str, warn_missing: bool = False) -> None:
     """Masked credential line. A callable ``key`` (Entra ID, Vertex OAuth, key_cmd, ...) is labelled
     by its tagged source and never invoked. Keys ≤ 12 chars (incl. "dummy-key") are not shown."""
-    from agent.credential_source import credential_label
+    from hermes_agent.agent.credential_source import credential_label
     if source_label := credential_label(key):
         print(f"🔑 Using credentials: {source_label}")
     elif isinstance(key, str) and len(key) > 12:
@@ -640,14 +640,14 @@ def _print_key_banner(key, label: str, warn_missing: bool = False) -> None:
 
 def _init_anthropic_client(agent, api_key, base_url, _provider_timeout):
     """anthropic_messages: native Anthropic SDK (or AnthropicBedrock for Bedrock+Claude)."""
-    from agent.anthropic_adapter import build_anthropic_client
-    from agent.anthropic_credentials import resolve_anthropic_token
+    from hermes_agent.agent.anthropic_adapter import build_anthropic_client
+    from hermes_agent.agent.anthropic_credentials import resolve_anthropic_token
     agent.client = None
     agent._client_kwargs = {}
     agent._anthropic_base_url = base_url
     if agent.provider == "bedrock":
         # AnthropicBedrock SDK for full feature parity (prompt caching, thinking budgets).
-        from agent.bedrock_adapter import bind_bedrock_runtime
+        from hermes_agent.agent.bedrock_adapter import bind_bedrock_runtime
         bind_bedrock_runtime(agent, base_url, "anthropic_messages")
         if not agent.quiet_mode:
             print(f"🤖 AI Agent initialized with model: {agent.model} (AWS Bedrock + AnthropicBedrock SDK, {agent._bedrock_region})")
@@ -679,7 +679,7 @@ def _init_anthropic_client(agent, api_key, base_url, _provider_timeout):
     # providers (MiniMax, Kimi, GLM, LiteLLM proxies) that accept the Anthropic protocol must never
     # trip OAuth code paths — doing so injects Claude-Code identity headers and system prompts that
     # cause 401/403 on their endpoints. See #1739.
-    from agent.anthropic_credentials import anthropic_route_is_oauth
+    from hermes_agent.agent.anthropic_credentials import anthropic_route_is_oauth
     agent._is_anthropic_oauth = anthropic_route_is_oauth(base_url, effective_key, provider=agent.provider)
     agent._anthropic_client = build_anthropic_client(effective_key, base_url, timeout=_provider_timeout)
     if not agent.quiet_mode:
@@ -689,7 +689,7 @@ def _init_anthropic_client(agent, api_key, base_url, _provider_timeout):
 
 def _init_moa_client(agent, api_key):
     """provider == "moa": virtual Mixture-of-Agents facade, no real HTTP client."""
-    from agent.moa_loop import bind_moa_runtime
+    from hermes_agent.agent.moa_loop import bind_moa_runtime
     # build_moa_facade relays "moa.*" events through tool_progress_callback so every surface
     # shows each reference's answer before the aggregator acts. Display-only; shared with
     # fallback-restore so a restored facade keeps emitting.
@@ -706,7 +706,7 @@ def _init_moa_client(agent, api_key):
 
 def _init_bedrock_client(agent, base_url):
     """bedrock_converse: boto3 directly, no OpenAI client."""
-    from agent.bedrock_adapter import bind_bedrock_runtime
+    from hermes_agent.agent.bedrock_adapter import bind_bedrock_runtime
     bind_bedrock_runtime(agent, base_url, "bedrock_converse")
     if not agent.quiet_mode:
         _gr_label = " + Guardrails" if agent._bedrock_guardrail_config else ""
@@ -729,7 +729,7 @@ def _explicit_client_kwargs(agent, api_key, base_url, _provider_timeout) -> dict
     if _is_external_process_provider(agent.provider):
         client_kwargs["command"] = agent.acp_command
         client_kwargs["args"] = agent.acp_args
-    from agent.provider_route_hooks import route_answer
+    from hermes_agent.agent.provider_route_hooks import route_answer
     _headers_for = _host_default_headers_factory(base_url)
     if _headers_for is not None:
         client_kwargs["default_headers"] = _headers_for(api_key, base_url)
@@ -753,7 +753,7 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
     no-provider diagnostic. ``None`` when the chain landed on a MoA preset: the facade is
     already bound and there is no OpenAI client to construct.
     """
-    from agent.auxiliary_client import resolve_provider_client
+    from hermes_agent.agent.auxiliary_client import resolve_provider_client
     _routed_client, _ = resolve_provider_client(
         agent.provider or "auto", model=agent.model, raw_codex=True)
     if _routed_client is not None:
@@ -797,7 +797,7 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
             # The chokepoint handed back the preset's aggregator client, which only proves the
             # preset resolves and its aggregator has credentials. A MoA entry means the preset
             # itself (same as ``provider: moa`` in config), so bind the facade, not the aggregator.
-            from agent.moa_loop import bind_moa_runtime
+            from hermes_agent.agent.moa_loop import bind_moa_runtime
             bind_moa_runtime(agent, _fb["model"])
             return None
         agent.provider = agent.requested_provider = _fb["provider"]
@@ -810,7 +810,7 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
     _pool = None
     if _explicit and _explicit != "auto":
         with suppress(Exception):
-            from agent.credential_pool import load_pool
+            from hermes_agent.agent.credential_pool import load_pool
             _pool = load_pool(_explicit)
             _pool_exhausted = _pool.has_credentials() and not _pool.has_available(model=agent.model)
     if _refused_entries or _pool_exhausted:
@@ -830,7 +830,7 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
     # names the 429 reset time, #56810); raise before the missing-credentials branch so a genuine
     # 402 is never described as a missing key or a transient rate limit.
     if _pool_exhausted:
-        from agent.auxiliary_unavailable import (
+        from hermes_agent.agent.auxiliary_unavailable import (
             ProviderCredentialsExhaustedError,
             pool_billing_message,
             pool_cooldown_message,
@@ -843,10 +843,10 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
             raise ProviderCredentialsExhaustedError(_exhausted_message, provider=_explicit)
     if _explicit and _explicit not in {"auto", "openrouter", "custom"}:
         # Explicit non-OpenRouter provider with no creds and no usable fallback: fail fast.
-        from agent.auxiliary_unavailable import ProviderNotConfiguredError, missing_provider_credentials_message
+        from hermes_agent.agent.auxiliary_unavailable import ProviderNotConfiguredError, missing_provider_credentials_message
         raise ProviderNotConfiguredError(missing_provider_credentials_message(_explicit))
     from hermes_constants import profile_cli_selector
-    from agent.auxiliary_unavailable import ProviderNotConfiguredError
+    from hermes_agent.agent.auxiliary_unavailable import ProviderNotConfiguredError
     _sel = profile_cli_selector()
     raise ProviderNotConfiguredError(
         "No LLM provider configured. Run `hermes model` to "
@@ -860,7 +860,7 @@ def _apply_openai_header_policy(agent, client_kwargs: dict[str, Any]) -> None:
     OpenRouter Claude beta header → model.default_headers → custom-provider TLS/extra_headers."""
     # Fine-grained tool streaming for Claude on OpenRouter: without the beta header
     # Anthropic buffers the whole tool call and OpenRouter's proxy times out.
-    from agent.anthropic_adapter import _TOOL_STREAMING_BETA
+    from hermes_agent.agent.anthropic_adapter import _TOOL_STREAMING_BETA
 
     _effective_base = str(client_kwargs.get("base_url", "")).lower()
     if base_url_host_matches(_effective_base, "openrouter.ai") and "claude" in (agent.model or "").lower():
@@ -903,7 +903,7 @@ def _init_openai_client(agent, api_key, base_url, fallback_model, _provider_time
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
     try:
-        from agent.bedrock_adapter import configure_bedrock_openai_client_kwargs
+        from hermes_agent.agent.bedrock_adapter import configure_bedrock_openai_client_kwargs
         configure_bedrock_openai_client_kwargs(client_kwargs, timeout=_provider_timeout)
     except Exception:
         if agent.provider == "bedrock" and "bedrock-mantle." in str(client_kwargs.get("base_url", "")):
@@ -957,13 +957,13 @@ def _lazy_headers(module: str, name: str, pass_key: bool = False, pass_base: boo
 # Host → default_headers factory for explicit base_url client construction. Ordered: first
 # host match wins; no match falls back to the provider profile's declared headers.
 _HOST_DEFAULT_HEADERS: list[tuple[str, Callable[[Any, str], dict[str, str]]]] = [
-    ("openrouter.ai", _lazy_headers("agent.auxiliary_client", "build_or_headers")),
+    ("openrouter.ai", _lazy_headers("hermes_agent.agent.auxiliary_client", "build_or_headers")),
     ("integrate.api.nvidia.com",
-     _lazy_headers("agent.auxiliary_client", "build_nvidia_nim_headers", pass_base=True)),
-    ("api.routermint.com", _lazy_headers("agent.client_lifecycle", "_routermint_headers")),
+     _lazy_headers("hermes_agent.agent.auxiliary_client", "build_nvidia_nim_headers", pass_base=True)),
+    ("api.routermint.com", _lazy_headers("hermes_agent.agent.client_lifecycle", "_routermint_headers")),
     ("api.kimi.com", lambda _k, _b: {"User-Agent": "claude-code/0.1.0"}),
-    ("portal.qwen.ai", _lazy_headers("agent.client_lifecycle", "_qwen_portal_headers")),
-    ("chatgpt.com", _lazy_headers("agent.codex_headers", "codex_cloudflare_headers", pass_key=True)),
+    ("portal.qwen.ai", _lazy_headers("hermes_agent.agent.client_lifecycle", "_qwen_portal_headers")),
+    ("chatgpt.com", _lazy_headers("hermes_agent.agent.codex_headers", "codex_cloudflare_headers", pass_key=True)),
     ("x.ai", _lazy_headers("hermes_agent.tools.xai_http", "hermes_xai_default_headers")),
 ]
 
@@ -1005,12 +1005,12 @@ def _load_tools(agent, enabled_toolsets, disabled_toolsets):
         logger.warning("Plugin discovery failed during agent setup", exc_info=True)
 
     # Capture the registry generation FIRST so a concurrent refresh can detect staleness, and the delegation
-    # backend this delegate_task is built from: the session routes on it (agent/delegation_backends.py).
-    from agent.delegation_backends import saved_backend
+    # backend this delegate_task is built from: the session routes on it (hermes_agent/agent/delegation_backends.py).
+    from hermes_agent.agent.delegation_backends import saved_backend
     from hermes_agent.tools.registry import registry as _snapshot_registry
     agent._tool_snapshot_generation, agent._delegation_backend = _snapshot_registry._generation, saved_backend()
     from hermes_agent import model_tools
-    from agent.oneshot_footprint import agent_is_oneshot
+    from hermes_agent.agent.oneshot_footprint import agent_is_oneshot
     from hermes_agent.toolsets import agent_tool_surface, session_disabled_toolsets, tool_selection_key
     agent._configured_disabled_toolsets, disabled_toolsets = disabled_toolsets, session_disabled_toolsets(
         disabled_toolsets, getattr(agent, "platform", None), oneshot=agent_is_oneshot(agent))  # pin restore reads both
@@ -1022,8 +1022,8 @@ def _load_tools(agent, enabled_toolsets, disabled_toolsets):
     # Kanban guidance is session-static for the dispatcher-owned worker only. Profiles may
     # expose kanban_show interactively, and children/cron runs inherit the env var, without
     # owning a task.
-    from agent.delegation_context import owned_kanban_task
-    from agent.prompt_builder import KANBAN_GUIDANCE
+    from hermes_agent.agent.delegation_context import owned_kanban_task
+    from hermes_agent.agent.prompt_builder import KANBAN_GUIDANCE
     agent._kanban_worker_guidance = (
         KANBAN_GUIDANCE if owned_kanban_task() and "kanban_show" in agent.valid_tool_names else ""
     )
@@ -1068,7 +1068,7 @@ def _publish_session_id(session_id: str) -> None:
         set_current_session_id(session_id)
     except Exception:
         try:
-            from agent.delegation_context import is_delegated_child_context
+            from hermes_agent.agent.delegation_context import is_delegated_child_context
             delegated_child = is_delegated_child_context()
         except Exception:
             delegated_child = False
@@ -1118,7 +1118,7 @@ def _apply_display_config(agent, _agent_cfg, platform):
     # show_commentary: Codex phase=commentary → interim path (true) or reasoning channel.
     agent.show_commentary = bool(_cfg_dict(_agent_cfg, "display").get("show_commentary", True))
 
-    # Window (seconds) for the bounded /fast auto|cold modes (agent.fast_mode).
+    # Window (seconds) for the bounded /fast auto|cold modes (hermes_agent.agent.fast_mode).
     agent.fast_auto_seconds = (_agent_cfg.get("agent") or {}).get("fast_auto_seconds", 60)
 
     # lmstudio_load_mode: "explicit" (preload via management API) or "jit" (Auto-Evict path).
@@ -1160,7 +1160,7 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
     agent._memory_nudge_interval = 10
     agent._turns_since_memory = 0
     agent._iters_since_skill = 0
-    from agent.safe_worker_policy import safe_worker_enabled
+    from hermes_agent.agent.safe_worker_policy import safe_worker_enabled
 
     if safe_worker_enabled():
         agent._memory_manager = None
@@ -1212,7 +1212,7 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
         try:
             _mem_provider_name = mem_config.get("provider", "") if mem_config else ""
             if not is_core_memory_provider(_mem_provider_name):
-                from agent.memory_manager import MemoryManager as _MemoryManager
+                from hermes_agent.agent.memory_manager import MemoryManager as _MemoryManager
                 agent._memory_manager = _MemoryManager()
                 _mp = resolve_memory_provider(_mem_provider_name, say=agent._emit_startup_warning)
                 if _mp is not None:
@@ -1227,7 +1227,7 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
             _ra().logger.warning("Memory provider plugin init failed: %s", _mpe)
             agent._memory_manager = None
 
-    from agent.memory_manager_tools import inject_memory_provider_tools
+    from hermes_agent.agent.memory_manager_tools import inject_memory_provider_tools
     inject_memory_provider_tools(agent)
 
 
@@ -1242,7 +1242,7 @@ def _apply_agent_section(agent, _agent_cfg):
         _agent_section.get("budget_warning_ratio")
     )
     # Both: "auto" (model-list match), true, false, or list of model substrings; independent
-    # of each other (gates in agent/system_prompt.py).
+    # of each other (gates in hermes_agent/agent/system_prompt.py).
     agent._tool_use_enforcement = _agent_section.get("tool_use_enforcement", "auto")
     agent._execution_guidance = _agent_section.get("execution_guidance", "auto")
 
@@ -1253,7 +1253,7 @@ def _apply_agent_section(agent, _agent_cfg):
         )
 
     # Empty-response guard: a malformed section falls back to schema defaults (on, $0.25).
-    from agent.empty_response_guard import resolve_guard_settings
+    from hermes_agent.agent.empty_response_guard import resolve_guard_settings
     (
         agent._empty_guard_enabled, agent._empty_guard_cost_threshold_usd
     ) = resolve_guard_settings(_agent_section.get("empty_response_guard"))
@@ -1284,7 +1284,7 @@ def _apply_agent_section(agent, _agent_cfg):
     # "Bot Chat" gate hint for hosts that defer the DB title write past the first prompt build.
     agent._session_title_hint = None
 
-    # platform_hints: <platform>: {append|replace}, stored verbatim (agent/system_prompt.py).
+    # platform_hints: <platform>: {append|replace}, stored verbatim (hermes_agent/agent/system_prompt.py).
     agent._platform_hint_overrides = _cfg_dict(_agent_cfg, "platform_hints")
 
     # App-level API retry count (wraps each model API call). Default 3; 1 = single attempt.
@@ -1294,7 +1294,7 @@ def _apply_agent_section(agent, _agent_cfg):
         _api_retries = 3
     agent._api_max_retries = _api_retries
     # Bounded post-exhaustion auto-recovery cycles once retries AND the fallback chain are spent
-    # on a transient outage (agent/turn_recovery_autorecover.py). 0 disables the ladder.
+    # on a transient outage (hermes_agent/agent/turn_recovery_autorecover.py). 0 disables the ladder.
     try:
         agent._auto_recovery_cycles = max(int(_agent_section.get("auto_recovery_cycles", 5)), 0)
     except (TypeError, ValueError):
@@ -1321,7 +1321,7 @@ def _compression_threshold(agent, cfg: dict[str, Any]) -> tuple[float, bool]:
     notice_enabled = _cfg_flag(cfg, "codex_gpt55_autoraise_notice", True)
     agent._compression_threshold_autoraised = None
     with suppress(Exception):
-        from agent.auxiliary_client import (
+        from hermes_agent.agent.auxiliary_client import (
             _compression_threshold_for_model as _cthresh_fn,
             _is_codex_gpt54_or_gpt55 as _is_codex_gpt54_or_gpt55_fn,
             _is_codex_spark as _is_codex_spark_fn,
@@ -1353,7 +1353,7 @@ def _compression_codex_settings(cfg: dict[str, Any]) -> tuple[str, bool, Optiona
             app_server_auto,
         )
         app_server_auto = "native"
-    # Native Responses server-side compaction (opt-in; gate in agent/native_compaction.py).
+    # Native Responses server-side compaction (opt-in; gate in hermes_agent/agent/native_compaction.py).
     # Truthy coercion so "false"/"off" strings stay disabled.
     responses_native = is_truthy_value(cfg.get("codex_responses_native", False))
     _raw = cfg.get("codex_responses_compact_threshold")
@@ -1390,7 +1390,7 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
     # legitimate "system prompt + summary + tail".
     protect_first = max(0, int(cfg.get("protect_first_n", 3)))
     checkpoint_required = is_truthy_value(cfg.get("checkpoint_required"), default=False)
-    from agent.conversation_compression_checkpoint import _refuse_checkpoint_required_on_codex_app_server
+    from hermes_agent.agent.conversation_compression_checkpoint import _refuse_checkpoint_required_on_codex_app_server
     _refuse_checkpoint_required_on_codex_app_server(checkpoint_required, getattr(agent, "api_mode", None))
     app_server_auto, responses_native, compact_threshold = _compression_codex_settings(cfg)
     # Opt-in idle compaction: compact up front when a session resumes after this many
@@ -1734,7 +1734,7 @@ def _resolve_context_length(agent, _agent_cfg, base_url):
     # Persisted for switch_model / fallback AFTER the custom_providers branch (per-model overrides).
     agent._config_context_length = _config_context_length
     if _config_context_length is not None:
-        from agent.context_pin import warn_once_on_pin_disagreement
+        from hermes_agent.agent.context_pin import warn_once_on_pin_disagreement
         warn_once_on_pin_disagreement(agent.model, agent.base_url or "", _config_context_length)
 
     _lmstudio_runtime_context_length = agent._ensure_lmstudio_runtime_loaded(_config_context_length)
@@ -1752,7 +1752,7 @@ def _resolve_context_length(agent, _agent_cfg, base_url):
 def _select_context_engine(_agent_cfg):
     """Config-driven context engine: ``context.engine`` → plugins/context_engine/<name>/ →
     general plugin system → None (built-in ContextCompressor)."""
-    from agent.safe_worker_policy import safe_worker_enabled
+    from hermes_agent.agent.safe_worker_policy import safe_worker_enabled
 
     if safe_worker_enabled():
         return None
@@ -1808,7 +1808,7 @@ def _compressor_max_tokens(agent):
     if agent.max_tokens is not None:
         return agent.max_tokens
     with suppress(Exception):
-        from agent.gemini_native_adapter import (
+        from hermes_agent.agent.gemini_native_adapter import (
             GEMINI_DEFAULT_MAX_OUTPUT_TOKENS, is_native_gemini_base_url
         )
         _gemini_provider = str(agent.provider or "").strip().lower() in {
@@ -1829,7 +1829,7 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
         # External engines own compaction policy: the host compression threshold (including the Codex
         # gpt-5.5 autoraise above) only configures the built-in ContextCompressor and never reaches the
         # plugin, so the autoraise notice would announce a change that does not apply. (#44439)
-        from agent.model_metadata import get_model_context_length
+        from hermes_agent.agent.model_metadata import get_model_context_length
         _plugin_ctx_len = get_model_context_length(
             agent.model, base_url=agent.base_url, api_key=getattr(agent, "api_key", ""),
             config_context_length=_effective_context_length, provider=agent.provider,
@@ -1885,15 +1885,15 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
         if hasattr(_cc, _attr):
             setattr(_cc, _attr, _value)
     if cs.prepare_ahead and isinstance(_cc, ContextCompressor):
-        from agent.prepared_compaction import PreparedCompaction
+        from hermes_agent.agent.prepared_compaction import PreparedCompaction
         _cc.prepared_compaction = PreparedCompaction()
     agent.compression_checkpoint_required = cs.checkpoint_required
-    from agent.conversation_compression_checkpoint import _warn_checkpoint_required_without_capable_provider
+    from hermes_agent.agent.conversation_compression_checkpoint import _warn_checkpoint_required_without_capable_provider
     _warn_checkpoint_required_without_capable_provider(agent)
     agent.codex_app_server_auto_compaction = cs.codex_app_server_auto
     agent.codex_responses_native_compaction = cs.codex_responses_native
     agent.codex_responses_compact_threshold = cs.codex_responses_compact_threshold
-    from agent.native_compaction import resolve_native_compaction_capabilities
+    from hermes_agent.agent.native_compaction import resolve_native_compaction_capabilities
     agent.runtime_capabilities = resolve_native_compaction_capabilities(
         model=agent.model, base_url=agent.base_url, provider=agent.provider,
         is_codex_backend=(agent.provider or "").strip().lower() == "openai-codex",
@@ -1983,7 +1983,7 @@ def _inject_context_engine_tools(agent):
         _existing_tool_names = {
             t.get("function", {}).get("name") for t in agent.tools if isinstance(t, dict)
         }
-        from agent.memory_manager_tools import normalize_tool_schema
+        from hermes_agent.agent.memory_manager_tools import normalize_tool_schema
         for _raw_schema in agent.context_compressor.get_tool_schemas():
             _schema = normalize_tool_schema(_raw_schema)
             if _schema is None:
@@ -2015,7 +2015,7 @@ def _inject_context_engine_tools(agent):
 
 
 def _init_usage_state(agent):
-    from agent.runtime_cwd import scope_terminal_cwd
+    from hermes_agent.agent.runtime_cwd import scope_terminal_cwd
     # Prefer the session's explicitly adopted workspace (a Desktop session created under the
     # spawn-time home pin records none; a picked/adopted one does — agent.session_cwd is set
     # at build time and on every workspace move). TERMINAL_CWD is the launch fallback.
@@ -2029,7 +2029,7 @@ def _init_usage_state(agent):
 _USAGE_STATE: dict[str, Any] = {
     "_user_turn_count": 0,
     "_is_user_initiated_turn": False,  # first API call of a user turn (provider request_headers attribution)
-    # Usage anchors (agent/usage_anchor.py): last response's exact usage + transcript
+    # Usage anchors (hermes_agent/agent/usage_anchor.py): last response's exact usage + transcript
     # snapshot; invalidated on compaction/session switch so stale anchors never suppress compression.
     "_usage_anchor": None,
     "_turn_base_usage_anchor": None,
@@ -2093,7 +2093,7 @@ def init_agent(
     side_agent: bool = False, memory_manager=None, memory_agent_context: str | None = None,
     tool_result_metadata_callback: Optional[Callable[..., dict]] = None,
 ):
-    from agent.safe_worker_policy import safe_worker_enabled
+    from hermes_agent.agent.safe_worker_policy import safe_worker_enabled
 
     if safe_worker_enabled():
         skip_context_files = skip_memory = skip_background_review = True
@@ -2160,7 +2160,7 @@ def init_agent(
     agent._image_rejecting_models = set()
     agent._reasoning_rejecting_routes = {}  # (provider, host, model) -> rejected reasoning keys
     # Models whose Anthropic organization answered a fast request with a fast-mode limit of 0;
-    # agent.fast_mode stops sending ``speed`` to them for the rest of the session.
+    # hermes_agent.agent.fast_mode stops sending ``speed`` to them for the rest of the session.
     agent._fast_mode_unavailable_models = set()
 
     _init_prompt_cache_config(agent)

@@ -1,10 +1,10 @@
-"""Tests for agent.title_generator — auto-generated session titles."""
+"""Tests for hermes_agent.agent.title_generator — auto-generated session titles."""
 
 import pytest
 from unittest.mock import MagicMock, patch
 
 
-from agent.title_generator import (
+from hermes_agent.agent.title_generator import (
     MAX_TITLE_INPUT_CHARS,
     _EXAMPLE_ECHO_REJECT,
     build_title_input,
@@ -128,7 +128,7 @@ class TestGenerateTitle:
             resp.choices[0].message.content = '{"title": "Reasoning Off"}'
             return resp
 
-        with patch("agent.title_generator.call_llm", side_effect=mock_call_llm):
+        with patch("hermes_agent.agent.title_generator.call_llm", side_effect=mock_call_llm):
             assert generate_title("question") == "Reasoning Off"
 
         assert captured_kwargs.get("reasoning_config") == {"enabled": False}
@@ -156,7 +156,7 @@ class TestGenerateTitle:
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
         mock_response.choices[0].message.content = content
-        with patch("agent.title_generator.call_llm", return_value=mock_response):
+        with patch("hermes_agent.agent.title_generator.call_llm", return_value=mock_response):
             assert generate_title("login is broken") == expected
 
     def test_json_in_reasoning_content_is_used_but_reasoning_prose_is_not(self):
@@ -177,7 +177,7 @@ class TestGenerateTitle:
             (response("", reasoning_content="The user wants ffmpeg checked. A short title would be"), None),
         ]
         for resp, expected in cases:
-            with patch("agent.title_generator.call_llm", return_value=resp):
+            with patch("hermes_agent.agent.title_generator.call_llm", return_value=resp):
                 assert generate_title("check ffmpeg") == expected
 
     def test_strips_think_blocks(self):
@@ -190,7 +190,7 @@ class TestGenerateTitle:
             "concisely.</think>Debugging Python Import Errors"
         )
 
-        with patch("agent.title_generator.call_llm", return_value=mock_response):
+        with patch("hermes_agent.agent.title_generator.call_llm", return_value=mock_response):
             title = generate_title("help me fix this import")
             assert title == "Debugging Python Import Errors"
             assert "<think>" not in title
@@ -205,7 +205,7 @@ class TestGenerateTitle:
             "<think>Let me reason about a good title for this session"
         )
 
-        with patch("agent.title_generator.call_llm", return_value=mock_response):
+        with patch("hermes_agent.agent.title_generator.call_llm", return_value=mock_response):
             title = generate_title("hello")
             # Everything from the unterminated open tag onward is stripped,
             # leaving nothing → None.
@@ -217,7 +217,7 @@ class TestGenerateTitle:
         mock_response.choices = [MagicMock()]
         mock_response.choices[0].message.content = "A" * 100
 
-        with patch("agent.title_generator.call_llm", return_value=mock_response):
+        with patch("hermes_agent.agent.title_generator.call_llm", return_value=mock_response):
             title = generate_title("question")
             assert len(title) == 80
             assert title.endswith("...")
@@ -236,7 +236,7 @@ class TestGenerateTitle:
         mock_response.choices = [MagicMock()]
         mock_response.choices[0].message.content = answer
 
-        with patch("agent.title_generator.call_llm", return_value=mock_response):
+        with patch("hermes_agent.agent.title_generator.call_llm", return_value=mock_response):
             assert generate_title("how does the registration system work?", "...") is None
 
     def test_rejects_many_short_words(self):
@@ -247,7 +247,7 @@ class TestGenerateTitle:
             "one two three four five six seven eight nine ten eleven twelve thirteen"
         )
 
-        with patch("agent.title_generator.call_llm", return_value=mock_response):
+        with patch("hermes_agent.agent.title_generator.call_llm", return_value=mock_response):
             assert generate_title("question", "answer") is None
 
     def test_accepts_normal_title(self):
@@ -256,7 +256,7 @@ class TestGenerateTitle:
         mock_response.choices = [MagicMock()]
         mock_response.choices[0].message.content = "Investigate the title resolver bug"
 
-        with patch("agent.title_generator.call_llm", return_value=mock_response):
+        with patch("hermes_agent.agent.title_generator.call_llm", return_value=mock_response):
             assert generate_title("question", "answer") == "Investigate the title resolver bug"
 
     @pytest.mark.parametrize("echo", [
@@ -272,7 +272,7 @@ class TestGenerateTitle:
         mock_response.choices = [MagicMock()]
         mock_response.choices[0].message.content = echo
 
-        with patch("agent.title_generator.call_llm", return_value=mock_response):
+        with patch("hermes_agent.agent.title_generator.call_llm", return_value=mock_response):
             assert generate_title("help me with something unrelated") is None
 
     def test_friendly_greeting_example_is_allowed(self):
@@ -282,7 +282,7 @@ class TestGenerateTitle:
         mock_response.choices = [MagicMock()]
         mock_response.choices[0].message.content = "Friendly greeting"
 
-        with patch("agent.title_generator.call_llm", return_value=mock_response):
+        with patch("hermes_agent.agent.title_generator.call_llm", return_value=mock_response):
             assert generate_title("hey there!") == "Friendly greeting"
 
     def test_topical_title_resembling_example_passes(self):
@@ -292,7 +292,7 @@ class TestGenerateTitle:
         mock_response.choices = [MagicMock()]
         mock_response.choices[0].message.content = "Fix login button on desktop"
 
-        with patch("agent.title_generator.call_llm", return_value=mock_response):
+        with patch("hermes_agent.agent.title_generator.call_llm", return_value=mock_response):
             assert generate_title("the login button is broken on desktop") == (
                 "Fix login button on desktop"
             )
@@ -307,7 +307,7 @@ class TestGenerateTitle:
             captured.append((task, exc))
 
         exc = RuntimeError("openrouter 402: credits exhausted")
-        with patch("agent.title_generator.call_llm", side_effect=exc):
+        with patch("hermes_agent.agent.title_generator.call_llm", side_effect=exc):
             result = generate_title("question", "answer", failure_callback=_cb)
 
         assert result is None
@@ -343,7 +343,7 @@ class TestAutoTitleSession:
             return "Auto Title"
 
         with patch(
-            "agent.title_generator.generate_title",
+            "hermes_agent.agent.title_generator.generate_title",
             side_effect=generate_after_manual_title,
         ):
             auto_title_session(
@@ -361,7 +361,7 @@ class TestAutoTitleSession:
         db.get_session_title_source.return_value = None
         db.set_auto_title.return_value = True
         seen = []
-        with patch("agent.title_generator.generate_title", return_value="Readable Session"):
+        with patch("hermes_agent.agent.title_generator.generate_title", return_value="Readable Session"):
             auto_title_session(
                 db,
                 "sess-1",
@@ -385,11 +385,11 @@ class TestAutoTitleSession:
         db.create_session(session_id="sess-1", source="cli")
         db.set_auto_title("sess-1", "fix the flaky auth test", source="derived")
 
-        with patch("agent.title_generator.generate_title", return_value="Fix flaky auth test"):
+        with patch("hermes_agent.agent.title_generator.generate_title", return_value="Fix flaky auth test"):
             auto_title_session(db, "sess-1", "fix the flaky auth test")
         assert db.get_session_title("sess-1") == "Fix flaky auth test"
 
-        with patch("agent.title_generator.generate_title", return_value="Totally Different"):
+        with patch("hermes_agent.agent.title_generator.generate_title", return_value="Totally Different"):
             auto_title_session(db, "sess-1", "fix the flaky auth test")
         assert db.get_session_title("sess-1") == "Fix flaky auth test"
 
@@ -402,7 +402,7 @@ class TestAutoTitleSession:
         seen = []
 
         boom = ImportError("stale module")
-        with patch("agent.title_generator.generate_title", side_effect=boom):
+        with patch("hermes_agent.agent.title_generator.generate_title", side_effect=boom):
             auto_title_session(
                 db,
                 "sess-1",
@@ -435,7 +435,7 @@ class TestMaybeAutoTitle:
         can decode the title into the main reply. The upgrade must not go on the wire until the caller starts
         it after the turn; every other route keeps the turn-start timing."""
         import threading
-        from agent import title_generator as tg
+        from hermes_agent.agent import title_generator as tg
         db = MagicMock()
         db.get_session_title.return_value = None
         started = threading.Event()
@@ -475,7 +475,7 @@ class TestMaybeAutoTitle:
         """#120558: a ``/model`` switch to a named custom provider runs the turn as ``custom:<name>``. A title pin
         spelled as that route (``custom:<name>``, the bare config name or its display name) is the same single-slot
         server, so the gate must still defer; only a differing pinned base_url or a hosted pin fires at turn start."""
-        from agent import title_generator as tg
+        from hermes_agent.agent import title_generator as tg
 
         main_runtime = {"provider": main_provider, "base_url": "http://127.0.0.1:8080/v1"}
         keyed = {"providers": {"gptoss": {"name": "GPTOSS Local", "base_url": "http://127.0.0.1:8080/v1"}}}
@@ -494,7 +494,7 @@ class TestMaybeAutoTitle:
         db = SessionDB(tmp_path / "state.db")
         db.create_session(session_id="sess-1", source="kanban")
 
-        with patch("agent.title_generator.auto_title_session") as mock_auto:
+        with patch("hermes_agent.agent.title_generator.auto_title_session") as mock_auto:
             maybe_auto_title(db, "sess-1", f"work kanban task {task_id}", [])
 
         assert db.get_session_title("sess-1") == "Fix flaky worker startup"
@@ -514,7 +514,7 @@ class TestMaybeAutoTitle:
         db = SessionDB(tmp_path / "state.db")
         for sid in ("sess-1", "sess-2"):  # a retried card must still get the ``#N`` suffix within the cap
             db.create_session(session_id=sid, source="kanban")
-            with patch("agent.title_generator.auto_title_session"):
+            with patch("hermes_agent.agent.title_generator.auto_title_session"):
                 maybe_auto_title(db, sid, f"work kanban task {task_id}", [])
 
         first, second = db.get_session_title("sess-1"), db.get_session_title("sess-2")
@@ -527,7 +527,7 @@ class TestMaybeAutoTitle:
         db = SessionDB(tmp_path / "state.db")
         db.create_session(session_id="sess-1", source="kanban")
 
-        with patch("agent.title_generator.auto_title_session") as mock_auto:
+        with patch("hermes_agent.agent.title_generator.auto_title_session") as mock_auto:
             maybe_auto_title(db, "sess-1", "work kanban task t_missing", [])
 
         assert db.get_session_title("sess-1") == "Kanban task t_missing"
@@ -536,13 +536,13 @@ class TestMaybeAutoTitle:
     def test_delegated_child_of_a_worker_is_not_named_after_the_card(self, tmp_path, monkeypatch):
         """A delegate_task child inherits ``HERMES_KANBAN_TASK`` but is not the card's session;
         it takes the ordinary title path instead of the parent's card title (#112817)."""
-        from agent.delegation_context import delegated_child_context
+        from hermes_agent.agent.delegation_context import delegated_child_context
 
         monkeypatch.setenv("HERMES_KANBAN_TASK", "t_parent")
         db = SessionDB(tmp_path / "state.db")
         db.create_session(session_id="child-1", source="kanban")
 
-        with delegated_child_context(), patch("agent.title_generator.auto_title_session") as mock_auto:
+        with delegated_child_context(), patch("hermes_agent.agent.title_generator.auto_title_session") as mock_auto:
             maybe_auto_title(db, "child-1", "research the auth flow for the parent", [])
 
         assert db.get_session_title("child-1") != "Kanban task t_parent"
@@ -552,7 +552,7 @@ class TestMaybeAutoTitle:
         """The derived title lands synchronously — no LLM, no waiting."""
         db = SessionDB(tmp_path / "state.db")
         db.create_session(session_id="sess-1", source="cli")
-        with patch("agent.title_generator.auto_title_session"):
+        with patch("hermes_agent.agent.title_generator.auto_title_session"):
             maybe_auto_title(
                 db, "sess-1", "fix the flaky auth test in login", []
             )
@@ -568,8 +568,8 @@ class TestMaybeAutoTitle:
             }}
         }
         with patch("hermes_cli.config.load_config_readonly", return_value=config), \
-             patch("agent.memory_provider.spawn_context_thread") as thread, \
-             patch("agent.title_generator.call_llm") as call_llm:
+             patch("hermes_agent.agent.memory_provider.spawn_context_thread") as thread, \
+             patch("hermes_agent.agent.title_generator.call_llm") as call_llm:
             maybe_auto_title(db, "sess-1", "repair startup memory routing", [])
         assert db.get_session_title("sess-1") == "repair startup memory routing"
         assert db.get_session_title_source("sess-1") == "derived"
@@ -581,7 +581,7 @@ class TestMaybeAutoTitle:
         resp.choices = [MagicMock()]
         resp.choices[0].message.content = '{"title": "Repair startup memory routing"}'
         with patch("hermes_cli.config.load_config_readonly", return_value=config), \
-             patch("agent.title_generator.call_llm", return_value=resp):
+             patch("hermes_agent.agent.title_generator.call_llm", return_value=resp):
             assert generate_title("repair startup memory routing") == "Repair startup memory routing"
 
     def test_enabled_false_still_disables_derived_and_model_titles(self, tmp_path):
@@ -593,8 +593,8 @@ class TestMaybeAutoTitle:
             }}
         }
         with patch("hermes_cli.config.load_config_readonly", return_value=config), \
-             patch("agent.memory_provider.spawn_context_thread") as thread, \
-             patch("agent.title_generator.call_llm") as call_llm:
+             patch("hermes_agent.agent.memory_provider.spawn_context_thread") as thread, \
+             patch("hermes_agent.agent.title_generator.call_llm") as call_llm:
             maybe_auto_title(db, "sess-1", "repair startup memory routing", [])
         assert db.get_session_title("sess-1") is None
         thread.assert_not_called()
@@ -614,7 +614,7 @@ class TestMaybeAutoTitle:
         """A session named after our own scaffolding is named after us."""
         db = SessionDB(tmp_path / "state.db")
         db.create_session(session_id="sess-1", source="cli")
-        with patch("agent.title_generator.auto_title_session") as mock_auto:
+        with patch("hermes_agent.agent.title_generator.auto_title_session") as mock_auto:
             maybe_auto_title(db, "sess-1", opener, [])
         assert db.get_session_title("sess-1") is None
         mock_auto.assert_not_called()
@@ -626,7 +626,7 @@ class TestMaybeAutoTitle:
         and undercounts the conversation, so a session deep into its history
         looks like it is still on its opening turn.
         """
-        from agent.title_generator import _is_real_user_turn
+        from hermes_agent.agent.title_generator import _is_real_user_turn
 
         assert _is_real_user_turn(
             {
@@ -657,7 +657,7 @@ class TestMaybeAutoTitle:
             {"role": "user", "content": "thanks"},
             {"role": "assistant", "content": "sure"},
         ]
-        with patch("agent.title_generator.auto_title_session"):
+        with patch("hermes_agent.agent.title_generator.auto_title_session"):
             maybe_auto_title(db, "sess-1", "fix the flaky auth test", history)
         assert db.get_session_title("sess-1") == "fix the flaky auth test"
 
@@ -672,7 +672,7 @@ class TestMaybeAutoTitle:
             {"role": "user", "content": "thanks"},
             {"role": "assistant", "content": "sure"},
         ]
-        with patch("agent.title_generator.auto_title_session") as mock_auto:
+        with patch("hermes_agent.agent.title_generator.auto_title_session") as mock_auto:
             maybe_auto_title(db, "sess-1", "and now something else", history)
         assert db.get_session_title("sess-1") == "Existing name"
         mock_auto.assert_not_called()
@@ -685,7 +685,7 @@ class TestMaybeAutoTitle:
     ])
     def test_only_the_exact_greeting_placeholder_is_provisional(self, title, provisional):
         """A topical title that merely starts with the phrase keeps its ``llm`` rank."""
-        from agent.title_generator import _is_provisional_greeting_title
+        from hermes_agent.agent.title_generator import _is_provisional_greeting_title
         assert _is_provisional_greeting_title(title) is provisional
 
     def test_upgrades_a_provisional_greeting_on_a_substantive_second_turn(self, tmp_path):
@@ -702,9 +702,9 @@ class TestMaybeAutoTitle:
             return resp
 
         history = [{"role": "user", "content": "hi how are you"}]
-        with patch("agent.title_generator.call_llm", side_effect=stub_call_llm), \
-                patch("agent.title_generator._auto_title_enabled", return_value=True), \
-                patch("agent.title_generator._model_title_upgrade_enabled", return_value=True):
+        with patch("hermes_agent.agent.title_generator.call_llm", side_effect=stub_call_llm), \
+                patch("hermes_agent.agent.title_generator._auto_title_enabled", return_value=True), \
+                patch("hermes_agent.agent.title_generator._model_title_upgrade_enabled", return_value=True):
             maybe_auto_title(db, "sess-1", "hi how are you", history)
             wait_for_title_upgrades(10)
             assert db.get_session_title_source("sess-1") == "derived"
@@ -722,9 +722,9 @@ class TestMaybeAutoTitle:
         db.create_session(session_id="sess-1", source="cli")
         db.set_auto_title("sess-1", "hi", source="derived")
         history = [{"role": "user", "content": f"turn {n}"} for n in range(3)]
-        with patch("agent.title_generator.auto_title_session") as mock_auto, \
-                patch("agent.title_generator._auto_title_enabled", return_value=True), \
-                patch("agent.title_generator._model_title_upgrade_enabled", return_value=True):
+        with patch("hermes_agent.agent.title_generator.auto_title_session") as mock_auto, \
+                patch("hermes_agent.agent.title_generator._auto_title_enabled", return_value=True), \
+                patch("hermes_agent.agent.title_generator._model_title_upgrade_enabled", return_value=True):
             maybe_auto_title(db, "sess-1", "and now the real question", history)
             wait_for_title_upgrades(10)
             assert mock_auto.call_count == 1  # turn 3: the placeholder still gets a model shot
@@ -744,7 +744,7 @@ class TestMaybeAutoTitle:
         db.create_session(session_id="taken", source="cli")
         db.set_session_title("taken", "hi")
         db.create_session(session_id="sess-1", source="cli")
-        with patch("agent.title_generator.auto_title_session"):
+        with patch("hermes_agent.agent.title_generator.auto_title_session"):
             maybe_auto_title(db, "sess-1", "hi", [])
         assert db.get_session_title("sess-1") is None
 
@@ -769,7 +769,7 @@ class TestAutoTitleDuplicateHandling:
         db.create_session(session_id="taken", source="cli")
         db.set_session_title("taken", "hi")
         db.create_session(session_id="sess-1", source="cli")
-        with patch("agent.title_generator.generate_title", return_value=None):
+        with patch("hermes_agent.agent.title_generator.generate_title", return_value=None):
             auto_title_session(db, "sess-1", "hi")
         assert db.get_session_title("sess-1") == "hi #2"
 
@@ -780,7 +780,7 @@ class TestAutoTitleDuplicateHandling:
         db.set_auto_title.side_effect = [ValueError("in use"), True]
         db.get_next_title_in_lineage.return_value = "Debugging Import Error #2"
         with patch(
-            "agent.title_generator.generate_title",
+            "hermes_agent.agent.title_generator.generate_title",
             return_value="Debugging Import Error",
         ):
             seen = []
@@ -817,7 +817,7 @@ class TestRuntimeValidator:
         def _bad_validator():
             raise RuntimeError("validator gone")
 
-        with patch("agent.title_generator.call_llm", return_value=mock_response) as mock_llm:
+        with patch("hermes_agent.agent.title_generator.call_llm", return_value=mock_response) as mock_llm:
             title = generate_title(
                 "question", "answer",
                 runtime_validator=_bad_validator,
@@ -848,20 +848,20 @@ class TestModelSwitchMarkerNotTitleable:
     def test_marker_prefix_matches_gateway_constant(self):
         """The guard must stay in sync with the gateway's marker builder."""
         from hermes_agent.tui_gateway.server import _MODEL_SWITCH_MARKER_PREFIX
-        from agent.title_generator import _MACHINE_PREFIXES
+        from hermes_agent.agent.title_generator import _MACHINE_PREFIXES
 
         assert _MODEL_SWITCH_MARKER_PREFIX in _MACHINE_PREFIXES
         assert self.MARKER.startswith(_MODEL_SWITCH_MARKER_PREFIX)
 
     def test_marker_is_not_titleable(self):
-        from agent.title_generator import is_titleable_user_message
+        from hermes_agent.agent.title_generator import is_titleable_user_message
 
         assert is_titleable_user_message(self.MARKER) is False
 
 
     def test_unrelated_system_bracket_text_still_titleable(self):
         """The guard is narrow: real user text starting "[System:" still titles."""
-        from agent.title_generator import is_titleable_user_message
+        from hermes_agent.agent.title_generator import is_titleable_user_message
 
         assert is_titleable_user_message("[System: my own note] how do I ...") is True
 
@@ -880,7 +880,7 @@ class TestModelSwitchMarkerNotTitleable:
             {"role": "user", "content": "南京市秦淮区 小时级天气预报"},
         ]
 
-        with patch("agent.title_generator.auto_title_session") as mock_auto:
+        with patch("hermes_agent.agent.title_generator.auto_title_session") as mock_auto:
             import threading
 
             called = threading.Event()
@@ -889,7 +889,7 @@ class TestModelSwitchMarkerNotTitleable:
             assert called.wait(timeout=10), "auto_title never ran after marker"
 
     def test_instant_title_skips_marker_uses_real_message(self):
-        from agent.title_generator import apply_instant_title
+        from hermes_agent.agent.title_generator import apply_instant_title
 
         db = MagicMock()
         db.get_session_title_source.return_value = None

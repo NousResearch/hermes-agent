@@ -7,7 +7,7 @@ iteration prep must hand back a re-anchored index and mirror it into the persist
 
 def _agent(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     from hermes_agent.hermes_state import SessionDB
 
     return AIAgent(session_db=SessionDB(db_path=tmp_path / "proof.db"),
@@ -17,8 +17,8 @@ def _agent(tmp_path, monkeypatch):
 
 
 def test_prepare_iteration_reanchors_after_the_repair_merges_rows(tmp_path, monkeypatch):
-    from agent.turn_context import _reset_per_turn_agent_state
-    from agent.turn_iteration_prep import prepare_iteration
+    from hermes_agent.agent.turn_context import _reset_per_turn_agent_state
+    from hermes_agent.agent.turn_iteration_prep import prepare_iteration
 
     agent = _agent(tmp_path, monkeypatch)
     try:

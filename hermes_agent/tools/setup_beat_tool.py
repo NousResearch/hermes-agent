@@ -3,7 +3,7 @@ for the user (``CARD_TIMEOUT_S``), and returns their answer with a short reminde
 
 The ``onboarding`` toolset carrying it is folded in only for the onboarding chat, at agent build
 (``hermes_agent/tui_gateway/methods_onboarding.py``). The run record is the session's ``onboarding_run``
-(``agent/onboarding_record.py``); the order and the options are ``agent/onboarding_flow.py``.
+(``hermes_agent/agent/onboarding_record.py``); the order and the options are ``hermes_agent/agent/onboarding_flow.py``.
 """
 
 from __future__ import annotations
@@ -13,9 +13,9 @@ import logging
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from agent import onboarding_flow as flow
-from agent.onboarding_text import finish_reminder, reminder
-from agent.onboarding_text import question as beat_question
+from hermes_agent.agent import onboarding_flow as flow
+from hermes_agent.agent.onboarding_text import finish_reminder, reminder
+from hermes_agent.agent.onboarding_text import question as beat_question
 from hermes_agent.tools.registry import registry, tool_error
 
 logger = logging.getLogger(__name__)
@@ -123,7 +123,7 @@ def _card(beat: str, step: flow.Step, args: Mapping[str, Any]) -> dict:
     facts = flow.Facts.from_stored(step.record["facts"])
     card = flow.BEAT_BY_ID[beat].card(facts, step.record["picks"])
     if beat == "name":
-        from agent.onboarding_facts import suggested_name
+        from hermes_agent.agent.onboarding_facts import suggested_name
 
         # The account name goes to the card only; the model reads it if the user picks it.
         card = {"suggested": name} if (name := suggested_name()) else {}
@@ -138,7 +138,7 @@ def setup_beat_tool(args: Mapping[str, Any], *, db=None, session_id: str = "", t
     """``callback(payload) -> {answer?} | {said} | {wrote_instead: true} | None`` asks the desktop to show
     ``{beat, question, card}`` and blocks until the user answers or the card closes. ``end_turn`` ends the
     agent's turn once this result is in: a card the user wrote past, whose message is the next turn."""
-    from agent import onboarding_record as records
+    from hermes_agent.agent import onboarding_record as records
 
     beat = args.get("beat")
     if beat not in BEATS:
@@ -208,7 +208,7 @@ SETUP_BEAT_SCHEMA = {
 registry.register(
     name="setup_beat", toolset="onboarding", schema=SETUP_BEAT_SCHEMA,
     # The agent loop runs it inline with the session's record and card callback
-    # (agent/inline_tool_executors.py); a bare registry dispatch has neither.
+    # (hermes_agent/agent/inline_tool_executors.py); a bare registry dispatch has neither.
     handler=lambda args, **kw: setup_beat_tool(args),
     emoji="🎛",
 )

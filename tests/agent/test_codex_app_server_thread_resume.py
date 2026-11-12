@@ -9,9 +9,9 @@ back fails closed: fresh thread, binding dropped, one status-rail notice.
 
 from pathlib import Path
 
-from agent.transports import codex_app_server_session as session_mod
-from agent.transports.codex_app_server import CodexAppServerError
-from agent.transports.codex_app_server_session import CodexAppServerSession, TurnResult
+from hermes_agent.agent.transports import codex_app_server_session as session_mod
+from hermes_agent.agent.transports.codex_app_server import CodexAppServerError
+from hermes_agent.agent.transports.codex_app_server_session import CodexAppServerSession, TurnResult
 from hermes_agent.hermes_state import SessionDB
 
 SID = "sess-codex-restart"
@@ -47,7 +47,7 @@ class _WireClient:
 
 
 def _agent(db, **kwargs):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     agent = AIAgent(api_key="stub", base_url="https://stub.invalid", provider="openai", api_mode="codex_app_server",
                     quiet_mode=True, skip_context_files=True, skip_memory=True, session_db=db, session_id=SID, **kwargs)
     agent._spawn_background_review = lambda **kw: None

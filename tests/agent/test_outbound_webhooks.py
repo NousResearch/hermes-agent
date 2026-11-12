@@ -1,4 +1,4 @@
-"""Tests for the outbound webhook dispatcher (agent.outbound_webhooks).
+"""Tests for the outbound webhook dispatcher (hermes_agent.agent.outbound_webhooks).
 
 Covers config parsing, matcher behaviour, HMAC signing, payload shape,
 idempotent registration on the plugin manager, and end-to-end delivery
@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from agent import outbound_webhooks
+from hermes_agent.agent import outbound_webhooks
 
 
 # ── helpers ───────────────────────────────────────────────────────────────
@@ -249,7 +249,7 @@ class TestParseConfig:
     def test_secret_env_resolves_from_profile_scope_under_multiplex(self, monkeypatch):
         """Per-profile registration: a secondary's ``.env`` secret signs its deliveries; the DEFAULT
         profile's environ value must never be borrowed when the secondary's scope lacks the var."""
-        from agent import secret_scope
+        from hermes_agent.agent import secret_scope
 
         monkeypatch.setenv("MY_HOOK_SECRET", "from-default-profile-env")
         secret_scope.set_multiplex_active(True)
@@ -337,7 +337,7 @@ class TestPayload:
         assert json.loads(body)["profile"] == "default"
 
     def test_kanban_task_id_is_the_owned_task_only(self, monkeypatch):
-        from agent.delegation_context import delegated_child_context
+        from hermes_agent.agent.delegation_context import delegated_child_context
 
         monkeypatch.setenv("HERMES_KANBAN_TASK", "t_owner")
         monkeypatch.delenv("HERMES_DELEGATED_CHILD_CONTEXT", raising=False)

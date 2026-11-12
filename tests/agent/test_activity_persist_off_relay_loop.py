@@ -19,10 +19,10 @@ import pytest
 
 pytest.importorskip("nemo_relay")
 
-import run_agent
-from agent import relay_llm, relay_runtime, relay_tools
-from agent.runtime_session_store import RuntimeSessionStore, WorkerRPC
-from agent.session_activity import ActivityProvenance
+from hermes_agent import run_agent
+from hermes_agent.agent import relay_llm, relay_runtime, relay_tools
+from hermes_agent.agent.runtime_session_store import RuntimeSessionStore, WorkerRPC
+from hermes_agent.agent.session_activity import ActivityProvenance
 
 SESSION = "session-1"
 
@@ -90,7 +90,7 @@ def worker_agent(tmp_path, monkeypatch):
 
 def _guard_warnings(caplog):
     return [r.getMessage() for r in caplog.records
-            if r.name == "agent.runtime_session_store" and "synchronous_rpc_on_event_loop" in r.getMessage()]
+            if r.name == "hermes_agent.agent.runtime_session_store" and "synchronous_rpc_on_event_loop" in r.getMessage()]
 
 
 def _assert_persisted_off_loop(store, owner, caplog, *operations):
@@ -104,7 +104,7 @@ def test_provider_callback_heartbeat_persists_off_relay_loop(relay_turn, worker_
     """Reporter stack 1: relay_llm.run_callback -> interruptible_api_call -> _emit_wait_notice
     -> _touch_activity -> worker.persist, on the loop ``relay_llm.execute`` runs."""
     agent, store, owner = worker_agent
-    caplog.set_level(logging.WARNING, logger="agent.runtime_session_store")
+    caplog.set_level(logging.WARNING, logger="hermes_agent.agent.runtime_session_store")
 
     def provider(request):
         assert asyncio.get_running_loop() is not None  # Relay's loop is live on this thread
@@ -124,7 +124,7 @@ def test_concurrent_tool_callback_heartbeat_persists_off_relay_loop(relay_turn, 
     """Reporter stack 3: concurrent tool dispatch on a ThreadPoolExecutor thread ->
     _begin_tool_execution -> _touch_activity -> worker.persist, inside relay_tools.execute."""
     agent, store, owner = worker_agent
-    caplog.set_level(logging.WARNING, logger="agent.runtime_session_store")
+    caplog.set_level(logging.WARNING, logger="hermes_agent.agent.runtime_session_store")
 
     def tool(args):
         assert asyncio.get_running_loop() is not None
@@ -141,7 +141,7 @@ def test_later_turn_writes_still_land_after_an_on_loop_heartbeat(relay_turn, wor
     """The sticky follow-on in the reporter's timeline: append_message / finalize failed with
     the same error after the first refusal. The heartbeat must not poison the store."""
     agent, store, owner = worker_agent
-    caplog.set_level(logging.WARNING, logger="agent.runtime_session_store")
+    caplog.set_level(logging.WARNING, logger="hermes_agent.agent.runtime_session_store")
 
     def tool(args):
         agent._touch_activity("executing tool: terminal")
@@ -158,7 +158,7 @@ def test_label_reset_on_a_running_loop_persists_off_loop(worker_agent, caplog):
     Defence in depth, not a reproduced caller: no reported stack shows this path on a loop, so
     this drives it from a synthetic ``asyncio.run``."""
     agent, store, owner = worker_agent
-    caplog.set_level(logging.WARNING, logger="agent.runtime_session_store")
+    caplog.set_level(logging.WARNING, logger="hermes_agent.agent.runtime_session_store")
 
     async def teardown():
         agent._reset_activity_labels_after_turn()
@@ -171,11 +171,11 @@ def test_sync_aux_usage_inside_managed_tool_persists_off_relay_loop(relay_turn, 
     """Sibling: a synchronous auxiliary call made by a tool (vision, web_extract, ...) records its
     usage at ``_validate_llm_response`` -> ``record_aux_usage`` while the tool callback still holds
     Relay's loop. The async aux path already hops with ``asyncio.to_thread``; the sync one did not."""
-    from agent.aux_accounting import reset_accounting_context, set_accounting_context
-    from agent.auxiliary_client import _validate_llm_response
+    from hermes_agent.agent.aux_accounting import reset_accounting_context, set_accounting_context
+    from hermes_agent.agent.auxiliary_client import _validate_llm_response
 
     _agent, store, owner = worker_agent
-    caplog.set_level(logging.WARNING, logger="agent.runtime_session_store")
+    caplog.set_level(logging.WARNING, logger="hermes_agent.agent.runtime_session_store")
     response = SimpleNamespace(
         model="m", usage={"prompt_tokens": 7, "completion_tokens": 3},
         choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))])
@@ -196,10 +196,10 @@ def test_sync_aux_usage_inside_managed_tool_persists_off_relay_loop(relay_turn, 
 def test_begin_tool_execution_inside_relay_tool_persists_off_relay_loop(relay_turn, worker_agent, caplog):
     """Reporter stack 3 through the real frame: tool_executor._begin_tool_execution on a
     ThreadPoolExecutor thread inside relay_tools.execute."""
-    from agent import tool_executor
+    from hermes_agent.agent import tool_executor
 
     agent, store, owner = worker_agent
-    caplog.set_level(logging.WARNING, logger="agent.runtime_session_store")
+    caplog.set_level(logging.WARNING, logger="hermes_agent.agent.runtime_session_store")
     agent.quiet_mode, agent.tool_progress_callback, agent.tool_start_callback = True, None, None
     agent._checkpoint_mgr = SimpleNamespace(enabled=False)
     ref = tool_executor._ToolCallRef(name="image_generate", args={"prompt": "x"}, task_id="task-1",
@@ -224,7 +224,7 @@ def test_async_delegation_ledger_writes_inside_relay_tool_persist_off_relay_loop
     from hermes_agent.tools.async_delegation_worker import WorkerDelegationLedger
 
     _agent, store, owner = worker_agent
-    caplog.set_level(logging.WARNING, logger="agent.runtime_session_store")
+    caplog.set_level(logging.WARNING, logger="hermes_agent.agent.runtime_session_store")
     ledger = WorkerDelegationLedger(store)
     monkeypatch.setattr(async_delegation, "worker_ledger", lambda: ledger)
 

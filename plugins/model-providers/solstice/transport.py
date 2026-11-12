@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from agent.gemini_native_adapter import GeminiAPIError, GeminiNativeClient, gemini_http_error
+from hermes_agent.agent.gemini_native_adapter import GeminiAPIError, GeminiNativeClient, gemini_http_error
 
 from . import INFERENCE_BASE_URL
 

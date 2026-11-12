@@ -1,8 +1,8 @@
-"""Tests for agent/side_question.py — the /btw context-aware side question engine."""
+"""Tests for hermes_agent/agent/side_question.py — the /btw context-aware side question engine."""
 
 from unittest.mock import patch
 
-from agent.side_question import (
+from hermes_agent.agent.side_question import (
     SIDE_QUESTION_TASK,
     answer_side_question,
     render_history_for_side_question,
@@ -76,7 +76,7 @@ class TestAnswerSideQuestion:
 
         history = [{"role": "user", "content": "run the tests"}]
         runtime = {"model": "m", "provider": "p", "base_url": "u", "api_key": "k", "api_mode": "chat_completions"}
-        with patch("agent.oneshot.run_oneshot", side_effect=fake_run_oneshot):
+        with patch("hermes_agent.agent.oneshot.run_oneshot", side_effect=fake_run_oneshot):
             answer = answer_side_question(
                 "which file had the error?", history, main_runtime=runtime
             )
@@ -125,8 +125,8 @@ class TestForkPath:
             return "fork answer"
 
         parent = object()
-        with patch("agent.side_question._answer_via_fork", side_effect=fake_fork), \
-             patch("agent.side_question._answer_via_oneshot") as oneshot:
+        with patch("hermes_agent.agent.side_question._answer_via_fork", side_effect=fake_fork), \
+             patch("hermes_agent.agent.side_question._answer_via_oneshot") as oneshot:
             out = answer_side_question("q?", [], parent_agent=parent)
         assert out == "fork answer"
         assert seen["parent"] is parent
@@ -134,18 +134,18 @@ class TestForkPath:
 
     def test_falls_back_to_oneshot_when_fork_fails(self):
         with patch(
-            "agent.side_question._answer_via_fork",
+            "hermes_agent.agent.side_question._answer_via_fork",
             side_effect=RuntimeError("boom"),
         ), patch(
-            "agent.side_question._answer_via_oneshot", return_value="digest answer"
+            "hermes_agent.agent.side_question._answer_via_oneshot", return_value="digest answer"
         ) as oneshot:
             out = answer_side_question("q?", [], parent_agent=object())
         assert out == "digest answer"
         oneshot.assert_called_once()
 
     def test_no_parent_agent_uses_oneshot(self):
-        with patch("agent.side_question._answer_via_fork") as fork, patch(
-            "agent.side_question._answer_via_oneshot", return_value="digest"
+        with patch("hermes_agent.agent.side_question._answer_via_fork") as fork, patch(
+            "hermes_agent.agent.side_question._answer_via_oneshot", return_value="digest"
         ):
             out = answer_side_question("q?", [])
         assert out == "digest"
@@ -154,7 +154,7 @@ class TestForkPath:
     def test_fork_denies_tools_and_replays_snapshot(self):
         """_answer_via_fork wires the empty whitelist, replays the trimmed
         snapshot, runs the fork, attributes usage, and tears down."""
-        from agent.side_question import _answer_via_fork
+        from hermes_agent.agent.side_question import _answer_via_fork
 
         calls = {}
 
@@ -180,12 +180,12 @@ class TestForkPath:
             {"role": "user", "content": "fix foo.py"},
             {"role": "assistant", "content": "fixed"},
         ]
-        with patch("agent.background_review.build_cache_parity_fork", fake_build), \
+        with patch("hermes_agent.agent.background_review.build_cache_parity_fork", fake_build), \
              patch("hermes_cli.plugins.set_thread_tool_whitelist",
                    side_effect=lambda allowed, **kw: whitelists.append(allowed)), \
              patch("hermes_cli.plugins.clear_thread_tool_whitelist"), \
-             patch("agent.background_review._snapshot_review_usage", return_value={}), \
-             patch("agent.background_review._record_review_usage_to_parent"):
+             patch("hermes_agent.agent.background_review._snapshot_review_usage", return_value={}), \
+             patch("hermes_agent.agent.background_review._record_review_usage_to_parent"):
             answer = _answer_via_fork(object(), "which file?", history)
 
         assert answer == "it was foo.py"
@@ -197,8 +197,8 @@ class TestForkPath:
     def test_fork_teardown_leaves_the_sessions_terminal_environment(self):
         """The /btw fork shares the live session's id, which keys its terminal sandbox: a real
         fork's teardown must release clients only, never ``close()`` the session's tool state."""
-        from agent.side_question import _answer_via_fork
-        from run_agent import AIAgent
+        from hermes_agent.agent.side_question import _answer_via_fork
+        from hermes_agent.run_agent import AIAgent
         from hermes_agent.tools import terminal_tool
 
         class _Env:
@@ -209,7 +209,7 @@ class TestForkPath:
 
         with patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]), \
              patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}), \
-             patch("agent.model_metadata.fetch_model_metadata", return_value={}):
+             patch("hermes_agent.agent.model_metadata.fetch_model_metadata", return_value={}):
             parent = AIAgent(api_key="k", base_url="https://openrouter.ai/api/v1", model="test/model",
                              quiet_mode=True, skip_context_files=True, skip_memory=True, session_id="sess-btw")
             parent._cached_system_prompt = "You are helpful."

@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
-from agent.context_compressor import ContextCompressor
+from hermes_agent.agent.context_compressor import ContextCompressor
 
 HEAD_SENTINEL = "HEADSENTINEL_zq81"
 MID_SENTINEL = "MIDSENTINEL_kv93"
@@ -59,8 +59,8 @@ def run_mode(tail_mode: str):
     comp.tail_token_budget = 3_000  # force a real middle on the small fixture
     comp._session_id = "scope-test"
     msgs = _mk_transcript()
-    with patch("agent.context_compressor.call_llm", side_effect=fake_call_llm), \
-         patch("agent.auxiliary_client.call_llm", side_effect=fake_call_llm):
+    with patch("hermes_agent.agent.context_compressor.call_llm", side_effect=fake_call_llm), \
+         patch("hermes_agent.agent.auxiliary_client.call_llm", side_effect=fake_call_llm):
         out = comp.compress(msgs, current_tokens=200_000, force=True)
 
     all_prompts = "\n".join(captured)

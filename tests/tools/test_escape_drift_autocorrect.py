@@ -78,7 +78,7 @@ def test_shared_correction_policy_across_tools(workdir, monkeypatch, engine, con
         target.parent.mkdir()
         target.write_text(content)
         monkeypatch.setattr(skill_manager_tool, "SKILLS_DIR", skill_dir.parent)
-        monkeypatch.setattr("agent.skill_utils.get_all_skills_dirs", lambda: [skill_dir.parent])
+        monkeypatch.setattr("hermes_agent.agent.skill_utils.get_all_skills_dirs", lambda: [skill_dir.parent])
         result = json.loads(skill_manager_tool.skill_manage(
             action="patch", name="example", file_path=str(target.relative_to(skill_dir)),
             old_string=old, new_string=new, task_id="t-shared"))

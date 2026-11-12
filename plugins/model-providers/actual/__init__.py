@@ -33,7 +33,7 @@ class ActualProfile(ProviderProfile):
             )
         ):
             return {}
-        from agent.ssl_verify import certifi_bundle_path
+        from hermes_agent.agent.ssl_verify import certifi_bundle_path
 
         # Re-derived when an install-environment rotation deleted the directory certifi was
         # imported from: a deleted path would otherwise be handed to the client as ssl_ca_cert.
@@ -41,7 +41,7 @@ class ActualProfile(ProviderProfile):
         return {"ssl_ca_cert": bundle} if bundle else {}
 
     def supported_reasoning_efforts(self, model: str | None) -> tuple[str, ...] | None:
-        from agent.reasoning_effort import ACTUAL_RELAY_EFFORTS
+        from hermes_agent.agent.reasoning_effort import ACTUAL_RELAY_EFFORTS
 
         return ACTUAL_RELAY_EFFORTS
 
@@ -50,7 +50,7 @@ class ActualProfile(ProviderProfile):
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         if not isinstance(reasoning_config, dict):
             return {}, {}
-        from agent.reasoning_effort import thinking_toggle_extras
+        from hermes_agent.agent.reasoning_effort import thinking_toggle_extras
 
         # The relay accepts ``none`` as a real effort level: it switches thinking off AND
         # is echoed as reasoning_effort, unlike the Moonshot/DeepSeek wires.

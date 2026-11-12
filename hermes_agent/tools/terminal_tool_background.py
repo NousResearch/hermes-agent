@@ -213,7 +213,7 @@ def spawn_background_process(
                 proc_session.completion_output_chars = int(completion_output_chars)
             if proc_session.watcher_platform:
                 _register_completion_watcher(process_registry, proc_session, session_key)
-            from agent.delegation_context import is_delegated_child_context
+            from hermes_agent.agent.delegation_context import is_delegated_child_context
             if is_delegated_child_context():
                 result_data["notify_on_complete"] = False
                 result_data["subagent_note"] = _SUBAGENT_NOTIFY_NOTE

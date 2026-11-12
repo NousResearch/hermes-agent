@@ -2,8 +2,8 @@
 import time
 from types import SimpleNamespace
 
-from agent.runtime_session_store import RuntimeSessionStore
-from agent.turn_facade_lease import LEASE_TTL_SECONDS, DurableTurnLease
+from hermes_agent.agent.runtime_session_store import RuntimeSessionStore
+from hermes_agent.agent.turn_facade_lease import LEASE_TTL_SECONDS, DurableTurnLease
 
 
 def test_managed_worker_turn_survives_lease_refresh_tick(tmp_path):

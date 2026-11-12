@@ -7,7 +7,7 @@ from time import time as wall_time
 from uuid import uuid4
 from typing import Any, List, Mapping, MutableMapping, Optional, TypeVar
 
-from agent.conversation_compression_archive import MERGED_DURABLE_ROWS, RETIRED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS
+from hermes_agent.agent.conversation_compression_archive import MERGED_DURABLE_ROWS, RETIRED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS
 
 
 # These fields describe Hermes' durable record and timeline display, not
@@ -15,7 +15,7 @@ from agent.conversation_compression_archive import MERGED_DURABLE_ROWS, RETIRED_
 # outgoing copy and the token estimator ignores them: one set, so an estimate
 # never prices bytes the provider never receives (an edit's inline_diff in
 # display_metadata is ~9KB and would trigger premature compaction).
-# Transcript-repair bookkeeping riding on batch rows / live dicts (agent/transcript_repair.py): the
+# Transcript-repair bookkeeping riding on batch rows / live dicts (hermes_agent/agent/transcript_repair.py): the
 # stored-row CAS digest and the durable row adopted onto the live dict. Never transcript payload.
 DB_ROW_SNAPSHOT = "_db_row_snapshot"
 CANONICAL_ROW = "_canonical_row"
@@ -88,7 +88,7 @@ def stamp_data_use(message: MutableMapping[str, Any], requires: list[str]) -> No
 # What the user typed on a turn a ``pre_llm_call`` hook vetoed, kept inside ``display_metadata``. The row's
 # ``content`` is the withheld placeholder, so every reader that hands transcript text to a model (wire
 # replay, compaction, session_search, memory providers, background review) only ever sees that; transcript
-# views render this key instead (agent/turn_context.py::_withhold_blocked_prompt).
+# views render this key instead (hermes_agent/agent/turn_context.py::_withhold_blocked_prompt).
 WITHHELD_PROMPT = "withheld_prompt"
 PRE_LLM_BLOCK_WITHHELD_PROMPT = "[Message withheld: a pre_llm_call policy hook blocked it.]"
 
@@ -206,7 +206,7 @@ _UNPRICED_CORE_FIELDS = frozenset({"_anthropic_content_blocks", "reasoning_detai
 def unpriced_replay_fields() -> frozenset[str]:
     """The core unpriced carriers plus every message carrier key a registered profile declares
     (``ProviderProfile.message_carrier_*``). Resolve once per message, never per key."""
-    from agent.reasoning_carriers import declared_carrier_keys
+    from hermes_agent.agent.reasoning_carriers import declared_carrier_keys
 
     opaque, text = declared_carrier_keys()
     return _UNPRICED_CORE_FIELDS.union(opaque, text)
@@ -369,7 +369,7 @@ def per_occurrence_tool_call_uids(uids: Mapping[str, Any], tool_calls: list[Mapp
     single response that repeats an id shares ONE uid (its results carry it, so every call stays paired);
     before a fold appends another turn's occurrences, the shared uid must fill each of this row's slots or
     the appended uids would align with the wrong calls."""
-    from agent.message_sanitization import coalesce_tool_call_id
+    from hermes_agent.agent.message_sanitization import coalesce_tool_call_id
 
     counts = Counter(call_id for tc in tool_calls if (call_id := coalesce_tool_call_id(tc)))
     expanded = dict(uids)
@@ -386,7 +386,7 @@ def index_tool_call_uids(index: MutableMapping[str, str], assistant: Mapping[str
     NEAREST preceding call, and a call without a uid (a legacy row) pairs its result with nothing. A
     provider id repeated inside one row (two folded turns) maps each call to its own occurrence's uid.
     Returns every pairing-id variant the assistant names."""
-    from agent.message_sanitization import coalesce_tool_call_id, tool_call_id_variants
+    from hermes_agent.agent.message_sanitization import coalesce_tool_call_id, tool_call_id_variants
 
     calls = [(tc, tool_call_id_variants(tc)) for tc in assistant.get("tool_calls") or ()]
     named = frozenset(variant for _, variants in calls for variant in variants)
@@ -410,7 +410,7 @@ def index_tool_call_uids(index: MutableMapping[str, str], assistant: Mapping[str
 
 def resolve_tool_call_uid(index: MutableMapping[str, str], tool_call_id: Any) -> Optional[str]:
     """The uid an indexed assistant dict minted for ``tool_call_id`` (any variant), else ``None``."""
-    from agent.message_sanitization import tool_result_id_variants
+    from hermes_agent.agent.message_sanitization import tool_result_id_variants
 
     if not index or not isinstance(tool_call_id, str) or not tool_call_id:
         return None
@@ -429,7 +429,7 @@ def tool_call_uid_from_history(messages: list[dict], tool_index: int, owners: di
     tool_call_id = messages[tool_index].get("tool_call_id")
     if not isinstance(tool_call_id, str) or not tool_call_id:
         return None
-    from agent.message_sanitization import tool_result_id_variants
+    from hermes_agent.agent.message_sanitization import tool_result_id_variants
 
     result_variants = set(tool_result_id_variants(tool_call_id))
     for prior_index in range(tool_index - 1, -1, -1):  # no messages[:i] copy: this runs per flushed result

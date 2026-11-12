@@ -4,8 +4,8 @@ A skill whose metadata.hermes.session_platforms names gateway channels is
 hidden from the skills index on every other channel; unknown platform
 fails OPEN (offline builds/tests must not hide skills).
 """
-from agent.prompt_builder import _skill_should_show
-from agent.skill_utils import extract_skill_conditions
+from hermes_agent.agent.prompt_builder import _skill_should_show
+from hermes_agent.agent.skill_utils import extract_skill_conditions
 
 def _conds(platforms):
     return extract_skill_conditions(

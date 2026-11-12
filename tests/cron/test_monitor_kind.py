@@ -85,7 +85,7 @@ def _install_agent_stubs(monkeypatch, observed: dict):
 
     fake_mod = type(sys)("run_agent")
     fake_mod.AIAgent = FakeAgent
-    monkeypatch.setitem(sys.modules, "run_agent", fake_mod)
+    monkeypatch.setitem(sys.modules, "hermes_agent.run_agent", fake_mod)
 
     from hermes_cli import runtime_provider as _rtp
     monkeypatch.setattr(

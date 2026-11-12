@@ -20,7 +20,7 @@ def six_rows():
 def _compress_with_mutate_reply(make_agent, reply=None):
     """Run main's ``compress_now`` against a scripted gateway whose ``session.resume`` answers the compacted
     transcript once ``session.mutate`` (answering ``reply``, or the fake's default) has run."""
-    from agent.conversation_compression_manual import CompressRequest, compress_now
+    from hermes_agent.agent.conversation_compression_manual import CompressRequest, compress_now
     agent, client = make_agent([])
     if reply is not None:
         client.mutate_replies.append(reply)
@@ -61,7 +61,7 @@ def test_cli_compress_prints_the_gateways_noop_report_and_changes_nothing(make_a
     """The owner's ``noop`` answer (a failed summary, or nothing removable) committed nothing: the CLI
     prints the owner's report, keeps its history (an aborted ``here N`` tail is not doubled or lost),
     counts no compression and leaves the status-bar estimate alone."""
-    from agent.manual_compression_feedback import summarize_manual_compression
+    from hermes_agent.agent.manual_compression_feedback import summarize_manual_compression
     from cli import HermesCLI
     agent, client = make_agent([])
     history = six_rows()

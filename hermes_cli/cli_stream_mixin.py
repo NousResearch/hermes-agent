@@ -17,8 +17,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from rich.markup import escape as _escape
 
-from agent.i18n import t
-from agent.think_scrubber import THINK_CLOSE_TAGS, THINK_OPEN_TAGS
+from hermes_agent.agent.i18n import t
+from hermes_agent.agent.think_scrubber import THINK_CLOSE_TAGS, THINK_OPEN_TAGS
 
 # Model-generated reasoning tags: suppressed during streaming (they'd display as raw XML;
 # the agent strips them from final_response too) unless show_reasoning routes them to the box.
@@ -460,7 +460,7 @@ class CLIStreamMixin:
 
     def _emit_stream_text(self, text: str) -> None:
         """Emit filtered text to the streaming display."""
-        from agent.markdown_tables import is_table_divider, looks_like_table_row
+        from hermes_agent.agent.markdown_tables import is_table_divider, looks_like_table_row
         from cli import (
             HermesCLI, _ACCENT, _RST, _STREAM_PARTIAL_PREVIEW_LEN, _cprint, _strip_markdown_syntax, datetime)
         if not text:
@@ -541,7 +541,7 @@ class CLIStreamMixin:
 
     def _flush_stream(self) -> None:
         """Emit any remaining partial line from the stream buffer and close the box."""
-        from agent.markdown_tables import is_table_divider, looks_like_table_row
+        from hermes_agent.agent.markdown_tables import is_table_divider, looks_like_table_row
         from cli import _ACCENT, _RST, _cprint, _strip_markdown_syntax
         # Still inside a "reasoning block" at end-of-stream = false positive (the model
         # mentioned a tag in prose and never closed it): recover the buffer as regular text.
@@ -708,7 +708,7 @@ class CLIStreamMixin:
         if tool_name in announced:
             return
         announced.add(tool_name)
-        from agent.display import bridge_generating_phrase, get_tool_emoji
+        from hermes_agent.agent.display import bridge_generating_phrase, get_tool_emoji
         what = bridge_generating_phrase(tool_name) or tool_name
         if getattr(self, "_modern_layout", False):  # the composer rule shows it; scrollback stays quiet
             self._spinner_text = f"{get_tool_emoji(tool_name, default='⚡')} {t('cli.modern.preparing', what=what)}"
@@ -799,7 +799,7 @@ class CLIStreamMixin:
                         not getattr(self, "_long_tool_hint_fired", False)
                         and self.tool_progress_mode == "all"
                         and duration >= 30.0):
-                        from agent.onboarding import (
+                        from hermes_agent.agent.onboarding import (
                             TOOL_PROGRESS_FLAG, is_seen, mark_seen, tool_progress_hint_cli)
                         if not is_seen(CLI_CONFIG, TOOL_PROGRESS_FLAG):
                             self._long_tool_hint_fired = True
@@ -813,7 +813,7 @@ class CLIStreamMixin:
         if event_type != "tool.started":
             return self._show_tool_progress(event_type, function_name, preview, kwargs.get("percent"))
         if function_name and not function_name.startswith("_"):
-            from agent.display import get_tool_preview_max_len, tool_row_emoji
+            from hermes_agent.agent.display import get_tool_preview_max_len, tool_row_emoji
             label = preview or function_name
             _pl = get_tool_preview_max_len()
             if _pl > 0 and len(label) > _pl:
@@ -848,7 +848,7 @@ class CLIStreamMixin:
         """Capture local before-state for write-capable tools."""
         from cli import logger
         try:
-            from agent.display import capture_local_edit_snapshot
+            from hermes_agent.agent.display import capture_local_edit_snapshot
             snapshot = capture_local_edit_snapshot(function_name, function_args)
             if snapshot is not None:
                 self._pending_edit_snapshots[tool_call_id] = snapshot
@@ -857,7 +857,7 @@ class CLIStreamMixin:
 
     def _print_tool_image(self, function_name, args, result, is_error) -> None:
         """Show the local image a finished tool produced or looked at (``display.inline_images``)."""
-        from agent.terminal_image import tool_image_path
+        from hermes_agent.agent.terminal_image import tool_image_path
         from hermes_cli.cli_inline_images import print_inline_images
         if path := tool_image_path(function_name, args, result, is_error=bool(is_error)):
             print_inline_images(self, [path])
@@ -881,7 +881,7 @@ class CLIStreamMixin:
                     pass
         snapshot = self._pending_edit_snapshots.pop(tool_call_id, None)
         try:
-            from agent.display import render_edit_diff_with_delta
+            from hermes_agent.agent.display import render_edit_diff_with_delta
             from hermes_cli.cli_modern_layout import diff_printer
             render_edit_diff_with_delta(
                 function_name, function_result, function_args=function_args, snapshot=snapshot,

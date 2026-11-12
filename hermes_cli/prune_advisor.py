@@ -401,7 +401,7 @@ def offer_interactive(*, cprint, ask=input) -> Optional[bool]:
     advice, stale = cached_advice()
     if stale:
         # Never read the store on the startup path: (re)measure in the background for next launch.
-        from agent.memory_provider import spawn_context_thread
+        from hermes_agent.agent.memory_provider import spawn_context_thread
         spawn_context_thread(advise, name="auto-prune-estimate").start()
     if advice is None:
         return None

@@ -12,7 +12,7 @@ def detect_provider() -> Optional[str]:
     """Resolve the active Hermes runtime provider, or None if unavailable.
 
     A callable ``api_key`` (Azure Foundry Entra ID bearer-token provider, see
-    :mod:`agent.azure_identity_adapter`) counts as a valid credential; otherwise
+    :mod:`hermes_agent.agent.azure_identity_adapter`) counts as a valid credential; otherwise
     Entra-configured Foundry deployments would default to ``"openrouter"`` and
     the ACP auth handshake would reject the legitimate provider."""
     try:

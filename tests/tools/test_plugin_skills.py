@@ -1,7 +1,7 @@
 """Tests for namespaced plugin skill registration and resolution.
 
 Covers:
-- agent/skill_utils namespace helpers
+- hermes_agent/agent/skill_utils namespace helpers
 - hermes_cli/plugins register_skill API + registry
 - hermes_agent/tools/skills_tool qualified name dispatch in skill_view
 """
@@ -17,14 +17,14 @@ import pytest
 
 class TestParseQualifiedName:
     def test_with_colon(self):
-        from agent.skill_utils import parse_qualified_name
+        from hermes_agent.agent.skill_utils import parse_qualified_name
 
         ns, bare = parse_qualified_name("superpowers:writing-plans")
         assert ns == "superpowers"
         assert bare == "writing-plans"
 
     def test_without_colon(self):
-        from agent.skill_utils import parse_qualified_name
+        from hermes_agent.agent.skill_utils import parse_qualified_name
 
         ns, bare = parse_qualified_name("my-skill")
         assert ns is None
@@ -32,7 +32,7 @@ class TestParseQualifiedName:
 
 class TestIsValidNamespace:
     def test_valid(self):
-        from agent.skill_utils import is_valid_namespace
+        from hermes_agent.agent.skill_utils import is_valid_namespace
 
         assert is_valid_namespace("superpowers")
         assert is_valid_namespace("my-plugin")
@@ -40,7 +40,7 @@ class TestIsValidNamespace:
         assert is_valid_namespace("Plugin123")
 
     def test_invalid(self):
-        from agent.skill_utils import is_valid_namespace
+        from hermes_agent.agent.skill_utils import is_valid_namespace
 
         assert not is_valid_namespace("")
         assert not is_valid_namespace(None)

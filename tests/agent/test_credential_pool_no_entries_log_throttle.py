@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 
-from agent.credential_pool import (
+from hermes_agent.agent.credential_pool import (
     NO_AVAILABLE_ENTRIES_LOG_THROTTLE_SECONDS,
     CredentialPool,
     PooledCredential,
@@ -50,11 +50,11 @@ def _make_entry(entry_id: str) -> PooledCredential:
 
 def test_empty_pool_logs_once_within_throttle_window(monkeypatch, caplog):
     clock = _FakeClock()
-    monkeypatch.setattr("agent.credential_pool.time.monotonic", clock)
+    monkeypatch.setattr("hermes_agent.agent.credential_pool.time.monotonic", clock)
 
     pool = CredentialPool("test", [])
 
-    with caplog.at_level(logging.INFO, logger="agent.credential_pool"):
+    with caplog.at_level(logging.INFO, logger="hermes_agent.agent.credential_pool"):
         for _ in range(50):
             clock.now += 0.1  # tighter than the throttle window
             assert pool.select() is None
@@ -65,11 +65,11 @@ def test_empty_pool_logs_once_within_throttle_window(monkeypatch, caplog):
 
 def test_logs_again_after_throttle_window_elapses(monkeypatch, caplog):
     clock = _FakeClock()
-    monkeypatch.setattr("agent.credential_pool.time.monotonic", clock)
+    monkeypatch.setattr("hermes_agent.agent.credential_pool.time.monotonic", clock)
 
     pool = CredentialPool("test", [])
 
-    with caplog.at_level(logging.INFO, logger="agent.credential_pool"):
+    with caplog.at_level(logging.INFO, logger="hermes_agent.agent.credential_pool"):
         assert pool.select() is None  # log #1
         clock.now += NO_AVAILABLE_ENTRIES_LOG_THROTTLE_SECONDS + 1
         assert pool.select() is None  # window elapsed -> log #2
@@ -81,11 +81,11 @@ def test_successful_selection_rearms_throttle(monkeypatch, caplog):
     """A recover -> re-exhaust transition must log immediately, even inside the
     window opened by the previous empty stretch (observability of the flip)."""
     clock = _FakeClock()
-    monkeypatch.setattr("agent.credential_pool.time.monotonic", clock)
+    monkeypatch.setattr("hermes_agent.agent.credential_pool.time.monotonic", clock)
 
     pool = CredentialPool("test", [])
 
-    with caplog.at_level(logging.INFO, logger="agent.credential_pool"):
+    with caplog.at_level(logging.INFO, logger="hermes_agent.agent.credential_pool"):
         assert pool.select() is None  # log #1, throttle armed
         clock.now += 1
         assert pool.select() is None  # within window -> no log

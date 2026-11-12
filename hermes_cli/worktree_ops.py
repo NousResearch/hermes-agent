@@ -93,7 +93,7 @@ def release_lsp_clients(wt_path: str) -> None:
     Best-effort: LSP trouble must never block worktree removal.
     """
     try:
-        from agent.lsp import release_workspace
+        from hermes_agent.agent.lsp import release_workspace
         release_workspace(wt_path)
     except Exception as e:
         logger.debug("LSP release for worktree %s failed: %s", wt_path, e)

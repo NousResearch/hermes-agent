@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from hermes_constants import PARTIAL_STREAM_STUB_ID
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 REPEATED_COMMAND = "cat >> /tmp/example.py <<'PYEOF'\n" + (

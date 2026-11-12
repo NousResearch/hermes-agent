@@ -76,7 +76,7 @@ def daemon(_isolate_hermes_home, monkeypatch):
     from starlette.testclient import TestClient
 
     import hermes_agent.tui_gateway.launch_profile_policy as launch_policy
-    from agent.secret_scope import is_multiplex_active, set_multiplex_active
+    from hermes_agent.agent.secret_scope import is_multiplex_active, set_multiplex_active
     from hermes_cli import profiles
     from hermes_cli.plugin_host import PluginHost
     from hermes_agent.gateway.runtime_bootstrap import TicketStore

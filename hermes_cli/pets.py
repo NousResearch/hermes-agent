@@ -14,7 +14,7 @@ def _err(msg: str) -> None:
 
 def _cmd_list(args) -> int:
     """List gallery pets (or only installed ones with ``--installed``)."""
-    from agent.pet import store
+    from hermes_agent.agent.pet import store
 
     if args.installed:
         pets = store.installed_pets()
@@ -26,7 +26,7 @@ def _cmd_list(args) -> int:
             print(f"  {pet.slug:<24} {pet.display_name}")
         return 0
 
-    from agent.pet.manifest import ManifestError, fetch_manifest
+    from hermes_agent.agent.pet.manifest import ManifestError, fetch_manifest
 
     try:
         entries = fetch_manifest()
@@ -53,8 +53,8 @@ def _cmd_list(args) -> int:
 
 
 def _cmd_install(args) -> int:
-    from agent.pet import store
-    from agent.pet.manifest import ManifestError
+    from hermes_agent.agent.pet import store
+    from hermes_agent.agent.pet.manifest import ManifestError
 
     slug = args.slug.strip()
     try:
@@ -74,7 +74,7 @@ def _cmd_install(args) -> int:
 
 
 def _cmd_remove(args) -> int:
-    from agent.pet import store
+    from hermes_agent.agent.pet import store
 
     slug = args.slug.strip()
     if store.remove_pet(slug):
@@ -85,7 +85,7 @@ def _cmd_remove(args) -> int:
 
 
 def _cmd_select(args) -> int:
-    from agent.pet import store
+    from hermes_agent.agent.pet import store
 
     slug = (args.slug or "").strip()
     if not slug:
@@ -129,9 +129,9 @@ def _cmd_show(args) -> int:
     import shutil
     import time
 
-    from agent.pet import store
-    from agent.pet.constants import DEFAULT_SCALE, LOOP_MS, STATE_ROWS, PetState, resolve_cols
-    from agent.pet.render import build_renderer
+    from hermes_agent.agent.pet import store
+    from hermes_agent.agent.pet.constants import DEFAULT_SCALE, LOOP_MS, STATE_ROWS, PetState, resolve_cols
+    from hermes_agent.agent.pet.render import build_renderer
 
     cfg = _pet_config()
     slug = (args.slug or "").strip() or str(cfg.get("slug", "") or "")
@@ -207,9 +207,9 @@ def _cmd_show(args) -> int:
 
 def _cmd_doctor(args) -> int:
     """Report install state, active pet, config, and terminal capability."""
-    from agent.pet import store
-    from agent.pet.render import resolve_mode
-    from agent.terminal_image import detect_terminal_graphics
+    from hermes_agent.agent.pet import store
+    from hermes_agent.agent.pet.render import resolve_mode
+    from hermes_agent.agent.terminal_image import detect_terminal_graphics
 
     cfg = _pet_config()
     enabled = _pet_enabled(cfg)
@@ -298,7 +298,7 @@ def set_pet_scale(value: float | str) -> tuple[float, str | None]:
     """Set ``display.pet.scale`` (clamped). Returns ``(applied, error)``; *error* is set (and
     nothing written) only when *value* isn't a number. Single write path behind ``/pet scale``
     and the desktop slider."""
-    from agent.pet.constants import clamp_scale
+    from hermes_agent.agent.pet.constants import clamp_scale
 
     try:
         scale = clamp_scale(float(value))
@@ -311,7 +311,7 @@ def set_pet_scale(value: float | str) -> tuple[float, str | None]:
 
 def toggle_pet_display() -> tuple[bool, str | None, str | None]:
     """Toggle ``display.pet.enabled``."""
-    from agent.pet import store
+    from hermes_agent.agent.pet import store
 
     cfg = _pet_config()
     pet = store.resolve_active_pet(str(cfg.get("slug", "") or ""))
@@ -333,8 +333,8 @@ def toggle_pet_display() -> tuple[bool, str | None, str | None]:
 
 def print_pet_gallery(*, limit: int = 20) -> None:
     """Print a slice of the public petdex gallery (CLI/TUI text fallback)."""
-    from agent.pet import store
-    from agent.pet.manifest import ManifestError, fetch_manifest
+    from hermes_agent.agent.pet import store
+    from hermes_agent.agent.pet.manifest import ManifestError, fetch_manifest
 
     try:
         entries = fetch_manifest()

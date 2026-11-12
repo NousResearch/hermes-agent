@@ -339,7 +339,7 @@ def _(rid, params: dict) -> dict:
     if err is not None:
         return err
     with _hermes_home_scope(profile_dir):
-        from agent.skill_utils import iter_skill_index_files
+        from hermes_agent.agent.skill_utils import iter_skill_index_files
         from hermes_cli.config import load_config
         from hermes_cli.skills_config import get_disabled_skills
         cfg = load_config() or {}

@@ -15,7 +15,7 @@ import logging
 import re
 from typing import Any, Callable, Optional
 
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 from hermes_agent.gateway.platforms.base import fit_prefix
 from hermes_agent.gateway.platforms.base_exec_approval import (
     approval_timeout_seconds, ea_default_reason_text, ea_reason_label_text, format_approval_timed_out_notice)

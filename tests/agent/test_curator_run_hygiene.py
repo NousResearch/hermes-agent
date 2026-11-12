@@ -18,8 +18,8 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(home))
     import hermes_agent.tools.skill_usage as usage
-    from agent import curator
-    import agent.curator_backup as cb
+    from hermes_agent.agent import curator
+    import hermes_agent.agent.curator_backup as cb
     for m in (usage, cb, curator):
         importlib.reload(m)
     monkeypatch.setattr(curator, "_load_config", dict)

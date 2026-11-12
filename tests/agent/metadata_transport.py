@@ -5,7 +5,7 @@ import pytest
 
 @pytest.fixture
 def metadata_transport(monkeypatch):
-    from agent import model_metadata
+    from hermes_agent.agent import model_metadata
 
     responses, requests = [], []
     real_client = httpx.Client

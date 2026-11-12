@@ -17,7 +17,7 @@ _RUNTIME_KEYS = ("model", "provider", "api_key", "base_url", "api_mode")
 
 def _snapshot_agent_model_runtime(agent) -> dict:
     """Capture the current agent model runtime for a one-turn restore."""
-    from agent.route_verdicts import primary_runtime_for_restore
+    from hermes_agent.agent.route_verdicts import primary_runtime_for_restore
     return {**{k: getattr(agent, k, "") for k in _RUNTIME_KEYS},
             "reasoning_config": copy.deepcopy(getattr(agent, "reasoning_config", None)),
             "primary_runtime": primary_runtime_for_restore(agent)}
@@ -51,7 +51,7 @@ def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
         # Endpoint-stamped, so this applies only when the switch landed on the primary's URL; the model
         # check keeps a fallback that shares that URL from inheriting the primary's verdicts.
         if isinstance(primary, dict) and primary.get("model") == model:
-            from agent.route_verdicts import restore_primary_route_verdicts
+            from hermes_agent.agent.route_verdicts import restore_primary_route_verdicts
             restore_primary_route_verdicts(agent, copy.deepcopy(primary))
         if "reasoning_config" in snapshot:
             agent.reasoning_config = snapshot["reasoning_config"]
@@ -72,7 +72,7 @@ def _profile_runtime_scope_tokens(profile_home, *, hydrate_secrets: bool = True)
     from any body that persists state rather than calls a provider: the exit-flush worker has a 5s
     TOTAL budget, and one slow source there costs the transcript the flush exists to save.
     """
-    from agent.secret_scope import is_multiplex_active
+    from hermes_agent.agent.secret_scope import is_multiplex_active
     scopes = _TurnScopes()
     try:
         if profile_home:
@@ -414,7 +414,7 @@ def _reset_session_model_override(sid: str, session: dict) -> dict:
     mid-turn): drop this session's pin and any armed ``--once`` restore, adopt config.yaml's model
     through the config-sync switch (no new pin, never written back), and persist the row so
     ``session.resume`` cannot restore the old pin. History is kept."""
-    from agent.i18n import t
+    from hermes_agent.agent.i18n import t
     had_override = bool(session.get("model_override"))
     session.pop("model_override", None)
     session.pop("one_turn_model_restore", None)

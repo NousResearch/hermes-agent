@@ -4,7 +4,7 @@
 
 import pytest
 
-from agent.turn_explainers import TurnExplainersMixin
+from hermes_agent.agent.turn_explainers import TurnExplainersMixin
 from hermes_agent.cron.scheduler import _final_response_from_result
 
 

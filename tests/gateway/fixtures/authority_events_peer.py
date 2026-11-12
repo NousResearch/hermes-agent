@@ -57,7 +57,7 @@ def main():
         from hermes_agent.gateway.session_controls import AuthorityConnection
         from hermes_agent.gateway.session_contract import Submission
         from hermes_agent.hermes_state_runtime import list_session_admissions
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         runner = GatewayRunner()
         authority = await initialize_session_authority(runner, profile_id='fixture', instance_id='events-owner')

@@ -19,7 +19,7 @@ import time
 from contextlib import suppress
 from pathlib import Path
 
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 from hermes_agent.gateway.config import Platform
 from hermes_agent.gateway.platforms.base import EphemeralReply
 from hermes_agent.gateway.platforms.event import MessageEvent, MessageType, clean_attachment_filename
@@ -288,7 +288,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         if is_internal:
             return None
         try:
-            from agent.estop import paused_reply as _estop_paused_reply
+            from hermes_agent.agent.estop import paused_reply as _estop_paused_reply
         except ImportError:
             return None
         _paused_notice = _estop_paused_reply()
@@ -977,14 +977,14 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
 
     # /learn and /plan: ack, rewrite the turn to a builder prompt, fall through to the agent.
     async def _hm_cmd_learn(self, event, source, _quick_key):
-        from agent.learn_prompt import build_learn_prompt
+        from hermes_agent.agent.learn_prompt import build_learn_prompt
 
         req = event.get_command_args().strip()
         _ack = t("gateway.learn.ack_described") if req else t("gateway.learn.ack_conversation")
         return await self._hm_rewrite_turn_to_prompt(event, source, "learn", _ack, lambda: build_learn_prompt(req))
 
     async def _hm_cmd_plan(self, event, source, _quick_key):
-        from agent.plan_prompt import build_plan_prompt
+        from hermes_agent.agent.plan_prompt import build_plan_prompt
 
         task = event.get_command_args().strip()
         _ack = (t("gateway.plan.ack_task", task=task[:80] + ("…" if len(task) > 80 else ""))
@@ -1118,7 +1118,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         """Rewrite ``/<bundle>`` to the bundle invocation message; True when handled.
         Skill bundles take precedence over individual skill commands (mirrors CLI dispatch)."""
         try:
-            from agent.skill_bundles import (
+            from hermes_agent.agent.skill_bundles import (
                 build_bundle_invocation_message, resolve_bundle_command_key
             )
             bundle_key = resolve_bundle_command_key(command)
@@ -1172,7 +1172,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         if not command or self._hm_bundle_slash_rewrite(event, source, _quick_key, command):
             return None
         try:
-            from agent.skill_commands import (
+            from hermes_agent.agent.skill_commands import (
                 get_skill_commands, build_skill_invocation_message, resolve_skill_command_key
             )
             skill_cmds = get_skill_commands()
@@ -1184,7 +1184,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             # Stacked slash-skill invocations: `/skill-a /skill-b do XYZ` loads every leading skill
             # (up to 5), not just the first. Mirrors CLI. Native split: plugin skills are interactive-only.
             try:
-                from agent.skill_commands import (
+                from hermes_agent.agent.skill_commands import (
                     build_stacked_skill_invocation_message as _build_stacked,
                     split_stacked_skill_commands,
                 )
@@ -1197,7 +1197,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
                 # Per-platform disabled check: get_skill_commands() only applies the *global*
                 # disabled list at scan time (process-global cache across platforms), and
                 # split_stacked_skill_commands() only checks each extra token is a KNOWN skill.
-                from agent.skill_utils import get_disabled_skill_names as _get_plat_disabled
+                from hermes_agent.agent.skill_utils import get_disabled_skill_names as _get_plat_disabled
                 _plat_disabled = _get_plat_disabled(platform=_plat)
                 if _skill_name and _skill_name in _plat_disabled:
                     return t("gateway.skills.disabled_for_platform", name=_skill_name, platform=_plat)
@@ -1554,7 +1554,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         self, source: SessionSource, session_key: str, message_text: str, image_paths: list[str]
     ) -> str:
         """Route images natively (attach pixels at run_conversation) or pre-analyze them into text."""
-        # See agent/image_routing.py. Offloaded to a thread: the decision does blocking network I/O
+        # See hermes_agent/agent/image_routing.py. Offloaded to a thread: the decision does blocking network I/O
         # (models.dev fetch on cache miss, Ollama /api/show probe) that would stall the event loop.
         _img_mode = await asyncio.to_thread(
             self._decide_image_input_mode, source=source, session_key=session_key,
@@ -1581,7 +1581,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         except Exception:
             logger.debug("vision enrichment: session runtime resolution failed", exc_info=True)
 
-        from agent.auxiliary_client import scoped_runtime_main
+        from hermes_agent.agent.auxiliary_client import scoped_runtime_main
 
         with scoped_runtime_main(vision_runtime):
             return await self._enrich_message_with_vision(message_text, image_paths)
@@ -1726,7 +1726,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         """Context length of the model this turn runs on. A global ``model.context_length`` pin
         belongs to the configured model, not a /model or channel override; custom-provider limits win."""
         from hermes_agent.gateway.run import _load_gateway_config
-        from agent.model_metadata import get_model_context_length_async
+        from hermes_agent.agent.model_metadata import get_model_context_length_async
 
         _msg_config_ctx = None
         _msg_cfg = None
@@ -1907,12 +1907,12 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         model: Optional[str] = None,
     ) -> str:
         """Resolve image-input routing (``"native"`` / ``"text"``) for the effective model this turn
-        (see agent/image_routing.py). Sessions can carry /model overrides and this runs before AIAgent
+        (see hermes_agent/agent/image_routing.py). Sessions can carry /model overrides and this runs before AIAgent
         sets the auxiliary_client runtime globals, so resolve the per-session runtime bundle the
         upcoming turn will use, not just the persisted default."""
         try:
-            from agent.image_routing import decide_image_input_mode
-            from agent.auxiliary_client import _read_main_model, _read_main_provider
+            from hermes_agent.agent.image_routing import decide_image_input_mode
+            from hermes_agent.agent.auxiliary_client import _read_main_model, _read_main_provider
             from hermes_cli.config import load_config
 
             cfg = user_config if isinstance(user_config, dict) else load_config()
@@ -1951,7 +1951,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         Description *and* local cache path are injected so the model understands the image without
         a tool call and can re-examine it with vision_analyze."""
         from hermes_agent.tools.vision_tools import vision_analyze_tool
-        from agent.memory_context import sanitize_context
+        from hermes_agent.agent.memory_context import sanitize_context
 
         analysis_prompt = (
             "Concisely describe this image in 2-4 sentences "

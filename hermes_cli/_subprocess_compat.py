@@ -760,7 +760,7 @@ def kill_process_tree(proc: subprocess.Popen, *, grace: float = 0.0) -> None:
     openai/codex#37527 ("Terminate timed-out hook process trees").
     """
     try:
-        from agent.deadline import kill_process_tree as _deadline_kill_tree
+        from hermes_agent.agent.deadline import kill_process_tree as _deadline_kill_tree
 
         if grace > 0 and not IS_WINDOWS:
             import signal as _signal
@@ -795,7 +795,7 @@ def kill_process_tree(proc: subprocess.Popen, *, grace: float = 0.0) -> None:
 
 
 def _legacy_kill_process_tree(proc: subprocess.Popen) -> None:
-    """Local tree-kill fallback when agent.deadline is unavailable (partial install, cycle)."""
+    """Local tree-kill fallback when hermes_agent.agent.deadline is unavailable (partial install, cycle)."""
     if not IS_WINDOWS:
         # Verify the child leads its own process group before signalling, never a shared group.
         try:

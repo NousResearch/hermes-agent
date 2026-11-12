@@ -110,7 +110,7 @@ def _clean_str(raw: Any) -> str:
 def _runtime_main(key: str) -> Any:
     """Context-local credential source or stripped runtime text; "" when unavailable."""
     try:
-        from agent.auxiliary_client import _runtime_main_value
+        from hermes_agent.agent.auxiliary_client import _runtime_main_value
 
         value = _runtime_main_value(key)
         return value if key == "api_key" else _clean_str(value)
@@ -187,7 +187,7 @@ def _resolve_inference_value(
     runtime = _runtime_main(key)
     # A declared source owns authentication even when its mint fails.
     if key == "api_key":
-        from agent.command_token_source import materialize_probe_api_key
+        from hermes_agent.agent.command_token_source import materialize_probe_api_key
         if callable(runtime):
             return materialize_probe_api_key(runtime)
         runtime = materialize_probe_api_key(runtime)
@@ -245,7 +245,7 @@ def _should_probe_ollama_vision(provider: str, base_url: str, api_key: str = "")
     if not base_url:
         return False
     try:
-        from agent.model_metadata import detect_local_server_type, is_local_endpoint
+        from hermes_agent.agent.model_metadata import detect_local_server_type, is_local_endpoint
 
         # Forward the key: an unauthorized probe can never produce a positive verdict.
         return bool(is_local_endpoint(base_url)) and detect_local_server_type(base_url, api_key=api_key) == "ollama"
@@ -287,7 +287,7 @@ def _probe_models_dev(provider: str, model: str, cfg: Optional[dict[str, Any]]) 
     when an image needs routing, and the text-only-main guard depends on catalog
     data — a cold cache returning "unknown" would reintroduce attempting the call.
     The fetch is cached (4h TTL) and backoff-limited."""
-    from agent.models_dev import get_model_capabilities
+    from hermes_agent.agent.models_dev import get_model_capabilities
 
     # allow_network=True on purpose: vision-capability lookup runs when an image actually needs routing (not
     # per turn), and the #31179 text-only-main guard depends on catalog data — a cold cache returning
@@ -298,7 +298,7 @@ def _probe_models_dev(provider: str, model: str, cfg: Optional[dict[str, Any]]) 
         # A VALID Codex ``-900k`` picker variant is a Hermes-side alias of its base slug; the catalog
         # only knows the base, so look that up. The runtime model id stays untouched (the transport
         # owns wire normalization) and ineligible ``-900k`` strings pass through unchanged (#102189).
-        from agent.model_metadata import strip_codex_context_variant_suffix
+        from hermes_agent.agent.model_metadata import strip_codex_context_variant_suffix
 
         model = strip_codex_context_variant_suffix(model)
     caps = get_model_capabilities(provider, model, allow_network=True)
@@ -313,7 +313,7 @@ def _probe_ollama(provider: str, model: str, cfg: Optional[dict[str, Any]]) -> O
     api_key = _resolve_inference_api_key(cfg, provider)
     if not _should_probe_ollama_vision(provider, base_url, api_key=api_key):
         return None
-    from agent.model_metadata import query_ollama_supports_vision
+    from hermes_agent.agent.model_metadata import query_ollama_supports_vision
 
     return query_ollama_supports_vision(model, base_url, api_key=api_key)
 
@@ -392,7 +392,7 @@ def decide_image_input_mode(
 
 
 # Image size handling is REACTIVE: attach at full size and let
-# ``run_agent._try_shrink_image_parts_in_messages`` shrink + retry on rejection
+# ``hermes_agent.run_agent._try_shrink_image_parts_in_messages`` shrink + retry on rejection
 # (e.g. Anthropic's 5 MB ceiling as HTTP 400). Provider ceilings are partial and
 # evolving; a proactive table would go stale and silently degrade quality.
 
@@ -488,7 +488,7 @@ def _accepted_mimes() -> frozenset:
     server decodes fewer formats (no WebP — and a WebP part fails SILENTLY: the model
     confabulates a description), so its narrower set transcodes those here."""
     try:
-        from agent.auxiliary_client import _runtime_main_value
+        from hermes_agent.agent.auxiliary_client import _runtime_main_value
         from hermes_cli.local_runtime.capabilities import ACCEPTED_IMAGE_MIMES, is_managed_provider
 
         if is_managed_provider(str(_runtime_main_value("provider") or ""), str(_runtime_main_value("base_url") or "")):
@@ -504,7 +504,7 @@ def _file_to_data_url(path: Path) -> Optional[str]:
     MIMEs outside the accepted set are transcoded to PNG. None when unreadable,
     blocked by the read guard, or untranscodable — the caller reports ``skipped``."""
     try:
-        from agent.file_safety import raise_if_read_blocked
+        from hermes_agent.agent.file_safety import raise_if_read_blocked
 
         raise_if_read_blocked(str(path))
     except ValueError as exc:

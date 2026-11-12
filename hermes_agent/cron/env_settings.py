@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import os
 
-from agent.secret_scope import current_secret_scope, is_multiplex_active, load_env_file
+from hermes_agent.agent.secret_scope import current_secret_scope, is_multiplex_active, load_env_file
 from hermes_constants import get_hermes_home
 
 

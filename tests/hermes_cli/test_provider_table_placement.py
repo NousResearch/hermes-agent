@@ -112,7 +112,7 @@ def test_mirrored_alias_keys_keep_the_overlay_route(monkeypatch):
 
 
 def test_profile_models_dev_id_resolves_at_lookup_time(monkeypatch):
-    import agent.models_dev as md
+    import hermes_agent.agent.models_dev as md
 
     _use_profiles(monkeypatch, ProviderProfile(name="zz-hosted", aliases=("zzh",), models_dev_id="zz-catalog"))
     monkeypatch.setattr(md, "PROVIDER_TO_MODELS_DEV", {})
@@ -128,7 +128,7 @@ def test_profile_models_dev_id_resolves_at_lookup_time(monkeypatch):
 def test_models_dev_keyed_overlay_row_keeps_the_profile_slug_and_label_offline(monkeypatch):
     """A profile whose overlay is keyed by its models.dev id lists under its own name and display_name
     when no models.dev catalog is at hand (offline, blocked): not under the catalog id."""
-    import agent.models_dev as md
+    import hermes_agent.agent.models_dev as md
     from hermes_cli import providers as prov
     from hermes_cli.model_switch import list_authenticated_providers
 

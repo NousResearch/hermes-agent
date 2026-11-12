@@ -23,7 +23,7 @@ from contextlib import contextmanager
 import pytest
 
 import hermes_agent.gateway.run as gateway_run
-from agent.context_references import ContextReferenceResult
+from hermes_agent.agent.context_references import ContextReferenceResult
 from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
 from hermes_agent.gateway.platforms.event import MessageEvent
 from hermes_agent.gateway.run import GatewayRunner
@@ -72,7 +72,7 @@ def _patch_runtime_resolution(monkeypatch) -> None:
         },
     )
     # config_context_length is int > 0, so get_model_context_length_async's
-    # config-override short-circuit (agent/model_metadata.py) fires and
+    # config-override short-circuit (hermes_agent/agent/model_metadata.py) fires and
     # returns it directly — no network probe needed.
     monkeypatch.setattr(
         gateway_run,
@@ -107,7 +107,7 @@ async def test_at_reference_reaches_preprocessor_with_real_context_length(
             expanded=True,
         )
 
-    import agent.context_references as ctx_mod
+    import hermes_agent.agent.context_references as ctx_mod
 
     monkeypatch.setattr(ctx_mod, "preprocess_context_references_async", _fake_preprocess)
 
@@ -172,8 +172,8 @@ async def test_at_reference_ignores_global_context_for_runtime_route_override(mo
         ),
     )
 
-    import agent.context_references as ctx_mod
-    import agent.model_metadata as model_meta_mod
+    import hermes_agent.agent.context_references as ctx_mod
+    import hermes_agent.agent.model_metadata as model_meta_mod
 
     async def _fake_get_context(_model, **kwargs):
         captured["config_context_length"] = kwargs["config_context_length"]

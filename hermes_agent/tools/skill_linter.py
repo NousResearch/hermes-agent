@@ -4,7 +4,7 @@ The hard validator (``skill_manager_tool._validate_frontmatter``) blocks the
 non-negotiables; this is the advisory companion encoding the CONTRIBUTING.md
 "Skill authoring standards" a human reviewer would otherwise catch. Findings
 never block by themselves — ``lint_skill`` returns ``LintFinding`` rows and the
-caller decides. Frontmatter parsing is delegated to ``agent.skill_utils`` so
+caller decides. Frontmatter parsing is delegated to ``hermes_agent.agent.skill_utils`` so
 BOM handling and the prompt description budget stay in one place.
 """
 
@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
-from agent.skill_utils import SKILL_PROMPT_DESC_LIMIT, parse_frontmatter
+from hermes_agent.agent.skill_utils import SKILL_PROMPT_DESC_LIMIT, parse_frontmatter
 
 # Shell utilities already wrapped as native tools; naming them in prose steers
 # the model to a raw shell call. banned token -> native tool to name instead.

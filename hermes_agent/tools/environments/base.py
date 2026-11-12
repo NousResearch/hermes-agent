@@ -401,7 +401,7 @@ class BaseEnvironment(ABC):
         if not self._profile_scoped_passthrough:
             return ()
         try:
-            from agent.secret_scope import is_multiplex_active
+            from hermes_agent.agent.secret_scope import is_multiplex_active
             if is_multiplex_active():
                 from hermes_agent.tools.env_passthrough import get_all_passthrough
                 names = (*get_all_passthrough(), *self._additional_profile_scoped_passthrough_names())
@@ -690,7 +690,7 @@ class BaseEnvironment(ABC):
         caps retention at ``tool_output.max_bytes`` WHILE draining; only the foreground terminal
         tool may set it — internal full-fidelity consumers (file-op ``cat`` reads feeding the
         patch engine, RPC reads, log reads) MUST leave it False or data is corrupted. The wait is
-        bounded by ``agent.deadline.run_bounded_sync`` so a wedged poll loop cannot hang past
+        bounded by ``hermes_agent.agent.deadline.run_bounded_sync`` so a wedged poll loop cannot hang past
         ``timeout`` and silently disable every asyncio timer in the process.
 
         ``bounded_capture=True`` caps stdout/stderr retention at ``tool_output.max_bytes`` WHILE the stream
@@ -761,7 +761,7 @@ class BaseEnvironment(ABC):
         # expiry from a daemon worker + ``Event.wait`` so a blocked loop cannot disable it; the
         # grace lets the inner loop return the partial-output 124 path.
         # See #94285.
-        from agent.deadline import run_bounded_sync
+        from hermes_agent.agent.deadline import run_bounded_sync
 
         try:
             bound_s = float(effective_timeout)
@@ -802,7 +802,7 @@ class BaseEnvironment(ABC):
         if not pid:
             return
         try:
-            from agent.deadline import kill_process_tree
+            from hermes_agent.agent.deadline import kill_process_tree
             kill_process_tree(int(pid))
         except Exception:
             logger.debug("terminal wait-bound kill_process_tree failed", exc_info=True)

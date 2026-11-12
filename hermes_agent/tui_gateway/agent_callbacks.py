@@ -259,7 +259,7 @@ def _wire_callbacks(sid: str):
     set_secret_capture_callback(secret_cb)
     # External password-manager unlock: the renderer shows a masked master-password card; the
     # answer is consumed by the manager CLI on stdin and only a session token stays in memory.
-    from agent.vault_backends.unlock import (set_code_prompt_callback, set_current_session_id,
+    from hermes_agent.agent.vault_backends.unlock import (set_code_prompt_callback, set_current_session_id,
                                              set_save_login_prompt_callback, set_unlock_prompt_callback)
     set_current_session_id(sid)  # an unlock made on this turn belongs to this session (released with it)
     set_unlock_prompt_callback(lambda backend, display_name: _ask(

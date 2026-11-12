@@ -646,7 +646,7 @@ def _notif_dispatch_event(sid: str, session: dict, evt: dict, text: str) -> None
         # honour ``hidden``). Only what the agent says about the new output is visible.
         from hermes_agent.tools.process_registry_notifications import HEARTBEAT_DISPLAY_KIND
         kwargs = {"display_kind": HEARTBEAT_DISPLAY_KIND}
-    from agent.notification_presentation import diagnostic_process_event
+    from hermes_agent.agent.notification_presentation import diagnostic_process_event
     if diagnostic_process_event(evt):
         kwargs.setdefault("display_metadata", {})["notification_category"] = "diagnostic"
     try:
@@ -692,7 +692,7 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, com
         from hermes_agent.tools.process_registry_notifications import async_delegation_display_text, process_completion_display_text
         display_text = (async_delegation_display_text(evt) if is_delegation
                         else process_completion_display_text([evt]) if evt_type == "completion" else text)
-        from agent.notification_presentation import diagnostic_process_event
+        from hermes_agent.agent.notification_presentation import diagnostic_process_event
         from hermes_agent.gateway.warning_notifications import render_notification
         render_notification(lambda: _emit("status.update", sid, {"kind": "process", "text": display_text}),
                             platform="tui", diagnostic=diagnostic_process_event(evt))
@@ -932,8 +932,8 @@ def _hud_surface_note(session: dict) -> str:
         if TOOL_CALL_NAME in direct:
             # Tool search defers the desktop tools by default: they stay callable through the
             # tool_call bridge, so the HUD note must count them and name the bridge (main 312f6bc2fd6).
-            from agent.prompt_builder import hud_surface_note
-            from agent.tool_executor import _tool_search_scoped_names
+            from hermes_agent.agent.prompt_builder import hud_surface_note
+            from hermes_agent.agent.tool_executor import _tool_search_scoped_names
             return hud_surface_note(direct, _tool_search_scoped_names(agent))
     committed = {"surface": surface, "voice_context": session.get("voice_live_context")}
     return surface_note(committed, direct)

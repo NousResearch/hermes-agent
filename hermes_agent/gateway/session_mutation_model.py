@@ -183,7 +183,7 @@ def _reset_payload(authority, old, current):
     session runs (and, when following, keeps following) its profile again; history is kept. Returns a
     ``noop`` report when the session already runs that model. A safe-mode session never read the
     profile, so it has no configured default to return to."""
-    from agent.i18n import t
+    from hermes_agent.agent.i18n import t
     model, provider = ('', '') if old.ignore_user_config else configured_default(authority)
     if not model:
         raise RuntimeStoreError('invalid_params', field='payload.model', detail=t('cli.model.reset_no_default'))
@@ -329,7 +329,7 @@ def _alias_credential(authority, result):
 
 
 def _persisted_selection_context(authority, snapshot, current):
-    from agent.usage_anchor import persisted_anchor_tokens
+    from hermes_agent.agent.usage_anchor import persisted_anchor_tokens
     from hermes_cli.model_selection_guards import SelectionContext
     target = snapshot.get('target') or snapshot['receipt']['session_id']
     tokens = persisted_anchor_tokens(authority.db, target, authority.db.get_messages_as_conversation(target))

@@ -746,7 +746,7 @@ class TestRunOnMcpLoop:
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always")
                 with patch(
-                    "agent.async_utils.asyncio.run_coroutine_threadsafe",
+                    "hermes_agent.agent.async_utils.asyncio.run_coroutine_threadsafe",
                     side_effect=RuntimeError("scheduler down"),
                 ):
                     with pytest.raises(RuntimeError):
@@ -874,7 +874,7 @@ class TestRunOnMCPLoopInterrupts:
             return future
 
         with patch.object(mcp_mod, "_mcp_loop", loop):
-            with patch("agent.async_utils.safe_schedule_threadsafe", side_effect=_schedule):
+            with patch("hermes_agent.agent.async_utils.safe_schedule_threadsafe", side_effect=_schedule):
                 return mcp_mod._run_on_mcp_loop(_unused_call(), timeout=1)
 
     def test_interrupt_cancels_waiting_mcp_call(self):
@@ -1147,7 +1147,7 @@ class TestMCPServerTask:
         server spawned there inherits the Hermes process dir instead, so
         relative-path servers resolve against the wrong tree.
         """
-        from agent.runtime_cwd import clear_session_cwd, set_session_cwd
+        from hermes_agent.agent.runtime_cwd import clear_session_cwd, set_session_cwd
         from hermes_agent.tools.mcp_tool import MCPServerTask
 
         monkeypatch.delenv("TERMINAL_CWD", raising=False)
@@ -1174,7 +1174,7 @@ class TestMCPServerTask:
 
     def test_start_configured_cwd_overrides_session_cwd(self, tmp_path, monkeypatch):
         """An explicit per-server `cwd` in config always wins over the session anchor."""
-        from agent.runtime_cwd import clear_session_cwd, set_session_cwd
+        from hermes_agent.agent.runtime_cwd import clear_session_cwd, set_session_cwd
         from hermes_agent.tools.mcp_tool import MCPServerTask
 
         monkeypatch.delenv("TERMINAL_CWD", raising=False)
@@ -1395,7 +1395,7 @@ class TestShutdown:
 
         try:
             with patch(
-                "agent.async_utils.safe_schedule_threadsafe",
+                "hermes_agent.agent.async_utils.safe_schedule_threadsafe",
                 side_effect=schedule_then_report_timeout,
             ):
                 shutdown_mcp_servers()
@@ -1536,7 +1536,7 @@ class TestBuildSafeEnv:
     def test_secret_source_vars_resolve_through_active_profile_scope(self, monkeypatch):
         """Under multiplex the stdio child gets the ROUTED profile's value for a source-tagged name,
         never the launch profile's os.environ copy; a name the profile lacks is omitted."""
-        from agent.secret_scope import set_multiplex_active, set_secret_scope, reset_secret_scope
+        from hermes_agent.agent.secret_scope import set_multiplex_active, set_secret_scope, reset_secret_scope
         from hermes_cli import env_loader
         from hermes_agent.tools.mcp_tool_config import _build_safe_env
 
@@ -2242,7 +2242,7 @@ class TestSamplingCallbackText:
         )
 
         with patch(
-            "agent.auxiliary_client.call_llm",
+            "hermes_agent.agent.auxiliary_client.call_llm",
             return_value=fake_client.chat.completions.create.return_value,
         ):
             params = _make_sampling_params()
@@ -2266,7 +2266,7 @@ class TestSamplingCallbackText:
         )
 
         with patch(
-            "agent.auxiliary_client.call_llm",
+            "hermes_agent.agent.auxiliary_client.call_llm",
             return_value=fake_client.chat.completions.create.return_value,
         ) as mock_call:
             params = _make_sampling_params(tools=[server_tool])
@@ -2296,7 +2296,7 @@ class TestSamplingCallbackToolUse:
         fake_client.chat.completions.create.return_value = _make_llm_tool_response()
 
         with patch(
-            "agent.auxiliary_client.call_llm",
+            "hermes_agent.agent.auxiliary_client.call_llm",
             return_value=fake_client.chat.completions.create.return_value,
         ):
             params = _make_sampling_params()
@@ -2324,7 +2324,7 @@ class TestToolLoopGovernance:
         fake_client.chat.completions.create.return_value = _make_llm_tool_response()
 
         with patch(
-            "agent.auxiliary_client.call_llm",
+            "hermes_agent.agent.auxiliary_client.call_llm",
             return_value=fake_client.chat.completions.create.return_value,
         ):
             params = _make_sampling_params()
@@ -2344,7 +2344,7 @@ class TestToolLoopGovernance:
         fake_client.chat.completions.create.return_value = _make_llm_tool_response()
 
         with patch(
-            "agent.auxiliary_client.call_llm",
+            "hermes_agent.agent.auxiliary_client.call_llm",
             return_value=fake_client.chat.completions.create.return_value,
         ):
             result = asyncio.run(handler(None, _make_sampling_params()))
@@ -2362,7 +2362,7 @@ class TestSamplingErrors:
         fake_client.chat.completions.create.return_value = _make_llm_response()
 
         with patch(
-            "agent.auxiliary_client.call_llm",
+            "hermes_agent.agent.auxiliary_client.call_llm",
             return_value=fake_client.chat.completions.create.return_value,
         ):
             # First call succeeds
@@ -2389,7 +2389,7 @@ class TestSamplingErrors:
             return _make_llm_response()
 
         with patch(
-            "agent.auxiliary_client.call_llm",
+            "hermes_agent.agent.auxiliary_client.call_llm",
             side_effect=slow_call,
         ):
             result = asyncio.run(handler(None, _make_sampling_params()))
@@ -2408,7 +2408,7 @@ class TestSamplingErrors:
         )
 
         with patch(
-            "agent.auxiliary_client.call_llm",
+            "hermes_agent.agent.auxiliary_client.call_llm",
             return_value=fake_client.chat.completions.create.return_value,
         ):
             result = asyncio.run(handler(None, _make_sampling_params()))
@@ -2428,7 +2428,7 @@ class TestModelWhitelist:
         fake_client.chat.completions.create.return_value = _make_llm_response()
 
         with patch(
-            "agent.auxiliary_client.call_llm",
+            "hermes_agent.agent.auxiliary_client.call_llm",
             return_value=fake_client.chat.completions.create.return_value,
         ):
             result = asyncio.run(handler(None, _make_sampling_params()))
@@ -2439,7 +2439,7 @@ class TestModelWhitelist:
         fake_client = MagicMock()
 
         with patch(
-            "agent.auxiliary_client.call_llm",
+            "hermes_agent.agent.auxiliary_client.call_llm",
             return_value=fake_client.chat.completions.create.return_value,
         ):
             result = asyncio.run(handler(None, _make_sampling_params()))
@@ -2461,7 +2461,7 @@ class TestMalformedToolCallArgs:
         )
 
         with patch(
-            "agent.auxiliary_client.call_llm",
+            "hermes_agent.agent.auxiliary_client.call_llm",
             return_value=fake_client.chat.completions.create.return_value,
         ):
             result = asyncio.run(handler(None, _make_sampling_params()))
@@ -2482,7 +2482,7 @@ class TestMetricsTracking:
         fake_client.chat.completions.create.return_value = _make_llm_response()
 
         with patch(
-            "agent.auxiliary_client.call_llm",
+            "hermes_agent.agent.auxiliary_client.call_llm",
             return_value=fake_client.chat.completions.create.return_value,
         ):
             asyncio.run(handler(None, _make_sampling_params()))

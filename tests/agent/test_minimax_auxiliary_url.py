@@ -11,7 +11,7 @@ import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from agent.auxiliary_client import _to_openai_base_url
+from hermes_agent.agent.auxiliary_client import _to_openai_base_url
 
 
 class TestToOpenaiBaseUrl:

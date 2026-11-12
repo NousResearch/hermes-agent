@@ -1,6 +1,6 @@
 """Content-free per-attempt compression telemetry for ContextCompressor.
 
-Split from ``agent/context_compressor.py`` (file size cap), which imports it at module level; this module
+Split from ``hermes_agent/agent/context_compressor.py`` (file size cap), which imports it at module level; this module
 must never import that module at module level (import cycle).
 """
 
@@ -9,8 +9,8 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from agent.model_metadata import estimate_messages_tokens_rough
-from agent.model_metadata_token_memo import forget_message_token_memo
+from hermes_agent.agent.model_metadata import estimate_messages_tokens_rough
+from hermes_agent.agent.model_metadata_token_memo import forget_message_token_memo
 
 
 def _safe_int(value: Any) -> int | None:

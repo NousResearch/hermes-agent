@@ -40,8 +40,8 @@ _NOT_BSM_TOKEN_WARNING_CONTINUING = (
 
 
 def _load_bw():
-    """Import ``agent.secret_sources.bitwarden`` on first use (crypto payload)."""
-    from agent.secret_sources import bitwarden as _bw
+    """Import ``hermes_agent.agent.secret_sources.bitwarden`` on first use (crypto payload)."""
+    from hermes_agent.agent.secret_sources import bitwarden as _bw
     return _bw
 
 

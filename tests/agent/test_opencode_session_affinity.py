@@ -7,9 +7,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent import auxiliary_client as aux
-from agent.chat_completion_helpers import build_api_kwargs
-from run_agent import AIAgent
+from hermes_agent.agent import auxiliary_client as aux
+from hermes_agent.agent.chat_completion_helpers import build_api_kwargs
+from hermes_agent.run_agent import AIAgent
 
 _MSGS = [{"role": "user", "content": "hi"}]
 
@@ -70,7 +70,7 @@ def out_of_turn():
 
     Earlier AIAgent-driven tests in this process can leave those contextvars set, which would hand the
     header to an unfixed tree through ``get_conversation_context()`` instead of the explicit runtime."""
-    from agent import portal_tags
+    from hermes_agent.agent import portal_tags
 
     tokens = (
         aux._RUNTIME_MAIN_CONTEXT.set(None),
@@ -154,7 +154,7 @@ def test_stateless_oneshot_still_sends_an_opencode_session_header(out_of_turn):
     no active chat, standalone aux calls) has no conversation identity at all, yet the relay rejects
     header-less requests with 400 MissingSessionID (#105841). It must carry an ephemeral key instead
     of nothing; non-OpenCode targets stay untouched."""
-    from agent.opencode_affinity import opencode_session_headers
+    from hermes_agent.agent.opencode_affinity import opencode_session_headers
 
     kwargs = aux._build_call_kwargs("opencode-go", "glm-5", _MSGS, base_url="https://opencode.ai/zen/go/v1")
     assert kwargs["extra_headers"]["x-opencode-session"]

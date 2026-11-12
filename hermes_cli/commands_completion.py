@@ -305,7 +305,7 @@ class SlashCommandCompleter(Completer):
         return "/" + token.lstrip("/").replace("_", "-").lower()
 
     def _is_skill_command(self, token: str) -> bool:
-        from agent.skill_commands import resolve_slash_key
+        from hermes_agent.agent.skill_commands import resolve_slash_key
         return resolve_slash_key(token.lstrip("/"), self._iter_skill_commands()) is not None
 
     def _stacked_skill_completions(self, text: str):
@@ -313,12 +313,12 @@ class SlashCommandCompleter(Completer):
         while every completed token is a distinct skill command, the cap is not reached, and the
         current word starts with ``/`` — instruction text must never get skill suggestions."""
         try:
-            from agent.skill_commands import _MAX_STACKED_SKILLS as _cap
+            from hermes_agent.agent.skill_commands import _MAX_STACKED_SKILLS as _cap
         except Exception:
             _cap = 5
         completed, current_word = _split_args(text)
         skill_cmds = self._iter_skill_commands()
-        from agent.skill_commands import resolve_slash_key
+        from hermes_agent.agent.skill_commands import resolve_slash_key
         seen: set[str] = set()
         for token in completed:
             key = resolve_slash_key(token.lstrip("/"), skill_cmds)
@@ -431,7 +431,7 @@ class SlashCommandCompleter(Completer):
             # Completing arguments: base command already typed.
             sub_text = parts[1] if len(parts) > 1 else ""
             first_arg = " " not in sub_text
-            # Stacked slash-skill chain (see split_stacked_skill_commands in agent/skill_commands).
+            # Stacked slash-skill chain (see split_stacked_skill_commands in hermes_agent/agent/skill_commands).
             if self._is_skill_command(base_cmd):
                 yield from self._stacked_skill_completions(text)
                 return

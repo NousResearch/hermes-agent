@@ -1,7 +1,7 @@
 """Native Windows execution contract for opt-in skill snippets."""
 import pytest
 
-from agent.skill_preprocessing import preprocess_skill_content, run_inline_shell
+from hermes_agent.agent.skill_preprocessing import preprocess_skill_content, run_inline_shell
 
 
 @pytest.mark.platforms("windows")

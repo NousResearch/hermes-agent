@@ -19,7 +19,7 @@ Primary implementation:
 - `hermes_cli/runtime_provider.py` — credential resolution, custom-endpoint runtime resolution
 - `hermes_cli/auth.py` — provider registry, `resolve_provider()`
 - `hermes_cli/model_switch.py` — shared `/model` switch pipeline (CLI + gateway)
-- `agent/auxiliary_client.py` — auxiliary model routing
+- `hermes_agent/agent/auxiliary_client.py` — auxiliary model routing
 - `providers/` — ABC + registry entry points (`ProviderProfile`, `register_provider`, `get_provider_profile`, `list_providers`)
 - `plugins/model-providers/<name>/` — per-provider plugins (bundled) that declare `api_mode`, `base_url`, `env_vars`, `fallback_models` and register themselves into the registry on first access. User plugins at `$HERMES_HOME/plugins/model-providers/<name>/` override bundled ones of the same name.
 
@@ -143,7 +143,7 @@ When provider resolution selects `anthropic`, Hermes uses:
 
 - `api_mode = anthropic_messages`
 - the native Anthropic Messages API
-- `agent/anthropic_adapter.py` for translation
+- `hermes_agent/agent/anthropic_adapter.py` for translation
 
 Credential resolution for native Anthropic now prefers refreshable Claude Code credentials over copied env tokens when both are present. In practice that means:
 
@@ -185,7 +185,7 @@ Hermes supports a configured fallback provider chain — a list of `(provider, m
 
 1. **Storage**: `AIAgent.__init__` stores the `fallback_model` dict and sets `_fallback_activated = False`.
 
-2. **Trigger points**: `_try_activate_fallback()` (forwarded to `try_activate_fallback()` in `agent/chat_completion_helpers.py`) is called from three places in the turn phases (`agent/turn_api_error.py`, `agent/turn_response_check.py`, `agent/turn_recovery.py`):
+2. **Trigger points**: `_try_activate_fallback()` (forwarded to `try_activate_fallback()` in `hermes_agent/agent/chat_completion_helpers.py`) is called from three places in the turn phases (`hermes_agent/agent/turn_api_error.py`, `hermes_agent/agent/turn_response_check.py`, `hermes_agent/agent/turn_recovery.py`):
    - After max retries on invalid API responses (None choices, missing content)
    - On non-retryable client errors (HTTP 401, 403, 404)
    - After max retries on transient errors (HTTP 429, 500, 502, 503)

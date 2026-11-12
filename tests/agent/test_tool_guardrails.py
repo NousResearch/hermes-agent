@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from agent.tool_guardrails import (
+from hermes_agent.agent.tool_guardrails import (
     ToolCallGuardrailConfig,
     ToolCallGuardrailController,
     ToolCallSignature,
@@ -240,7 +240,7 @@ def test_identical_call_streak_never_halts_when_hard_stop_disabled_or_for_poller
 
 # ── Per-turn runaway-loop caps (Claude Code v2.1.212, Week 29) ──────────────
 
-from agent.tool_guardrails import LoopCapConfig
+from hermes_agent.agent.tool_guardrails import LoopCapConfig
 
 
 
@@ -374,7 +374,7 @@ def test_harness_refusals_are_not_tool_failures_on_either_classifier(tmp_path):
     substring tests key on. Neither `classify_tool_failure` nor the executor's live seam
     `_detect_tool_failure` may count them, or the cheap refusal feeds the streak that
     fires `repeated_exact_failure_block` over calls that never failed."""
-    from agent.display import _detect_tool_failure
+    from hermes_agent.agent.display import _detect_tool_failure
     from hermes_agent.tools.file_tools import _dedup_stub_or_block, read_file_tool, search_tool
 
     target = tmp_path / "responses.ts"
@@ -395,7 +395,7 @@ def test_harness_refusals_are_not_tool_failures_on_either_classifier(tmp_path):
 def test_a_real_tool_error_is_still_a_failure():
     """The exemption is keyed on the marker, not on the word: a body that
     genuinely failed still counts, or the streak that stops a real loop is gone."""
-    from agent.display import _detect_tool_failure
+    from hermes_agent.agent.display import _detect_tool_failure
 
     real = '{"error": "ENOENT: no such file"}'
     assert classify_tool_failure("read_file", real)[0] is True

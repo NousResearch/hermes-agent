@@ -24,10 +24,10 @@ class TestCredentialPoolPreservedOnAutoDetect:
     def test_anthropic_pool_preserved_with_url_auto_detect(self):
         """When provider=None and base_url=api.anthropic.com, the passed
         credential_pool should remain attached after auto-detection."""
-        from agent.agent_init import init_agent
+        from hermes_agent.agent.agent_init import init_agent
 
         # Build a minimal agent-like object (like tests use object.__new__)
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         agent = object.__new__(AIAgent)
         agent._base_url = ""
         agent._base_url_lower = ""
@@ -35,17 +35,17 @@ class TestCredentialPoolPreservedOnAutoDetect:
 
         pool = SimpleNamespace(provider="anthropic")
 
-        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(None, None)), \
+        with patch("hermes_agent.agent.auxiliary_client.resolve_provider_client", return_value=(None, None)), \
              patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]), \
-             patch('agent.anthropic_adapter.build_anthropic_client', return_value=MagicMock()), \
-             patch('agent.anthropic_credentials.resolve_anthropic_token', return_value=''), \
-             patch('agent.anthropic_credentials._is_oauth_token', return_value=False), \
-             patch('agent.azure_identity_adapter.is_token_provider', return_value=False), \
+             patch('hermes_agent.agent.anthropic_adapter.build_anthropic_client', return_value=MagicMock()), \
+             patch('hermes_agent.agent.anthropic_credentials.resolve_anthropic_token', return_value=''), \
+             patch('hermes_agent.agent.anthropic_credentials._is_oauth_token', return_value=False), \
+             patch('hermes_agent.agent.azure_identity_adapter.is_token_provider', return_value=False), \
              patch('hermes_cli.model_normalize.normalize_model_for_provider', return_value='test-model'), \
-             patch('agent.credential_pool.load_pool', return_value=MagicMock()), \
+             patch('hermes_agent.agent.credential_pool.load_pool', return_value=MagicMock()), \
              patch('hermes_cli.config.load_config', return_value={}), \
              patch('hermes_cli.config.get_compatible_custom_providers', return_value=[]), \
-             patch('agent.iteration_budget.IterationBudget'), \
+             patch('hermes_agent.agent.iteration_budget.IterationBudget'), \
              patch('hermes_cli.config.cfg_get', return_value=None):
 
             init_agent(

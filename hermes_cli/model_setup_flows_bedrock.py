@@ -152,7 +152,7 @@ def _model_flow_bedrock(config, current_model=""):
 
     # 1. Check for AWS credentials
     try:
-        from agent.bedrock_adapter import has_aws_credentials, resolve_aws_auth_env_var, resolve_bedrock_region, discover_bedrock_models
+        from hermes_agent.agent.bedrock_adapter import has_aws_credentials, resolve_aws_auth_env_var, resolve_bedrock_region, discover_bedrock_models
     except ImportError:
         _say("  ✗ Could not load the Bedrock adapter.", "  Run hermes pm repair, then restart Hermes.", "")
         return

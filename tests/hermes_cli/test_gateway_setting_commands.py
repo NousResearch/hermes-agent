@@ -35,7 +35,7 @@ def test_refine_and_review_run_on_the_gateway_sessions_agent(monkeypatch, capsys
 
     def local_review(*_a, **_k):
         raise AssertionError("the reviewer must not run in the CLI process")
-    monkeypatch.setattr("agent.review_engine.start_review", local_review)
+    monkeypatch.setattr("hermes_agent.agent.review_engine.start_review", local_review)
     cli = SimpleNamespace(session_id="local-s")
     assert gateway_setting_commands.run(cli, "refine", "/refine naming") is True
     assert gateway_setting_commands.run(cli, "review", "/review the diff") is True

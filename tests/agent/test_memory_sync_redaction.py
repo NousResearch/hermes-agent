@@ -7,8 +7,8 @@ import json
 
 import pytest
 
-from agent.memory_manager import MemoryManager
-from agent.memory_provider import MemoryProvider
+from hermes_agent.agent.memory_manager import MemoryManager
+from hermes_agent.agent.memory_provider import MemoryProvider
 
 _SECRET = "sk-proj-abc123def456ghi789jkl012"
 _LEAK = f"export OPENAI_API_KEY={_SECRET} and Authorization: Bearer opaque0123456789abcdef"
@@ -69,7 +69,7 @@ def _manager():
 
 @pytest.mark.parametrize("fanout", sorted(FANOUTS))
 def test_every_provider_fanout_scrubs_secrets_without_touching_the_live_transcript(fanout, monkeypatch):
-    monkeypatch.setattr("agent.redact._REDACT_ENABLED", True)
+    monkeypatch.setattr("hermes_agent.agent.redact._REDACT_ENABLED", True)
     (mgr, provider), transcript = _manager(), _transcript()
     FANOUTS[fanout](mgr, transcript)
     mgr.flush_pending(timeout=5.0)
@@ -84,7 +84,7 @@ def test_every_provider_fanout_scrubs_secrets_without_touching_the_live_transcri
 
 def test_scrub_holds_with_redact_secrets_off(monkeypatch):
     # Provider egress follows chat/cron egress: redact_secrets governs local logs, not what leaves the agent.
-    monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+    monkeypatch.setattr("hermes_agent.agent.redact._REDACT_ENABLED", False)
     mgr, provider = _manager()
     mgr.sync_all("hi", _LEAK)
     mgr.flush_pending(timeout=5.0)

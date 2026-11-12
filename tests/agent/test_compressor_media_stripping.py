@@ -6,12 +6,12 @@ directives on the next turn.
 """
 import pytest
 from unittest.mock import patch
-from agent.context_compressor import ContextCompressor
+from hermes_agent.agent.context_compressor import ContextCompressor
 
 
 @pytest.fixture()
 def compressor():
-    with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+    with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000):
         return ContextCompressor(
             model="test/model",
             threshold_percent=0.85,

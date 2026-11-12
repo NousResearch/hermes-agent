@@ -27,7 +27,7 @@ def _pet_row_frame_counts(spritesheet) -> dict:
     """Real frame count per concrete spritesheet row name."""
     with contextlib.suppress(Exception):
         from PIL import Image
-        from agent.pet import constants, render
+        from hermes_agent.agent.pet import constants, render
         with Image.open(spritesheet) as opened:
             image = opened.convert("RGBA")
         W, H = constants.FRAME_W, constants.FRAME_H
@@ -45,7 +45,7 @@ def _pet_row_frame_counts(spritesheet) -> dict:
 
 def _pet_state_rows(spritesheet) -> list[str]:
     """Row taxonomy for the concrete sheet (legacy 8-row or current 9-row atlas), in the renderer's `PetState` names."""
-    from agent.pet import constants
+    from hermes_agent.agent.pet import constants
     with contextlib.suppress(Exception):
         from PIL import Image
         with Image.open(spritesheet) as image:

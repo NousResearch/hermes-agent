@@ -160,7 +160,7 @@ def test_room_agent_uses_target_policy_toolsets_and_turn_limit(monkeypatch):
             captured.update(kwargs)
 
     policy = _policy(max_turns=7)
-    monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+    monkeypatch.setattr("hermes_agent.run_agent.AIAgent", FakeAgent)
     monkeypatch.setattr(
         "hermes_agent.gateway.run._resolve_runtime_agent_kwargs",
         lambda: {"provider": "openai-codex", "base_url": "https://example.test/v1"},

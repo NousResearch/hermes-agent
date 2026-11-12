@@ -7,8 +7,8 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from agent.credits_tracker import CreditsState
-from run_agent import AIAgent
+from hermes_agent.agent.credits_tracker import CreditsState
+from hermes_agent.run_agent import AIAgent
 
 def _agent_with_state(*, paid_access: bool = False) -> AIAgent:
     """Bare agent with a depleted-shaped state that would normally emit."""

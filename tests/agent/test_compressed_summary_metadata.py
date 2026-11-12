@@ -15,7 +15,7 @@ Two invariants:
 from unittest.mock import MagicMock, patch
 
 
-from agent.context_compressor import (
+from hermes_agent.agent.context_compressor import (
     COMPRESSED_SUMMARY_HAS_USER_TURN_KEY,
     COMPRESSED_SUMMARY_METADATA_KEY,
     ContextCompressor,
@@ -24,7 +24,7 @@ from agent.context_compressor import (
 
 def _make_compressor():
     with patch(
-        "agent.context_compressor.get_model_context_length", return_value=8000
+        "hermes_agent.agent.context_compressor.get_model_context_length", return_value=8000
     ):
         return ContextCompressor(
             model="test-model", quiet_mode=True, config_context_length=8000
@@ -42,7 +42,7 @@ def _make_messages(n_turns=30):
 def _compress(cc, msgs):
     resp = MagicMock()
     resp.choices[0].message.content = "## Active Task\nstuff"
-    with patch("agent.context_compressor.call_llm", return_value=resp):
+    with patch("hermes_agent.agent.context_compressor.call_llm", return_value=resp):
         return cc.compress(msgs, current_tokens=100_000, force=True)
 
 
@@ -62,7 +62,7 @@ class TestMetadataFlagSet:
 class TestMetadataFlagNeverReachesWire:
 
     def test_chat_completions_transport_strips_flag(self):
-        from agent.transports.chat_completions import ChatCompletionsTransport
+        from hermes_agent.agent.transports.chat_completions import ChatCompletionsTransport
 
         cc = _make_compressor()
         out = _compress(cc, _make_messages())
@@ -104,7 +104,7 @@ class TestClassifyAgreesWithPredicatesOnLiveEmissions:
         # protection) so the transcript geometry — not protection budgets —
         # decides the merge-vs-standalone path deterministically.
         with patch(
-            "agent.context_compressor.get_model_context_length",
+            "hermes_agent.agent.context_compressor.get_model_context_length",
             return_value=100_000,
         ):
             cc = ContextCompressor(
@@ -123,7 +123,7 @@ class TestClassifyAgreesWithPredicatesOnLiveEmissions:
 
     @staticmethod
     def _assert_agreement(message):
-        from agent.context_compressor import is_compaction_summary_message
+        from hermes_agent.agent.context_compressor import is_compaction_summary_message
 
         kind = ContextCompressor.classify_summary_content(message.get("content"))
         detected = ContextCompressor._is_context_summary_content(
@@ -163,7 +163,7 @@ class TestClassifyAgreesWithPredicatesOnLiveEmissions:
         assert kind == "standalone"
 
     def test_non_summary_messages_agree_on_none(self):
-        from agent.context_compressor import is_compaction_summary_message
+        from hermes_agent.agent.context_compressor import is_compaction_summary_message
 
         for msg in (
             {"role": "user", "content": "plain question"},

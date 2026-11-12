@@ -314,7 +314,7 @@ def _dispatch(raw_target: str, content: str, sender: Sender, *, wake: Any) -> st
             return sender.roster_err(f"No registered peer named '{peer_name}'.")
         dm_target = f"{peer_name}/{peer_profile}" if peer_profile else peer_name
         # A peer dm crosses installs: qualify the id with this host so the peer's own '<me>' stays distinct.
-        from agent.turn_author import bot_author_id, local_origin
+        from hermes_agent.agent.turn_author import bot_author_id, local_origin
         peer_author = {**author, "id": bot_author_id(me, local_origin())}
         # Pin the registry-owning profile: `hermes peer` resolves bot_peers via the profile-scoped
         # load_config(), while the roster above reads the machine-root config — the CLI must run
@@ -983,7 +983,7 @@ def _delivery_main(args: list[str]) -> int:
     author_json, mode, dm_file, argv = parsed
     author = None
     if author_json is not None:
-        from agent.turn_author import parse_turn_author
+        from hermes_agent.agent.turn_author import parse_turn_author
 
         author = parse_turn_author(author_json)
         if author is None:

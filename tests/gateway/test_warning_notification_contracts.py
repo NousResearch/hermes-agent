@@ -7,10 +7,10 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from agent import empty_response_guard
-from agent.status_output import StatusOutputMixin
-from agent.turn_api_call import nous_rate_limit_guard
-from agent.turn_empty_response import _terminal_empty
+from hermes_agent.agent import empty_response_guard
+from hermes_agent.agent.status_output import StatusOutputMixin
+from hermes_agent.agent.turn_api_call import nous_rate_limit_guard
+from hermes_agent.agent.turn_empty_response import _terminal_empty
 from hermes_agent.gateway.config import Platform
 from hermes_agent.gateway.run import GatewayRunner, _load_gateway_config
 from hermes_agent.gateway.run_turn_runner import TurnRunner
@@ -72,7 +72,7 @@ def test_real_retry_producers_keep_final_failure_and_persistence(tmp_path, monke
         result, source, [], SimpleNamespace(session_id="session"), None, None, None, "session", "slack", 0))
     assert response and response != "(empty)" and not silent
     sent.clear()
-    with patch("agent.nous_rate_guard.nous_rate_limit_remaining", return_value=60), \
+    with patch("hermes_agent.agent.nous_rate_guard.nous_rate_limit_remaining", return_value=60), \
          patch("hermes_cli.anon_auth.apply_model_switch"), \
          patch("hermes_cli.anon_auth.route_is_welcome_host", return_value=False):
         verdict = nous_rate_limit_guard(agent, _retry=SimpleNamespace(), api_messages=[], messages=[],

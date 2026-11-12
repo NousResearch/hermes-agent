@@ -261,7 +261,7 @@ def pin_process_hermes_home(path: str | Path | None) -> None:
 
     An embedding host that serves several profiles and mirrors the active turn's profile into
     ``os.environ["HERMES_HOME"]`` for legacy readers (Hermes WebUI) otherwise makes every turn's own
-    profile look like the launch profile: ``agent.secret_scope.serves_routed_profile()`` turns
+    profile look like the launch profile: ``hermes_agent.agent.secret_scope.serves_routed_profile()`` turns
     False and that turn's MCP connections fall back to bare, cross-profile names; the sibling
     launch-home checks (``secret_scope._is_process_home``, ``hermes_agent.tools.environments.local._is_routed_home``,
     ``hermes_cli.env_loader._process_hermes_home``) misjudge the same way. ``None`` clears the pin.
@@ -1334,7 +1334,7 @@ def openrouter_variant_base(model_id: str) -> str | None:
     ``x-ai/grok-4``), else ``None``.
 
     Lives here rather than in ``hermes_cli.models`` so the metadata layer
-    (``agent.model_metadata``) can share one definition without importing the
+    (``hermes_agent.agent.model_metadata``) can share one definition without importing the
     CLI — this module is dependency-free by contract.
 
     >>> openrouter_variant_base("x-ai/grok-4:nitro")

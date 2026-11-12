@@ -17,14 +17,14 @@ from unittest.mock import MagicMock, patch
 import httpx
 import pytest
 
-from agent import chat_completion_helpers as helpers
-from agent import chat_completion_stream_monitor as monitor
+from hermes_agent.agent import chat_completion_helpers as helpers
+from hermes_agent.agent import chat_completion_stream_monitor as monitor
 
 _ABANDONED = "request abandoned"
 
 
 def _anthropic_agent():
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     agent = AIAgent(api_key="test-key", base_url="https://example.com/v1", model="claude-opus-4-7",
                     quiet_mode=True, skip_context_files=True, skip_memory=True)
@@ -235,7 +235,7 @@ def test_abandon_after_visible_text_returns_a_stub_classified_as_the_abandon(mon
     agent._current_streamed_assistant_text = "Hello there"
     monkeypatch.setattr(helpers._StreamingCall, "_visible_text_delivered", lambda self: True)
     classified = []
-    from agent import error_classifier
+    from hermes_agent.agent import error_classifier
 
     real_classify = error_classifier.classify_api_error
     monkeypatch.setattr(error_classifier, "classify_api_error",
@@ -283,7 +283,7 @@ def test_wedged_worker_under_the_lifetime_cap_is_abandoned_once(wedged, monkeypa
     stale kills: with the stale detector off, the cap alone must still end the turn. With the
     cap at the stale timeout both checks fire on the same tick; one silent window is one kill,
     and the call is abandoned once, with the stale error (no chunk ever arrived)."""
-    from agent.stream_max_lifetime import StreamLifetimeExceeded
+    from hermes_agent.agent.stream_max_lifetime import StreamLifetimeExceeded
 
     monkeypatch.setenv("HERMES_STREAM_STALE_TIMEOUT", stale)
     (tmp_path / "config.yaml").write_text(f"agent:\n  stream_max_lifetime: {cap}\n")

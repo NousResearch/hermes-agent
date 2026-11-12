@@ -25,7 +25,7 @@ def _bare_agent():
     ``_sync_external_memory_for_turn`` touches — matches the bare-agent
     pattern used across ``tests/agent/test_interrupt_propagation.py``.
     """
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     agent = AIAgent.__new__(AIAgent)
     agent._memory_manager = MagicMock()

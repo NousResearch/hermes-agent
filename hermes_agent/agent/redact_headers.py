@@ -1,8 +1,8 @@
-"""Credential-bearing HTTP header masking for agent.redact.
+"""Credential-bearing HTTP header masking for hermes_agent.agent.redact.
 
 API-key style headers (``x-api-key``…) and Cookie / Set-Cookie headers in raw header lines,
 curl ``-H`` arguments, mid-line log text and JSON-serialized request dumps. Authorization
-headers stay in agent/redact.py (they carry a scheme word).
+headers stay in hermes_agent/agent/redact.py (they carry a scheme word).
 """
 
 import re
@@ -172,7 +172,7 @@ def _redact_header_line_value(m: re.Match) -> str:
 
 def redact_header_credentials(text: str) -> str:
     """Mask secret-header and cookie-header values in raw, curl and inline forms; the JSON
-    forms run with the assignment passes in agent/redact.py."""
+    forms run with the assignment passes in hermes_agent/agent/redact.py."""
     text = _SECRET_HEADER_LINE_RE.sub(
         _redact_header_line_value,
         text,
@@ -225,7 +225,7 @@ def cookie_value_is_credential(value: str, *, qualified: bool = False) -> bool:
     a ``name=value`` pair is a cookie payload; ``getCookie()``, ``None``, ``$(cat jar)`` and
     ``chocolate`` are code or prose, while an opaque token is masked. A qualified
     ``SESSION_COOKIE`` is as strong as ``SESSION_TOKEN`` and masks any literal value."""
-    from agent.redact import _should_redact_assignment
+    from hermes_agent.agent.redact import _should_redact_assignment
     if value.startswith("«redacted"):
         return False
     key = "session_token" if qualified else "cookie"
@@ -236,7 +236,7 @@ def json_header_value_is_credential(key: str, value: str) -> bool:
     """Gate for a JSON ``"<header>": "<value>"`` field: cookie fields follow the cookie value
     shape; an API-key header masks every value but a whole ``${API_KEY}`` / env-lookup
     placeholder (no path exemption: ``/abc…`` is a valid key shape)."""
-    from agent.redact import _ENV_LOOKUP_VALUE_RE, _SHELL_VAR_REF
+    from hermes_agent.agent.redact import _ENV_LOOKUP_VALUE_RE, _SHELL_VAR_REF
     if "cookie" in key.lower():
         return cookie_value_is_credential(value)
     # An earlier pass's marker keeps its vendor label (``«redacted:ghp_…»``), as main's field pass does.
@@ -257,5 +257,5 @@ def _redact_cookie_assignment(m: "re.Match[str]", mask) -> str:
 
 def redact_cookie_assignments(text: str, mask) -> str:
     """``cookie=`` / ``*_COOKIE=`` assignment values (an ``=`` gated assignment pass in
-    agent/redact.py)."""
+    hermes_agent/agent/redact.py)."""
     return _COOKIE_ASSIGN_RE.sub(lambda m: _redact_cookie_assignment(m, mask), text)

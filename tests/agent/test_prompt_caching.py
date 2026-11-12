@@ -1,8 +1,8 @@
-"""Tests for agent/prompt_caching.py — Anthropic cache control injection."""
+"""Tests for hermes_agent/agent/prompt_caching.py — Anthropic cache control injection."""
 
 import copy
 
-from agent.prompt_caching import (
+from hermes_agent.agent.prompt_caching import (
     _apply_cache_marker,
     _build_marker,
     _can_carry_marker,
@@ -712,7 +712,7 @@ class TestOpenCodeGoOneHourPrecedence:
         the route in at all — 5-minute caching quietly becomes *no* caching.
         Asserting the TTL alone cannot see that.
         """
-        from agent.agent_runtime_helpers import (
+        from hermes_agent.agent.agent_runtime_helpers import (
             anthropic_prompt_cache_policy,
             blank_cache_policy_stub,
         )
@@ -791,7 +791,7 @@ class TestOpenCodeGoOneHourPrecedence:
         planner end-to-end asserts the *wire artifact* — the marker's ``ttl``
         — instead of regex-scanning source files for the clamp call.
         """
-        from agent.agent_runtime_helpers import plan_cache_sections_for_destination
+        from hermes_agent.agent.agent_runtime_helpers import plan_cache_sections_for_destination
 
         def _markers(messages, tools):
             found = []

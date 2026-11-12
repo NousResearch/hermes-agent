@@ -234,7 +234,7 @@ async def test_pending_pick_writes_do_not_stall_the_event_loop(tmp_path, monkeyp
 
 @pytest.mark.asyncio
 async def test_a_guarded_deferred_pick_asks_for_confirmation_instead_of_being_dropped(tmp_path, monkeypatch):
-    from agent.usage_anchor import USAGE_ANCHOR_MODEL_CONFIG_KEY, capture_usage_anchor
+    from hermes_agent.agent.usage_anchor import USAGE_ANCHOR_MODEL_CONFIG_KEY, capture_usage_anchor
     from hermes_agent.gateway.session_contract import Submission
     from hermes_cli import model_selection_guards
     monkeypatch.setattr(model_selection_guards, '_context_cache_threshold', lambda: 1000)

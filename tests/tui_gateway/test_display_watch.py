@@ -155,7 +155,7 @@ def test_screen_start_and_stop_reach_the_models_turn_notes(tmp_path, monkeypatch
     """#125830: a screen started/stopped mid-session must reach the model without waiting for a
     prompt rebuild — the watcher stages the Bot Screen line as a one-shot per-turn note on every
     live session of THAT profile. The staged note is consumed on the next turn
-    (``agent/turn_context.py``), so only its presence here is asserted."""
+    (``hermes_agent/agent/turn_context.py``), so only its presence here is asserted."""
     import psutil
     from hermes_agent.tui_gateway import server
 

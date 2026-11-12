@@ -4,14 +4,14 @@ touching it (no synthetic turns, no role-alternation risk, no prompt-cache inval
 Preferred path: a detached cache-parity fork of the live parent ``AIAgent`` replays its
 snapshot verbatim against the warm prefix cache (tools denied at dispatch, persistence
 detached, usage attributed to the parent). Fallback (no live parent, e.g. gateway evicted
-the agent): a rendered transcript through :func:`agent.oneshot.run_oneshot`.
+the agent): a rendered transcript through :func:`hermes_agent.agent.oneshot.run_oneshot`.
 ``auxiliary.side_question.provider``/``.model`` route the fork elsewhere with a compact digest.
 """
 
 import logging
 from typing import Any, Callable, Dict, List, Optional
 
-from agent.background_review import _msg_text
+from hermes_agent.agent.background_review import _msg_text
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +108,7 @@ def _answer_via_fork(parent_agent: Any, question: str, history: Optional[list[di
     ``on_fork(fork)`` publishes the built fork so an owner can interrupt it, and
     ``on_fork(None)`` follows its teardown.
     """
-    from agent.background_review import _digest_history, build_cache_parity_fork, release_cache_parity_fork
+    from hermes_agent.agent.background_review import _digest_history, build_cache_parity_fork, release_cache_parity_fork
     from hermes_cli.plugins import clear_thread_tool_whitelist, set_thread_tool_whitelist
 
     fork, _rt, routed = build_cache_parity_fork(parent_agent, _side_question_task_config(),
@@ -135,7 +135,7 @@ def _answer_via_fork(parent_agent: Any, question: str, history: Optional[list[di
 
 def _answer_via_oneshot(question: str, history: Optional[list[dict[str, Any]]], **run_kwargs: Any) -> str:
     """Fallback: answer from a rendered transcript digest in one aux call."""
-    from agent.oneshot import run_oneshot
+    from hermes_agent.agent.oneshot import run_oneshot
 
     user_input = (
         f"Conversation transcript (snapshot):\n-----\n{render_history_for_side_question(history)}\n-----\n\n"

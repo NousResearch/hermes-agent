@@ -17,9 +17,9 @@ from __future__ import annotations
 import json
 from typing import Any, Generator, Optional, Tuple
 
-from agent.message_sanitization import deterministic_call_id
-from agent.transports.types import NormalizedResponse, build_tool_call
-from agent.turn_tool_round import run_tool_round
+from hermes_agent.agent.message_sanitization import deterministic_call_id
+from hermes_agent.agent.transports.types import NormalizedResponse, build_tool_call
+from hermes_agent.agent.turn_tool_round import run_tool_round
 
 Prelude = Generator[tuple[str, str, dict], Optional[str], None]
 
@@ -33,7 +33,7 @@ def prelude_call_id(session_id: str, name: str, args: dict, index: int) -> str:
 def run_scripted_prelude(agent: Any, s: Any, prelude: Prelude) -> Any:
     """Play ``prelude`` into the loop state ``s``; returns the last tool round's verdict, or None when
     no step ran. The caller ends the turn on ``return`` and skips the model on ``break``."""
-    from agent.conversation_loop import _run_phase
+    from hermes_agent.agent.conversation_loop import _run_phase
 
     verdict, result = None, None
     while not agent._interrupt_requested:

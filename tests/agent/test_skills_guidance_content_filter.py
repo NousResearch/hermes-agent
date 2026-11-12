@@ -17,7 +17,7 @@ emitted when ``skill_manage`` is available — never its exact wording.
 from __future__ import annotations
 
 
-from agent.prompt_builder import SKILLS_GUIDANCE
+from hermes_agent.agent.prompt_builder import SKILLS_GUIDANCE
 
 
 class TestBehaviourIsPreserved:
@@ -29,7 +29,7 @@ class TestBehaviourIsPreserved:
         """The Skill Safety Rule (moved from SKILLS_GUIDANCE to the compaction
         handoff) must contain REAL newlines (not escaped backslash-n literals)
         so its heading renders as a heading."""
-        from agent.context_compressor_tail import SKILL_SAFETY_RULE
+        from hermes_agent.agent.context_compressor_tail import SKILL_SAFETY_RULE
 
         assert chr(10) in SKILL_SAFETY_RULE
         assert (chr(92) + 'n') not in SKILL_SAFETY_RULE + SKILLS_GUIDANCE
@@ -41,7 +41,7 @@ class TestGuidanceReachesTheSystemPrompt:
         # wiring behaviorally rather than trusting the constant in isolation.
         from types import SimpleNamespace
 
-        from agent import system_prompt
+        from hermes_agent.agent import system_prompt
 
         agent = SimpleNamespace(valid_tool_names={"skill_manage"}, _kanban_worker_guidance="")
         assert SKILLS_GUIDANCE in (system_prompt._tool_guidance_block(agent) or "")

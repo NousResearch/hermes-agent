@@ -15,8 +15,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Awaitable, Callable
 
-from agent.file_safety import HOME_CREDENTIAL_DIRS
-from agent.model_metadata import CHARS_PER_TOKEN, estimate_tokens_rough
+from hermes_agent.agent.file_safety import HOME_CREDENTIAL_DIRS
+from hermes_agent.agent.model_metadata import CHARS_PER_TOKEN, estimate_tokens_rough
 from hermes_cli._subprocess_compat import IS_WINDOWS, harden_git_argv, noninteractive_git_env, windows_hide_flags
 from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
 from hermes_cli.sizefmt import format_bytes
@@ -504,7 +504,7 @@ COMPOSER_PASTES_DIRNAME = "composer-pastes"
 
 
 def _composer_paste_roots() -> list[Path]:
-    from agent.file_safety import _hermes_dirs
+    from hermes_agent.agent.file_safety import _hermes_dirs
     return [hermes_dir / COMPOSER_PASTES_DIRNAME for hermes_dir in _hermes_dirs()]
 
 
@@ -530,7 +530,7 @@ def _agent_staged_path(path: Path) -> bool:
 
 
 def _resolve_path(cwd: Path, target: str, *, allowed_root: Path | None = None) -> Path:
-    from agent.file_safety import is_nt_namespace_path
+    from hermes_agent.agent.file_safety import is_nt_namespace_path
     if is_nt_namespace_path(target):  # raw-string check: resolving such a path is the NTLM-leak trigger
         raise ValueError("path uses a Windows NT/device namespace prefix and cannot be attached")
     resolved = (cwd / Path(os.path.expanduser(target))).resolve()  # `/` keeps an absolute target as-is
@@ -554,11 +554,11 @@ def _ensure_reference_path_allowed(path: Path) -> None:
         raise ValueError("path is a sensitive credential file and cannot be attached")
     if any(_is_under(path, blocked_dir) for blocked_dir in blocked_dirs):
         raise ValueError("path is a sensitive credential or internal Hermes path and cannot be attached")
-    # Anchor to the canonical read deny-list (agent/file_safety.get_read_block_error): the
+    # Anchor to the canonical read deny-list (hermes_agent/agent/file_safety.get_read_block_error): the
     # narrow list above never caught auth.json, .anthropic_oauth.json, mcp-tokens/, webhook
     # secrets or project .env files, and it grows automatically with that deny-list.
     try:
-        from agent.file_safety import get_read_block_error
+        from hermes_agent.agent.file_safety import get_read_block_error
         blocked = get_read_block_error(str(path)) is not None
     except ValueError:
         raise

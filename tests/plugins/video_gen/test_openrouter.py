@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 
-from agent import video_gen_registry
+from hermes_agent.agent import video_gen_registry
 from plugins.video_gen.openrouter import OpenRouterVideoGenProvider, _build_payload
 
 _VEO = {"id": "google/veo-3.1", "name": "Google: Veo 3.1", "supported_durations": [4, 6, 8],
@@ -168,7 +168,7 @@ def test_one_job_keeps_one_credential_while_the_pool_rotates(monkeypatch, tmp_pa
 def test_multiplexed_profile_spends_its_own_key_not_the_launch_profiles(monkeypatch, tmp_path):
     """On a multiplexed gateway os.environ is the launch profile's .env; a routed turn must sign every request
     with its own profile's key and send it only to its own profile's base URL."""
-    from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_multiplex_active, set_secret_scope
+    from hermes_agent.agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_multiplex_active, set_secret_scope
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-launch-profile")
@@ -197,7 +197,7 @@ def test_multiplexed_profile_spends_its_own_key_not_the_launch_profiles(monkeypa
 def test_multiplexed_profile_without_a_key_is_refused_not_served_on_the_launch_key(monkeypatch, tmp_path):
     """Absence on the routed side: a profile with no OpenRouter credential of its own must fail closed, never
     spend the launch profile's ``os.environ`` key."""
-    from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_multiplex_active, set_secret_scope
+    from hermes_agent.agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_multiplex_active, set_secret_scope
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-launch-profile")

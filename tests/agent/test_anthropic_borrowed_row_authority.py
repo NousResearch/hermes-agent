@@ -34,9 +34,9 @@ from dataclasses import replace as dc_replace
 
 import pytest
 
-from agent import anthropic_credentials as AA
-from agent.credential_persistence import sanitize_borrowed_credential_payload
-from agent.credential_pool import (
+from hermes_agent.agent import anthropic_credentials as AA
+from hermes_agent.agent.credential_persistence import sanitize_borrowed_credential_payload
+from hermes_agent.agent.credential_pool import (
     AUTH_TYPE_OAUTH,
     CredentialPool,
     PooledCredential,
@@ -259,7 +259,7 @@ def test_hermes_pkce_row_still_syncs_from_the_pool_store(monkeypatch):
         "expires_at_ms": int(time.time() * 1000) + 3_600_000,
     }
     monkeypatch.setattr(
-        "agent.credential_pool.read_credential_pool", lambda provider=None: [rotated]
+        "hermes_agent.agent.credential_pool.read_credential_pool", lambda provider=None: [rotated]
     )
 
     entry = PooledCredential(

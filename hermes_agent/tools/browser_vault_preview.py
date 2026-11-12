@@ -24,7 +24,7 @@ import json
 from contextvars import ContextVar
 from typing import Any, Callable
 
-from agent.browser_page_backend import BrowserPageBackend
+from hermes_agent.agent.browser_page_backend import BrowserPageBackend
 
 PreviewCallback = Callable[[dict], Any]
 
@@ -92,7 +92,7 @@ def run_preview_vault(callback: PreviewCallback | None, operation: Callable[[], 
 
 
 def _redact(value: Any, depth: int = 0) -> Any:
-    from agent.redact import REDACT_WALK_DEPTH_MARKER, REDACT_WALK_MAX_DEPTH, redact_registered_vault_values
+    from hermes_agent.agent.redact import REDACT_WALK_DEPTH_MARKER, REDACT_WALK_MAX_DEPTH, redact_registered_vault_values
 
     if depth >= REDACT_WALK_MAX_DEPTH:
         return REDACT_WALK_DEPTH_MARKER
@@ -111,6 +111,6 @@ def redact_preview_result(raw: str) -> str:
     try:
         value = json.loads(raw)
     except (ValueError, TypeError):
-        from agent.redact import redact_registered_vault_values
+        from hermes_agent.agent.redact import redact_registered_vault_values
         return redact_registered_vault_values(str(raw))
     return json.dumps(_redact(value), ensure_ascii=False)

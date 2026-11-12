@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.turn_api_call import _should_stream
+from hermes_agent.agent.turn_api_call import _should_stream
 from providers.base import ProviderProfile
 
 
@@ -73,8 +73,8 @@ def test_discovered_process_provider_delivers_progress_before_completion(tmp_pat
     """
     from hermes_constants import get_hermes_home
     from providers import get_provider_profile
-    from run_agent import AIAgent
-    from agent.turn_api_call import perform_api_call
+    from hermes_agent.run_agent import AIAgent
+    from hermes_agent.agent.turn_api_call import perform_api_call
 
     plugin = get_hermes_home() / "plugins" / "streaming-fixture"
     plugin.mkdir(parents=True)

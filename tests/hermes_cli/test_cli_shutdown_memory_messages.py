@@ -81,7 +81,7 @@ def test_cleanup_provider_exception_is_swallowed(mock_invoke_hook):
 
 def _real_agent(db, session_id, session_messages):
     """Build the real persistence seam without the heavyweight LLM client."""
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     agent = object.__new__(AIAgent)
     agent._session_db = db
@@ -148,7 +148,7 @@ def test_cli_close_preflush_resumed_prefix_is_not_duplicated(tmp_path, monkeypat
             agent._session_messages = messages
             entered_flush.set()
             assert release_flush.wait(timeout=5)
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         # Runtime accepts None; the stub keeps that optional contract explicit.
         return AIAgent._flush_messages_to_session_db(
@@ -298,7 +298,7 @@ def test_cli_close_builds_prompt_before_creating_first_session_row(tmp_path, mon
     """First-turn close persistence must not leave a NULL prompt snapshot."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
 
-    import agent.conversation_loop as loop_mod
+    import hermes_agent.agent.conversation_loop as loop_mod
     import cli as cli_mod
     from hermes_agent.hermes_state import SessionDB
 

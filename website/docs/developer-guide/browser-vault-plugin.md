@@ -15,11 +15,11 @@ registration does not make a password manager available to `browser_vault`.
 
 ## Registering a backend
 
-An **in-process** plugin subclasses `agent.vault_backends.base.LoginBackend` and registers one instance:
+An **in-process** plugin subclasses `hermes_agent.agent.vault_backends.base.LoginBackend` and registers one instance:
 
 ```python
-from agent.vault_backends.base import LoginBackend
-from agent.vault_store import VaultItemMeta
+from hermes_agent.agent.vault_backends.base import LoginBackend
+from hermes_agent.agent.vault_store import VaultItemMeta
 
 
 class KeePassBackend(LoginBackend):
@@ -117,10 +117,10 @@ a model-facing tool that returns a password: it would bypass every rule above.
 
 A plugin browser that has no CDP endpoint (Camofox talks to its own REST server) cannot be reached by
 the vault's supervisor, so `browser_vault` would refuse every fill with "Could not determine the
-current page origin". Such a plugin registers an `agent.browser_page_backend.BrowserPageBackend`:
+current page origin". Such a plugin registers an `hermes_agent.agent.browser_page_backend.BrowserPageBackend`:
 
 ```python
-from agent.browser_page_backend import BrowserPageBackend
+from hermes_agent.agent.browser_page_backend import BrowserPageBackend
 
 
 class MyBrowserPages(BrowserPageBackend):

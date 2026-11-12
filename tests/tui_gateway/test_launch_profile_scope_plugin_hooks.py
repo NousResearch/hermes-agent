@@ -10,7 +10,7 @@ fail-closed plugin vetoed every tool call. The dispatcher (``plugins_dispatch``)
 executor already propagate contextvars; the seam is the launch scope itself.
 
 The two hook kinds delivered off-turn by long-lived worker threads (stream observers in
-``agent.plugin_stream_hooks``, the plugin event bus in ``plugins_dispatch``) had the sibling gap:
+``hermes_agent.agent.plugin_stream_hooks``, the plugin event bus in ``plugins_dispatch``) had the sibling gap:
 the worker ran callbacks in its own empty context, so even a routed turn's observer saw no scope.
 """
 
@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from agent.secret_scope import set_multiplex_active
+from hermes_agent.agent.secret_scope import set_multiplex_active
 from hermes_cli import plugins as plugins_mod
 from hermes_constants import get_hermes_home, get_hermes_home_override
 from hermes_agent.tools.daemon_pool import DaemonThreadPoolExecutor
@@ -80,7 +80,7 @@ def _fire_from_tool_worker():
 
 def _fire_off_turn_workers(launch_manager_hook_seen):
     """The two worker-thread deliveries: stream observer queue and the plugin event bus."""
-    from agent import plugin_stream_hooks
+    from hermes_agent.agent import plugin_stream_hooks
     manager = plugins_mod.get_plugin_manager()
     observed: list[dict] = []
 

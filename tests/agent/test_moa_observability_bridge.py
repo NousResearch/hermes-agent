@@ -9,9 +9,9 @@ bridge that carries it out: the renderer, the non-consuming accessor, and the
 conversation-loop helper that reads it.
 """
 
-from agent.moa_loop import _RefAccounting
-from agent.moa_trace import _slot_trace, slot_metrics
-from agent.usage_pricing import CanonicalUsage
+from hermes_agent.agent.moa_loop import _RefAccounting
+from hermes_agent.agent.moa_trace import _slot_trace, slot_metrics
+from hermes_agent.agent.usage_pricing import CanonicalUsage
 
 
 def _acct():
@@ -62,7 +62,7 @@ class TestSlotMetrics:
 
 class TestLastReferenceMetricsAccessor:
     def _client(self):
-        from agent.moa_loop import MoAClient
+        from hermes_agent.agent.moa_loop import MoAClient
 
         return MoAClient("closed")
 
@@ -94,7 +94,7 @@ class TestLastReferenceMetricsAccessor:
 
 class TestConversationLoopHelper:
     def test_returns_none_for_a_non_moa_client(self):
-        from agent.conversation_loop import _moa_reference_metrics_for_hook
+        from hermes_agent.agent.conversation_loop import _moa_reference_metrics_for_hook
 
         class _Agent:
             client = object()
@@ -102,7 +102,7 @@ class TestConversationLoopHelper:
         assert _moa_reference_metrics_for_hook(_Agent()) is None
 
     def test_returns_none_when_there_is_no_client(self):
-        from agent.conversation_loop import _moa_reference_metrics_for_hook
+        from hermes_agent.agent.conversation_loop import _moa_reference_metrics_for_hook
 
         class _Agent:
             client = None
@@ -111,7 +111,7 @@ class TestConversationLoopHelper:
 
 
     def test_a_raising_accessor_is_swallowed(self):
-        from agent.conversation_loop import _moa_reference_metrics_for_hook
+        from hermes_agent.agent.conversation_loop import _moa_reference_metrics_for_hook
 
         class _Client:
             def last_reference_metrics(self):

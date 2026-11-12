@@ -17,7 +17,7 @@ from hermes_agent import hermes_state
 from hermes_agent import hermes_state_wal
 from hermes_agent import hermes_state_common
 from hermes_agent import hermes_state_schema
-from agent.session_activity import ActivityProvenance, build_activity_snapshot
+from hermes_agent.agent.session_activity import ActivityProvenance, build_activity_snapshot
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_common import FTS_SQL, FTS_STORAGE_VERSION, SCHEMA_SQL, SCHEMA_VERSION
 

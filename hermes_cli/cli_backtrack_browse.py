@@ -23,7 +23,7 @@ _BORDER = "class:clarify-border"
 def transcript_turns(cli) -> list[tuple[str, str]]:
     """``(prompt, reply)`` per real user turn, oldest first; index = the ordinal /undo rewinds.
     The reply is the visible assistant text up to the next turn (tool calls and handoffs dropped)."""
-    from agent.compaction_display import project_compaction_message_for_display
+    from hermes_agent.agent.compaction_display import project_compaction_message_for_display
     from hermes_cli.cli_session_mixin import _user_turn_indices
     history = cli.conversation_history or []
     starts = _user_turn_indices(history)

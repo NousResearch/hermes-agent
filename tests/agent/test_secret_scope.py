@@ -1,7 +1,7 @@
 """Tests for the profile-scoped credential primitive (Workstream A / Phase 2)."""
 import pytest
 
-from agent import secret_scope as ss
+from hermes_agent.agent import secret_scope as ss
 
 
 @pytest.fixture(autouse=True)
@@ -219,7 +219,7 @@ class TestScopeSetupRecovery:
         def boom(home):
             raise RuntimeError("corrupt profile home")
 
-        monkeypatch.setattr("agent.secret_scope.build_profile_secret_scope", boom)
+        monkeypatch.setattr("hermes_agent.agent.secret_scope.build_profile_secret_scope", boom)
         with pytest.raises(RuntimeError):
             with _profile_runtime_scope(foreign, hydrate_secrets=False):
                 pass
@@ -236,7 +236,7 @@ class TestScopeSetupRecovery:
         def boom(home):
             raise RuntimeError("corrupt profile home")
 
-        monkeypatch.setattr("agent.secret_scope.build_profile_secret_scope", boom)
+        monkeypatch.setattr("hermes_agent.agent.secret_scope.build_profile_secret_scope", boom)
         with pytest.raises(RuntimeError):
             with _worker_profile_scope(str(foreign), bind_home=True):
                 pass

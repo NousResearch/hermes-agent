@@ -11,13 +11,13 @@ the refused run's durable boundary row for the owner to drop.
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from agent.context_compressor import _DB_PERSISTED_MARKER
-from agent.turn_retry_state import TurnRetryState
-from agent.turn_truncation import handle_content_policy_refusal
+from hermes_agent.agent.context_compressor import _DB_PERSISTED_MARKER
+from hermes_agent.agent.turn_retry_state import TurnRetryState
+from hermes_agent.agent.turn_truncation import handle_content_policy_refusal
 
 
 def _agent():
-    from agent.transports import get_transport
+    from hermes_agent.agent.transports import get_transport
 
     agent = MagicMock()
     agent.api_mode, agent.provider, agent.model, agent.log_prefix = "anthropic_messages", "anthropic", "claude", ""

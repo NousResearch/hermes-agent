@@ -11,7 +11,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 
 __all__ = [
     "EXECUTORS",
@@ -85,7 +85,7 @@ def _exec_autoprune(ctx: CommandContext) -> CommandReply:
 def _exec_bundles(ctx: CommandContext) -> CommandReply:
     """Core /bundles data — installed skill bundles listing."""
     try:
-        from agent.skill_bundles import _bundles_dir, list_bundles
+        from hermes_agent.agent.skill_bundles import _bundles_dir, list_bundles
     except Exception as exc:  # pragma: no cover - env-specific
         return CommandReply(t("gateway.bundles.unavailable", error=exc), data={"error": str(exc)})
     bundles = list_bundles()
@@ -105,7 +105,7 @@ def _exec_bundles(ctx: CommandContext) -> CommandReply:
 def _skill_commands() -> dict:
     """Registered skill commands, or ``{}`` when the skill subsystem is unavailable."""
     try:
-        from agent.skill_commands import get_skill_commands
+        from hermes_agent.agent.skill_commands import get_skill_commands
         return get_skill_commands() or {}
     except Exception:
         return {}
@@ -152,8 +152,8 @@ def _exec_commands(ctx: CommandContext) -> CommandReply:
             for cmd in sorted(skill_cmds):
                 desc = skill_cmds[cmd].get("description", "").strip() or t("gateway.commands.default_desc")
                 entries.append(f"`{cmd}` — {desc}")
-        # Skills kept off the menu because a built-in owns the name (agent.skill_commands guard).
-        from agent.skill_commands import skill_command_collision_note
+        # Skills kept off the menu because a built-in owns the name (hermes_agent.agent.skill_commands guard).
+        from hermes_agent.agent.skill_commands import skill_command_collision_note
         from hermes_agent.tools.skills_tool import find_all_skills
         entries.extend(f"⚠ {note}" for note in filter(None, map(
             skill_command_collision_note, sorted(s["name"] for s in find_all_skills()))))

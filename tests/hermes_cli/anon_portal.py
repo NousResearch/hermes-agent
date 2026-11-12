@@ -134,7 +134,7 @@ def install_portal(monkeypatch, tmp_path, fake: FakePortal | None = None) -> Fak
             kw["transport"] = httpx.MockTransport(fake.handler)
             super().__init__(*a, **kw)
     monkeypatch.setattr(httpx, "Client", _RoutedClient)
-    monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda *_a, **_kw: False)
+    monkeypatch.setattr("hermes_agent.agent.bedrock_adapter.has_aws_credentials", lambda *_a, **_kw: False)
     anon_auth.reset_mint_memo_for_tests()
     free_tier_bootstrap.reset_for_tests()
     from hermes_cli import anon_challenge

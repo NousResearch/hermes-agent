@@ -1004,7 +1004,7 @@ def _endpoint_probe_client(url: str, timeout: float):
     system proxy (Clash on Windows, corporate) answered the ``127.0.0.1`` probe with its own error
     page and the GUI reported "advertised no models" while the CLI saw the model (#63472)."""
     import httpx
-    from agent.model_metadata import is_local_endpoint
+    from hermes_agent.agent.model_metadata import is_local_endpoint
     return httpx.AsyncClient(timeout=httpx.Timeout(timeout), trust_env=not is_local_endpoint(url))
 
 
@@ -1053,7 +1053,7 @@ async def validate_provider_credential(body: EnvVarUpdate, request: Request):
 
     url, auth = probe
     if key == "GEMINI_API_KEY":
-        from agent.gemini_native_adapter import normalize_gemini_base_url
+        from hermes_agent.agent.gemini_native_adapter import normalize_gemini_base_url
         # Normalize guarantees the version segment; the key itself never decides the surface —
         # AQ. keys exist for both AI Studio and Vertex express mode (#115306).
         url = normalize_gemini_base_url(url.rsplit("/models", 1)[0]) + "/models"

@@ -9,8 +9,8 @@ from types import SimpleNamespace
 import pytest
 
 from tests.gateway.test_stored_history_mount import _connect
-from agent.prompt_refresh import stamp_prompt_epoch
-from agent.turn_facade_lease import admit_durable_turn_lease
+from hermes_agent.agent.prompt_refresh import stamp_prompt_epoch
+from hermes_agent.agent.turn_facade_lease import admit_durable_turn_lease
 from hermes_agent.tools.delegate_tool import _build_child_agent
 
 
@@ -46,10 +46,10 @@ def _parent(db, session_id, on_progress):
 def offline_children(monkeypatch):
     # Only metadata discovery is stubbed. Construction, storage and session.resume are real.
     monkeypatch.setattr(
-        "agent.model_metadata.get_model_context_length", lambda *a, **kw: 128000
+        "hermes_agent.agent.model_metadata.get_model_context_length", lambda *a, **kw: 128000
     )
     monkeypatch.setattr(
-        "agent.context_compressor.get_model_context_length", lambda *a, **kw: 128000
+        "hermes_agent.agent.context_compressor.get_model_context_length", lambda *a, **kw: 128000
     )
 
     def no_model_call(*args, **kwargs):

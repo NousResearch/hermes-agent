@@ -10,15 +10,15 @@ request.
 
 import pytest
 
-from agent.context_compressor import (
+from hermes_agent.agent.context_compressor import (
     COMPRESSION_CONTINUATION_USER_CONTENT,
     SUMMARY_PREFIX,
 )
-from agent.conversation_compression import (
+from hermes_agent.agent.conversation_compression import (
     _compressed_has_busy_steer,
     _ensure_compressed_has_user_turn,
 )
-from agent.prompt_builder import STEER_MARKER_OPEN, format_steer_marker
+from hermes_agent.agent.prompt_builder import STEER_MARKER_OPEN, format_steer_marker
 import itertools
 
 REQUEST_A = "Historical request A: audit the auth module."

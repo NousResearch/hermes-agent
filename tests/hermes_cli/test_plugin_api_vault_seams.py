@@ -1,7 +1,7 @@
 """The browser-vault plugin seams are on the published plugin API.
 
-``agent.vault_backends.base:LoginBackend``, ``agent.vault_store:VaultItemMeta`` and
-``agent.browser_page_backend:BrowserPageBackend`` are what ``browser-vault-plugin.md`` tells a plugin to
+``hermes_agent.agent.vault_backends.base:LoginBackend``, ``hermes_agent.agent.vault_store:VaultItemMeta`` and
+``hermes_agent.agent.browser_page_backend:BrowserPageBackend`` are what ``browser-vault-plugin.md`` tells a plugin to
 subclass or return: ``ctx.register_login_backend`` / ``ctx.register_browser_page_backend`` accept only
 instances of the base classes, and the core login-backend wrapper accepts only ``VaultItemMeta`` items.
 A plugin built the way the guide shows passes ``hermes plugins validate`` without a private-import
@@ -69,9 +69,9 @@ def test_login_backend_subclassed_as_documented_serves_vault_item_meta_through_c
     """The guide's ``KeePassBackend`` shape (class attributes + the three abstract methods returning
     ``VaultItemMeta``) registers via ``ctx.register_login_backend`` and the vault reads it through core's
     wrapper; an item that is not a ``VaultItemMeta`` is refused, so the dataclass is the contract."""
-    from agent.vault_backends.base import LoginBackend, backend_for_handle
-    from agent.vault_backends.plugin import PluginBackendError
-    from agent.vault_store import VaultItemMeta
+    from hermes_agent.agent.vault_backends.base import LoginBackend, backend_for_handle
+    from hermes_agent.agent.vault_backends.plugin import PluginBackendError
+    from hermes_agent.agent.vault_store import VaultItemMeta
 
     item = VaultItemMeta(id="keepass:1", kind="login", label="Example", origin="https://example.com",
                          created_at="2026-01-01T00:00:00Z", identifier="me@example.com",
@@ -115,8 +115,8 @@ def test_login_backend_subclassed_as_documented_serves_vault_item_meta_through_c
 def test_browser_page_backend_subclassed_as_documented_serves_its_task(tmp_path, monkeypatch):
     """The guide's ``MyBrowserPages`` shape registers via ``ctx.register_browser_page_backend`` (behind
     the guide's ``hasattr`` guard) and is the backend the vault picks for the task it holds a page for."""
-    from agent import browser_page_registry
-    from agent.browser_page_backend import BrowserPageBackend
+    from hermes_agent.agent import browser_page_registry
+    from hermes_agent.agent.browser_page_backend import BrowserPageBackend
 
     calls = []
 

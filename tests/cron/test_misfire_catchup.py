@@ -172,7 +172,7 @@ class TestFireOverdueJobs:
         """`hermes pause` must silence the backstop too — otherwise it force-fires every job
         that ESTOP held back. Nothing to unwind: the first sweep after `hermes resume`
         catches up through the ordinary claim_fire path."""
-        from agent import estop
+        from hermes_agent.agent import estop
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         estop._logged_components.clear()

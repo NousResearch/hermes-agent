@@ -224,7 +224,7 @@ def trim_memory_when_idle(*, reason: str) -> bool:
     """Timer-lane trim: allocator release only, plus ONE full collection per quiet period once no turn has run
     in this process for ``IDLE_COLLECT_AFTER_SECONDS`` (again only after a later agent close)."""
     global _idle_collected_for, _agent_closed_since_idle_collect
-    from agent.review_idle_queue import QUEUE
+    from hermes_agent.agent.review_idle_queue import QUEUE
 
     quiet_for, quiet_since = QUEUE.quiet_period()
     with _idle_collect_lock:

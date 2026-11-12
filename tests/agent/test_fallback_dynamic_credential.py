@@ -5,7 +5,7 @@ import httpx
 import pytest
 from openai import OpenAI
 
-from agent.client_lifecycle import _swap_fallback_clients
+from hermes_agent.agent.client_lifecycle import _swap_fallback_clients
 
 
 @pytest.mark.parametrize("mode", ["chat_completions", "codex_responses"])

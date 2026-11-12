@@ -15,7 +15,7 @@ def bundles_env(tmp_path, monkeypatch):
     bundles_dir = tmp_path / "skill-bundles"
     monkeypatch.setenv("HERMES_BUNDLES_DIR", str(bundles_dir))
     # Reset module-level cache between tests.
-    import agent.skill_bundles as mod
+    import hermes_agent.agent.skill_bundles as mod
     mod._bundles_cache = {}
     mod._bundles_cache_mtime = None
     return bundles_dir

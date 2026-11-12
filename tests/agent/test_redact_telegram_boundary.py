@@ -7,7 +7,7 @@ import sys
 
 import pytest
 
-from agent.redact import redact_for_egress, redact_sensitive_text, redact_terminal_output
+from hermes_agent.agent.redact import redact_for_egress, redact_sensitive_text, redact_terminal_output
 
 
 def _redact(payload, mode):
@@ -95,7 +95,7 @@ def test_cron_stdout_preserves_identity_and_masks_adjacent_token(tmp_path, monke
     scripts = home / "scripts"
     scripts.mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr("agent.redact._REDACT_ENABLED", True)
+    monkeypatch.setattr("hermes_agent.agent.redact._REDACT_ENABLED", True)
     identity = "ITEM-000042:job-a12345678:q-" + "a" * 32
     token = "123456789:" + "Ab_9-" * 7
     script = scripts / "synthetic_monitor.py"

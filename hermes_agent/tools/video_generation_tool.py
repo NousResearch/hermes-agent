@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """``video_generate``: one tool dispatching to a plugin-registered :class:`VideoGenProvider`
-(``agent/video_gen_provider.py`` ABC, ``agent/video_gen_registry.py``, ``plugins/video_gen/<name>/``).
+(``hermes_agent/agent/video_gen_provider.py`` ABC, ``hermes_agent/agent/video_gen_registry.py``, ``plugins/video_gen/<name>/``).
 
 Ships **no in-tree provider**: enable a plugin and select it in ``hermes tools`` → Video
 Generation. The tool layer only does lightweight validation; each provider clamps/ignores
@@ -13,7 +13,7 @@ import json
 import logging
 from typing import Any, Dict, List, Optional
 
-from agent.video_gen_provider import (
+from hermes_agent.agent.video_gen_provider import (
     COMMON_ASPECT_RATIOS,
     COMMON_RESOLUTIONS,
     DEFAULT_ASPECT_RATIO,
@@ -90,7 +90,7 @@ def _read_configured_video_model() -> Optional[str]:
 
 def _discovered_registry():
     """Import the provider registry after (idempotent) plugin discovery so user-installed plugins are visible."""
-    from agent import video_gen_registry
+    from hermes_agent.agent import video_gen_registry
     from hermes_cli.plugins import _ensure_plugins_discovered
     _ensure_plugins_discovered()
     return video_gen_registry, _ensure_plugins_discovered

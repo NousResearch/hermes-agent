@@ -457,8 +457,8 @@ def _mark_verification_stale(task_id: str, resolved_paths: list[str],
     if not paths:
         return
     try:
-        from agent.coding_context import project_facts_for
-        from agent.verification_evidence import mark_workspace_edited
+        from hermes_agent.agent.coding_context import project_facts_for
+        from hermes_agent.agent.verification_evidence import mark_workspace_edited
 
         parents = [str(Path(p).parent) for p in paths]
         cwd = (next((c for c in parents if project_facts_for(c)), None)

@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.context_compressor import ContextCompressor
+from hermes_agent.agent.context_compressor import ContextCompressor
 
 
 class StubProviderError(Exception):
@@ -31,7 +31,7 @@ class TestSustainedOverloadEscalation:
         )
 
     def _compressor(self, **kwargs):
-        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(
                 model="test",
                 quiet_mode=True,
@@ -50,7 +50,7 @@ class TestSustainedOverloadEscalation:
         c._last_summary_network_failure = True
         msgs = self._msgs(12)
         err = StubProviderError("Error code: 403 - provider overloaded", status_code=403) if access_error else self._err()
-        with patch("agent.context_compressor.call_llm", side_effect=err):
+        with patch("hermes_agent.agent.context_compressor.call_llm", side_effect=err):
             first = c.compress(msgs, current_tokens=999999, force=True)
             second = c.compress(msgs, current_tokens=999999, force=True)
             # First two: preserve the transcript unchanged (#115906 semantics).
@@ -78,13 +78,13 @@ class TestSustainedOverloadEscalation:
         isolated overload afterwards aborts instead of escalating to the destructive fallback."""
         c = self._compressor(abort_on_summary_failure=False)
         msgs = self._msgs(12)
-        with patch("agent.context_compressor.call_llm", side_effect=self._err()):
+        with patch("hermes_agent.agent.context_compressor.call_llm", side_effect=self._err()):
             for _ in range(2):
                 assert c.compress(msgs, current_tokens=999999, force=True) == msgs
         assert c._consecutive_overload_aborts == 2
         ok = MagicMock()
         ok.choices[0].message.content = "Healthy summary."
-        with patch("agent.context_compressor.call_llm", return_value=ok):
+        with patch("hermes_agent.agent.context_compressor.call_llm", return_value=ok):
             assert c._generate_summary(msgs[1:6], bypass_cooldown=True)
         assert c._consecutive_overload_aborts == 0
 
@@ -105,7 +105,7 @@ class TestSustainedOverloadEscalation:
 
         first = self._compressor(abort_on_summary_failure=False)
         first.bind_session_state(db, session_id)
-        with patch("agent.context_compressor.call_llm", side_effect=self._err()):
+        with patch("hermes_agent.agent.context_compressor.call_llm", side_effect=self._err()):
             for _ in range(2):  # exactly two aborts — one below the escalation threshold
                 assert first.compress(msgs, current_tokens=999999, force=True) == msgs
         assert first._consecutive_overload_aborts == 2
@@ -115,7 +115,7 @@ class TestSustainedOverloadEscalation:
         second = self._compressor(abort_on_summary_failure=False)
         second.bind_session_state(db, session_id)
         assert second._consecutive_overload_aborts == 2  # inherited, not restarted
-        with patch("agent.context_compressor.call_llm", side_effect=self._err()):
+        with patch("hermes_agent.agent.context_compressor.call_llm", side_effect=self._err()):
             third = second.compress(msgs, current_tokens=999999, force=True)
         # Third consecutive abort IN THE SESSION escalates even though this object saw one.
         # A fresh object's first overload burns the aux→main one-shot retry, which labels the

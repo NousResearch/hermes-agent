@@ -57,7 +57,7 @@ Microsoft recommends [keyless authentication with Microsoft Entra ID](https://le
 Foundry's RBAC is per-resource (`Azure AI User` grants both surfaces; some tenants may display `Foundry User`) and Microsoft documents the same inference scope (`https://ai.azure.com/.default`) for both. Under the hood:
 
 - OpenAI-style uses the OpenAI Python SDK's native callable `api_key=` contract — the SDK mints a fresh JWT per request automatically.
-- Anthropic-style uses an `httpx.Client` with a request event hook installed by `agent.azure_identity_adapter.build_bearer_http_client`, because the Anthropic SDK does not accept callable `auth_token` natively. The hook rewrites `Authorization: Bearer <fresh-jwt>` per outbound request. Same Microsoft RBAC, same Foundry scope — the SDK contract is the only difference.
+- Anthropic-style uses an `httpx.Client` with a request event hook installed by `hermes_agent.agent.azure_identity_adapter.build_bearer_http_client`, because the Anthropic SDK does not accept callable `auth_token` natively. The hook rewrites `Authorization: Bearer <fresh-jwt>` per outbound request. Same Microsoft RBAC, same Foundry scope — the SDK contract is the only difference.
 
 ### Why use Entra ID?
 

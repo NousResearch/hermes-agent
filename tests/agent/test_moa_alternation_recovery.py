@@ -10,8 +10,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent import moa_loop
-from agent.error_classifier import FailoverReason, classify_api_error
+from hermes_agent.agent import moa_loop
+from hermes_agent.agent.error_classifier import FailoverReason, classify_api_error
 import itertools
 
 ALTERNATION_MSG = "Conversation roles must alternate user/assistant/user/assistant/..."

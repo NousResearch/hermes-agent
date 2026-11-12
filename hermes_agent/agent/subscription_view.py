@@ -1,6 +1,6 @@
 """Surface-agnostic core for the ``/subscription`` TUI screen.
 
-Companion to :mod:`agent.billing_view` — same fail-open philosophy (``logged_in=False``
+Companion to :mod:`hermes_agent.agent.billing_view` — same fail-open philosophy (``logged_in=False``
 when not logged in / portal unreachable; never crash) and decimal money end-to-end.
 The TUI drives plan changes in-terminal (preview, then schedule a downgrade/cancel/resume
 or apply an upgrade); the portal deep-link (``portal_url`` + ``org_id``) is the fallback
@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Optional
 
-from agent.billing_view import OrgRoleCapability, fetch_portal_state, format_money, parse_money, parse_org_fields
+from hermes_agent.agent.billing_view import OrgRoleCapability, fetch_portal_state, format_money, parse_money, parse_org_fields
 
 logger = logging.getLogger(__name__)
 

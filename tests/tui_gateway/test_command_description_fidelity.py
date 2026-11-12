@@ -5,7 +5,7 @@ from prompt_toolkit.document import Document
 
 
 def test_full_descriptions_survive_catalog_and_completion(monkeypatch):
-    from agent import skill_commands
+    from hermes_agent.agent import skill_commands
     from hermes_cli import plugins
     from hermes_cli.commands_completion import SlashCommandCompleter
     from hermes_agent.tui_gateway import server

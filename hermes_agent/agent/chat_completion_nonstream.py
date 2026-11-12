@@ -1,7 +1,7 @@
 """Request-local worker lifecycle, watchdog polling, and wait status."""
 
-from agent import chat_completion_helpers as h
-from agent import chat_completion_wait_notice as wn
+from hermes_agent.agent import chat_completion_helpers as h
+from hermes_agent.agent import chat_completion_wait_notice as wn
 
 
 class _NonStreamRequest:
@@ -69,7 +69,7 @@ class _NonStreamRequest:
         try:
             self._install_codex_request_token()
             if self.codex_watchdog_state is not None:
-                from agent.codex_runtime import _codex_watchdog_state_var
+                from hermes_agent.agent.codex_runtime import _codex_watchdog_state_var
 
                 watchdog_state_var = _codex_watchdog_state_var
                 watchdog_context_token = watchdog_state_var.set(self.codex_watchdog_state)

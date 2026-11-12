@@ -13,7 +13,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from agent.image_gen_provider import ImageGenProvider
+from hermes_agent.agent.image_gen_provider import ImageGenProvider
 from hermes_agent.tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER
 
 logger = logging.getLogger(__name__)
@@ -51,7 +51,7 @@ def _discover() -> None:
 
 def _available(name: str):
     """The registered provider *name* if it exists and has credentials, else ``None``."""
-    from agent.image_gen_registry import get_provider
+    from hermes_agent.agent.image_gen_registry import get_provider
 
     provider = get_provider(name)
     return provider if provider is not None and provider.is_available() else None
@@ -97,7 +97,7 @@ def resolve_provider(*, require_references: bool = True, prefer: str | None = No
     provider is accepted (prompt-only base drafts).
     """
     _discover()
-    from agent.image_gen_registry import get_active_provider
+    from hermes_agent.agent.image_gen_registry import get_active_provider
 
     forced = os.environ.get("HERMES_PET_IMAGE_PROVIDER", "").strip().lower()
     for name in (forced, prefer):
@@ -147,7 +147,7 @@ def list_sprite_providers() -> list[dict]:
 def _save_local(image_ref: str, *, prefix: str) -> Path:
     """Return a local path for *image_ref*, downloading it if it's a URL."""
     if image_ref.startswith(("http://", "https://")):
-        from agent.image_gen_provider import save_url_image
+        from hermes_agent.agent.image_gen_provider import save_url_image
 
         return Path(save_url_image(image_ref, prefix=prefix))
     return Path(image_ref)

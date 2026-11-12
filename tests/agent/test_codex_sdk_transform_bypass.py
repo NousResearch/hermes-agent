@@ -18,7 +18,7 @@ sys.modules.setdefault("fire", types.SimpleNamespace(Fire=lambda *a, **k: None))
 sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
 sys.modules.setdefault("fal_client", types.SimpleNamespace())
 
-from agent.sdk_transform_bypass import (
+from hermes_agent.agent.sdk_transform_bypass import (
     _is_plain_json_data,
     bypass_sdk_request_transform as _bypass_sdk_request_transform,
 )
@@ -112,7 +112,7 @@ class TestBypassSdkRequestTransform:
 
 class TestRunCodexStreamRoutesPayloadViaExtraBody:
     def _make_agent(self):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key",
@@ -126,7 +126,7 @@ class TestRunCodexStreamRoutesPayloadViaExtraBody:
         return agent
 
     def test_create_receives_input_via_extra_body(self):
-        from agent.codex_runtime import run_codex_stream
+        from hermes_agent.agent.codex_runtime import run_codex_stream
 
         agent = self._make_agent()
         events = [

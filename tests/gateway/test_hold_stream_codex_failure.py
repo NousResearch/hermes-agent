@@ -16,7 +16,7 @@ from tests.gateway.test_run_progress_topics import _make_runner
 async def test_codex_held_partial_final_reaches_chat_only_rewritten(error, monkeypatch):
     import hermes_agent.gateway.run as gateway_run
     from hermes_cli import plugins
-    from agent.transports.codex_app_server_session import CodexAppServerSession, TurnResult
+    from hermes_agent.agent.transports.codex_app_server_session import CodexAppServerSession, TurnResult
     from hermes_agent.gateway.config import Platform, StreamingConfig
     from hermes_agent.gateway.session import SessionSource
     from hermes_agent.gateway.platforms.event import MessageEvent, MessageType

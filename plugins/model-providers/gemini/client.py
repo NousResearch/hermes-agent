@@ -15,9 +15,9 @@ from typing import Any, Iterator, Optional
 
 import httpx
 
-from agent.bounded_response import read_streaming_error_body
-from agent.gemini_long_decode import long_decode_hops
-from agent.gemini_native_adapter import (
+from hermes_agent.agent.bounded_response import read_streaming_error_body
+from hermes_agent.agent.gemini_long_decode import long_decode_hops
+from hermes_agent.agent.gemini_native_adapter import (
     _MAX_TOKEN_SENDS,
     GeminiAPIError,
     GeminiNativeClient,

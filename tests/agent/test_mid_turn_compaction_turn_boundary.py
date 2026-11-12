@@ -1,8 +1,8 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from agent.turn_preflight import compress_after_tool_results
-from run_agent import AIAgent
+from hermes_agent.agent.turn_preflight import compress_after_tool_results
+from hermes_agent.run_agent import AIAgent
 
 
 def test_post_tool_compression_reanchors_the_active_user_boundary(monkeypatch):
@@ -30,11 +30,11 @@ def test_post_tool_compression_reanchors_the_active_user_boundary(monkeypatch):
         _persist_user_message_idx=4,
     )
     monkeypatch.setattr(
-        "agent.turn_preflight.conversation_history_after_compression",
+        "hermes_agent.agent.turn_preflight.conversation_history_after_compression",
         lambda _agent, _messages, _history: [],
     )
     monkeypatch.setattr(
-        "agent.conversation_loop._should_skip_model_call_for_reference_handoff",
+        "hermes_agent.agent.conversation_loop._should_skip_model_call_for_reference_handoff",
         lambda _messages, _user_message: False,
     )
 
@@ -82,9 +82,9 @@ def test_pre_api_compression_mid_turn_keeps_this_turns_tool_pair_on_the_wire():
     with (
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=[tool_def]),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
-        patch("agent.model_metadata.get_model_context_length", return_value=256_000),
-        patch("agent.context_compressor.get_model_context_length", return_value=256_000),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.model_metadata.get_model_context_length", return_value=256_000),
+        patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=256_000),
     ):
         agent = AIAgent(
             api_key="test-key-1234567890", base_url="https://openrouter.ai/api/v1", model="test/model",
@@ -132,9 +132,9 @@ def test_pre_api_compression_mid_turn_keeps_this_turns_tool_pair_on_the_wire():
 
     history = [{"role": "user" if i % 2 == 0 else "assistant", "content": f"msg {i}"} for i in range(30)]
     with (
-        patch("agent.turn_context.estimate_request_tokens_rough", return_value=10),
-        patch("agent.model_metadata.estimate_messages_tokens_rough", side_effect=_estimate),
-        patch("agent.conversation_loop._estimate_tools_tokens_rough", return_value=0),
+        patch("hermes_agent.agent.turn_context.estimate_request_tokens_rough", return_value=10),
+        patch("hermes_agent.agent.model_metadata.estimate_messages_tokens_rough", side_effect=_estimate),
+        patch("hermes_agent.agent.conversation_loop._estimate_tools_tokens_rough", return_value=0),
         patch.object(agent, "_compress_context", side_effect=_compress),
         patch.object(agent, "_execute_tool_calls", side_effect=_execute),
         patch.object(agent, "_flush_messages_to_session_db", return_value=True),

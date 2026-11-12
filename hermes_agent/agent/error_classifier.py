@@ -2,7 +2,7 @@
 
 A priority-ordered pipeline maps an API exception to a ``ClassifiedError``
 whose recovery hints (retry, rotate credential, fallback, compress, abort) the
-retry loop in run_agent.py consults instead of re-matching strings itself.
+retry loop in hermes_agent/run_agent.py consults instead of re-matching strings itself.
 """
 
 from __future__ import annotations
@@ -401,7 +401,7 @@ _REQUEST_VALIDATION_PATTERNS = (
 # Parameters Hermes sends on SOME routes only → hosts where that is deliberate.
 # A rejection from any other host means the provider's gateway injected the
 # field itself: a server-side flake, not our request shape. prompt_cache_retention
-# is only sent for api.meta.ai / bedrock-mantle (agent/transports/codex.py).
+# is only sent for api.meta.ai / bedrock-mantle (hermes_agent/agent/transports/codex.py).
 _SERVER_INJECTED_PARAM_SENDERS: dict[str, tuple] = {
     "prompt_cache_retention": ("meta", "muse", "msl", "model-api", "bedrock", "mantle"),
 }
@@ -586,7 +586,7 @@ _REASONING_MANDATORY_PATTERN = "reasoning is mandatory"
 # field as "extra inputs are not permitted" (#109774). Enum-rejecting aggregators (commandcode.ai)
 # say "Invalid option: expected one of ..." with no "unsupported" anywhere, naming the field only
 # in the structured 'param' tail (#115277). Shared with the auxiliary retry ladder
-# (``agent.auxiliary_client._is_unsupported_parameter_error``).
+# (``hermes_agent.agent.auxiliary_client._is_unsupported_parameter_error``).
 UNSUPPORTED_PARAM_MARKERS = (
     "unsupported parameter", "unsupported_parameter", "not supported", "does not support",
     "doesn't support", "is deprecated for this model",
@@ -927,7 +927,7 @@ def _nous_welcome_tier(c: _Ctx) -> Optional[Verdict]:
     if status == 429:
         # Every free-tier 429 is the allowance talking, so even one without a ``reason`` (header-only,
         # quota words) is a refusal; otherwise it would fall to billing or the generic rate-limit copy.
-        from agent.nous_rate_guard import welcome_refusal_from_headers
+        from hermes_agent.agent.nous_rate_guard import welcome_refusal_from_headers
         refusal = parse_welcome_refusal(c.body) or welcome_refusal_from_headers(
             c.headers, body_wait=_rate_limit_reset_seconds(c.msg, c.body, c.headers))
         ctx = {"welcome_refusal": refusal}
@@ -1025,7 +1025,7 @@ def _moa_special_cases(c: _Ctx) -> Optional[Verdict]:
     if c.provider_slug == "moa" and any(s in str(c.error) for s in _MOA_ADAPTER_SHAPE_BUGS):
         return _v(_R.format_error, retryable=False)
     # Persisted MoA preset name that was renamed/deleted — deterministic config error.
-    from agent.errors import InvalidProviderResponseError, MoAPresetNotFoundError
+    from hermes_agent.agent.errors import InvalidProviderResponseError, MoAPresetNotFoundError
     if isinstance(c.error, MoAPresetNotFoundError):
         return _v(_R.model_not_found, retryable=False)
     return _v(_R.incomplete_response, **_ABORT_FALLBACK) if isinstance(c.error, InvalidProviderResponseError) else None
@@ -1079,10 +1079,10 @@ def _by_transport(c: _Ctx) -> Optional[Verdict]:
         # phantom context-length error. Reasoning models have multi-minute thinking phases that routinely
         # exceed the cloud gateway's idle window (NVIDIA NIM ~120s — first-party repro at
         # NVIDIA/NemoClaw#4846; OpenAI worker / Anthropic stream-idle similar). The per-reasoning-model
-        # stale-timeout floor in agent/reasoning_timeouts.py raises the stale-detector threshold to tolerate
+        # stale-timeout floor in hermes_agent/agent/reasoning_timeouts.py raises the stale-detector threshold to tolerate
         # long thinking, so a true transport-layer failure here is recoverable via the retry path — not via
         # context compression. Reclassify as timeout. (Part 1 of Fixes #52310.)
-        from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
+        from hermes_agent.agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
         if get_reasoning_stale_timeout_floor(c.model) is not None:
             return _V_TIMEOUT
         return _V_CONTEXT_OVERFLOW if c.large_session(0.6, 120000, 200) else _V_TIMEOUT
@@ -1327,7 +1327,7 @@ def _usage_window_display_message(body: Any) -> str:
 def _has_large_inline_image(content: Any) -> bool:
     """True when a rejected ``content`` list carries a ``data:image/`` part the shrink pass would rewrite
     (over ``conversation_compression._IMAGE_SHRINK_TARGET_BYTES``; below it a shrink retry is a no-op)."""
-    from agent.conversation_compression import _IMAGE_SHRINK_TARGET_BYTES
+    from hermes_agent.agent.conversation_compression import _IMAGE_SHRINK_TARGET_BYTES
 
     for part in content if isinstance(content, list) else ():
         image = part.get("image_url") if isinstance(part, dict) else None
@@ -1485,7 +1485,7 @@ def _has_usage_limit_transient_signal(error_msg: str, body: dict, response_heade
 def _rate_limit_reset_seconds(error_msg: str, body: dict, response_headers) -> Optional[float]:
     """Seconds until a 429's window reopens, from the body's reset fields, ``Retry-After`` or the
     message grammar (``retry after Ns`` / ``resets in 4hr``); None when the response names none."""
-    from agent.retry_utils import parse_retry_after_seconds, reset_delay_from_message
+    from hermes_agent.agent.retry_utils import parse_retry_after_seconds, reset_delay_from_message
     for payload in (p for p in (body, _error_obj(body)) if isinstance(p, dict)):
         for name in _RESET_FIELDS:
             value = payload.get(name)

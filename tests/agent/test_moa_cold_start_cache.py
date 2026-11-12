@@ -38,7 +38,7 @@ def _make_preset_config() -> dict:
 def test_preset_resolution_is_cached_across_create_calls(monkeypatch, tmp_path):
     """resolve_moa_preset must run once per (config-mtime, preset_name),
     not on every create() iteration."""
-    import agent.moa_loop as moa
+    import hermes_agent.agent.moa_loop as moa
 
     moa._preset_cache.clear()
 
@@ -74,7 +74,7 @@ def test_preset_cache_invalidates_on_config_edit(monkeypatch, tmp_path):
     attribute, which never invalidated (review finding)."""
     import os
 
-    import agent.moa_loop as moa
+    import hermes_agent.agent.moa_loop as moa
 
     moa._preset_cache.clear()
 
@@ -108,7 +108,7 @@ def test_preset_cache_invalidates_on_config_edit(monkeypatch, tmp_path):
 
 def test_no_config_file_fails_open(monkeypatch, tmp_path):
     """No config.yaml (stat raises) -> caching disabled, create() still works."""
-    import agent.moa_loop as moa
+    import hermes_agent.agent.moa_loop as moa
 
     moa._preset_cache.clear()
 
@@ -127,7 +127,7 @@ def test_no_config_file_fails_open(monkeypatch, tmp_path):
 def test_slot_runtime_is_cached_across_create_calls(monkeypatch, tmp_path):
     """resolve_runtime_provider (real I/O) must run once per
     (provider, model) across all create() iterations, not per call."""
-    import agent.moa_loop as moa
+    import hermes_agent.agent.moa_loop as moa
 
     moa._runtime_cache.clear()
     moa._preset_cache.clear()
@@ -160,7 +160,7 @@ def test_slot_runtime_cache_expires_after_ttl(monkeypatch):
     """A stale runtime entry (key rotation window) must re-resolve after
     the TTL — the original PR cached for the process lifetime, pinning
     rotated credentials forever (review finding)."""
-    import agent.moa_loop as moa
+    import hermes_agent.agent.moa_loop as moa
 
     moa._runtime_cache.clear()
 
@@ -195,7 +195,7 @@ def test_slot_runtime_cache_expires_after_ttl(monkeypatch):
 def test_slot_runtime_resolution_error_is_not_cached(monkeypatch):
     """A transient resolution failure must not pin the bare-kwargs fallback
     for a TTL — the next call must retry the real resolver."""
-    import agent.moa_loop as moa
+    import hermes_agent.agent.moa_loop as moa
 
     moa._runtime_cache.clear()
 
@@ -231,7 +231,7 @@ def _fake_response():
 def test_slot_runtime_cache_is_scoped_per_profile_home(monkeypatch, tmp_path):
     """Under a multiplex gateway two profiles can share (provider, model) with different
     accounts; a cached api_key/base_url must never cross the per-turn HERMES_HOME override."""
-    import agent.moa_loop as moa
+    import hermes_agent.agent.moa_loop as moa
     import hermes_constants
 
     moa._runtime_cache.clear()

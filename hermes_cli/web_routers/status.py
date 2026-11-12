@@ -716,7 +716,7 @@ def get_system_stats():  # sync: FastAPI runs it on a worker (psutil.cpu_percent
 @router.get("/api/curator")
 async def get_curator_status(profile: Optional[str] = None):
     try:
-        from agent import curator
+        from hermes_agent.agent import curator
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Curator unavailable: {exc}")
 
@@ -735,7 +735,7 @@ async def get_curator_status(profile: Optional[str] = None):
 
 @router.put("/api/curator/paused")
 async def set_curator_paused(body: CuratorPause, profile: Optional[str] = None):
-    from agent import curator
+    from hermes_agent.agent import curator
     # ``_state_file()`` is ``get_hermes_home()/skills/.curator_state`` resolved at call
     # time, so the request's home override is what decides which profile pauses.
     await config_scoped_to_thread(profile, lambda: curator.set_paused(bool(body.paused)))
@@ -765,7 +765,7 @@ async def run_curator(profile: Optional[str] = None):
 async def get_learning_graph(profile: Optional[str] = None):
     """Learning graph for the desktop panel: profile-scoped learned skills + memory chunks."""
     def _run():
-        from agent.learning_graph import build_learning_graph
+        from hermes_agent.agent.learning_graph import build_learning_graph
         return build_learning_graph()
 
     try:
@@ -791,7 +791,7 @@ async def _learning_mutation(profile: Optional[str], fn, status: int, fallback: 
 @router.get("/api/learning/node")
 async def get_learning_node(id: str, profile: Optional[str] = None):
     """Current content of a journey node (skill SKILL.md or memory chunk), for an edit prefill."""
-    from agent.learning_mutations import node_detail
+    from hermes_agent.agent.learning_mutations import node_detail
     return await _learning_mutation(profile, lambda: node_detail(id), 404, "not found")
 
 
@@ -801,7 +801,7 @@ async def delete_learning_node(body: LearningNodeRef, profile: Optional[str] = N
 
     ``?profile=`` is honoured too: a shared-backend Desktop scopes this call by query only, and
     ignoring it archived the same-named skill of the launch profile instead."""
-    from agent.learning_mutations import delete_node
+    from hermes_agent.agent.learning_mutations import delete_node
     return await _learning_mutation(
         body.profile or profile, lambda: delete_node(body.id), 400, "delete failed")
 
@@ -809,7 +809,7 @@ async def delete_learning_node(body: LearningNodeRef, profile: Optional[str] = N
 @router.put("/api/learning/node")
 async def update_learning_node(body: LearningNodeEdit, profile: Optional[str] = None):
     """Rewrite a journey node's content (SKILL.md or memory chunk); profile as for DELETE."""
-    from agent.learning_mutations import edit_node
+    from hermes_agent.agent.learning_mutations import edit_node
     return await _learning_mutation(
         body.profile or profile, lambda: edit_node(body.id, body.content), 400, "edit failed")
 

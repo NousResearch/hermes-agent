@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from importlib import import_module
 from typing import Any, Callable, Dict, Optional, Tuple
 
-from agent.prompt_cache_scope import conversation_id
+from hermes_agent.agent.prompt_cache_scope import conversation_id
 from hermes_agent.tools.arg_coercion import coerce_tool_args
 from hermes_agent.tools.arg_validation import call_with_arg_checks
 from hermes_agent.tools.registry import registry
@@ -189,12 +189,12 @@ def _preview_is_default_vault_target(agent, task_id: str) -> bool:
     names = getattr(agent, "valid_tool_names", ()) or ()
     preview = "drive_preview" in names
     if not preview and "tool_call" in names:
-        from agent.tool_executor import _tool_search_scoped_names
+        from hermes_agent.agent.tool_executor import _tool_search_scoped_names
 
         preview = "drive_preview" in _tool_search_scoped_names(agent)
     if not preview:
         return False
-    from agent.browser_page_registry import backend_for_task
+    from hermes_agent.agent.browser_page_registry import backend_for_task
     from hermes_agent.tools.browser_session import session_for_task
     from hermes_agent.tools.browser_supervisor import SUPERVISOR_REGISTRY
 
@@ -270,7 +270,7 @@ def _setup_beat(agent, args: dict, ctx: InlineToolContext) -> Any:
     # The run record lives on the session row and the card callback on the agent. A card the user wrote
     # past ends the turn as a new message does: setup_beat runs inline (never parallel), so its result is
     # kept and the loop stops before the next model call.
-    from agent.interrupt_control import _REASON_NEW_MESSAGE
+    from hermes_agent.agent.interrupt_control import _REASON_NEW_MESSAGE
     from hermes_agent.tools.setup_beat_tool import setup_beat_tool
 
     return setup_beat_tool(

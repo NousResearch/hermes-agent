@@ -26,7 +26,7 @@ def housekeeping_media_caches() -> None:
     from hermes_agent.tools.environments.local import cleanup_terminal_temp_cache
     from hermes_agent.tools.bot_mode_dm import cleanup_bot_dm_cache
     from hermes_agent.tools.bot_relay import cleanup_bot_relay_artifacts
-    from agent.provider_media import MEDIA_CACHE_MAX_AGE_HOURS
+    from hermes_agent.agent.provider_media import MEDIA_CACHE_MAX_AGE_HOURS
     from hermes_agent.gateway.run import _housekeeping_chore
 
     for cache_name, cleanup_fn in (
@@ -48,7 +48,7 @@ def maybe_post_auto_prune_prompt(runner, loop) -> None:
     profile); the database estimate runs only for a profile that can actually receive it."""
     if runner is None or loop is None:
         return
-    from agent.async_utils import safe_schedule_threadsafe
+    from hermes_agent.agent.async_utils import safe_schedule_threadsafe
     from hermes_cli import prune_advisor
     from hermes_constants import get_routing_process_hermes_home
 

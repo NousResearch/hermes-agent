@@ -738,7 +738,7 @@ def test_delivery_turn_author_qualifies_a_remote_sender_by_its_connection():
 
 def test_delivery_env_carries_only_the_given_author(monkeypatch):
     """The dispatcher's own HERMES_TURN_AUTHOR never reaches the child: dropped without an author, replaced with one."""
-    from agent.turn_author import TURN_AUTHOR_ENV
+    from hermes_agent.agent.turn_author import TURN_AUTHOR_ENV
 
     monkeypatch.setenv("HERMES_RELAY_TEST_MARKER", "kept")
     monkeypatch.setenv(TURN_AUTHOR_ENV, json.dumps({"id": "bot:previous", "name": "previous", "is_bot": True}))
@@ -763,7 +763,7 @@ def test_delivery_env_carries_only_the_given_author(monkeypatch):
 def test_delivery_env_under_multiplex_names_the_pinned_launch_home(tmp_path, monkeypatch):
     """A relayed DM into the launch profile spawns with the launch home and its secrets, even after a
     host mirrors another home into HERMES_HOME; a bound scope or home override still wins."""
-    from agent.secret_scope import reset_secret_scope, set_multiplex_active, set_secret_scope
+    from hermes_agent.agent.secret_scope import reset_secret_scope, set_multiplex_active, set_secret_scope
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     launch, mirrored = tmp_path / "launch", tmp_path / "mirrored"

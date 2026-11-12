@@ -19,14 +19,14 @@ import hermes_agent.tools.file_tools as ft
 
 
 def _family(prov, model):
-    with patch("agent.auxiliary_client._read_main_provider", return_value=prov), \
-         patch("agent.auxiliary_client._read_main_model", return_value=model):
+    with patch("hermes_agent.agent.auxiliary_client._read_main_provider", return_value=prov), \
+         patch("hermes_agent.agent.auxiliary_client._read_main_model", return_value=model):
         return ft._is_openai_family_main()
 
 
 def _override(prov, model):
-    with patch("agent.auxiliary_client._read_main_provider", return_value=prov), \
-         patch("agent.auxiliary_client._read_main_model", return_value=model):
+    with patch("hermes_agent.agent.auxiliary_client._read_main_provider", return_value=prov), \
+         patch("hermes_agent.agent.auxiliary_client._read_main_model", return_value=model):
         return ft._patch_schema_overrides()
 
 

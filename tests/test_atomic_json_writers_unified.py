@@ -1,7 +1,7 @@
 """Invariant for the non-secret atomic JSON writers that used to inline ``utils._atomic_write``.
 
 Contract under test for ``hermes_agent/gateway/session_persistence``, ``hermes_agent/cron/suggestions`` and
-``agent/shell_hooks``: a failed replace leaves the previous file byte-identical AND leaves no temp
+``hermes_agent/agent/shell_hooks``: a failed replace leaves the previous file byte-identical AND leaves no temp
 file behind (the interrupt-safe cleanup only the canonical helper guarantees). A hand-rolled copy
 that skips the cleanup, or writes through the target instead of a sibling temp, fails this.
 """
@@ -58,7 +58,7 @@ def test_suggestions_failed_replace_keeps_old_bytes_and_no_temp(tmp_path, monkey
 
 
 def test_shell_hooks_allowlist_survives_failed_replace_without_temp(tmp_path, monkeypatch, broken_replace):
-    from agent import shell_hooks
+    from hermes_agent.agent import shell_hooks
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
     target = shell_hooks.allowlist_path()

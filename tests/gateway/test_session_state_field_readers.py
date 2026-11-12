@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 from hermes_agent.gateway.platforms.event import MessageEvent
 from hermes_agent.gateway.run import _AGENT_PENDING_SENTINEL
 from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
@@ -70,7 +70,7 @@ async def test_stop_flushes_only_nonempty_overflow_and_resets_turn_timestamps():
     with (
         patch("hermes_agent.gateway.status.remove_pid_file"),
         patch("hermes_agent.gateway.status.publish_runtime_status"),
-        patch("agent.auxiliary_client.shutdown_cached_clients"),
+        patch("hermes_agent.agent.auxiliary_client.shutdown_cached_clients"),
         patch("hermes_agent.gateway.shutdown_flush.flush_overflow_to_file",
               side_effect=lambda mapping, **_kw: flushed.append(mapping)),
     ):

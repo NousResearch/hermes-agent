@@ -20,12 +20,12 @@ def no_connect(*args, **kwargs):
     raise RuntimeError('OFFLINE PROBE: network forbidden')
 socket.socket.connect = no_connect
 socket.create_connection = no_connect
-import agent.tool_executor as te
-import agent.turn_usage as tu
+import hermes_agent.agent.tool_executor as te
+import hermes_agent.agent.turn_usage as tu
 import hermes_agent.tools.delegate_tool_results as dr
-import agent.usage_pricing as up
-import agent.codex_runtime as cr
-from run_agent import AIAgent
+import hermes_agent.agent.usage_pricing as up
+import hermes_agent.agent.codex_runtime as cr
+from hermes_agent.run_agent import AIAgent
 for mod in (te, tu, dr, up, cr):
     assert pathlib.Path(mod.__file__).is_relative_to(root), mod.__file__
 print(json.dumps({'sha': subprocess.check_output(['git','rev-parse','HEAD'],text=True, encoding='utf-8', errors='replace').strip(), 'modules': {m.__name__:m.__file__ for m in (te,tu,dr,up,cr)}, 'home':home.name}), flush=True)
@@ -94,15 +94,15 @@ for provider,mode,raw in cases:
     long_budget=dr._parent_summary_char_budget(b,1)
     usage_rows.append({'provider':provider,'mode':mode,**fresh,'long_lived_budget':long_budget})
 # Raw native adapter response -> production conversion -> writer -> budget.
-from agent.bedrock_adapter import normalize_converse_response
-from agent.gemini_native_adapter import _usage_from_metadata
+from hermes_agent.agent.bedrock_adapter import normalize_converse_response
+from hermes_agent.agent.gemini_native_adapter import _usage_from_metadata
 native=[]
 for provider, raw in [('bedrock',normalize_converse_response({'usage':{'inputTokens':5000,'cacheReadInputTokens':20000,'cacheWriteInputTokens':5000,'outputTokens':100}}).usage),('google',_usage_from_metadata({'promptTokenCount':30000,'cachedContentTokenCount':25000,'candidatesTokenCount':100,'totalTokenCount':30100}))]:
     b=parent(provider); values=record(b,raw); assert values['prompt']==30000
     native.append({'provider':provider,**values})
 print(json.dumps({'provider_writers':usage_rows,'native_adapters':native}),flush=True)
 # Exercise the actual MoA accounting deposit/consume path without model calls.
-from agent.moa_loop import MoAClient
+from hermes_agent.agent.moa_loop import MoAClient
 moa_client = MoAClient('offline')
 moa_client.chat.completions._fold_pending_accounting(up.CanonicalUsage(input_tokens=240000), None)
 b=parent('moa',client=moa_client)

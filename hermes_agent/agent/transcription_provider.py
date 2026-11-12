@@ -13,7 +13,7 @@ from __future__ import annotations
 import abc
 from typing import Any, Dict, Optional
 
-from agent.provider_base import CatalogProviderBase
+from hermes_agent.agent.provider_base import CatalogProviderBase
 
 
 class TranscriptionProvider(CatalogProviderBase):

@@ -26,15 +26,15 @@ class TestResolveAutoMainFirst:
         mock_client = MagicMock()
 
         with patch(
-            "agent.auxiliary_client._get_aux_model_for_provider",
+            "hermes_agent.agent.auxiliary_client._get_aux_model_for_provider",
             return_value="gemini-3-flash",
         ), patch(
-            "agent.auxiliary_client.resolve_provider_client",
+            "hermes_agent.agent.auxiliary_client.resolve_provider_client",
             return_value=(mock_client, main_model),
         ) as mock_resolve, patch(
-            "agent.auxiliary_client._is_provider_unhealthy", return_value=False
+            "hermes_agent.agent.auxiliary_client._is_provider_unhealthy", return_value=False
         ):
-            from agent.auxiliary_client import _resolve_auto_route
+            from hermes_agent.agent.auxiliary_client import _resolve_auto_route
 
             client, model, _provider = _resolve_auto_route(
                 main_runtime={
@@ -57,18 +57,18 @@ class TestResolveAutoMainFirst:
             return mock_client, model
 
         with patch(
-            "agent.auxiliary_client._get_auxiliary_task_config",
+            "hermes_agent.agent.auxiliary_client._get_auxiliary_task_config",
             return_value={"prefer_fast_model": True},
         ), patch(
-            "agent.auxiliary_client._get_aux_model_for_provider",
+            "hermes_agent.agent.auxiliary_client._get_aux_model_for_provider",
             return_value=fast_model,
         ), patch(
-            "agent.auxiliary_client.resolve_provider_client",
+            "hermes_agent.agent.auxiliary_client.resolve_provider_client",
             side_effect=resolve,
         ), patch(
-            "agent.auxiliary_client._is_provider_unhealthy", return_value=False
+            "hermes_agent.agent.auxiliary_client._is_provider_unhealthy", return_value=False
         ):
-            from agent.auxiliary_client import _resolve_auto_route
+            from hermes_agent.agent.auxiliary_client import _resolve_auto_route
 
             client, model, _provider = _resolve_auto_route(
                 main_runtime={
@@ -113,14 +113,14 @@ class TestResolveAutoMainFirst:
         monkeypatch.setenv("HERMES_HOME", str(home))
 
         with patch(
-            "agent.auxiliary_client.resolve_provider_client"
+            "hermes_agent.agent.auxiliary_client.resolve_provider_client"
         ) as mock_resolve, patch(
-            "agent.auxiliary_client._is_provider_unhealthy", return_value=False
+            "hermes_agent.agent.auxiliary_client._is_provider_unhealthy", return_value=False
         ):
             mock_client = MagicMock()
             mock_resolve.return_value = (mock_client, "anthropic/claude-opus-4.8")
 
-            from agent.auxiliary_client import _resolve_auto_route
+            from hermes_agent.agent.auxiliary_client import _resolve_auto_route
 
             client, _model, _provider = _resolve_auto_route(
                 main_runtime={
@@ -145,21 +145,21 @@ class TestResolveAutoMainFirst:
         """Auto aux resolution honors auxiliary.<task>.fallback_chain before built-ins."""
         task_client = MagicMock()
         with patch(
-            "agent.auxiliary_client._read_main_provider", return_value="nvidia",
+            "hermes_agent.agent.auxiliary_client._read_main_provider", return_value="nvidia",
         ), patch(
-            "agent.auxiliary_client._read_main_model", return_value="qwen/qwen3.5-122b-a10b",
+            "hermes_agent.agent.auxiliary_client._read_main_model", return_value="qwen/qwen3.5-122b-a10b",
         ), patch(
-            "agent.auxiliary_client.resolve_provider_client",
+            "hermes_agent.agent.auxiliary_client.resolve_provider_client",
             return_value=(None, None),  # main provider has no client
         ), patch(
-            "agent.auxiliary_client._try_configured_fallback_chain",
+            "hermes_agent.agent.auxiliary_client._try_configured_fallback_chain",
             return_value=(task_client, "task-free-model", "fallback_chain[0](openrouter)"),
         ) as mock_task_chain, patch(
-            "agent.auxiliary_client._try_main_fallback_chain",
+            "hermes_agent.agent.auxiliary_client._try_main_fallback_chain",
         ) as mock_main_chain, patch(
-            "agent.auxiliary_client._try_openrouter",
+            "hermes_agent.agent.auxiliary_client._try_openrouter",
         ) as mock_openrouter:
-            from agent.auxiliary_client import _resolve_auto_route
+            from hermes_agent.agent.auxiliary_client import _resolve_auto_route
 
             client, model, _provider = _resolve_auto_route(task="title_generation")
 
@@ -174,13 +174,13 @@ class TestResolveAutoMainFirst:
         """Blank auto aux requests must not pair a stale config model with live fallback provider."""
         runtime_client = MagicMock()
         with patch(
-            "agent.auxiliary_client._read_main_model",
+            "hermes_agent.agent.auxiliary_client._read_main_model",
             return_value="claude-opus-4-8",
         ) as mock_read_main_model, patch(
-            "agent.auxiliary_client._resolve_auto_route",
+            "hermes_agent.agent.auxiliary_client._resolve_auto_route",
             return_value=(runtime_client, "gpt-5.5", "openai-codex"),
         ) as mock_resolve_auto:
-            from agent.auxiliary_client import resolve_provider_client
+            from hermes_agent.agent.auxiliary_client import resolve_provider_client
 
             client, model = resolve_provider_client(
                 "auto",
@@ -202,16 +202,16 @@ class TestResolveAutoMainFirst:
         """Named API-key providers inherit the live session endpoint for aux work."""
         token_plan_url = "https://token-plan-sgp.xiaomimimo.com/v1"
         with patch(
-            "agent.auxiliary_client._read_main_provider",
+            "hermes_agent.agent.auxiliary_client._read_main_provider",
             return_value="openrouter",
         ), patch(
-            "agent.auxiliary_client._read_main_model", return_value="config-model",
+            "hermes_agent.agent.auxiliary_client._read_main_model", return_value="config-model",
         ), patch(
-            "agent.auxiliary_client.resolve_provider_client"
+            "hermes_agent.agent.auxiliary_client.resolve_provider_client"
         ) as mock_resolve:
             mock_resolve.return_value = (MagicMock(), "mimo-v2.5-pro")
 
-            from agent.auxiliary_client import _resolve_auto_route
+            from hermes_agent.agent.auxiliary_client import _resolve_auto_route
 
             _resolve_auto_route(main_runtime={
                 "provider": "xiaomi",
@@ -237,20 +237,20 @@ class TestResolveVisionMainFirst:
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
 
         with patch(
-            "agent.auxiliary_client._read_main_provider", return_value="openrouter",
+            "hermes_agent.agent.auxiliary_client._read_main_provider", return_value="openrouter",
         ), patch(
-            "agent.auxiliary_client._read_main_model",
+            "hermes_agent.agent.auxiliary_client._read_main_model",
             return_value="anthropic/claude-sonnet-4.6",
         ), patch(
-            "agent.auxiliary_client.resolve_provider_client"
+            "hermes_agent.agent.auxiliary_client.resolve_provider_client"
         ) as mock_resolve, patch(
-            "agent.auxiliary_client._resolve_task_provider_model",
+            "hermes_agent.agent.auxiliary_client._resolve_task_provider_model",
             return_value=("auto", None, None, None, None),
         ):
             mock_client = MagicMock()
             mock_resolve.return_value = (mock_client, "anthropic/claude-sonnet-4.6")
 
-            from agent.auxiliary_client import resolve_vision_provider_client
+            from hermes_agent.agent.auxiliary_client import resolve_vision_provider_client
 
             provider, client, model = resolve_vision_provider_client()
 
@@ -298,16 +298,16 @@ class TestResolveVisionMainFirst:
         nous_client, fake_try_nous = self._stub_nous_portal(seen)
 
         with patch(
-            "agent.auxiliary_client._read_main_provider", return_value="nous",
+            "hermes_agent.agent.auxiliary_client._read_main_provider", return_value="nous",
         ), patch(
-            "agent.auxiliary_client._read_main_model", return_value="tencent/hy3:free",
+            "hermes_agent.agent.auxiliary_client._read_main_model", return_value="tencent/hy3:free",
         ), patch(
-            "agent.auxiliary_client._resolve_task_provider_model",
+            "hermes_agent.agent.auxiliary_client._resolve_task_provider_model",
             return_value=("auto", None, None, None, None),
         ), patch(
-            "agent.auxiliary_client._try_nous", side_effect=fake_try_nous,
+            "hermes_agent.agent.auxiliary_client._try_nous", side_effect=fake_try_nous,
         ):
-            from agent.auxiliary_client import resolve_vision_provider_client
+            from hermes_agent.agent.auxiliary_client import resolve_vision_provider_client
 
             provider, client, model = resolve_vision_provider_client()
 
@@ -322,16 +322,16 @@ class TestResolveVisionMainFirst:
         _nous_client, fake_try_nous = self._stub_nous_portal(seen)
 
         with patch(
-            "agent.auxiliary_client._read_main_provider", return_value="nous",
+            "hermes_agent.agent.auxiliary_client._read_main_provider", return_value="nous",
         ), patch(
-            "agent.auxiliary_client._read_main_model", return_value="tencent/hy3:free",
+            "hermes_agent.agent.auxiliary_client._read_main_model", return_value="tencent/hy3:free",
         ), patch(
-            "agent.auxiliary_client._resolve_task_provider_model",
+            "hermes_agent.agent.auxiliary_client._resolve_task_provider_model",
             return_value=("auto", "qwen/qwen3-vl-8b-instruct", None, None, None),
         ), patch(
-            "agent.auxiliary_client._try_nous", side_effect=fake_try_nous,
+            "hermes_agent.agent.auxiliary_client._try_nous", side_effect=fake_try_nous,
         ):
-            from agent.auxiliary_client import resolve_vision_provider_client
+            from hermes_agent.agent.auxiliary_client import resolve_vision_provider_client
 
             provider, _client, model = resolve_vision_provider_client()
 
@@ -348,16 +348,16 @@ class TestResolveVisionMainFirst:
         nous_client, fake_try_nous = self._stub_nous_portal(seen)
 
         with patch(
-            "agent.auxiliary_client._read_main_provider", return_value="nous",
+            "hermes_agent.agent.auxiliary_client._read_main_provider", return_value="nous",
         ), patch(
-            "agent.auxiliary_client._read_main_model", return_value="tencent/hy3:free",
+            "hermes_agent.agent.auxiliary_client._read_main_model", return_value="tencent/hy3:free",
         ), patch(
-            "agent.auxiliary_client._resolve_task_provider_model",
+            "hermes_agent.agent.auxiliary_client._resolve_task_provider_model",
             return_value=("nous", None, None, None, None),
         ), patch(
-            "agent.auxiliary_client._try_nous", side_effect=fake_try_nous,
+            "hermes_agent.agent.auxiliary_client._try_nous", side_effect=fake_try_nous,
         ):
-            from agent.auxiliary_client import resolve_vision_provider_client
+            from hermes_agent.agent.auxiliary_client import resolve_vision_provider_client
 
             provider, client, model = resolve_vision_provider_client()
 
@@ -375,13 +375,13 @@ class TestResolveVisionMainFirst:
         _nous_client, fake_try_nous = self._stub_nous_portal(seen)
 
         with patch(
-            "agent.auxiliary_client._read_main_provider", return_value="nous",
+            "hermes_agent.agent.auxiliary_client._read_main_provider", return_value="nous",
         ), patch(
-            "agent.auxiliary_client._read_main_model", return_value="tencent/hy3:free",
+            "hermes_agent.agent.auxiliary_client._read_main_model", return_value="tencent/hy3:free",
         ), patch(
-            "agent.auxiliary_client._try_nous", side_effect=fake_try_nous,
+            "hermes_agent.agent.auxiliary_client._try_nous", side_effect=fake_try_nous,
         ):
-            from agent.auxiliary_client import resolve_provider_client
+            from hermes_agent.agent.auxiliary_client import resolve_provider_client
 
             _client, model = resolve_provider_client("nous")
 
@@ -405,22 +405,22 @@ class TestResolveVisionCustomProvider:
 
     def test_custom_main_forwards_runtime_endpoint(self):
         """custom main with recorded runtime endpoint → Step 1 builds a client."""
-        import agent.auxiliary_client as aux
+        import hermes_agent.agent.auxiliary_client as aux
 
         with aux.scoped_runtime_main({"base_url": "https://my.endpoint.example/v1", "api_key": "sk-runtime-key", "api_mode": "anthropic_messages"}), patch(
-            "agent.auxiliary_client._read_main_provider", return_value="custom",
+            "hermes_agent.agent.auxiliary_client._read_main_provider", return_value="custom",
         ), patch(
-            "agent.auxiliary_client._read_main_model", return_value="claude-opus-4-8",
+            "hermes_agent.agent.auxiliary_client._read_main_model", return_value="claude-opus-4-8",
         ), patch(
-            "agent.auxiliary_client._resolve_task_provider_model",
+            "hermes_agent.agent.auxiliary_client._resolve_task_provider_model",
             return_value=("auto", None, None, None, None),
         ), patch(
-            "agent.auxiliary_client.resolve_provider_client"
+            "hermes_agent.agent.auxiliary_client.resolve_provider_client"
         ) as mock_resolve:
             mock_client = MagicMock()
             mock_resolve.return_value = (mock_client, "claude-opus-4-8")
 
-            from agent.auxiliary_client import resolve_vision_provider_client
+            from hermes_agent.agent.auxiliary_client import resolve_vision_provider_client
 
             provider, client, model = resolve_vision_provider_client()
 
@@ -436,23 +436,23 @@ class TestResolveVisionCustomProvider:
 
     def test_custom_prefixed_main_forwards_runtime_endpoint(self):
         """A ``custom:<name>`` provider id also forwards the runtime endpoint."""
-        import agent.auxiliary_client as aux
+        import hermes_agent.agent.auxiliary_client as aux
 
         with aux.scoped_runtime_main({"base_url": "https://named.example/v1", "api_key": "sk-named"}), patch(
-            "agent.auxiliary_client._read_main_provider",
+            "hermes_agent.agent.auxiliary_client._read_main_provider",
             return_value="custom:copilot-gateway",
         ), patch(
-            "agent.auxiliary_client._read_main_model", return_value="claude-opus-4-8",
+            "hermes_agent.agent.auxiliary_client._read_main_model", return_value="claude-opus-4-8",
         ), patch(
-            "agent.auxiliary_client._resolve_task_provider_model",
+            "hermes_agent.agent.auxiliary_client._resolve_task_provider_model",
             return_value=("auto", None, None, None, None),
         ), patch(
-            "agent.auxiliary_client.resolve_provider_client"
+            "hermes_agent.agent.auxiliary_client.resolve_provider_client"
         ) as mock_resolve:
             mock_client = MagicMock()
             mock_resolve.return_value = (mock_client, "claude-opus-4-8")
 
-            from agent.auxiliary_client import resolve_vision_provider_client
+            from hermes_agent.agent.auxiliary_client import resolve_vision_provider_client
 
             provider, client, _model = resolve_vision_provider_client()
 
@@ -465,25 +465,25 @@ class TestResolveVisionCustomProvider:
 
     def test_custom_main_no_runtime_falls_back_to_configured_endpoint(self):
         """No recorded runtime endpoint → resolve the configured custom endpoint."""
-        import agent.auxiliary_client as aux
+        import hermes_agent.agent.auxiliary_client as aux
 
         with aux.scoped_runtime_main({}), patch(
-            "agent.auxiliary_client._read_main_provider", return_value="custom",
+            "hermes_agent.agent.auxiliary_client._read_main_provider", return_value="custom",
         ), patch(
-            "agent.auxiliary_client._read_main_model", return_value="claude-opus-4-8",
+            "hermes_agent.agent.auxiliary_client._read_main_model", return_value="claude-opus-4-8",
         ), patch(
-            "agent.auxiliary_client._resolve_task_provider_model",
+            "hermes_agent.agent.auxiliary_client._resolve_task_provider_model",
             return_value=("auto", None, None, None, None),
         ), patch(
-            "agent.auxiliary_client._resolve_custom_runtime",
+            "hermes_agent.agent.auxiliary_client._resolve_custom_runtime",
             return_value=("https://configured.example/v1", "sk-configured", "chat_completions"),
         ), patch(
-            "agent.auxiliary_client.resolve_provider_client"
+            "hermes_agent.agent.auxiliary_client.resolve_provider_client"
         ) as mock_resolve:
             mock_client = MagicMock()
             mock_resolve.return_value = (mock_client, "claude-opus-4-8")
 
-            from agent.auxiliary_client import resolve_vision_provider_client
+            from hermes_agent.agent.auxiliary_client import resolve_vision_provider_client
 
             _provider, client, _model = resolve_vision_provider_client()
 

@@ -30,8 +30,8 @@ def resolve_route_entry_client(entry: dict[str, Any], provider: str, model: str,
     """The client :func:`bind_route_entry` binds for ``entry``, shared with ``hermes fallback check
     --live`` so a readiness probe talks to exactly what the swap would. ``raw_codex=False`` returns
     the chat-completions adapter for Codex/Responses providers."""
-    from agent.auxiliary_client import resolve_provider_client
-    from agent.chat_completion_helpers import _fallback_api_mode_hint
+    from hermes_agent.agent.auxiliary_client import resolve_provider_client
+    from hermes_agent.agent.chat_completion_helpers import _fallback_api_mode_hint
     from hermes_cli.fallback_config import resolve_entry_api_key
     # Pass the entry's base_url/api_key so custom endpoints (Ollama Cloud) resolve instead
     # of falling through to OpenRouter defaults.
@@ -41,7 +41,7 @@ def resolve_route_entry_client(entry: dict[str, Any], provider: str, model: str,
     # Ollama Cloud: OLLAMA_API_KEY from env when the entry has no key. Host match, not
     # substring — GHSA-76xc-57q6-vm5m.
     if base_url_hint and base_url_host_matches(base_url_hint, "ollama.com") and not api_key_hint:
-        from agent.secret_scope import get_secret
+        from hermes_agent.agent.secret_scope import get_secret
         api_key_hint = get_secret("OLLAMA_API_KEY") or None
     client, _resolved_model = resolve_provider_client(
         provider, model=model, raw_codex=raw_codex, explicit_base_url=base_url_hint, explicit_api_key=api_key_hint,
@@ -59,7 +59,7 @@ def bind_route_entry(agent: Any, entry: dict[str, Any], provider: str, model: st
     """Swap ``agent`` onto ``entry`` (a fallback-chain-shaped dict). Returns ``(old_model,
     old_provider)``, or None when the provider has no usable client. Sets ``_fallback_activated``
     so the next turn's ``restore_primary_runtime`` reverts it; raises on a failed swap."""
-    from agent.chat_completion_helpers import (
+    from hermes_agent.agent.chat_completion_helpers import (
         _fallback_api_mode_resolved, _rebind_fallback_credential_pool,
         _reresolve_fallback_reasoning_config, _rescope_fallback_extra_body, _update_fallback_context_compressor,
     )
@@ -80,7 +80,7 @@ def bind_route_entry(agent: Any, entry: dict[str, Any], provider: str, model: st
         elif not api_mode_explicit and api_mode == "chat_completions":
             api_mode = _fallback_api_mode_resolved(agent, provider, model, base_url)
 
-    from agent.route_verdicts import reset_route_verdicts, save_primary_route_verdicts
+    from hermes_agent.agent.route_verdicts import reset_route_verdicts, save_primary_route_verdicts
     save_primary_route_verdicts(agent)  # before the swap: stamped with the endpoint that earned them
     old_model, old_provider, old_base_url = agent.model, agent.provider, agent.base_url
     # Clear the per-config context_length override so the new model's own context window is
@@ -97,13 +97,13 @@ def bind_route_entry(agent: Any, entry: dict[str, Any], provider: str, model: st
 
     _rebind_fallback_credential_pool(agent, provider, model)
     if provider == "moa":
-        from agent.moa_loop import bind_moa_runtime
+        from hermes_agent.agent.moa_loop import bind_moa_runtime
         bind_moa_runtime(agent, model)
     else:
-        from agent.client_lifecycle import _swap_fallback_clients
+        from hermes_agent.agent.client_lifecycle import _swap_fallback_clients
         _swap_fallback_clients(agent, client, provider, model, base_url, api_mode)
 
-    from agent.agent_runtime_helpers import sync_credential_pool_entry_id
+    from hermes_agent.agent.agent_runtime_helpers import sync_credential_pool_entry_id
     sync_credential_pool_entry_id(agent)
 
     agent._use_prompt_caching, agent._use_native_cache_layout = agent._anthropic_prompt_cache_policy(
@@ -119,11 +119,11 @@ def reinstall_runtime_snapshot(agent: Any, rt: dict[str, Any]) -> None:
     """Put ``agent`` on the runtime recorded in ``rt`` (a ``_primary_runtime``-shaped snapshot):
     identity, client, caching flags, compressor, reasoning and prompt identity. Credential pool
     and fallback bookkeeping are the caller's. Raises on failure."""
-    from agent.agent_runtime_helpers import (
+    from hermes_agent.agent.agent_runtime_helpers import (
         _apply_primary_runtime_fields, _rebuild_primary_client, _restore_runtime_capabilities,
     )
     _apply_primary_runtime_fields(agent, rt)
-    from agent.route_verdicts import reset_route_verdicts
+    from hermes_agent.agent.route_verdicts import reset_route_verdicts
     reset_route_verdicts(agent)
     _restore_runtime_capabilities(agent, rt)
     agent._use_prompt_caching = rt["use_prompt_caching"]
@@ -144,14 +144,14 @@ def reinstall_runtime_snapshot(agent: Any, rt: dict[str, Any]) -> None:
     )
     # Same rule as fallback activation: refresh an existing verdict only; never-probed sessions stay lazy.
     if getattr(agent, "_compression_feasibility_checked", False) is True:
-        from agent.conversation_compression_feasibility import revalidate_compression_feasibility
+        from hermes_agent.agent.conversation_compression_feasibility import revalidate_compression_feasibility
         revalidate_compression_feasibility(agent)
     # Older snapshots have no reasoning_config; keep the current value.
     saved_reasoning = rt.get("reasoning_config")
     if saved_reasoning is not None:
         agent.reasoning_config = dict(saved_reasoning)
     # Reset the stale-call circuit breaker: its streak measured the route being left.
-    from agent.chat_completion_helpers import _reset_stale_streak, rewrite_prompt_model_identity
+    from hermes_agent.agent.chat_completion_helpers import _reset_stale_streak, rewrite_prompt_model_identity
     _reset_stale_streak(agent)
     # Undo the identity rewrite so the prompt is byte-identical to the stored copy again
     # (prefix cache match).
@@ -163,12 +163,12 @@ def reinstall_primary_runtime(
     load_primary_pool, prefetched_pool=None, prefetched: bool = False,
 ) -> None:
     """Put ``agent`` back on its ``_primary_runtime`` snapshot ``rt`` and clear the fallback state."""
-    from agent.agent_runtime_helpers import _rebind_primary_credential_pool
+    from hermes_agent.agent.agent_runtime_helpers import _rebind_primary_credential_pool
     reinstall_runtime_snapshot(agent, rt)
     _rebind_primary_credential_pool(
         agent, primary_provider, primary_model, matches_primary, load_primary_pool, prefetched_pool, prefetched
     )
-    from agent.route_verdicts import restore_primary_route_verdicts
+    from hermes_agent.agent.route_verdicts import restore_primary_route_verdicts
     restore_primary_route_verdicts(agent, rt)
     agent._fallback_activated = False
     agent._fallback_index = 0

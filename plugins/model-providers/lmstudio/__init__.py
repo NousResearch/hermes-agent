@@ -13,8 +13,8 @@ and disable local-server detection for Ollama, llama.cpp and vLLM.
 
 from typing import Any
 
-from agent.lmstudio_reasoning import resolve_lmstudio_effort
-from agent.reasoning_effort import generic_nested_reasoning
+from hermes_agent.agent.lmstudio_reasoning import resolve_lmstudio_effort
+from hermes_agent.agent.reasoning_effort import generic_nested_reasoning
 from providers import register_provider
 from providers.base import ProviderProfile
 

@@ -17,8 +17,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import run_agent
-from agent.transports.codex_app_server_session import CodexAppServerSession, TurnResult
+from hermes_agent import run_agent
+from hermes_agent.agent.transports.codex_app_server_session import CodexAppServerSession, TurnResult
 
 
 @pytest.fixture
@@ -326,7 +326,7 @@ class TestRunConversationCodexPath:
         """When tool iterations cross the skill nudge interval, the
         background review fires with review_skills=True and the right
         messages_snapshot signature."""
-        from agent.transports.codex_app_server_session import (
+        from hermes_agent.agent.transports.codex_app_server_session import (
             CodexAppServerSession, TurnResult,
         )
         # Make the fake session report 10 tool iterations in one turn
@@ -373,7 +373,7 @@ class TestRunConversationCodexPath:
         """Gateway sessions set TERMINAL_CWD without pinning agent.session_cwd.
         Codex app-server must still start in that configured workspace instead
         of falling back to the Hermes daemon process cwd."""
-        from agent.transports.codex_app_server_session import (
+        from hermes_agent.agent.transports.codex_app_server_session import (
             CodexAppServerSession, TurnResult,
         )
 
@@ -617,7 +617,7 @@ class TestReviewForkApiModeDowngrade:
                 return None
             self.close = _no_op_close
 
-        with _patch("run_agent.AIAgent.__init__", _capture_init):
+        with _patch("hermes_agent.run_agent.AIAgent.__init__", _capture_init):
             agent._spawn_background_review(
                 messages_snapshot=[{"role": "user", "content": "x"}],
                 review_memory=True,
@@ -732,7 +732,7 @@ class TestQuotaFailureFallsOverToConfiguredFallback:
 
 
 class TestSessionRetirementOnRunAgent:
-    """run_agent.py side: when run_turn returns should_retire=True, the
+    """hermes_agent/run_agent.py side: when run_turn returns should_retire=True, the
     AIAgent must close + null _codex_session so the next turn respawns."""
 
     def test_should_retire_drops_session(self, monkeypatch):
@@ -815,7 +815,7 @@ class TestCodexToolProgressBridge:
 
 
     def test_mapper_mcp_and_dynamic_tool_calls(self):
-        from agent.codex_runtime import (
+        from hermes_agent.agent.codex_runtime import (
             _codex_item_to_args,
             _codex_item_to_tool_name,
         )
@@ -827,7 +827,7 @@ class TestCodexToolProgressBridge:
         assert _codex_item_to_tool_name(dyn) == "web_search"
 
     def test_bridge_ignores_non_tool_items_and_other_methods(self):
-        from agent.codex_runtime import make_codex_app_server_event_bridge
+        from hermes_agent.agent.codex_runtime import make_codex_app_server_event_bridge
         events = []
         agent = SimpleNamespace(
             tool_progress_callback=lambda *a, **kw: events.append(a),

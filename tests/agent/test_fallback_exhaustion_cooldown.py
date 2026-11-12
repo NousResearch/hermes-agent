@@ -16,16 +16,16 @@ Rate-limit / billing failures keep their own 60s cooldown and are unaffected.
 """
 
 from unittest.mock import MagicMock, patch
-from run_agent import AIAgent
-from agent.error_classifier import FailoverReason
-from agent.chat_completion_helpers import _FALLBACK_EXHAUSTED_COOLDOWN_S
+from hermes_agent.run_agent import AIAgent
+from hermes_agent.agent.error_classifier import FailoverReason
+from hermes_agent.agent.chat_completion_helpers import _FALLBACK_EXHAUSTED_COOLDOWN_S
 
 
 def _make_agent(fallback_model=None):
     with (
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(
             api_key="test-key",
@@ -64,9 +64,9 @@ class TestExhaustionArmsCooldown:
         agent._rate_limited_until = 0
         frozen = 1_000.0
         with (
-            patch("agent.chat_completion_helpers.time.monotonic", return_value=frozen),
+            patch("hermes_agent.agent.chat_completion_helpers.time.monotonic", return_value=frozen),
             patch(
-                "agent.auxiliary_client.resolve_provider_client",
+                "hermes_agent.agent.auxiliary_client.resolve_provider_client",
                 return_value=(_mock_client(), "resolved"),
             ),
         ):
@@ -96,9 +96,9 @@ class TestExhaustionArmsCooldown:
         agent._rate_limited_until = 0
         frozen = 1_000.0
         with (
-            patch("agent.chat_completion_helpers.time.monotonic", return_value=frozen),
+            patch("hermes_agent.agent.chat_completion_helpers.time.monotonic", return_value=frozen),
             patch(
-                "agent.auxiliary_client.resolve_provider_client",
+                "hermes_agent.agent.auxiliary_client.resolve_provider_client",
                 return_value=(_mock_client(), "resolved"),
             ),
         ):
@@ -120,9 +120,9 @@ class TestExhaustionArmsCooldown:
         far_future = frozen + 999
         agent._rate_limited_until = far_future
         with (
-            patch("agent.chat_completion_helpers.time.monotonic", return_value=frozen),
+            patch("hermes_agent.agent.chat_completion_helpers.time.monotonic", return_value=frozen),
             patch(
-                "agent.auxiliary_client.resolve_provider_client",
+                "hermes_agent.agent.auxiliary_client.resolve_provider_client",
                 return_value=(_mock_client(), "resolved"),
             ),
         ):
@@ -159,9 +159,9 @@ class TestRateLimitBackoffEscalation:
         snapshot = (agent.provider, agent.model, agent.base_url)
         frozen = 1_000.0
         with (
-            patch("agent.chat_completion_helpers.time.monotonic", return_value=frozen),
+            patch("hermes_agent.agent.chat_completion_helpers.time.monotonic", return_value=frozen),
             patch(
-                "agent.auxiliary_client.resolve_provider_client",
+                "hermes_agent.agent.auxiliary_client.resolve_provider_client",
                 return_value=(_mock_client(), "resolved"),
             ),
         ):
@@ -184,9 +184,9 @@ class TestRateLimitBackoffEscalation:
         agent._rate_limit_backoff_count = 10
         frozen = 1_000.0
         with (
-            patch("agent.chat_completion_helpers.time.monotonic", return_value=frozen),
+            patch("hermes_agent.agent.chat_completion_helpers.time.monotonic", return_value=frozen),
             patch(
-                "agent.auxiliary_client.resolve_provider_client",
+                "hermes_agent.agent.auxiliary_client.resolve_provider_client",
                 return_value=(_mock_client(), "resolved"),
             ),
         ):
@@ -201,9 +201,9 @@ class TestRateLimitBackoffEscalation:
         snapshot = (agent.provider, agent.model, agent.base_url)
         frozen = 1_000.0
         with (
-            patch("agent.chat_completion_helpers.time.monotonic", return_value=frozen),
+            patch("hermes_agent.agent.chat_completion_helpers.time.monotonic", return_value=frozen),
             patch(
-                "agent.auxiliary_client.resolve_provider_client",
+                "hermes_agent.agent.auxiliary_client.resolve_provider_client",
                 return_value=(_mock_client(), "resolved"),
             ),
         ):
@@ -222,9 +222,9 @@ class TestRateLimitBackoffEscalation:
 
         # The next rate-limit is treated as a fresh first failure: 60s.
         with (
-            patch("agent.chat_completion_helpers.time.monotonic", return_value=frozen),
+            patch("hermes_agent.agent.chat_completion_helpers.time.monotonic", return_value=frozen),
             patch(
-                "agent.auxiliary_client.resolve_provider_client",
+                "hermes_agent.agent.auxiliary_client.resolve_provider_client",
                 return_value=(_mock_client(), "resolved"),
             ),
         ):

@@ -55,7 +55,7 @@ Si tu habilidad es especializada, contribuida por la comunidad o de nicho, es me
 
 Los plugins de memoria independientes:
 
-- Implementan el mismo ABC `MemoryProvider` (`agent/memory_provider.py`) — `sync_turn`, `prefetch`, `shutdown` y opcionalmente `post_setup(hermes_home, config)` para integración con el asistente de configuración
+- Implementan el mismo ABC `MemoryProvider` (`hermes_agent/agent/memory_provider.py`) — `sync_turn`, `prefetch`, `shutdown` y opcionalmente `post_setup(hermes_home, config)` para integración con el asistente de configuración
 - Usan el mismo sistema de descubrimiento — `discover_memory_providers()` los recoge desde directorios de plugins de usuario/proyecto y entry points de pip
 - Se integran con `hermes memory setup` a través de `post_setup()` — sin necesidad de tocar el código base
 - Pueden registrar sus propios subcomandos CLI a través de `register_cli(subparser)` en un archivo `cli.py`

@@ -156,7 +156,7 @@ class _Sent(Exception):
 def _stream_delta(provider: str, model: str, base_url: str, attrs: dict[str, Any]) -> dict[str, Any]:
     """Keys the streaming request path adds to or changes in the built request, for one
     chat-completions agent: ``_call_chat_completions`` runs until ``chat.completions.create``."""
-    from agent.chat_completion_helpers import _StreamingCall
+    from hermes_agent.agent.chat_completion_helpers import _StreamingCall
 
     agent = base._agent(provider, model, base_url)
     for name, value in attrs.items():
@@ -181,7 +181,7 @@ def _stream_delta(provider: str, model: str, base_url: str, attrs: dict[str, Any
 
 def _aux_kwargs(monkeypatch, provider: str, model: str, base_url: str | None, opts: dict[str, Any]) -> dict[str, Any]:
     """``_build_call_kwargs`` per reasoning setting, with temperature, max_tokens and tools set."""
-    from agent import auxiliary_client as aux
+    from hermes_agent.agent import auxiliary_client as aux
 
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)  # flips the direct-OpenAI key choice
     if "config" in opts:

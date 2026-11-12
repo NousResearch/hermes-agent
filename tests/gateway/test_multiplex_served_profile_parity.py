@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.secret_scope import set_multiplex_active
+from hermes_agent.agent.secret_scope import set_multiplex_active
 from hermes_agent.gateway.config import Platform, PlatformConfig
 from hermes_agent.gateway.run import GatewayRunner, _profile_runtime_scope
 from hermes_agent.gateway.session import SessionSource

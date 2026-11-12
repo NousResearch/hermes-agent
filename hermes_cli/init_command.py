@@ -85,7 +85,7 @@ def _resolve_session_cwd(session_key: str | None) -> str:
     Ladder: the terminal tool's per-session cwd record (seeded when a surface attaches a
     workspace to the session — desktop project picker, ``project_create``/``project_switch``,
     gateway ``terminal.cwd`` — and updated after every completed command, so it tracks
-    ``cd``), then ``agent.runtime_cwd.resolve_agent_cwd()`` (session-pinned cwd →
+    ``cd``), then ``hermes_agent.agent.runtime_cwd.resolve_agent_cwd()`` (session-pinned cwd →
     ``TERMINAL_CWD`` → process cwd). A bare ``os.getcwd()`` is only right for a CLI launched
     inside a project: on the desktop app it is the home directory, so /init scanned and
     updated the HOME's AGENTS.md instead of the workspace attached to the session.
@@ -105,7 +105,7 @@ def _resolve_session_cwd(session_key: str | None) -> str:
     except Exception:
         pass
     try:
-        from agent.runtime_cwd import resolve_agent_cwd
+        from hermes_agent.agent.runtime_cwd import resolve_agent_cwd
 
         return str(resolve_agent_cwd())
     except Exception:

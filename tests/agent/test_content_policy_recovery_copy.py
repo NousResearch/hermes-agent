@@ -10,7 +10,7 @@ something else — never the old "/undo N to clear it yourself" lockout instruct
 
 
 def test_recovery_copy_says_not_stuck_and_offers_remedies():
-    from agent.turn_failure_copy import CONTENT_POLICY_NEXT_STEPS
+    from hermes_agent.agent.turn_failure_copy import CONTENT_POLICY_NEXT_STEPS
 
     lowered = CONTENT_POLICY_NEXT_STEPS.lower()
     # The chat is not locked: the refused message left the conversation; just keep going.

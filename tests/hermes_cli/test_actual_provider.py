@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
-from agent.auxiliary_client import _normalize_aux_provider
+from hermes_agent.agent.auxiliary_client import _normalize_aux_provider
 from hermes_cli import runtime_provider as rp
 from hermes_cli.auth import (
     ACTUAL_LOCAL_NOAUTH_PLACEHOLDER,
@@ -429,7 +429,7 @@ def test_actual_hosted_client_uses_scoped_macos_certifi(monkeypatch):
 
 @pytest.mark.platforms("macos")
 def test_actual_client_tls_default_does_not_override_explicit_config(monkeypatch):
-    from agent.agent_runtime_helpers import create_openai_client
+    from hermes_agent.agent.agent_runtime_helpers import create_openai_client
 
     _clear_ca_bundle_env(monkeypatch)
     captured: list[dict] = []
@@ -452,11 +452,11 @@ def test_actual_client_tls_default_does_not_override_explicit_config(monkeypatch
             return "test"
 
     monkeypatch.setattr(
-        "agent.ssl_verify.resolve_httpx_verify", fake_resolve_httpx_verify
+        "hermes_agent.agent.ssl_verify.resolve_httpx_verify", fake_resolve_httpx_verify
     )
-    monkeypatch.setattr("agent.auxiliary_client._validate_proxy_env_urls", lambda: None)
-    monkeypatch.setattr("agent.auxiliary_client._validate_base_url", lambda _url: None)
-    monkeypatch.setattr("agent.process_bootstrap.OpenAI", lambda **kwargs: kwargs)
+    monkeypatch.setattr("hermes_agent.agent.auxiliary_client._validate_proxy_env_urls", lambda: None)
+    monkeypatch.setattr("hermes_agent.agent.auxiliary_client._validate_base_url", lambda _url: None)
+    monkeypatch.setattr("hermes_agent.agent.process_bootstrap.OpenAI", lambda **kwargs: kwargs)
 
     defaults = create_openai_client(
         FakeAgent(),
@@ -482,7 +482,7 @@ def test_actual_client_tls_default_does_not_override_explicit_config(monkeypatch
     assert explicit["http_client"] == "http-client"
 
 def test_actual_agent_side_routing_keeps_chat_completions_for_any_model():
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     for model in ("qwen3.8-27b-Q4_K_M", "zai-org/GLM-5.3", "gpt-5.4"):
         assert not AIAgent._provider_model_requires_responses_api(
@@ -491,12 +491,12 @@ def test_actual_agent_side_routing_keeps_chat_completions_for_any_model():
         )
 
 def test_actual_agent_init_repairs_stale_responses_mode():
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     with (
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(
             api_key="actual-test-key",
@@ -519,7 +519,7 @@ def test_actual_chat_completions_wire_replays_reasoning_through_tool_turn(
 
     from openai import OpenAI
 
-    from agent.transports.chat_completions import ChatCompletionsTransport
+    from hermes_agent.agent.transports.chat_completions import ChatCompletionsTransport
 
     requests: list[tuple[str, dict]] = []
 

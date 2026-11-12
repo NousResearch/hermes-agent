@@ -13,7 +13,7 @@ from #70782 (which reached for a bare gc.collect(); trim_memory is the
 house mechanism and already wraps a collect).
 """
 from hermes_cli import mem_trim
-from agent.context_compressor import ContextCompressor
+from hermes_agent.agent.context_compressor import ContextCompressor
 
 
 def _compressor(threshold_tokens: int = 24_576) -> ContextCompressor:

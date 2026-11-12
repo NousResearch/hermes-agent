@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 
 def _agent():
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     return AIAgent(
         api_key="test-key",
@@ -39,7 +39,7 @@ def _callbacks(callbacks_by_hook):
 
 
 def test_stream_delta_plugin_hook_is_queued_off_token_path(monkeypatch):
-    from agent.plugin_stream_hooks import shutdown_plugin_stream_hook_dispatcher
+    from hermes_agent.agent.plugin_stream_hooks import shutdown_plugin_stream_hook_dispatcher
 
     shutdown_plugin_stream_hook_dispatcher()
     calls = []
@@ -68,7 +68,7 @@ def test_stream_delta_plugin_hook_is_queued_off_token_path(monkeypatch):
 
 
 def test_stream_delta_plugin_hook_error_does_not_break_streaming(monkeypatch):
-    from agent.plugin_stream_hooks import shutdown_plugin_stream_hook_dispatcher
+    from hermes_agent.agent.plugin_stream_hooks import shutdown_plugin_stream_hook_dispatcher
 
     shutdown_plugin_stream_hook_dispatcher()
     ui_deltas = []
@@ -88,10 +88,10 @@ def test_stream_delta_plugin_hook_error_does_not_break_streaming(monkeypatch):
 
 
 def test_stream_hook_queue_drops_oldest_pending_event_when_full(monkeypatch):
-    from agent.plugin_stream_hooks import enqueue_plugin_stream_hook, shutdown_plugin_stream_hook_dispatcher
+    from hermes_agent.agent.plugin_stream_hooks import enqueue_plugin_stream_hook, shutdown_plugin_stream_hook_dispatcher
 
     shutdown_plugin_stream_hook_dispatcher()
-    monkeypatch.setattr("agent.plugin_stream_hooks._QUEUE_SIZE", 1)
+    monkeypatch.setattr("hermes_agent.agent.plugin_stream_hooks._QUEUE_SIZE", 1)
     delivered = []
     first_delivered = threading.Event()
     release_worker = threading.Event()
@@ -116,10 +116,10 @@ def test_stream_hook_queue_drops_oldest_pending_event_when_full(monkeypatch):
 
 
 def test_stream_hook_queue_isolated_per_consumer(monkeypatch):
-    from agent.plugin_stream_hooks import enqueue_plugin_stream_hook, shutdown_plugin_stream_hook_dispatcher
+    from hermes_agent.agent.plugin_stream_hooks import enqueue_plugin_stream_hook, shutdown_plugin_stream_hook_dispatcher
 
     shutdown_plugin_stream_hook_dispatcher()
-    monkeypatch.setattr("agent.plugin_stream_hooks._QUEUE_SIZE", 1)
+    monkeypatch.setattr("hermes_agent.agent.plugin_stream_hooks._QUEUE_SIZE", 1)
     slow_delivered = []
     fast_delivered = []
     slow_started = threading.Event()
@@ -154,7 +154,7 @@ def test_stream_hook_queue_isolated_per_consumer(monkeypatch):
 
 
 def test_reasoning_stream_delta_plugin_hook_is_opt_in(monkeypatch):
-    from agent.plugin_stream_hooks import shutdown_plugin_stream_hook_dispatcher
+    from hermes_agent.agent.plugin_stream_hooks import shutdown_plugin_stream_hook_dispatcher
 
     shutdown_plugin_stream_hook_dispatcher()
     calls = []
@@ -183,7 +183,7 @@ def test_reasoning_stream_delta_plugin_hook_is_opt_in(monkeypatch):
 
 
 def test_interim_message_plugin_hook_is_queued(monkeypatch):
-    from agent.plugin_stream_hooks import shutdown_plugin_stream_hook_dispatcher
+    from hermes_agent.agent.plugin_stream_hooks import shutdown_plugin_stream_hook_dispatcher
 
     shutdown_plugin_stream_hook_dispatcher()
     calls = []
@@ -220,7 +220,7 @@ def test_interim_message_plugin_hook_does_not_count_as_stream_consumer(monkeypat
 
 
 def test_stream_lifecycle_plugin_hooks_are_queued(monkeypatch):
-    from agent.plugin_stream_hooks import shutdown_plugin_stream_hook_dispatcher
+    from hermes_agent.agent.plugin_stream_hooks import shutdown_plugin_stream_hook_dispatcher
 
     shutdown_plugin_stream_hook_dispatcher()
     calls = []
@@ -253,10 +253,10 @@ def test_stream_lifecycle_plugin_hooks_are_queued(monkeypatch):
     assert end_call[1]["error"] is None
 
 
-@patch("run_agent.AIAgent._create_request_openai_client")
-@patch("run_agent.AIAgent._close_request_openai_client")
+@patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+@patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
 def test_chat_completion_stream_emits_lifecycle_hooks(_mock_close, mock_create, monkeypatch):
-    from agent.plugin_stream_hooks import shutdown_plugin_stream_hook_dispatcher
+    from hermes_agent.agent.plugin_stream_hooks import shutdown_plugin_stream_hook_dispatcher
 
     shutdown_plugin_stream_hook_dispatcher()
     calls = []
@@ -311,7 +311,7 @@ def test_chat_completion_stream_emits_lifecycle_hooks(_mock_close, mock_create, 
 
 
 def test_bedrock_reasoning_delta_reaches_plugin_only_observer(monkeypatch):
-    from agent.plugin_stream_hooks import shutdown_plugin_stream_hook_dispatcher
+    from hermes_agent.agent.plugin_stream_hooks import shutdown_plugin_stream_hook_dispatcher
 
     shutdown_plugin_stream_hook_dispatcher()
     calls = []
@@ -322,12 +322,12 @@ def test_bedrock_reasoning_delta_reaches_plugin_only_observer(monkeypatch):
     monkeypatch.setattr("hermes_cli.plugins.iter_hook_callbacks", _callbacks({"on_stream_delta": [on_stream_delta]}))
     monkeypatch.setattr("hermes_cli.config.cfg_get", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(
-        "agent.bedrock_adapter._get_bedrock_runtime_client",
+        "hermes_agent.agent.bedrock_adapter._get_bedrock_runtime_client",
         lambda *_args: SimpleNamespace(converse_stream=lambda **_kwargs: {"stream": []}),
     )
-    monkeypatch.setattr("agent.bedrock_adapter.is_stale_connection_error", lambda _exc: False)
-    monkeypatch.setattr("agent.bedrock_adapter.is_streaming_access_denied_error", lambda _exc: False)
-    monkeypatch.setattr("agent.bedrock_adapter.invalidate_runtime_client", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("hermes_agent.agent.bedrock_adapter.is_stale_connection_error", lambda _exc: False)
+    monkeypatch.setattr("hermes_agent.agent.bedrock_adapter.is_streaming_access_denied_error", lambda _exc: False)
+    monkeypatch.setattr("hermes_agent.agent.bedrock_adapter.invalidate_runtime_client", lambda *_args, **_kwargs: None)
 
     def stream_converse_with_callbacks(
         _raw_response,
@@ -347,7 +347,7 @@ def test_bedrock_reasoning_delta_reaches_plugin_only_observer(monkeypatch):
             on_reasoning_delta("bedrock reasoning")
         return SimpleNamespace(choices=[], usage=None, stop_reason="end_turn")
 
-    monkeypatch.setattr("agent.bedrock_adapter.stream_converse_with_callbacks", stream_converse_with_callbacks)
+    monkeypatch.setattr("hermes_agent.agent.bedrock_adapter.stream_converse_with_callbacks", stream_converse_with_callbacks)
 
     agent = _agent()
     agent.api_mode = "bedrock_converse"
@@ -382,7 +382,7 @@ def test_inline_think_reaches_reasoning_pane_unless_native_reasoning_streamed():
 
 def test_finish_chat_stream_recovers_inline_reasoning_content():
     """#89647: with no reasoning delta, reasoning_content comes from the <think> blocks in raw content."""
-    from agent import chat_completion_helpers as cch
+    from hermes_agent.agent import chat_completion_helpers as cch
 
     call = cch._StreamingCall.__new__(cch._StreamingCall)
     call.agent = _agent()

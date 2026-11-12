@@ -7,12 +7,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from agent.context_compressor import (
+from hermes_agent.agent.context_compressor import (
     HISTORICAL_TASK_HEADING,
     SUMMARY_PREFIX,
     _SUMMARY_END_MARKER,
 )
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 from hermes_agent.gateway.config import GatewayConfig
 from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 from hermes_agent.gateway.run import GatewayRunner
@@ -117,7 +117,7 @@ def test_rewind_session_retry_text_is_the_stored_bytes_for_multipart_carriers(
     """/retry re-sends exactly what was stored: a carrier split across text parts comes back as the
     parts' concatenation (``"".join``), not the "\\n"-joined display flattening."""
     from hermes_agent import hermes_state
-    from agent.context_compressor import retryable_user_text
+    from hermes_agent.agent.context_compressor import retryable_user_text
 
     monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
     store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
@@ -649,7 +649,7 @@ async def test_gateway_retry_paused_refusal_leaves_transcript_unchanged(tmp_path
     )
     before = store._db.get_messages("retry-paused-session", include_inactive=True)
     paused_notice = "⏸️ Hermes is paused. New work is on hold; run `hermes resume`."
-    monkeypatch.setattr("agent.estop.paused_reply", lambda: paused_notice)
+    monkeypatch.setattr("hermes_agent.agent.estop.paused_reply", lambda: paused_notice)
 
     result = await gw._handle_retry_command(
         MessageEvent(text="/retry", message_type=MessageType.TEXT, source=MagicMock())
@@ -673,7 +673,7 @@ async def test_gateway_retry_paused_refusal_leaves_carrier_rewind_untouched(
     )
     before = store._db.get_messages("retry-paused-carrier-session", include_inactive=True)
     paused_notice = "⏸️ Hermes is paused. New work is on hold; run `hermes resume`."
-    monkeypatch.setattr("agent.estop.paused_reply", lambda: paused_notice)
+    monkeypatch.setattr("hermes_agent.agent.estop.paused_reply", lambda: paused_notice)
 
     result = await gw._handle_retry_command(
         MessageEvent(text="/retry", message_type=MessageType.TEXT, source=MagicMock())

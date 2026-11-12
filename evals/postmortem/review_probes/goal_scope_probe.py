@@ -66,7 +66,7 @@ try:
    text=str(kwargs.get('messages') or args);calls.append(text)
    content='{"verdict":"wait","wait_for_seconds":1200,"reason":"workers"}' if 'Active delegations:' in text else '{"verdict":"continue","reason":"integrate next"}'
    return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
-  with patch('agent.auxiliary_client.call_llm',side_effect=fake_aux):
+  with patch('hermes_agent.agent.auxiliary_client.call_llm',side_effect=fake_aux):
    c._maybe_continue_goal_after_turn();out['lifecycle_initial_pending']=c._pending_input.qsize()
    while not c._pending_input.empty():c._pending_input.get_nowait()
    deleg['d']['status']='completed';c.conversation_history=[{'role':'assistant','content':'Workers finished; I still need to integrate their branches.'}]

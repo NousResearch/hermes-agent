@@ -117,7 +117,7 @@ class TestPathResolution:
         monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fence_probe")
         assert kb.kanban_db_path(board="ignored") == forced
         # Delegated children / spawned descendants are fenced the same way.
-        from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER
+        from hermes_agent.agent.delegation_context import DELEGATED_CHILD_ENV_MARKER
         monkeypatch.setenv(DELEGATED_CHILD_ENV_MARKER, "1")
         assert kb.kanban_db_path(board="ignored") == forced
 

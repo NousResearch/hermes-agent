@@ -94,7 +94,7 @@ def test_legacy_top_level_allowed_roles_still_authorize(_home):
 @contextlib.contextmanager
 def _multiplexed_profile(home):
     """The scope the gateway loads and serves a multiplexed profile in: its own secret scope."""
-    from agent.secret_scope import reset_multiplex_context, set_multiplex_context
+    from hermes_agent.agent.secret_scope import reset_multiplex_context, set_multiplex_context
     from hermes_agent.gateway.run import _profile_runtime_scope
     token = set_multiplex_context(True)
     try:

@@ -22,7 +22,7 @@ import weakref
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from agent.side_question_request import SideQuestionCapture, ask_text_only, runtime_key
+from hermes_agent.agent.side_question_request import SideQuestionCapture, ask_text_only, runtime_key
 
 logger = logging.getLogger(__name__)
 

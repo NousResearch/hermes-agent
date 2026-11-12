@@ -13,8 +13,8 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from agent.proxy_sources import iron_proxy as ip
-from agent.redact import mask_secret
+from hermes_agent.agent.proxy_sources import iron_proxy as ip
+from hermes_agent.agent.redact import mask_secret
 from hermes_cli.config import load_config, load_env, save_config
 
 
@@ -543,7 +543,7 @@ def _bitwarden_env_names(console: Console) -> Optional[list[str]]:
         console.print("  Run `hermes secrets bitwarden setup` first, or omit --from-bitwarden.")
         return None
     try:
-        from agent.secret_sources import bitwarden as bw
+        from hermes_agent.agent.secret_sources import bitwarden as bw
         token_env = bw_cfg.get("access_token_env", "BWS_ACCESS_TOKEN")
         access_token = os.environ.get(token_env, "").strip()
         if not access_token:

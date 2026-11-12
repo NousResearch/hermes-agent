@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from agent.reasoning_effort import NEBIUS_EFFORTS, clamp_effort
+from hermes_agent.agent.reasoning_effort import NEBIUS_EFFORTS, clamp_effort
 from providers import register_provider
 from providers.base import ProviderProfile
 

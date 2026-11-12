@@ -1,4 +1,4 @@
-"""Tests for agent.subscription_view — the surface-agnostic /subscription core.
+"""Tests for hermes_agent.agent.subscription_view — the surface-agnostic /subscription core.
 
 Behavior contracts (not change-detectors): the manage-URL builder's shape, the
 payload parser's field mapping + fail-open posture, and the dev-fixture states
@@ -9,7 +9,7 @@ from decimal import Decimal
 
 import pytest
 
-from agent.subscription_view import (
+from hermes_agent.agent.subscription_view import (
     CurrentSubscription,
     SubscriptionState,
     SubscriptionTier,

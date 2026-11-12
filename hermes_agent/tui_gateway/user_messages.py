@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Any
 
-# Provider-layer failure codes → (title, hint). Codes are ``agent.error_classifier.FailoverReason``
+# Provider-layer failure codes → (title, hint). Codes are ``hermes_agent.agent.error_classifier.FailoverReason``
 # values carried in ``error_surface.code``; anything unlisted falls back on the layer table.
 _TURN_ERROR_CODE_COPY: dict[str, tuple[str, str]] = {
     "auth": ("The model provider rejected the API key", "Fix the key with /model, then /retry."),

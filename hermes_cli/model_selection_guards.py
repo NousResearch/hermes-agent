@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable, List, Optional
 
-from agent.models_dev import ModelInfo
+from hermes_agent.agent.models_dev import ModelInfo
 
 
 @dataclass(frozen=True)

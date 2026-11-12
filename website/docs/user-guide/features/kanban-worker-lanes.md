@@ -7,7 +7,7 @@ This page is the contract. It exists for two audiences:
 - **Operators** picking which lanes to wire into a board (which profiles to create, which assignees to use).
 - **Plugin / integration authors** wanting to add a new lane shape (a CLI worker that wraps Codex / Claude Code / OpenCode, a containerised review worker, a non-Hermes service that pulls tasks via the API).
 
-If you're writing the worker code itself — the agent that runs *inside* a lane — the kanban lifecycle and reference details are injected into the worker's system prompt automatically (the `KANBAN_GUIDANCE` block in [`agent/prompt_builder.py`](https://github.com/NousResearch/hermes-agent/blob/main/agent/prompt_builder.py)).
+If you're writing the worker code itself — the agent that runs *inside* a lane — the kanban lifecycle and reference details are injected into the worker's system prompt automatically (the `KANBAN_GUIDANCE` block in [`hermes_agent/agent/prompt_builder.py`](https://github.com/NousResearch/hermes-agent/blob/main/hermes_agent/agent/prompt_builder.py)).
 
 ## The hierarchy
 
@@ -66,7 +66,7 @@ handoffs and attach files to their assigned task; `unblock` remains orchestrator
 Cross-task comments and follow-up task creation retain their existing behavior.
 
 Integration authors spawning code should use
-`agent.delegation_context.delegated_child_subprocess_env` at the actual spawn, after
+`hermes_agent.agent.delegation_context.delegated_child_subprocess_env` at the actual spawn, after
 merging environment overrides. It preserves the caller's credential/profile policy.
 This is cooperative runtime scoping, **not OS confinement**: it does not prevent
 arbitrary code from deliberately erasing lineage metadata or opening SQLite directly.
@@ -141,4 +141,4 @@ So lane authors don't have to reimplement these:
 
 - [Kanban overview](./kanban) — the user-facing intro.
 - [Kanban tutorial](./kanban-tutorial) — walkthrough with the dashboard open.
-- [`KANBAN_GUIDANCE`](https://github.com/NousResearch/hermes-agent/blob/main/agent/prompt_builder.py) — the worker + orchestrator lifecycle injected into every kanban worker's system prompt.
+- [`KANBAN_GUIDANCE`](https://github.com/NousResearch/hermes-agent/blob/main/hermes_agent/agent/prompt_builder.py) — the worker + orchestrator lifecycle injected into every kanban worker's system prompt.

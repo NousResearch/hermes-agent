@@ -82,10 +82,10 @@ That's it. After dropping these two files, the following **auto-wire** with no o
 | `hermes model` picker | `hermes_cli/models.py` | Appears in `CANONICAL_PROVIDERS`, model list fetched from `{base_url}/models` |
 | `hermes doctor` | `hermes_cli/doctor.py` | Health check for `ACME_API_KEY` + `{base_url}/models` probe |
 | `hermes setup` | `hermes_cli/config.py` | `ACME_API_KEY` appears in `OPTIONAL_ENV_VARS` and the setup wizard |
-| URL reverse-mapping | `agent/model_metadata.py` | Hostname → provider name for auto-detection |
-| Auxiliary model | `agent/auxiliary_client.py` | Uses `default_aux_model` for compression / summarization |
+| URL reverse-mapping | `hermes_agent/agent/model_metadata.py` | Hostname → provider name for auto-detection |
+| Auxiliary model | `hermes_agent/agent/auxiliary_client.py` | Uses `default_aux_model` for compression / summarization |
 | Runtime resolution | `hermes_cli/runtime_provider.py` | Returns correct `base_url`, `api_key`, `api_mode` |
-| Transport | `agent/transports/chat_completions.py` | Profile path generates kwargs via `prepare_messages` / `build_extra_body` / `build_api_kwargs_extras` |
+| Transport | `hermes_agent/agent/transports/chat_completions.py` | Profile path generates kwargs via `prepare_messages` / `build_extra_body` / `build_api_kwargs_extras` |
 
 ## ProviderProfile fields
 
@@ -148,7 +148,7 @@ optional `model_family` — and omitted fields stay unknown (not `False`), so a
 partial entry patches catalog metadata without erasing it.
 
 One declaration feeds every consumer that reads the catalog through
-`agent.models_dev`: the `/model` picker's `reasoning` badge, image routing
+`hermes_agent.agent.models_dev`: the `/model` picker's `reasoning` badge, image routing
 (`decide_image_input_mode` goes `native` for a `supports_vision: True` model
 even when the profile-wide `supports_vision` is unset), context-window lookup,
 and the dashboard's `/api/model/info`. Precedence: explicit user
@@ -157,7 +157,7 @@ and the dashboard's `/api/model/info`. Precedence: explicit user
 
 Not covered: the picker's `fast` badge (a model-name heuristic in
 `hermes_cli/models.py::model_supports_fast_mode`), reasoning-effort vocabulary
-(`agent/reasoning_effort.py`), and transport request fields. Declarations do not
+(`hermes_agent/agent/reasoning_effort.py`), and transport request fields. Declarations do not
 add models to a picker — use `fallback_models` / `fetch_models` for that. The
 registry is discovered once per process: restart Hermes after editing them.
 
@@ -344,18 +344,18 @@ A provider's own `hermes model` step calls these instead of re-implementing core
 |---|---|
 | `hermes_cli.model_setup.persist_model_selection(model, provider, *, base_url=None, api_mode=None)` | Writes the `model:` section (`provider`, then `base_url` / `api_mode` when given), scrubs inline endpoint credentials, saves `config.yaml` and deactivates the previously active OAuth provider. Returns the saved section. |
 | `hermes_cli.model_setup.note_setup_failure(failure_class)` | Records why the flow ended without a pick (`"auth"`, `"no_models"`, ...) for the opt-in provider-setup metric; a no-op outside a tracked flow. |
-| `agent.secret_scope.secret_source_label(name)` | `" (from Bitwarden)"`-style suffix naming the secret-source plugin that supplied env var `name`; `""` for `.env` / shell values. |
+| `hermes_agent.agent.secret_scope.secret_source_label(name)` | `" (from Bitwarden)"`-style suffix naming the secret-source plugin that supplied env var `name`; `""` for `.env` / shell values. |
 
 ## Account usage
 
 Model-provider plugins can provide account or plan usage to `/usage` by
 overriding `ProviderProfile.fetch_account_usage`. Import and return the shared
-`agent.account_usage.AccountUsageSnapshot` (with any `AccountUsageWindow`
+`hermes_agent.agent.account_usage.AccountUsageSnapshot` (with any `AccountUsageWindow`
 entries); do not format output in the plugin. Returning `None`, or raising an
 exception, leaves `/usage` empty just as it does for providers without usage
 data. Built-in usage fetchers always take precedence, so this hook cannot
 replace the account-usage behavior for a built-in provider. The hook runs under a shared
-10 s deadline (`agent.account_usage.PLUGIN_USAGE_HOOK_DEADLINE_S`) on every surface; overrunning it
+10 s deadline (`hermes_agent.agent.account_usage.PLUGIN_USAGE_HOOK_DEADLINE_S`) on every surface; overrunning it
 renders nothing for that turn rather than stalling `/usage`, so give your own HTTP calls a shorter
 timeout.
 
@@ -366,7 +366,7 @@ gateway, the TUI/Desktop usage feed) renders the snapshot through the same core 
 ```python
 from datetime import datetime, timezone
 
-from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
+from hermes_agent.agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
 
 def fetch_account_usage(self, *, api_key=None, base_url=None):
     return AccountUsageSnapshot(
@@ -392,12 +392,12 @@ The `process_command_env_vars` and `process_args_env_var` names are executable a
 
 The client your `create_client` returns receives `command` and `args` in `client_kwargs`. If it is already complete and async-safe, declare `HERMES_SKIP_TRANSPORT_WRAP = True` / `HERMES_SKIP_ASYNC_WRAP = True` as class attributes so the auxiliary client does not re-dispatch it through an HTTP wire adapter.
 
-#### The public ACP client: `agent.acp_client.ACPClient`
+#### The public ACP client: `hermes_agent.agent.acp_client.ACPClient`
 
 For an agent CLI that speaks the [Agent Client Protocol](https://agentclientprotocol.com) on stdio, return an `ACPClient` (or a subclass) from `create_client` instead of writing your own shim. It is an OpenAI-client facade (`client.chat.completions.create(...)`, streaming included) that starts one short-lived ACP session per request, applies the requested model over ACP (`session/set_config_option`, else `session/set_model`), forwards Hermes' tools as a prompt-level bridge, answers `fs/read_text_file` / `fs/write_text_file` inside the session cwd with Hermes' file-safety rules, cancels permission requests, and lists the session's models with `list_models(timeout_seconds=...)`. It already declares both `HERMES_SKIP_*` attributes.
 
 ```python
-from agent.acp_client import ACPClient
+from hermes_agent.agent.acp_client import ACPClient
 
 class MyAgentClient(ACPClient):
     default_command = "myagent"            # used only when the caller passes no command/args
@@ -422,7 +422,7 @@ class MyAgentProfile(ProviderProfile):
 
 Keep the class attributes in step with the profile's `process_*` fields. Override `_handle_server_message(msg, *, process, cwd, text_parts, reasoning_parts, allow_file_requests=True)` to render extra `session/update` kinds (call `super()` for the rest). `hermes_cli.auth.resolve_external_process_provider_credentials(name)` returns the resolved `command`/`args`/`base_url` for a `fetch_models()` probe.
 
-`agent.copilot_acp_client.CopilotACPClient` is a deprecated alias of `ACPClient` with the old GitHub Copilot launch defaults. The module keeps its whole former surface for listed catalog plugins pinned to it (`ACP_MARKER_BASE_URL`, its former private helpers, `subprocess` for `Popen` patching); the first access of any of its names warns once per process. Subclass `ACPClient` instead (set `placeholder_model` to your own placeholder id). The alias stays for at least two minor releases.
+`hermes_agent.agent.copilot_acp_client.CopilotACPClient` is a deprecated alias of `ACPClient` with the old GitHub Copilot launch defaults. The module keeps its whole former surface for listed catalog plugins pinned to it (`ACP_MARKER_BASE_URL`, its former private helpers, `subprocess` for `Popen` patching); the first access of any of its names warns once per process. Subclass `ACPClient` instead (set `placeholder_model` to your own placeholder id). The alias stays for at least two minor releases.
 
 ### Picker rows for non-api-key plugins
 
@@ -451,7 +451,7 @@ Native clients may persist private assistant replay in `reasoning_details` with 
 
 Providers may override `get_model_context_length(model)` with a qualified positive token bound, or return `None` for the existing lookup chain. Explicit configuration and endpoint-scoped overrides take precedence; the provider bound is consulted before generic caches and HTTP probes. Do not confuse a catalog maximum with an account entitlement.
 
-For a nonstandard cost surface, `get_usage_cost(model, usage)` may return an `agent.usage_pricing.CostResult`, or `None` for normal pricing. `usage` is a `CanonicalUsage` whose `raw_usage` retains response metadata when available. Classify native list-price totals as `estimated`, never `actual` or `included`; missing invoice information is not proof of zero charges. The default hooks return `None`, preserving existing providers.
+For a nonstandard cost surface, `get_usage_cost(model, usage)` may return an `hermes_agent.agent.usage_pricing.CostResult`, or `None` for normal pricing. `usage` is a `CanonicalUsage` whose `raw_usage` retains response metadata when available. Classify native list-price totals as `estimated`, never `actual` or `included`; missing invoice information is not proof of zero charges. The default hooks return `None`, preserving existing providers.
 
 ## Hook reference examples
 
@@ -514,8 +514,8 @@ Set `profile.api_mode` to match the default your provider ships — it acts as a
 A plugin that speaks a protocol none of the built-in transports cover registers one and names it in the profile:
 
 ```python
-from agent.transports import register_transport
-from agent.transports.chat_completions import ChatCompletionsTransport
+from hermes_agent.agent.transports import register_transport
+from hermes_agent.agent.transports.chat_completions import ChatCompletionsTransport
 
 class MyDialectTransport(ChatCompletionsTransport):
     api_mode = "mydialect"
@@ -562,7 +562,7 @@ from providers.base import ProviderProfile
 def example_auth(action: str, args) -> bool:
     """action: "add" | "status" | "logout" | "refresh"; args: parsed CLI namespace."""
     if action == "add":
-        from agent.credential_pool import AUTH_TYPE_OAUTH, PooledCredential, load_pool
+        from hermes_agent.agent.credential_pool import AUTH_TYPE_OAUTH, PooledCredential, load_pool
         tokens = run_device_code_flow()                      # provider-specific
         load_pool("example-oauth").add_entry(PooledCredential(
             provider="example-oauth", id=uuid.uuid4().hex[:6], label=tokens["account"],
@@ -671,7 +671,7 @@ register_provider(ProviderProfile(name="example-oauth", auth_type="oauth_externa
 
 | Contract | |
 |---|---|
-| `classify_api_error(error, *, status_code, error_code, message, body, model)` | Consulted by `agent.error_classifier.classify_api_error` for failures of **this provider only**, after any generic `transform_api_error_classification` hooks and before the built-in pipeline. `message` is the lower-cased error text, `body` the parsed JSON body (may be empty). Return `{"reason": <FailoverReason name>}` plus optional `retryable` / `should_compress` / `should_rotate_credential` / `should_fallback` / `error_context` to override (for terminal reasons — billing, auth, model_not_found … — `should_fallback: True` implies `retryable: False` unless you set it, because the fallback chain only runs for non-retryable verdicts; rate-limit reasons keep the built-in retry-then-fallback shape); `None` (or an unknown reason) leaves the built-in verdict. Exceptions are swallowed and logged at DEBUG. The verdict drives the same recovery as for built-ins — e.g. `billing` benches the credential for the billing TTL instead of the transient 403 cooldown. |
+| `classify_api_error(error, *, status_code, error_code, message, body, model)` | Consulted by `hermes_agent.agent.error_classifier.classify_api_error` for failures of **this provider only**, after any generic `transform_api_error_classification` hooks and before the built-in pipeline. `message` is the lower-cased error text, `body` the parsed JSON body (may be empty). Return `{"reason": <FailoverReason name>}` plus optional `retryable` / `should_compress` / `should_rotate_credential` / `should_fallback` / `error_context` to override (for terminal reasons — billing, auth, model_not_found … — `should_fallback: True` implies `retryable: False` unless you set it, because the fallback chain only runs for non-retryable verdicts; rate-limit reasons keep the built-in retry-then-fallback shape); `None` (or an unknown reason) leaves the built-in verdict. Exceptions are swallowed and logged at DEBUG. The verdict drives the same recovery as for built-ins — e.g. `billing` benches the credential for the billing TTL instead of the transient 403 cooldown. |
 | 401 on a plugin credential | Handled by the credential pool, no core edit: the failing pooled row is refreshed through `refresh_credential` once per attempt (capped at two refreshes per row per session), the client is rebuilt with the rotated token and the request retried. A `None`/empty return or an exception benches the row — the request then rotates or falls to the generic "sign in again: `hermes auth add <name>`" copy, never to a built-in provider's guidance. |
 | Auxiliary calls | An `oauth_external` / `oauth_device_code` plugin that ships `create_client` serves auxiliary tasks on its pooled row (an expiring row is rotated first); auxiliary 401s take the same pool refresh (`try_refresh_current` → `refresh_credential`). |
 

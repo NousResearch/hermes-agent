@@ -44,7 +44,7 @@ def _fake_binary(tmp_path, monkeypatch, name: str) -> None:
 
 
 def _pool_entry(provider: str, **fields):
-    from agent.credential_pool import AUTH_TYPE_OAUTH, PooledCredential, load_pool
+    from hermes_agent.agent.credential_pool import AUTH_TYPE_OAUTH, PooledCredential, load_pool
 
     entry = PooledCredential(
         provider=provider, id="e1", label="acme", auth_type=AUTH_TYPE_OAUTH, priority=0,

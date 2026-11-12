@@ -9,7 +9,7 @@ description: "How to build a secret-manager backend plugin for Hermes Agent"
 Secret sources resolve provider credentials from an external secret manager (a vault, a password manager, an OS keystore, a custom script) into environment variables at process startup — after `~/.hermes/.env` loads, before Hermes reads credentials. Bitwarden, 1Password, and a generic command-helper source ship in-tree; **every other backend is a plugin**. This guide covers building one.
 
 :::tip
-The bundled set is deliberately closed, same policy as [memory providers](./memory-provider-plugin.md): PRs adding new vault backends under `agent/secret_sources/` are closed with a pointer to this guide. Publish your backend as a standalone plugin repo and share it in the Nous Research Discord (`#plugins-skills-and-skins`).
+The bundled set is deliberately closed, same policy as [memory providers](./memory-provider-plugin.md): PRs adding new vault backends under `hermes_agent/agent/secret_sources/` are closed with a pointer to this guide. Publish your backend as a standalone plugin repo and share it in the Nous Research Discord (`#plugins-skills-and-skins`).
 :::
 
 ## First-process bootstrap timing
@@ -34,7 +34,7 @@ That closes the "replace Bitwarden with my vault" first-process gap (#64177).
 
 ## What the framework owns vs. what you own
 
-The orchestrator (`agent.secret_sources.registry.apply_all`) owns everything security- and precedence-sensitive, so a backend cannot get it wrong:
+The orchestrator (`hermes_agent.agent.secret_sources.registry.apply_all`) owns everything security- and precedence-sensitive, so a backend cannot get it wrong:
 
 | Framework owns | You own |
 |---|---|
@@ -56,12 +56,12 @@ The orchestrator (`agent.secret_sources.registry.apply_all`) owns everything sec
 
 ## The SecretSource ABC
 
-Implement `agent.secret_sources.base.SecretSource`. One method is required:
+Implement `hermes_agent.agent.secret_sources.base.SecretSource`. One method is required:
 
 ```python
 from pathlib import Path
 
-from agent.secret_sources.base import (
+from hermes_agent.agent.secret_sources.base import (
     ErrorKind,
     FetchResult,
     SecretSource,

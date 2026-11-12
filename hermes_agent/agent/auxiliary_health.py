@@ -8,7 +8,7 @@ def _unhealthy_cache_key(provider: str, base_url: Optional[str] = None, model: O
     """Provider-wide key, or endpoint-specific key for an explicit custom endpoint — prefixed with the
     active profile home: a 402 on profile A's account must not hide the provider from profile B's
     (differently funded) account in the same multiplexed process."""
-    from agent.auxiliary_client import _normalize_chain_label, _normalize_resolved_model
+    from hermes_agent.agent.auxiliary_client import _normalize_chain_label, _normalize_resolved_model
     from hermes_constants import hermes_home_key
     label = _normalize_chain_label(provider)
     endpoint = normalize_route_base_url(_custom_health_base_url(provider, base_url))
@@ -19,9 +19,9 @@ def _unhealthy_cache_key(provider: str, base_url: Optional[str] = None, model: O
 
 def _custom_health_base_url(provider: str, explicit_base_url: Optional[str] = None) -> str:
     """Return the concrete custom endpoint used to scope health and failed-route checks."""
-    from agent.auxiliary_client import _current_custom_base_url
+    from hermes_agent.agent.auxiliary_client import _current_custom_base_url
     explicit = str(explicit_base_url or "").strip()
-    from agent.auxiliary_client import _normalize_chain_label
+    from hermes_agent.agent.auxiliary_client import _normalize_chain_label
     label = _normalize_chain_label(provider)
     if label == "local/custom":
         return explicit or _current_custom_base_url()

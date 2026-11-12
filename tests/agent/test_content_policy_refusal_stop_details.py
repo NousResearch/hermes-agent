@@ -2,13 +2,13 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from agent.turn_retry_state import TurnRetryState
-from agent.turn_truncation import handle_content_policy_refusal
+from hermes_agent.agent.turn_retry_state import TurnRetryState
+from hermes_agent.agent.turn_truncation import handle_content_policy_refusal
 
 
 def _agent():
-    import agent.transports.anthropic
-    from agent.transports import get_transport
+    import hermes_agent.agent.transports.anthropic
+    from hermes_agent.agent.transports import get_transport
 
     agent = MagicMock()
     agent.api_mode, agent.provider, agent.model, agent.log_prefix = "anthropic_messages", "anthropic", "claude", ""
@@ -37,7 +37,7 @@ def test_empty_refusal_reports_stop_details_explanation():
 def test_refusal_that_falls_back_names_the_cause(caplog):
     """A refusal answered by the fallback still says why: the switch notice gets the
     content-policy reason (not "provider failure") and agent.log keeps the native stop reason."""
-    from agent.error_classifier import FailoverReason
+    from hermes_agent.agent.error_classifier import FailoverReason
 
     agent = _agent()
     agent._has_pending_fallback.return_value = True
@@ -46,7 +46,7 @@ def test_refusal_that_falls_back_names_the_cause(caplog):
         content=[], stop_reason="refusal", usage=None, model="claude",
         stop_details={"type": "refusal", "category": "cyber", "explanation": None},
     )
-    with caplog.at_level("WARNING", logger="agent.conversation_loop"):
+    with caplog.at_level("WARNING", logger="hermes_agent.agent.conversation_loop"):
         verdict = handle_content_policy_refusal(
             agent, response, TurnRetryState(), thinking_spinner=None, messages=[], api_messages=[], api_kwargs={},
             active_system_prompt=None, conversation_history=[], api_call_count=1, effective_task_id="t", turn_id="u",
@@ -63,7 +63,7 @@ def test_refusal_log_caps_a_long_stop_details_explanation(caplog):
         content=[], stop_reason="refusal", usage=None, model="claude",
         stop_details={"type": "refusal", "category": "cyber", "explanation": "x" * 2000 + "SENTINEL"},
     )
-    with caplog.at_level("WARNING", logger="agent.conversation_loop"):
+    with caplog.at_level("WARNING", logger="hermes_agent.agent.conversation_loop"):
         handle_content_policy_refusal(
             agent, response, TurnRetryState(), thinking_spinner=None, messages=[], api_messages=[], api_kwargs={},
             active_system_prompt=None, conversation_history=[], api_call_count=1, effective_task_id="t", turn_id="u",

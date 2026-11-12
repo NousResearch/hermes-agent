@@ -54,7 +54,7 @@ def test_toggle_restore_and_rotation_round_trip_through_the_row(db):
 
 def test_compression_rotation_publishes_the_child_row_with_the_live_flag(db):
     import types
-    from agent import conversation_compression as cc
+    from hermes_agent.agent import conversation_compression as cc
     db.create_session("s1", source="cli")
     db.append_message("s1", "user", "hello")
     db.append_message("s1", "assistant", "world")

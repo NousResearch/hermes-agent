@@ -184,7 +184,7 @@ def _resolve_token_and_base(*, use_cache: bool = True) -> tuple[str, str]:
 
 def _retry_after_seconds(headers: Any) -> Optional[int]:
     """Parse a ``Retry-After`` header (integer seconds) — None if absent/bad."""
-    from agent.retry_utils import parse_retry_after_seconds
+    from hermes_agent.agent.retry_utils import parse_retry_after_seconds
 
     seconds = parse_retry_after_seconds(headers)
     return None if seconds is None else int(seconds)

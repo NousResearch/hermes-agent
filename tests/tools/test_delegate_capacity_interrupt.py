@@ -11,8 +11,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.interrupt_control import InterruptControlMixin
-from agent.turn_context import _bind_interrupt_scope
+from hermes_agent.agent.interrupt_control import InterruptControlMixin
+from hermes_agent.agent.turn_context import _bind_interrupt_scope
 from hermes_agent.tools import async_delegation
 from hermes_agent.tools.delegate_tool_dispatch import _Batch, _dispatch_background
 from hermes_agent.tools.interrupt import is_interrupted, set_interrupt

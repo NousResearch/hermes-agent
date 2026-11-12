@@ -50,7 +50,7 @@ def _mkprofile(home, name):
 
 
 def _read():
-    from agent.secret_scope import UnscopedSecretError, get_secret
+    from hermes_agent.agent.secret_scope import UnscopedSecretError, get_secret
     try:
         return get_secret("OPENROUTER_API_KEY")
     except UnscopedSecretError:
@@ -137,7 +137,7 @@ def test_default_cron_fire_and_kanban_tick_after_the_flip_keep_env_injected_cred
 
 @pytest.mark.asyncio
 async def test_activation_does_not_run_once_shutdown_began(standalone_host):
-    from agent.secret_scope import is_multiplex_active
+    from hermes_agent.agent.secret_scope import is_multiplex_active
     runner, home = standalone_host
     _mkprofile(home, "daily-news-bot")
     runner._running = False            # stop() flips this first
@@ -184,7 +184,7 @@ async def test_concurrent_rescans_keep_the_new_profiles_reservation(standalone_h
 
 @pytest.mark.asyncio
 async def test_activation_rechecks_shutdown_after_the_preflight(standalone_host, monkeypatch):
-    from agent.secret_scope import is_multiplex_active
+    from hermes_agent.agent.secret_scope import is_multiplex_active
     from hermes_agent.gateway import run_profile_reconcile as rpr
     runner, home = standalone_host
     monkeypatch.setattr(rpr, "_added_profile_blocker", lambda _launch: setattr(runner, "_running", False))

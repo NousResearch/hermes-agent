@@ -39,7 +39,7 @@ def guest_home(monkeypatch, tmp_path):
     _save_auth_store({"active_provider": "nous", "providers": {"nous": dict(GUEST_STATE)}})
 
     # No network from any lap: models.dev, the Portal catalog, and Ollama Cloud all stubbed.
-    from agent import models_dev
+    from hermes_agent.agent import models_dev
     from hermes_cli import models as models_mod
     from hermes_cli import model_switch_providers as msp
     monkeypatch.setattr(models_dev, "fetch_models_dev", lambda *a, **k: {})

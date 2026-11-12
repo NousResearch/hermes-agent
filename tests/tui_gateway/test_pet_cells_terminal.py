@@ -9,8 +9,8 @@ PIL = pytest.importorskip("PIL.Image")
 
 @pytest.fixture
 def boba(tmp_path, monkeypatch):
-    from agent.pet import store
-    from agent.pet.constants import FRAME_H, FRAME_W
+    from hermes_agent.agent.pet import store
+    from hermes_agent.agent.pet.constants import FRAME_H, FRAME_W
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     pet_dir = store.pets_dir() / "boba"

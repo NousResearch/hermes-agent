@@ -1,7 +1,7 @@
 """Structured-output (``response_format``) handling on auxiliary routes that reject it.
 
 Covers NousResearch/hermes-agent#83390 / #105191 / #113064 for the aux callers that attach
-``response_format`` (``agent/title_generator.py`` and ``agent/plugin_llm.py``): a fallback candidate
+``response_format`` (``hermes_agent/agent/title_generator.py`` and ``hermes_agent/agent/plugin_llm.py``): a fallback candidate
 that rejects ``json_schema`` gets the same retry-without-the-field rung as the primary path instead of
 aborting the task, and a route+model known to reject a ``response_format`` type (provider profile or a
 capability rejection already seen in this process) never pays the guaranteed-fail first request.
@@ -12,8 +12,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from agent import auxiliary_structured_output as structured_output
-from agent.auxiliary_client import (
+from hermes_agent.agent import auxiliary_structured_output as structured_output
+from hermes_agent.agent.auxiliary_client import (
     _build_call_kwargs,
     _call_fallback_candidate_async,
     _call_fallback_candidate_sync,

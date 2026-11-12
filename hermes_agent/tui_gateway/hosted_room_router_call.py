@@ -16,7 +16,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
-from agent.memory_provider import spawn_context_thread
+from hermes_agent.agent.memory_provider import spawn_context_thread
 from hermes_agent.gateway import hosted_room_router as router
 from hermes_agent.gateway import hosted_rooms
 
@@ -54,7 +54,7 @@ def ask_router(*, root: Path, db_path: Path, room: Mapping[str, Any], discussion
                context: Mapping[str, str], homes: Mapping[str, Path]) -> tuple[str, ...] | None:
     """Member ids the router picked (``()`` = everyone), or None when the call failed or answered invalidly.
     Runs under the room owner's profile scope: its ``auxiliary.group_router`` config and credentials."""
-    from agent.auxiliary_client import call_llm, extract_content_or_reasoning
+    from hermes_agent.agent.auxiliary_client import call_llm, extract_content_or_reasoning
     from hermes_agent.gateway.run import _profile_runtime_scope
 
     payload = discussion.get("payload") or {}

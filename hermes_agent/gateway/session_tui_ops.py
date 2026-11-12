@@ -154,7 +154,7 @@ async def reload_env(connection, ref, params):
         if not _multiplexed(authority):
             from hermes_cli.config import reload_env as reload_process_env
             return reload_process_env()
-        from agent.secret_scope import build_profile_secret_scope, invalidate_env_file_cache
+        from hermes_agent.agent.secret_scope import build_profile_secret_scope, invalidate_env_file_cache
         from hermes_cli.env_loader import hydrate_profile_secret_sources, reset_secret_source_cache
         home = _profile_home(authority)
         before = build_profile_secret_scope(home)
@@ -341,7 +341,7 @@ async def _rewind_last_turn(connection, ref, taken=None):
     owner's revision-fenced ``rewind`` mutation; 0 when the transcript has no user turn, or when that turn
     ended before the checkpoint taken at ``taken`` (``/undo`` already removed the turn that made it)."""
     authority = connection.authority
-    from agent.context_compressor import user_originated_turn_view
+    from hermes_agent.agent.context_compressor import user_originated_turn_view
     from hermes_agent.gateway.session_local_recovery import local_history
     from hermes_agent.tools.checkpoint_undo_hint import rollback_rewinds_newest_turn
     rows = [row for row in await asyncio.to_thread(local_history, authority, ref) if not row.get('archived')]

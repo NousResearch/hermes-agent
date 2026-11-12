@@ -43,7 +43,7 @@ def _user_turns(snapshot):
     """Human-authored live user rows (``row_id`` = durable ``messages.id``), oldest first: no display-only
     kind other than a typed /steer, never a compaction handoff carrier, never a row a compression
     archived (shown in the snapshot's history, not a turn to rewind to)."""
-    from agent.context_compressor import is_user_originated_turn
+    from hermes_agent.agent.context_compressor import is_user_originated_turn
     return [row for row in snapshot.get("messages", [])
             if type(row.get("row_id")) is int and row.get("display_kind") in (None, "", "steer")
             and not row.get("archived") and is_user_originated_turn(row)]
@@ -58,7 +58,7 @@ def _rewind_to(turns_back, *, retry=False):
         if retry:
             # Main's retry_last order: a turn that cannot be resent losslessly as text (an image
             # turn) is refused on the CAS snapshot, before session.mutate archives it.
-            from agent.context_compressor import retryable_user_text, user_originated_turn_view
+            from hermes_agent.agent.context_compressor import retryable_user_text, user_originated_turn_view
             try:
                 retryable_user_text((user_originated_turn_view(target) or {}).get("content"))
             except ValueError as exc:
@@ -88,7 +88,7 @@ async def _rewind(view, turns_back, *, retry=False):
     view.generation = snapshot["execution_generation"]
     content = (result.get("target_message") or {}).get("content")
     if retry:
-        from agent.context_compressor import retryable_user_text
+        from hermes_agent.agent.context_compressor import retryable_user_text
         with contextlib.suppress(ValueError):
             return retryable_user_text(content), result["rewound_count"]
     return content if isinstance(content, str) else "", result["rewound_count"]
@@ -102,7 +102,7 @@ async def _title(view, rest):
 
 
 async def _undo(view, rest):
-    from agent.i18n import t
+    from hermes_agent.agent.i18n import t
     if rest and not (rest.isdigit() and int(rest) > 0):
         raise GatewayClientError("Usage: /undo [N]")
     turns = int(rest or 1)
@@ -116,7 +116,7 @@ async def _undo(view, rest):
 
 
 async def _retry(view, rest):
-    from agent.i18n import t
+    from hermes_agent.agent.i18n import t
     rewound = await _rewind(view, 1, retry=True)
     if rewound is None or not rewound[0].strip():
         print(t("cli.session.retry_no_user_message"))
@@ -129,7 +129,7 @@ async def _new(view, rest):
     """A fresh session with this one's frozen launch request (model, toolsets, cwd, ...); the old
     session stays resumable by its id. A title is a separate rename so an existing title is a
     conflict, never a silent attach to that other session."""
-    from agent.i18n import t
+    from hermes_agent.agent.i18n import t
     info = await view.client.rpc("session.info", session_id=view.session_id)
     accepted = set((await view.client.rpc("runtime.describe")).get("session_create", {}).get("parameters", []))
     # ``client`` names the client that created that session, never this terminal.

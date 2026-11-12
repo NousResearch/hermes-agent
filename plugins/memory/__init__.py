@@ -24,7 +24,7 @@ from hermes_cli.config import cfg_get
 from plugins import plugin_loader as _loader
 
 if TYPE_CHECKING:
-    from agent.memory_provider import MemoryProvider
+    from hermes_agent.agent.memory_provider import MemoryProvider
 
 logger = logging.getLogger(__name__)
 
@@ -312,7 +312,7 @@ def import_provider_module(name: str, submodule: Optional[str] = None):
 
 def _instantiate_subclass(namespace) -> Optional[MemoryProvider]:
     """First instantiable ``MemoryProvider`` subclass found among *namespace*'s attributes."""
-    from agent.memory_provider import MemoryProvider
+    from hermes_agent.agent.memory_provider import MemoryProvider
 
     for attr_name in dir(namespace):
         attr = getattr(namespace, attr_name, None)
@@ -328,7 +328,7 @@ def _load_provider_from_entry_point(entry_point, *, register_skills: bool = True
     """Import a provider entry point and extract the MemoryProvider instance: an
     instance, a subclass, a module with ``register(ctx)``, a factory / ``register``
     callable, or a namespace holding a subclass — in that order."""
-    from agent.memory_provider import MemoryProvider
+    from hermes_agent.agent.memory_provider import MemoryProvider
 
     loaded = entry_point.load()
     if isinstance(loaded, MemoryProvider):

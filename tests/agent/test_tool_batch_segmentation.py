@@ -19,12 +19,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from run_agent import AIAgent
-from agent.tool_dispatch_helpers import (
+from hermes_agent.run_agent import AIAgent
+from hermes_agent.agent.tool_dispatch_helpers import (
     _plan_tool_batch_segments,
     _should_parallelize_tool_batch,
 )
-from agent.prompt_builder import STEER_MARKER_OPEN
+from hermes_agent.agent.prompt_builder import STEER_MARKER_OPEN
 from hermes_agent.tools.budget_config import BudgetConfig
 from hermes_agent.tools.tool_result_storage import PERSISTED_OUTPUT_TAG
 
@@ -385,7 +385,7 @@ def agent():
             return_value=_make_tool_defs("web_search", "terminal"),
         ),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
     ):
         a = AIAgent(
             api_key="test-key-1234567890",
@@ -589,7 +589,7 @@ class TestSegmentedDispatchIntegration:
 
         with (
             patch("hermes_agent.model_tools.handle_function_call", side_effect=fake_handle),
-            patch("agent.tool_executor._budget_for_agent", return_value=budget),
+            patch("hermes_agent.agent.tool_executor._budget_for_agent", return_value=budget),
         ):
             agent._execute_tool_calls(msg, messages, "task-1")
 
@@ -618,7 +618,7 @@ class TestSegmentedDispatchIntegration:
         assert _kinds(_plan_tool_batch_segments(calls)) == ["sequential"]
         assert agent.steer("preserve malformed-call steer after budget enforcement")
 
-        with patch("agent.tool_executor._budget_for_agent", return_value=budget):
+        with patch("hermes_agent.agent.tool_executor._budget_for_agent", return_value=budget):
             agent._execute_tool_calls(msg, messages, "task-1")
 
         assert len(messages) == 2
@@ -640,7 +640,7 @@ class TestPathCanonicalization:
     def test_relative_and_absolute_same_target_use_separate_segments(self, tmp_path):
         """A relative path resolved against execution_cwd and an absolute path
         pointing to the same file must be detected as overlapping."""
-        from agent.tool_dispatch_helpers import (
+        from hermes_agent.agent.tool_dispatch_helpers import (
             _canonical_path,
             _paths_overlap,
         )
@@ -659,7 +659,7 @@ class TestPathCanonicalization:
     def test_symlink_aliases_are_not_parallelized(self, tmp_path):
         """A symlink alias and the real path must be detected as overlapping
         so they are never placed in the same parallel segment."""
-        from agent.tool_dispatch_helpers import (
+        from hermes_agent.agent.tool_dispatch_helpers import (
             _canonical_path,
             _paths_overlap,
         )
@@ -683,7 +683,7 @@ class TestPathCanonicalization:
     def test_execution_cwd_used_over_process_cwd(self, tmp_path, monkeypatch):
         """_extract_parallel_scope_path must use execution_cwd, not
         process cwd, when resolving relative paths."""
-        from agent.tool_dispatch_helpers import (
+        from hermes_agent.agent.tool_dispatch_helpers import (
             _extract_parallel_scope_path,
             _paths_overlap,
         )
@@ -719,7 +719,7 @@ class TestPathCanonicalization:
     def test_case_insensitive_paths_overlap_windows(self, tmp_path):
         """On Windows, FILE.txt and file.txt are the same file — they must
         be detected as overlapping after normcase() canonicalisation."""
-        from agent.tool_dispatch_helpers import _canonical_path, _paths_overlap
+        from hermes_agent.agent.tool_dispatch_helpers import _canonical_path, _paths_overlap
 
         upper = _canonical_path(str(tmp_path / "FILE.txt"), execution_cwd=tmp_path)
         lower = _canonical_path(str(tmp_path / "file.txt"), execution_cwd=tmp_path)

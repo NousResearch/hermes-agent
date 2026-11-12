@@ -24,12 +24,12 @@ import threading
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from agent.context_compressor import (
+from hermes_agent.agent.context_compressor import (
     ContextCompressor,
     pin_summary_route,
     take_pinned_summary_route,
 )
-from agent.conversation_compression import (
+from hermes_agent.agent.conversation_compression import (
     CompressionCommitFence,
     resolve_compression_fallback_route,
     run_compress_context_with_progress_timeout,
@@ -47,7 +47,7 @@ CHAIN_ENTRY = {
 def _patch_chain(chain):
     """Pin auxiliary.compression config without touching the real config.yaml."""
     return patch(
-        "agent.auxiliary_client._get_auxiliary_task_config",
+        "hermes_agent.agent.auxiliary_client._get_auxiliary_task_config",
         return_value={"fallback_chain": chain},
     )
 
@@ -295,15 +295,15 @@ def test_same_turn_fallback_retry_is_not_gated_by_the_primary_stall_backoff(tmp_
     import time
     from pathlib import Path
 
-    import agent.conversation_compression as cc
-    from agent.auxiliary_client import AuxiliaryExplicitCancellation
+    import hermes_agent.agent.conversation_compression as cc
+    from hermes_agent.agent.auxiliary_client import AuxiliaryExplicitCancellation
     from hermes_agent.hermes_state import SessionDB
 
     session_id = "STALL_FALLBACK_SAME_TURN"
     db = SessionDB(db_path=Path(tmp_path) / "state.db")
     db.create_session(session_id, source="cli")
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key", base_url="https://openrouter.ai/api/v1", model="test/model", quiet_mode=True,
@@ -395,7 +395,7 @@ def test_no_chain_resolves_to_no_route():
 
 def _make_compressor(summary_model="aux-summarizer"):
     with patch(
-        "agent.context_compressor.get_model_context_length", return_value=100000
+        "hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000
     ):
         return ContextCompressor(
             model="main-model",
@@ -426,7 +426,7 @@ def test_pinned_route_overrides_the_summary_call_route():
         calls.append(kwargs)
         return _ok_response()
 
-    with patch("agent.context_compressor.call_llm", side_effect=_fake_call_llm):
+    with patch("hermes_agent.agent.context_compressor.call_llm", side_effect=_fake_call_llm):
         with pin_summary_route(dict(CHAIN_ENTRY)):
             summary = compressor._generate_summary(_msgs())
 
@@ -452,7 +452,7 @@ def test_pinned_route_is_not_reissued_by_the_main_model_retry():
             raise TimeoutError("Request timed out.")
         return _ok_response()
 
-    with patch("agent.context_compressor.call_llm", side_effect=_fake_call_llm):
+    with patch("hermes_agent.agent.context_compressor.call_llm", side_effect=_fake_call_llm):
         with pin_summary_route(dict(CHAIN_ENTRY)):
             summary = compressor._generate_summary(_msgs())
 
@@ -472,7 +472,7 @@ def test_unpinned_summary_call_keeps_task_routing():
         calls.append(kwargs)
         return _ok_response()
 
-    with patch("agent.context_compressor.call_llm", side_effect=_fake_call_llm):
+    with patch("hermes_agent.agent.context_compressor.call_llm", side_effect=_fake_call_llm):
         summary = compressor._generate_summary(_msgs())
 
     assert summary

@@ -93,7 +93,7 @@ def _reported_model_is_evidence(provider: str, model: str, client: Any) -> bool:
     and a Bedrock ARN is not what the endpoint reports back.
     """
     from openai import OpenAI
-    from agent.model_metadata import is_local_endpoint
+    from hermes_agent.agent.model_metadata import is_local_endpoint
     from providers import get_provider_profile
     from utils import base_url_hostname
     base_url = str(getattr(client, "base_url", "") or "")
@@ -133,7 +133,7 @@ def _without_sdk_retries(client: Any) -> Any:
     """``client`` with OpenAI SDK retries off, so one probe is one request. Some builders keep the
     SDK default (Vertex, Bedrock Mantle), including inside the Codex Responses wrapper."""
     from openai import OpenAI
-    from agent.auxiliary_client import CodexAuxiliaryClient
+    from hermes_agent.agent.auxiliary_client import CodexAuxiliaryClient
     if isinstance(client, OpenAI):
         return client.with_options(max_retries=0)
     if isinstance(client, CodexAuxiliaryClient) and isinstance(client._real_client, OpenAI):
@@ -163,7 +163,7 @@ def check_entry_static(entry: dict[str, Any]) -> EntryCheck:
         result.error_class, result.error = "config", _redacted(exc) or type(exc).__name__
         return result
     result.configured = True
-    from agent.chat_completion_helpers import _fallback_api_mode_hint
+    from hermes_agent.agent.chat_completion_helpers import _fallback_api_mode_hint
     result.base_url = _redacted(runtime.get("base_url"))
     explicit, hinted = _fallback_api_mode_hint(entry, result.provider, str(entry.get("base_url") or "").strip())
     # bind_route_entry keeps an explicit or non-chat hint and re-detects only a default chat one.
@@ -178,11 +178,11 @@ def check_entry_static(entry: dict[str, Any]) -> EntryCheck:
 
 def check_entry_live(entry: dict[str, Any], result: EntryCheck) -> EntryCheck:
     """Send one minimal completion for ``entry`` (already statically ready) and record the verdict."""
-    from agent.auxiliary_client import _build_call_kwargs, _create_with_progress_once, _elapsed_ms, _provider_requires_stream
+    from hermes_agent.agent.auxiliary_client import _build_call_kwargs, _create_with_progress_once, _elapsed_ms, _provider_requires_stream
     from hermes_cli.fallback_config import resolve_entry_api_key
     from hermes_cli.timeouts import get_provider_request_timeout
-    from agent.error_classifier import classify_api_error
-    from agent.route_binding import resolve_route_entry_client
+    from hermes_agent.agent.error_classifier import classify_api_error
+    from hermes_agent.agent.route_binding import resolve_route_entry_client
 
     provider, secrets, started = result.provider, _secret_values(resolve_entry_api_key(entry)), None
     try:
@@ -220,8 +220,8 @@ def check_entry_live(entry: dict[str, Any], result: EntryCheck) -> EntryCheck:
 def _body_failure(raw: Any) -> tuple[Optional[dict[str, Any]], bool]:
     """``(provider error, failed status)`` from the body AND a gateway ``{"data": ...}`` envelope,
     read before any normalization: unwrapping rebuilds the answer without ``status`` / ``error``."""
-    from agent import auxiliary_call_outcome as outcome
-    from agent.auxiliary_client import _field
+    from hermes_agent.agent import auxiliary_call_outcome as outcome
+    from hermes_agent.agent.auxiliary_client import _field
     data = _field(raw, "data")
     layers = [raw, data] if isinstance(data, dict) else [raw]
     choices = _field(raw, "choices")
@@ -236,10 +236,10 @@ def _body_failure(raw: Any) -> tuple[Optional[dict[str, Any]], bool]:
 def _judge_answer(result: EntryCheck, raw: Any, model: str, client: Any, secrets: tuple[str, ...]) -> None:
     """Verdict for an answered request: a provider error in the body, no usable completion, another
     model, or ready."""
-    from agent import auxiliary_call_outcome as outcome
-    from agent.auxiliary_client import _recover_aux_response_message, _unwrap_data_envelope, extract_content_or_reasoning
-    from agent.errors import InvalidProviderResponseError
-    from agent.transports.chat_completions import is_router_timeout_shim
+    from hermes_agent.agent import auxiliary_call_outcome as outcome
+    from hermes_agent.agent.auxiliary_client import _recover_aux_response_message, _unwrap_data_envelope, extract_content_or_reasoning
+    from hermes_agent.agent.errors import InvalidProviderResponseError
+    from hermes_agent.agent.transports.chat_completions import is_router_timeout_shim
     provider = result.provider  # already lowercased by check_entry_static
     embedded, failed = _body_failure(raw)
     response = None

@@ -6,7 +6,7 @@ from unittest.mock import patch, MagicMock
 from hermes_cli.auth import resolve_provider, resolve_api_key_provider_credentials
 from hermes_cli.models import normalize_provider
 from hermes_cli.model_normalize import normalize_model_for_provider, detect_vendor
-from agent.models_dev import list_agentic_models
+from hermes_agent.agent.models_dev import list_agentic_models
 
 
 # ── Provider Registry ──
@@ -111,9 +111,9 @@ class TestGeminiAgentInit:
     def test_gemini_agent_uses_chat_completions(self, monkeypatch):
         """Gemini still reports chat_completions even though the transport is native."""
         monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
-        with patch("agent.gemini_native_adapter.GeminiNativeClient") as mock_client:
+        with patch("hermes_agent.agent.gemini_native_adapter.GeminiNativeClient") as mock_client:
             mock_client.return_value = MagicMock()
-            from run_agent import AIAgent
+            from hermes_agent.run_agent import AIAgent
             agent = AIAgent(
                 model="gemini-2.5-flash",
                 provider="gemini",
@@ -128,10 +128,10 @@ class TestGeminiAgentInit:
     def test_gemini_resolve_provider_client_uses_native_client(self, monkeypatch):
         """resolve_provider_client('gemini') should build GeminiNativeClient."""
         monkeypatch.setenv("GEMINI_API_KEY", "AIzaSy_TEST_KEY")
-        with patch("agent.gemini_native_adapter.GeminiNativeClient") as mock_client, \
-             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+        with patch("hermes_agent.agent.gemini_native_adapter.GeminiNativeClient") as mock_client, \
+             patch("hermes_agent.agent.auxiliary_client.OpenAI") as mock_openai:
             mock_client.return_value = MagicMock()
-            from agent.auxiliary_client import resolve_provider_client
+            from hermes_agent.agent.auxiliary_client import resolve_provider_client
             resolve_provider_client("gemini")
         assert mock_client.called
         mock_openai.assert_not_called()
@@ -159,7 +159,7 @@ class TestGeminiModelsDev:
                 }
             }
         }
-        with patch("agent.models_dev.fetch_models_dev", return_value=mock_data):
+        with patch("hermes_agent.agent.models_dev.fetch_models_dev", return_value=mock_data):
             result = list_agentic_models("gemini")
         assert "gemini-3-flash-preview" in result
         assert "gemini-2.5-pro" in result

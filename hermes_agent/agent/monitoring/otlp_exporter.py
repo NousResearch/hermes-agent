@@ -17,8 +17,8 @@ import re
 from contextlib import suppress
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
-from agent.monitoring.gateway_health import _safe_instance_id
-from agent.monitoring.redaction import redact_bounded
+from hermes_agent.agent.monitoring.gateway_health import _safe_instance_id
+from hermes_agent.agent.monitoring.redaction import redact_bounded
 
 logger = logging.getLogger(__name__)
 
@@ -117,7 +117,7 @@ _SAFE_RESOURCE_VALUE = re.compile(r"^[A-Za-z0-9._:/-]{1,128}$")
 
 def _install_id(config: dict[str, Any]) -> str:
     try:
-        from agent.monitoring.policy import ensure_install_id
+        from hermes_agent.agent.monitoring.policy import ensure_install_id
         return str(ensure_install_id(config))
     except Exception:
         return "unknown"
@@ -222,7 +222,7 @@ class EmitterStreamer:
 
     def shutdown(self) -> None:
         with suppress(Exception):
-            from agent.monitoring.emitter import get_emitter
+            from hermes_agent.agent.monitoring.emitter import get_emitter
             get_emitter().unsubscribe(self)
         with suppress(Exception):
             self._processor.force_flush()
@@ -276,7 +276,7 @@ def start_streaming(
         logger.warning("monitoring.export.otlp.enabled but the OTel SDK could not "
                        "be installed/imported; install 'hermes-agent[otlp]'")
         return None
-    from agent.monitoring.emitter import get_emitter
+    from hermes_agent.agent.monitoring.emitter import get_emitter
     streamer = OTLPStreamer(config, event_filter=event_filter)
     get_emitter().subscribe(streamer)
     return streamer

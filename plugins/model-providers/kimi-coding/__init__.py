@@ -4,7 +4,7 @@ redirected to api.kimi.com/coding by core)."""
 from typing import Any
 from urllib.parse import urlparse
 
-from agent.reasoning_effort import KIMI_K3_EFFORTS, KIMI_K3_OVERRIDES, thinking_toggle_extras
+from hermes_agent.agent.reasoning_effort import KIMI_K3_EFFORTS, KIMI_K3_OVERRIDES, thinking_toggle_extras
 from hermes_cli.version_info import hermes_user_agent
 from providers import register_provider
 from providers.base import OMIT_TEMPERATURE, LazyHeaders, ProviderProfile

@@ -26,11 +26,11 @@ import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from agent.context_compressor import (
+from hermes_agent.agent.context_compressor import (
     _MAX_PRUNED_SKILL_MARKERS,
     _skill_pruned_marker,
 )
-from agent.conversation_compression import (
+from hermes_agent.agent.conversation_compression import (
     _PRUNED_SKILL_RELOAD_NOTICE_HEADER,
     _pruned_skill_reload_notice,
     _strip_stale_todo_snapshot,
@@ -41,7 +41,7 @@ from hermes_agent.tools.todo_tool import TODO_INJECTION_HEADER
 
 def _build_agent_with_db(db: SessionDB, session_id: str, platform: str = "cli"):
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key",
@@ -145,7 +145,7 @@ class TestPrunedSkillReloadNotice:
     def test_notice_does_not_feed_the_marker_extractor(self):
         """The notice must never re-trigger marker extraction on the next
         boundary — it references skills WITHOUT the canonical prefix."""
-        from agent.context_compressor import _extract_pruned_skill_names
+        from hermes_agent.agent.context_compressor import _extract_pruned_skill_names
 
         notice = _pruned_skill_reload_notice(
             [{"role": "user", "content": _skill_pruned_marker("once")}]
@@ -203,8 +203,8 @@ class TestSkillGuidanceSurvivesWithTodos:
     def test_synthetic_row_classification_unbroken(self, tmp_path):
         """A snapshot+notice appended as its own row must still classify as
         compression scaffolding, never as a real user turn."""
-        from agent.context_compressor import ContextCompressor
-        from agent.conversation_compression import _is_real_user_message
+        from hermes_agent.agent.context_compressor import ContextCompressor
+        from hermes_agent.agent.conversation_compression import _is_real_user_message
 
         summary = (
             "[CONTEXT COMPACTION] summary\n\n## Pruned Skills\n"

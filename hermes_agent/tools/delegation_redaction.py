@@ -17,8 +17,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
-import agent.redact as _redact
-from agent.redact import (
+import hermes_agent.agent.redact as _redact
+from hermes_agent.agent.redact import (
     REDACTION_UNAVAILABLE,
     is_secret_field_name,
     redact_for_egress,

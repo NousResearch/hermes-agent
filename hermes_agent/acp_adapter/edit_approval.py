@@ -200,7 +200,7 @@ def maybe_require_edit_approval(tool_name: str, arguments: dict[str, Any]) -> st
 def build_acp_edit_tool_call(proposal: EditProposal):
     """Build the ToolCallUpdate payload for ACP request_permission."""
     import acp
-    from agent.redact import redact_approval_display
+    from hermes_agent.agent.redact import redact_approval_display
 
     # The title is display text; the diff keeps the raw path the client opens.
     return acp.update_tool_call(

@@ -261,19 +261,19 @@ class TestResolveOpenaiAudioApiKeyIsProfileScoped:
     loaded at boot, not the profile the current turn belongs to — so a raw
     read here would let one profile's voice reply or voice-note transcription
     run on (and be billed to) another profile's OpenAI account. Same contract
-    ``agent/vertex_adapter`` and the WeChat send path already follow.
+    ``hermes_agent/agent/vertex_adapter`` and the WeChat send path already follow.
     """
 
     @pytest.fixture(autouse=True)
     def _reset_multiplex(self):
-        from agent import secret_scope as ss
+        from hermes_agent.agent import secret_scope as ss
 
         ss.set_multiplex_active(False)
         yield
         ss.set_multiplex_active(False)
 
     def test_scope_wins_over_another_profiles_environ(self, monkeypatch):
-        from agent import secret_scope as ss
+        from hermes_agent.agent import secret_scope as ss
 
         monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
         monkeypatch.setenv("OPENAI_API_KEY", "sk-other-profile")

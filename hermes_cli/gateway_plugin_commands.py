@@ -127,7 +127,7 @@ def skill_notes(cli):
     notice = skills(cli, notes=True)
     if notice is not None:
         return [notice] if notice else []
-    from agent.skill_commands import skill_command_collision_note
+    from hermes_agent.agent.skill_commands import skill_command_collision_note
     from hermes_agent.tools.skills_tool import find_all_skills
     return list(filter(None, (skill_command_collision_note(s["name"]) for s in find_all_skills())))
 
@@ -140,7 +140,7 @@ def run_skill(cli, base_cmd, rest):
     connection = connection_for(cli)
     if connection is None:
         return False
-    from agent.i18n import t
+    from hermes_agent.agent.i18n import t
     from cli import _cprint
     command = base_cmd.lstrip("/") + (" " + rest if rest else "")
     try:
@@ -221,7 +221,7 @@ def call_unbounded(cli, connection, name, command):
     from cli import _cprint
     from hermes_cli.gateway_connection import CallStopped
     wake = cli._gateway_command_wait = threading.Event()  # set by Ctrl+C (cli_tui_mixin)
-    from agent.memory_provider import spawn_context_thread
+    from hermes_agent.agent.memory_provider import spawn_context_thread
     answering: list = []  # the clarify request id the panel is answering, while it is open
     spawn_context_thread(_answer_choices, args=(cli, connection, wake, answering), name="hermes-command-choices").start()
     try:

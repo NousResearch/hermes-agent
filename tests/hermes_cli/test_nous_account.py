@@ -200,7 +200,7 @@ def test_no_oauth_token_reports_inference_key_present(monkeypatch):
         def entries(self):
             return [_Entry()]
 
-    monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: _Pool())
+    monkeypatch.setattr("hermes_agent.agent.credential_pool.load_pool", lambda provider: _Pool())
 
     info = get_nous_portal_account_info()
 
@@ -257,7 +257,7 @@ def test_pool_oauth_entry_force_fresh_uses_account_api(monkeypatch):
         def entries(self):
             return [_Entry()]
 
-    monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: _Pool())
+    monkeypatch.setattr("hermes_agent.agent.credential_pool.load_pool", lambda provider: _Pool())
 
     info = get_nous_portal_account_info(force_fresh=True)
 

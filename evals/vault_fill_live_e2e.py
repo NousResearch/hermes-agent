@@ -72,8 +72,8 @@ def main() -> int:
 
         from hermes_agent.tools import browser_vault_tool as bvt
         from hermes_agent.tools.browser_cdp_tool import _redact_cdp_output
-        from agent.vault_store import get_vault_store
-        from agent import redact
+        from hermes_agent.agent.vault_store import get_vault_store
+        from hermes_agent.agent import redact
         import hermes_agent.tools.approval_prompt as ap
 
         store = get_vault_store()
@@ -110,7 +110,7 @@ def main() -> int:
 
         # save-on-page: the supervisor's default page is the blank first tab; the tool must find the login
         # tab itself (Browser Use daemon tabs are how a real session looks) and bind the item to ITS origin.
-        from agent.vault_backends import unlock as vault_unlock
+        from hermes_agent.agent.vault_backends import unlock as vault_unlock
         store.remove_item(login.id)
         sup.evaluate_runtime("document.querySelector('input[name=pw]') && (document.querySelector('input[name=pw]').value = '')")
         assert sup.focus_page("about:blank")["ok"] is False  # about: pages are never candidates

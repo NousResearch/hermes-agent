@@ -402,7 +402,7 @@ def _plugin_terminal_env_strip_keys() -> frozenset:
     stripped from every spawned subprocess). Computed at call time because plugins
     register after import; fail-soft to empty."""
     try:
-        from agent.terminal_env_registry import plugin_strip_env_keys
+        from hermes_agent.agent.terminal_env_registry import plugin_strip_env_keys
 
         return plugin_strip_env_keys()
     except Exception:

@@ -13,8 +13,8 @@ reaching the wire, and Claude signed thinking is charged only where conversion k
 """
 from unittest.mock import MagicMock, patch
 
-from agent.context_compressor import ContextCompressor
-from agent.message_metadata import stamp_reasoning_tokens, stamped_reasoning_tokens
+from hermes_agent.agent.context_compressor import ContextCompressor
+from hermes_agent.agent.message_metadata import stamp_reasoning_tokens, stamped_reasoning_tokens
 
 
 def _compacted_then_long_tool_turn(rounds: int = 12, reasoning_tokens: int = 8_000) -> list[dict]:
@@ -37,7 +37,7 @@ def _compacted_then_long_tool_turn(rounds: int = 12, reasoning_tokens: int = 8_0
 
 
 def test_window_reaches_into_a_reasoning_heavy_active_turn():
-    with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+    with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=200_000):
         c = ContextCompressor(model="grok-4.7", threshold_percent=0.5, protect_first_n=1,
                               protect_last_n=2, quiet_mode=True)
         _ = c.context_length
@@ -52,7 +52,7 @@ def test_each_row_carries_its_own_responses_count_into_the_request_estimate_not_
     """A real turn loop: a response reporting 8,000 reasoning tokens, then a TRUNCATED one reporting 73
     (its fragment is built before the usage fold), then the finish. The fragment is stamped 73, the
     next request's estimate sees the stamps, and no request-only key reaches the provider."""
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     from tests.agent.test_run_agent import _mock_response, _mock_tool_call
 
     def usage(reasoning):
@@ -62,7 +62,7 @@ def test_each_row_carries_its_own_responses_count_into_the_request_estimate_not_
     with (
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(api_key="test-key-1234567890", base_url="https://openrouter.ai/api/v1",
                         quiet_mode=True, skip_context_files=True, skip_memory=True)
@@ -75,7 +75,7 @@ def test_each_row_carries_its_own_responses_count_into_the_request_estimate_not_
         _mock_response(content=" and the rest.", usage=usage(0)),
     ]
     estimates = []
-    from agent import model_metadata
+    from hermes_agent.agent import model_metadata
     original = model_metadata.estimate_messages_tokens_rough
 
     def spy(messages, **kwargs):
@@ -84,7 +84,7 @@ def test_each_row_carries_its_own_responses_count_into_the_request_estimate_not_
 
     # assemble_api_request imports the estimator inside the function, so the module attribute is the seam.
     with (
-        patch("agent.model_metadata.estimate_messages_tokens_rough", side_effect=spy),
+        patch("hermes_agent.agent.model_metadata.estimate_messages_tokens_rough", side_effect=spy),
         patch.object(agent, "_persist_session"), patch.object(agent, "_save_trajectory"),
         patch.object(agent, "_cleanup_task_resources"),
     ):
@@ -105,8 +105,8 @@ def test_replaced_reasoning_drops_the_old_stamp():
 
 
 def test_claude_thinking_is_charged_only_where_conversion_keeps_the_signature():
-    from agent.anthropic_message_convert import convert_messages_to_anthropic
-    from agent.message_sanitization import native_anthropic_accounting_projection
+    from hermes_agent.agent.anthropic_message_convert import convert_messages_to_anthropic
+    from hermes_agent.agent.message_sanitization import native_anthropic_accounting_projection
 
     def signed(text, tool_id=None):
         row = {"role": "assistant", "content": text,

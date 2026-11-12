@@ -25,8 +25,8 @@ from pathlib import Path as _Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
-from agent.i18n import t
-from agent.secret_scope import is_multiplex_active
+from hermes_agent.agent.i18n import t
+from hermes_agent.agent.secret_scope import is_multiplex_active
 from hermes_agent.gateway.platforms._shared import (
     get_scoped_secret as _get_scoped_secret, seed_extra_from_env as _seed_extra_from_env, send_error
 )
@@ -525,7 +525,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
             logger.warning("[GoogleChat] Loop not accepting callbacks; dropping event")
             return
         try:
-            from agent.async_utils import safe_schedule_threadsafe
+            from hermes_agent.agent.async_utils import safe_schedule_threadsafe
             # run_coroutine_threadsafe copies the CALLING thread's context onto the loop task; from the
             # gRPC callback thread that is empty. Run the scheduling inside the adapter's connect-time
             # scope so the task (and every to_thread/create_task under it) carries the profile.
@@ -839,7 +839,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
         if self._debug_raw:
             # Contains message text + sender email: redact and gate at DEBUG.
             try:
-                from agent.redact import redact_sensitive_text
+                from hermes_agent.agent.redact import redact_sensitive_text
                 dump = redact_sensitive_text(json.dumps(envelope))
             except Exception:
                 dump = "<redact filter unavailable>"

@@ -69,7 +69,7 @@ def _first_available_plugin_provider(registry: str, skip: str | None = None):
         import importlib
         from hermes_cli.plugins import _ensure_plugins_discovered
         _ensure_plugins_discovered()
-        for provider in importlib.import_module(f"agent.{registry}").list_providers():
+        for provider in importlib.import_module(f"hermes_agent.agent.{registry}").list_providers():
             if provider.name == skip:
                 continue
             try:
@@ -88,7 +88,7 @@ def _first_available_plugin_provider(registry: str, skip: str | None = None):
 def _vision_row(config, feats):
     # Use the same runtime resolver as the actual vision tools.
     try:
-        from agent.auxiliary_client import get_available_vision_backends
+        from hermes_agent.agent.auxiliary_client import get_available_vision_backends
         ok = bool(get_available_vision_backends())
     except Exception:
         ok = False

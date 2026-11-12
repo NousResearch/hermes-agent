@@ -9,7 +9,7 @@ import contextlib
 from types import SimpleNamespace
 
 import hermes_agent.tui_gateway.server as srv
-from agent.stream_delivery import StreamDeliveryMixin
+from hermes_agent.agent.stream_delivery import StreamDeliveryMixin
 
 
 class _Agent(StreamDeliveryMixin):

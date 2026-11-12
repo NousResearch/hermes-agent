@@ -8,15 +8,15 @@ lifetime of the process so a retry loop can't spam the logs.
 
 import logging
 
-import agent.auxiliary_client as ac
-from agent.auxiliary_client import resolve_provider_client
+import hermes_agent.agent.auxiliary_client as ac
+from hermes_agent.agent.auxiliary_client import resolve_provider_client
 
 class TestUnknownProviderDedup:
     def setup_method(self):
         ac._LOGGED_UNKNOWN_PROVIDER_KEYS.clear()
 
     def test_unknown_provider_logs_debug_once_not_warning(self, caplog):
-        with caplog.at_level(logging.DEBUG, logger="agent.auxiliary_client"):
+        with caplog.at_level(logging.DEBUG, logger="hermes_agent.agent.auxiliary_client"):
             client, model = resolve_provider_client("no_such_provider_xyz", "")
         assert (client, model) == (None, None)
         recs = [
@@ -29,7 +29,7 @@ class TestUnknownProviderDedup:
         assert not any(r.levelno >= logging.WARNING for r in recs)
 
     def test_unknown_provider_repeat_is_suppressed(self, caplog):
-        with caplog.at_level(logging.DEBUG, logger="agent.auxiliary_client"):
+        with caplog.at_level(logging.DEBUG, logger="hermes_agent.agent.auxiliary_client"):
             resolve_provider_client("no_such_provider_xyz", "")
             resolve_provider_client("no_such_provider_xyz", "")
             resolve_provider_client("no_such_provider_xyz", "")
@@ -59,7 +59,7 @@ class TestUnhandledAuthTypeDedup:
         patched["bogus_authtype"] = bogus
         monkeypatch.setattr(auth, "PROVIDER_REGISTRY", patched)
 
-        with caplog.at_level(logging.DEBUG, logger="agent.auxiliary_client"):
+        with caplog.at_level(logging.DEBUG, logger="hermes_agent.agent.auxiliary_client"):
             client, model = resolve_provider_client("bogus_authtype", "")
             resolve_provider_client("bogus_authtype", "")  # repeat → suppressed
 

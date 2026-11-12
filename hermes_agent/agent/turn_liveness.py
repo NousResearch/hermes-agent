@@ -16,7 +16,7 @@ import threading
 import time
 from typing import Any, Callable, Dict, NamedTuple, Optional, Tuple
 
-from agent.session_activity import AwakeIdleMeter
+from hermes_agent.agent.session_activity import AwakeIdleMeter
 
 logger = logging.getLogger(__name__)
 
@@ -116,7 +116,7 @@ class TurnLivenessWatchdog:
     def schedule(self):
         """Start polling via the shared periodic scheduler; returns the cancel handle.
         Scheduled at turn entry, after the turn-active flag and activity clock are stamped."""
-        from agent.periodic_scheduler import schedule
+        from hermes_agent.agent.periodic_scheduler import schedule
 
         return schedule(self._tick, self._poll_s)
 

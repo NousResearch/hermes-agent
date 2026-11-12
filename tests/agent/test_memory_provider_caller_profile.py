@@ -10,11 +10,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.inline_tool_executors import resolve_invoke_tool_executor
-from agent.memory_manager import MemoryManager
-from agent.memory_provider import MemoryProvider, ctx_bound
-from agent.secret_scope import is_multiplex_active
-from agent.tool_executor import _resolve_sequential_dispatch, _ToolCallRef
+from hermes_agent.agent.inline_tool_executors import resolve_invoke_tool_executor
+from hermes_agent.agent.memory_manager import MemoryManager
+from hermes_agent.agent.memory_provider import MemoryProvider, ctx_bound
+from hermes_agent.agent.secret_scope import is_multiplex_active
+from hermes_agent.agent.tool_executor import _resolve_sequential_dispatch, _ToolCallRef
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
 _TOOL = "pw_remember"
@@ -148,14 +148,14 @@ def _assert_generic_refusal(result, caplog, *homes):
     error = result.get("error", "")
     assert "refused" in error and "hermes logs errors" in error, result
     assert _REFUSAL_CODE not in error and not any(str(home) in error for home in homes), result
-    logged = "\n".join(r.getMessage() for r in caplog.records if r.name == "agent.memory_caller_scope")
+    logged = "\n".join(r.getMessage() for r in caplog.records if r.name == "hermes_agent.agent.memory_caller_scope")
     assert _REFUSAL_CODE in logged, logged
     assert all(str(home) in logged for home in homes), logged
 
 
 @pytest.fixture
 def multiplexed():
-    from agent.secret_scope import reset_multiplex_context, set_multiplex_context
+    from hermes_agent.agent.secret_scope import reset_multiplex_context, set_multiplex_context
     token = set_multiplex_context(True)
     yield
     reset_multiplex_context(token)
@@ -315,7 +315,7 @@ _HOOKS = {
 
 def _refused_hooks(caplog) -> set:
     return {r.args[0].removeprefix("hook ") for r in caplog.records
-            if r.name == "agent.memory_caller_scope" and _REFUSAL_CODE in r.getMessage()}
+            if r.name == "hermes_agent.agent.memory_caller_scope" and _REFUSAL_CODE in r.getMessage()}
 
 
 def test_lifecycle_hooks_from_another_profiles_scope_are_refused(homes, caplog):
@@ -327,7 +327,7 @@ def test_lifecycle_hooks_from_another_profiles_scope_are_refused(homes, caplog):
             hook(alpha)
     assert _InstanceScopedProvider.events == []
     assert _refused_hooks(caplog) == set(_HOOKS)
-    assert all(str(beta_home) in r.getMessage() for r in caplog.records if r.name == "agent.memory_caller_scope")
+    assert all(str(beta_home) in r.getMessage() for r in caplog.records if r.name == "hermes_agent.agent.memory_caller_scope")
 
 
 def test_multiplexed_lifecycle_hooks_without_a_caller_scope_are_refused(homes, multiplexed, monkeypatch, caplog):
@@ -343,7 +343,7 @@ def test_multiplexed_lifecycle_hooks_without_a_caller_scope_are_refused(homes, m
 def test_tool_calls_reuse_what_initialize_bound(homes, monkeypatch):
     # Per call, only the caller's home is resolved: the bound home's key and the provider's
     # handle_tool_call signature are worked out once per manager, not on every call.
-    from agent import memory_caller_scope, memory_manager
+    from hermes_agent.agent import memory_caller_scope, memory_manager
     alpha_home, _ = homes
     alpha = _manager(alpha_home)
     keys, signatures = [], []
@@ -368,7 +368,7 @@ def test_refusals_are_written_to_gateway_log():
     # gateway.log keeps only the gateway component's loggers; the refusals must be among them.
     import logging
 
-    from agent import memory_caller_scope
+    from hermes_agent.agent import memory_caller_scope
     from hermes_logging import COMPONENT_PREFIXES, _ComponentFilter
     record = logging.LogRecord(memory_caller_scope.logger.name, logging.WARNING, __file__, 1, "refused", (), None)
     assert _ComponentFilter(COMPONENT_PREFIXES["gateway"]).filter(record)
@@ -377,7 +377,7 @@ def test_refusals_are_written_to_gateway_log():
 def test_background_hook_runs_under_the_owning_profile_explicitly(homes, multiplexed):
     # The turn proves its profile through the secret scope alone (no HERMES_HOME override): the
     # background worker must still run the provider under the owner's home, not the process's.
-    from agent.secret_scope import reset_secret_scope, set_secret_scope
+    from hermes_agent.agent.secret_scope import reset_secret_scope, set_secret_scope
     alpha_home, _ = homes
     alpha = _manager(alpha_home)
     token = set_secret_scope({}, profile_home=str(alpha_home))
@@ -441,7 +441,7 @@ def test_one_provider_instance_is_never_served_to_a_second_profile(homes, multip
     with _Scope(alpha_home):
         assert json.loads(alpha.handle_tool_call(_HOOK_TOOL, {})) == {"ok": True}
     assert [e[1] for e in _InstanceScopedProvider.events] == [str(alpha_home)]
-    logged = "\n".join(r.getMessage() for r in caplog.records if r.name == "agent.memory_caller_scope")
+    logged = "\n".join(r.getMessage() for r in caplog.records if r.name == "hermes_agent.agent.memory_caller_scope")
     assert "memory_provider_instance_shared" in logged and str(beta_home) in logged, logged
 
 
@@ -450,7 +450,7 @@ def test_agent_whose_provider_instance_is_refused_is_told_and_runs_without_it(ho
     # nothing claims the provider "activated".
     import logging
 
-    from agent import agent_init
+    from hermes_agent.agent import agent_init
     from tests.agent.test_memory_migration_notifications import StartupAgent
     alpha_home, beta_home = homes
     shared = _InstanceScopedProvider()
@@ -502,8 +502,8 @@ def test_value_equal_distinct_instances_are_each_served(homes, multiplexed):
 
 
 def test_untrackable_provider_instance_fails_closed_only_when_multiplexed(homes):
-    from agent.memory_caller_scope import claim_instance
-    from agent.secret_scope import reset_multiplex_context, set_multiplex_context
+    from hermes_agent.agent.memory_caller_scope import claim_instance
+    from hermes_agent.agent.secret_scope import reset_multiplex_context, set_multiplex_context
 
     class _NoWeakref:
         __slots__ = ("name",)

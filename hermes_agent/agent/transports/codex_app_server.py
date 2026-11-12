@@ -17,8 +17,8 @@ import threading
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from agent.deadline import kill_process_tree
-from agent.transports.hermes_tools_mcp_server import HERMES_TOOLS_MCP_SERVER_NAME
+from hermes_agent.agent.deadline import kill_process_tree
+from hermes_agent.agent.transports.hermes_tools_mcp_server import HERMES_TOOLS_MCP_SERVER_NAME
 from hermes_agent.tools.environments.local import hermes_subprocess_env
 
 MIN_CODEX_VERSION = (0, 125, 0)
@@ -109,7 +109,7 @@ class CodexAppServerClient:
             spawn_env["CODEX_HOME"] = codex_home
 
         cmd = [codex_bin, "app-server", *(extra_args or [])]
-        from agent.delegation_context import (
+        from hermes_agent.agent.delegation_context import (
             DELEGATED_CHILD_ENV_MARKER, KANBAN_ENV_KEYS,
             delegated_child_subprocess_env, is_dispatcher_owned_worker_context,
         )

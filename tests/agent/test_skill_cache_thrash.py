@@ -1,7 +1,7 @@
 """Regression test for #104849: skill command cache thrash from platform/home flapping."""
 from pathlib import Path
 from unittest.mock import patch
-from agent.skill_commands import get_skill_commands, scan_skill_commands
+from hermes_agent.agent.skill_commands import get_skill_commands, scan_skill_commands
 
 
 def _make_skill(parent: Path, name: str) -> None:
@@ -25,7 +25,7 @@ def test_cache_survives_platform_empty_string_none_flapping(tmp_path):
     to `None` so both spellings share one slot (scan once, hit forever).
     """
     import os
-    import agent.skill_commands as sc_mod
+    import hermes_agent.agent.skill_commands as sc_mod
 
     _make_skill(tmp_path, "test-skill")
 
@@ -40,7 +40,7 @@ def test_cache_survives_platform_empty_string_none_flapping(tmp_path):
     with (
         patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path),
         patch.object(sc_mod, "_skill_commands_by_key", {}),
-        patch("agent.skill_commands.scan_skill_commands", side_effect=counting_scan),
+        patch("hermes_agent.agent.skill_commands.scan_skill_commands", side_effect=counting_scan),
     ):
         # First call: platform implicitly None (no env var)
         with patch.dict(os.environ, {}, clear=False):
@@ -70,7 +70,7 @@ def test_cache_creates_multiple_slots_for_distinct_platform_or_home(tmp_path):
     cache that breaks the #14536 / #88023 fixes (platform/profile isolation).
     """
     import os
-    import agent.skill_commands as sc_mod
+    import hermes_agent.agent.skill_commands as sc_mod
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     profile_a = tmp_path / "profile_a"
@@ -92,7 +92,7 @@ def test_cache_creates_multiple_slots_for_distinct_platform_or_home(tmp_path):
 
     with (
         patch.object(sc_mod, "_skill_commands_by_key", {}),
-        patch("agent.skill_commands.scan_skill_commands", side_effect=counting_scan),
+        patch("hermes_agent.agent.skill_commands.scan_skill_commands", side_effect=counting_scan),
     ):
         # Scan profile A, platform 'telegram'
         token = set_hermes_home_override(profile_a)
@@ -141,8 +141,8 @@ def test_cache_keys_project_as_third_dimension(tmp_path):
     (platform, home) key would serve repo A's project skills to repo B after a
     cache hit — the regression this guards against.
     """
-    import agent.skill_commands as sc_mod
-    from agent import skill_utils
+    import hermes_agent.agent.skill_commands as sc_mod
+    from hermes_agent.agent import skill_utils
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     repo_a = tmp_path / "repo-a"
@@ -177,7 +177,7 @@ def test_cache_keys_project_as_third_dimension(tmp_path):
     try:
         with (
             patch.object(sc_mod, "_skill_commands_by_key", {}),
-            patch("agent.skill_commands.scan_skill_commands", side_effect=counting_scan),
+            patch("hermes_agent.agent.skill_commands.scan_skill_commands", side_effect=counting_scan),
             patch.object(skill_utils, "find_project_root", fake_find_project_root),
             patch.object(skill_utils, "get_project_skills_dirs", fake_project_dirs),
         ):
@@ -207,9 +207,9 @@ def test_reload_invalidates_every_identity_slot(tmp_path):
     """reload_skills() clears the whole multi-slot dict: a skill edit can affect
     any (platform, home, project) identity, so every cached view must rescan."""
     import os
-    import agent.skill_commands as sc_mod
+    import hermes_agent.agent.skill_commands as sc_mod
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-    from agent.skill_commands import reload_skills
+    from hermes_agent.agent.skill_commands import reload_skills
 
     profile_a = tmp_path / "profile_a"
     profile_b = tmp_path / "profile_b"

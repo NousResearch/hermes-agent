@@ -869,7 +869,7 @@ Six touchpoints:
 
 ### 9. Optional: Platform Hints
 
-**`platform_hint=`** on `ctx.register_platform` — If your platform has specific rendering limitations (no markdown, message length limits, etc.), declare a hint on its registry entry (keep the text in a light sibling such as `adapter_hint.py`). It is injected into the system prompt; `agent/prompt_builder.py::PLATFORM_HINTS` holds only core surfaces:
+**`platform_hint=`** on `ctx.register_platform` — If your platform has specific rendering limitations (no markdown, message length limits, etc.), declare a hint on its registry entry (keep the text in a light sibling such as `adapter_hint.py`). It is injected into the system prompt; `hermes_agent/agent/prompt_builder.py::PLATFORM_HINTS` holds only core surfaces:
 
 ```python
 PLATFORM_HINT = (

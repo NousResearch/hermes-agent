@@ -22,8 +22,8 @@ import time
 
 import pytest
 
-from agent import credential_pool as CP
-from agent.credential_pool import (
+from hermes_agent.agent import credential_pool as CP
+from hermes_agent.agent.credential_pool import (
     AUTH_TYPE_OAUTH,
     CredentialPool,
     PooledCredential,
@@ -273,7 +273,7 @@ def test_write_through_fires_on_every_refresh_not_just_first(
     # (``from X import Y`` creates a local binding that does not update when
     # ``X.Y`` is reassigned).  Patch CP's bindings separately so the
     # ``_sync_device_code_entry_to_auth_store`` method — whose __globals__
-    # are ``agent.credential_pool.__dict__`` — sees the mocked paths.
+    # are ``hermes_agent.agent.credential_pool.__dict__`` — sees the mocked paths.
     monkeypatch.setattr(CP, "_global_auth_file_path", lambda: root_path)
     monkeypatch.setattr(CP, "_same_path", lambda a, b: a == b)
     # Let _write_through_provider_state_to_global_root run for real so it
@@ -341,14 +341,14 @@ def test_hermes_pkce_refresh_writes_back_to_singleton(tmp_path, monkeypatch):
     _write_store(hermes_home / "auth.json", {"version": 1, "providers": {}})
 
     monkeypatch.setattr(
-        "agent.anthropic_credentials.refresh_anthropic_oauth_pure",
+        "hermes_agent.agent.anthropic_credentials.refresh_anthropic_oauth_pure",
         lambda refresh_token, use_json=False: {
             "access_token": "sk-ant-oat-rt1",
             "refresh_token": "rt1",
             "expires_at_ms": int(time.time() * 1000) + 3_600_000,
         },
     )
-    monkeypatch.setattr("agent.anthropic_credentials.read_claude_code_credentials", lambda: None)
+    monkeypatch.setattr("hermes_agent.agent.anthropic_credentials.read_claude_code_credentials", lambda: None)
 
     entry = PooledCredential(
         provider="anthropic",
@@ -390,9 +390,9 @@ def test_manual_hermes_pkce_refresh_does_not_create_duplicate_singleton(
     hermes_home.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     monkeypatch.setattr("hermes_cli.auth.is_provider_explicitly_configured", lambda pid: True)
-    monkeypatch.setattr("agent.anthropic_credentials.read_claude_code_credentials", lambda: None)
+    monkeypatch.setattr("hermes_agent.agent.anthropic_credentials.read_claude_code_credentials", lambda: None)
     monkeypatch.setattr(
-        "agent.anthropic_credentials.refresh_anthropic_oauth_pure",
+        "hermes_agent.agent.anthropic_credentials.refresh_anthropic_oauth_pure",
         lambda refresh_token, use_json=False: {
             "access_token": "manual-at-1",
             "refresh_token": "manual-rt-1",

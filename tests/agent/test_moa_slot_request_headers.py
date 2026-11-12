@@ -9,7 +9,7 @@ import pytest
 @pytest.fixture
 def slot_profile(request, monkeypatch):
     import providers
-    from agent import provider_route_hooks
+    from hermes_agent.agent import provider_route_hooks
     from providers.base import ProviderProfile
 
     state = {"calls": 0, "fail": False}
@@ -35,7 +35,7 @@ def slot_profile(request, monkeypatch):
 
 
 def test_slot_headers_are_memoized_per_request_shape(slot_profile):
-    from agent.moa_loop import _slot_request_headers
+    from hermes_agent.agent.moa_loop import _slot_request_headers
 
     runtime = {"provider": "moaslot", "model": "m"}
     for _ in range(3):
@@ -44,7 +44,7 @@ def test_slot_headers_are_memoized_per_request_shape(slot_profile):
 
 
 def test_failing_slot_hook_stays_generic_for_the_agent_session(slot_profile):
-    from agent.moa_loop import _slot_request_headers
+    from hermes_agent.agent.moa_loop import _slot_request_headers
 
     runtime = {"provider": "moaslot", "model": "m"}
     agent = SimpleNamespace()

@@ -24,7 +24,7 @@ _TURN_ATTRS = ("tool_gen_callback", "_print_fn", "thinking_callback", "reaction_
                *local_desktop_ui.CALLBACK_ATTRS)
 # Private key in ``wire``'s return value: the desktop window bridge registration ``restore`` releases.
 _DESKTOP_UI_TOKEN = "__desktop_ui_token__"
-# MoA facade progress (agent/moa_loop._RELAY_EVENTS) -> the payload hermes_agent/tui_gateway/tool_progress emits.
+# MoA facade progress (hermes_agent/agent/moa_loop._RELAY_EVENTS) -> the payload hermes_agent/tui_gateway/tool_progress emits.
 _MOA_KEYS = {"moa.reference": {"moa_index": "index", "moa_count": "count"},
              "moa.progress": {"moa_refs_done": "refs_done", "moa_refs_total": "refs_total"},
              "moa.phase": {"moa_phase": "phase", "moa_refs_done": "refs_done", "moa_refs_total": "refs_total"},
@@ -136,7 +136,7 @@ def publish_progress(turn, event_type, name, preview, kwargs) -> None:
             event_type, name, preview, kwargs, show_reasoning=show_reasoning(turn)))
         return
     if event_type == "tool.progress":
-        from agent.tool_progress_relay import tool_progress_payload
+        from hermes_agent.agent.tool_progress_relay import tool_progress_payload
         turn._publish_execution(event_type, tool_progress_payload(name, preview, kwargs))
         return
     if event_type != "reasoning.available" and event_type not in _MOA_KEYS:
@@ -194,7 +194,7 @@ def note_tool_start(turn, call_id, tool_name=None, args=None) -> None:
     if tool_name is None:
         return
     try:
-        from agent.display import capture_local_edit_snapshot
+        from hermes_agent.agent.display import capture_local_edit_snapshot
         snapshot = capture_local_edit_snapshot(tool_name, args if isinstance(args, dict) else {},
                                                task_id=turn._ctx.session_id)
     except Exception:  # health: allow BLE001 -- display-only preview; a failed snapshot only drops the diff
@@ -217,14 +217,14 @@ def complete_fields(turn, call_id, tool_name=None, args=None, result=None, *, is
     snapshot = turn.__dict__.setdefault("_local_edit_snapshots", {}).pop(key, None)
     rendered: list[str] = []
     try:
-        from agent.display import render_edit_diff_with_delta
+        from hermes_agent.agent.display import render_edit_diff_with_delta
         render_edit_diff_with_delta(tool_name, result, function_args=args if isinstance(args, dict) else {},
                                     snapshot=snapshot, print_fn=rendered.append)
     except Exception:  # health: allow BLE001 -- display-only preview, as main's CLI _on_tool_complete
         logger.debug("Edit diff preview failed for %s", tool_name, exc_info=True)
         rendered = []
     fields["inline_diff"] = "\n".join(rendered) if rendered else None
-    from agent.terminal_image import tool_image_path
+    from hermes_agent.agent.terminal_image import tool_image_path
     fields["image_path"] = tool_image_path(tool_name, args, result, is_error=is_error)
     todo = todo_state(tool_name, result)
     if todo is not None:

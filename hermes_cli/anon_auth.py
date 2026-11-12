@@ -36,7 +36,7 @@ from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
-from agent.retry_utils import parse_retry_after_seconds
+from hermes_agent.agent.retry_utils import parse_retry_after_seconds
 from hermes_cli.auth_constants import (
     AuthError, DEFAULT_NOUS_PORTAL_URL, DEFAULT_NOUS_WELCOME_URL, NOUS_INFERENCE_INVOKE_SCOPE, WELCOME_CLAIM_FLAG,
     _decode_jwt_claims, httpx)

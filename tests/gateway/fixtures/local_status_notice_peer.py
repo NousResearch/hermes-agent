@@ -41,8 +41,8 @@ async def probe():
     from hermes_agent.gateway.run_api import start_gateway_api, stop_gateway_api
     from hermes_cli import web_server
     from hermes_cli.dashboard_auth.ws_tickets import mint_ticket
-    import run_agent
-    from agent.credits_tracker import AgentNotice
+    from hermes_agent import run_agent
+    from hermes_agent.agent.credits_tracker import AgentNotice
 
     original = run_agent.AIAgent.run_conversation
 

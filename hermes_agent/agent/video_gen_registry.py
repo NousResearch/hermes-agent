@@ -4,7 +4,7 @@ Populated by plugins via ``PluginContext.register_video_gen_provider()``;
 consumed by the ``video_generate`` tool. The active provider is
 ``video_gen.provider`` from ``config.yaml``; a configured-but-unregistered name
 fails closed. If unset, the single *available* registered provider is used
-(mirrors ``agent/image_gen_registry.py`` minus its legacy ``fal`` preference)
+(mirrors ``hermes_agent/agent/image_gen_registry.py`` minus its legacy ``fal`` preference)
 so a box with credentials for only one backend auto-selects it; otherwise None
 and the tool points the user at ``hermes tools``.
 """
@@ -14,8 +14,8 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from agent.provider_registry import ProviderRegistry, configured_provider_name, is_available_safe
-from agent.video_gen_provider import VideoGenProvider
+from hermes_agent.agent.provider_registry import ProviderRegistry, configured_provider_name, is_available_safe
+from hermes_agent.agent.video_gen_provider import VideoGenProvider
 
 logger = logging.getLogger(__name__)
 

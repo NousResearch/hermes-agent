@@ -1,10 +1,10 @@
-"""Tests for agent.error_classifier — structured API error classification."""
+"""Tests for hermes_agent.agent.error_classifier — structured API error classification."""
 
 from types import SimpleNamespace
 
 import pytest
 
-from agent.error_classifier import (
+from hermes_agent.agent.error_classifier import (
     ClassifiedError,
     FailoverReason,
     PROVIDER_STREAM_NON_JSON_ERROR_CODE,
@@ -1011,8 +1011,8 @@ class TestClassifyApiError:
         """Strict OpenAI-compatible endpoints reject ``pattern`` lookaround with a 400 (#42631).
         Driven through the production path (classifier → ``recover_after_classification``):
         the lookaround ``pattern`` must be stripped from ``agent.tools`` and the turn retried."""
-        from agent.turn_recovery import recover_after_classification
-        from agent.turn_retry_state import TurnRetryState
+        from hermes_agent.agent.turn_recovery import recover_after_classification
+        from hermes_agent.agent.turn_retry_state import TurnRetryState
 
         class _Agent:
             log_prefix = ""
@@ -1208,7 +1208,7 @@ class TestClassifyApiError:
                 "errorArgs": {"reason": "claude messages.208: ..."},
             },
         )
-        with caplog.at_level(logging.WARNING, logger="agent.error_classifier"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.agent.error_classifier"):
             result = classify_api_error(
                 e, approx_tokens=66000, context_length=200000, num_messages=219,
             )

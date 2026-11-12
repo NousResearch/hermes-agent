@@ -5,7 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, PARTIAL_FAILED_TURN_NOTICE
+from hermes_agent.agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, PARTIAL_FAILED_TURN_NOTICE
 
 
 def test_gateway_failure_writer_preserves_accepted_turn_identity(tmp_path):
@@ -356,7 +356,7 @@ def test_content_policy_refused_turn_stays_in_the_display_tagged_content_refused
     block. Model-exclusion (the stuck-session fix) and display-retention are the two invariants."""
     import asyncio
 
-    from agent.turn_failure_copy import CONTENT_REFUSED_DISPLAY_KIND, CONTENT_REFUSED_METADATA_KEY
+    from hermes_agent.agent.turn_failure_copy import CONTENT_REFUSED_DISPLAY_KIND, CONTENT_REFUSED_METADATA_KEY
     from hermes_agent.gateway.config import GatewayConfig, Platform
     from hermes_agent.gateway.platforms.event import MessageEvent
     from hermes_agent.gateway.run import GatewayRunner
@@ -422,7 +422,7 @@ def test_managed_worker_refusal_is_cleaned_owner_side_in_the_real_db(tmp_path):
     import asyncio
     from types import SimpleNamespace
 
-    from agent.turn_failure_copy import CONTENT_REFUSED_DISPLAY_KIND, CONTENT_REFUSED_METADATA_KEY
+    from hermes_agent.agent.turn_failure_copy import CONTENT_REFUSED_DISPLAY_KIND, CONTENT_REFUSED_METADATA_KEY
     from hermes_agent.gateway.config import GatewayConfig, Platform
     from hermes_agent.gateway.run import GatewayRunner
     from hermes_agent.gateway.session import AsyncSessionStore, SessionSource, SessionStore

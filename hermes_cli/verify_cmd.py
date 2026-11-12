@@ -9,7 +9,7 @@ from pathlib import Path
 
 
 def run_verify_command(args) -> int:
-    from agent.verify import load_or_detect, manifest_path, run_verify, save_manifest
+    from hermes_agent.agent.verify import load_or_detect, manifest_path, run_verify, save_manifest
 
     root = Path(getattr(args, "path", None) or ".").resolve()
     if not root.is_dir():
@@ -67,7 +67,7 @@ def _merge_project_facts_commands(root: Path, recipe) -> None:
     Never applied to a saved manifest — the user-edited manifest is the source of truth.
     """
     try:
-        from agent.coding_context import detect_project_facts
+        from hermes_agent.agent.coding_context import detect_project_facts
 
         facts_commands = list(detect_project_facts(root).verify_commands)
     except Exception:
@@ -88,7 +88,7 @@ def _record_evidence(root: Path, recipe, result, *, partial: bool) -> None:
     pass is never presented as a full workspace green.
     """
     try:
-        from agent.verification_evidence import record_verify_run
+        from hermes_agent.agent.verification_evidence import record_verify_run
 
         tails = [f"[{p.phase}] {p.command}\n{p.output_tail}" for p in result.phases if p.output_tail]
         if result.readiness is not None:

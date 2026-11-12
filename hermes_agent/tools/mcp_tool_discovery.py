@@ -79,7 +79,7 @@ def _owner_scope_home() -> Optional[Path]:
     scope_key = _core._mcp_registry_scope()
     if scope_key is None:
         return None
-    from agent.secret_scope import current_secret_scope_home
+    from hermes_agent.agent.secret_scope import current_secret_scope_home
     return Path(current_secret_scope_home() or scope_key)
 
 
@@ -92,7 +92,7 @@ async def _install_owner_secret_scope():
     and the server parks with zero tools (#113746). ``${VAR}`` refs are interpolated earlier, at
     config load, under :func:`_owner_secret_scope`.
     """
-    from agent.secret_scope import set_secret_scope
+    from hermes_agent.agent.secret_scope import set_secret_scope
     home = _owner_scope_home()
     if home is None:
         return None
@@ -111,7 +111,7 @@ def _owner_secret_mapping(home: Path) -> dict[str, str]:
     header literal ``${VAR}`` and parked a server that worked. A served profile gets its own ``.env``
     + external sources only. A source that did not fully hydrate is retried at most once per
     interval per home: every retry is a helper subprocess, and connect/reconnect loops are tight."""
-    from agent.secret_scope import _is_process_home, build_profile_secret_scope
+    from hermes_agent.agent.secret_scope import _is_process_home, build_profile_secret_scope
     from hermes_cli import env_loader
     key = str(home.resolve())
     if time.monotonic() >= _hydrate_retry_after.get(key, 0.0):
@@ -132,7 +132,7 @@ def _owner_secret_scope():
     the resulting ``UnscopedSecretError`` into ``{}``, so an unscoped discover / reconcile / status /
     probe for a routed profile saw ZERO servers — stdio siblings included — before the connect-site
     binding could ever run (#113746). Same owner rule; scope key ``None`` binds nothing."""
-    from agent.secret_scope import reset_secret_scope, set_secret_scope
+    from hermes_agent.agent.secret_scope import reset_secret_scope, set_secret_scope
     home = _owner_scope_home()
     if home is None:
         yield
@@ -173,7 +173,7 @@ async def _connect_server(name: str, config: dict) -> _core.MCPServerTask:
         raise
     finally:
         if scope_token is not None:
-            from agent.secret_scope import reset_secret_scope
+            from hermes_agent.agent.secret_scope import reset_secret_scope
             reset_secret_scope(scope_token)
         if claim_token is not None:
             _core._connect_server_claim.reset(claim_token)
@@ -539,7 +539,7 @@ def _log_summary(prefix: str, names, **lazy) -> None:
 def register_mcp_servers(servers: dict[str, dict]) -> list[str]:
     """Connect ``{name: config}`` servers and register their tools; idempotent for connected
     names, ``enabled: false`` skipped without disconnecting. Returns every MCP tool name."""
-    from agent.safe_worker_policy import safe_worker_enabled
+    from hermes_agent.agent.safe_worker_policy import safe_worker_enabled
     if safe_worker_enabled():
         # A troubleshooting worker never spawns MCP processes; nor may it borrow tools
         # another caller already connected in this process.
@@ -609,7 +609,7 @@ def discover_mcp_tools(allowed_mcp_names: Optional[list[str]] = None) -> list[st
     list simply don't match); ``None`` spawns every configured server. Used by
     ``hermes -z -t <toolsets>`` to skip cold-starting servers the caller doesn't need (10-60s
     each); it only affects which servers start, not which names ``-t`` validation can see."""
-    from agent.safe_worker_policy import safe_worker_enabled
+    from hermes_agent.agent.safe_worker_policy import safe_worker_enabled
     if safe_worker_enabled():
         return []
     with _owner_secret_scope():

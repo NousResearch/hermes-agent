@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.context_compressor import SUMMARY_PREFIX
+from hermes_agent.agent.context_compressor import SUMMARY_PREFIX
 
 TODOS = {'todos': [{'id': '1', 'content': 'ship it', 'status': 'in_progress'}]}
 

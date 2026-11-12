@@ -85,15 +85,15 @@ def _format_age(seconds: float) -> str:
 
 
 def _model_not_found_patterns() -> list[str]:
-    """Model-not-found phrases from ``agent.error_classifier`` (the failover path's
+    """Model-not-found phrases from ``hermes_agent.agent.error_classifier`` (the failover path's
     own list, so nothing drifts); a minimal built-in set if the import fails.
 
-    Imported from ``agent.error_classifier`` so the batch renderer applies the SAME classification the
+    Imported from ``hermes_agent.agent.error_classifier`` so the batch renderer applies the SAME classification the
     failover path consumes — no hand-copied pattern list to drift. Fails open to a minimal built-in set so a
     classifier import problem never hides the per-task blocks. See #97667.
     """
     try:
-        from agent.error_classifier import _MODEL_NOT_FOUND_PATTERNS
+        from hermes_agent.agent.error_classifier import _MODEL_NOT_FOUND_PATTERNS
         return list(_MODEL_NOT_FOUND_PATTERNS)
     except Exception:
         return ["is not a valid model", "model not found", "model_not_found"]
@@ -186,7 +186,7 @@ _CONTENT_POLICY_RECOVERY = (
 
 def _failure_recovery_lines(r: dict) -> list[str]:
     """What the parent should do about a failed child, when its classified reason names a remedy."""
-    from agent.error_surface import _NON_RETRYABLE_REASONS
+    from hermes_agent.agent.error_surface import _NON_RETRYABLE_REASONS
     reason = r.get("failure_reason")
     if reason == "content_policy_blocked":
         return [_CONTENT_POLICY_RECOVERY]
@@ -481,7 +481,7 @@ class TimelineNotification(str):
 
     @classmethod
     def for_delegation(cls, text: str, event: dict) -> "TimelineNotification":
-        from agent.notification_presentation import diagnostic_process_event
+        from hermes_agent.agent.notification_presentation import diagnostic_process_event
         return cls(text, async_delegation_display_text(event), "async_delegation_complete",
                    "diagnostic" if diagnostic_process_event(event) else "result")
 

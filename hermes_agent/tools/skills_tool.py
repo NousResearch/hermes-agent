@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from hermes_constants import get_hermes_home
 from hermes_agent.tools.registry import registry, tool_error
 from hermes_cli.config import cfg_get
-from agent.skill_utils import (
+from hermes_agent.agent.skill_utils import (
     EXCLUDED_SKILL_DIRS as _EXCLUDED_SKILL_DIRS, is_skill_support_path as _is_skill_support_path)
 from hermes_agent.tools.skills_tool_setup import (
     SkillReadinessStatus, _build_setup_note, _capture_required_environment_variables,
@@ -51,7 +51,7 @@ def _dir_tree_signature(root, sig, depth=_SIGNATURE_MAX_DEPTH) -> None:
     (``iter_skill_index_files``: no excluded dirs, no support dirs of a skill), depth-bounded. The child
     names, not only mtimes: an install and an uninstall inside one coarse mtime tick (1-2 s on some
     filesystems) leave every mtime equal, and the change must still show. ~1 ms for 170 dirs."""
-    from agent.skill_utils import EXCLUDED_SKILL_DIRS, SKILL_SUPPORT_DIRS
+    from hermes_agent.agent.skill_utils import EXCLUDED_SKILL_DIRS, SKILL_SUPPORT_DIRS
     try:
         mtime = os.stat(root).st_mtime_ns
         with os.scandir(root) as it:
@@ -76,8 +76,8 @@ def _dir_tree_signature(root, sig, depth=_SIGNATURE_MAX_DEPTH) -> None:
 
 def _skills_scan_signature(dirs_to_scan, disabled) -> tuple:
     """Stat-based change signature over every directory the catalog walks; platform is read via
-    ``agent.skill_utils.sys`` so test patches are honored."""
-    from agent import skill_utils as _skill_utils
+    ``hermes_agent.agent.skill_utils.sys`` so test patches are honored."""
+    from hermes_agent.agent import skill_utils as _skill_utils
     platform = getattr(getattr(_skill_utils, "sys", None), "platform", "")
     sig: list = []
     for d in dirs_to_scan:
@@ -119,11 +119,11 @@ def load_env() -> dict[str, str]:
     """Snapshot of HERMES_HOME/.env for the post-skill secret-capture diff (same tokenizer that
     installs the profile scope, so a captured value never differs from the served one). A frozen-policy
     worker never opens the profile ``.env``: ``hermes_cli.config.load_env`` owns that short-circuit."""
-    from agent.safe_worker_policy import worker_config_snapshot
+    from hermes_agent.agent.safe_worker_policy import worker_config_snapshot
 
     if worker_config_snapshot() is not None:
         return {}
-    from agent.secret_scope import load_env_file
+    from hermes_agent.agent.secret_scope import load_env_file
 
     return load_env_file(get_hermes_home() / ".env")
 
@@ -149,9 +149,9 @@ def bind_turn_secret_capture(callback):
 
 
 def _skill_utils_delegate(attr: str):
-    """Lazy call-time delegate to ``agent.skill_utils.<attr>`` (re-export; patches honored)."""
+    """Lazy call-time delegate to ``hermes_agent.agent.skill_utils.<attr>`` (re-export; patches honored)."""
     def _delegate(*args):
-        from agent import skill_utils
+        from hermes_agent.agent import skill_utils
         return getattr(skill_utils, attr)(*args)
     _delegate.__name__ = _delegate.__qualname__ = attr
     return _delegate
@@ -174,7 +174,7 @@ def _get_category_from_path(skill_path: Path) -> Optional[str]:
     (respects test monkeypatching), then skills.external_dirs."""
     dirs_to_check = [_skills_dir()]
     with suppress(Exception):
-        from agent.skill_utils import get_external_skills_dirs
+        from hermes_agent.agent.skill_utils import get_external_skills_dirs
         dirs_to_check.extend(get_external_skills_dirs())
     for skills_dir in dirs_to_check:
         with suppress(ValueError):
@@ -198,7 +198,7 @@ def _parse_tags(tags_value) -> list[str]:
 def _is_skill_disabled(*names: str, platform: str | None = None) -> bool:
     """Any of *names* disabled in config (one config load)? Platform precedence: explicit arg,
     ``HERMES_PLATFORM``, session ``HERMES_SESSION_PLATFORM``. A globally-disabled skill stays disabled on every platform
-    (keep in sync with agent.skill_utils.get_disabled_skill_names)."""
+    (keep in sync with hermes_agent.agent.skill_utils.get_disabled_skill_names)."""
     try:
         from hermes_cli.config import load_config
         skills_cfg = load_config().get("skills", {})
@@ -218,8 +218,8 @@ def _is_skill_disabled(*names: str, platform: str | None = None) -> bool:
 
 def skill_search_dirs() -> tuple[list[tuple[int, Path]], Path]:
     """(``(tier, dir)`` roots in precedence order, active_skills_dir) — the shared
-    ``agent.skill_utils.get_skill_search_roots`` order with the live profile dir (dropped if absent)."""
-    from agent.skill_utils import TIER_LOCAL, get_skill_search_roots
+    ``hermes_agent.agent.skill_utils.get_skill_search_roots`` order with the live profile dir (dropped if absent)."""
+    from hermes_agent.agent.skill_utils import TIER_LOCAL, get_skill_search_roots
     active_skills_dir = _skills_dir()
     roots = [(t, d) for t, d in get_skill_search_roots(active_skills_dir)
              if t != TIER_LOCAL or d.exists()]
@@ -227,11 +227,11 @@ def skill_search_dirs() -> tuple[list[tuple[int, Path]], Path]:
 
 
 def _skill_catalog(*, skip_disabled: bool = False, include_hidden: bool = False) -> list[dict[str, Any]]:
-    """Every scanned skill resolved by ``agent.skill_utils.resolve_skill_catalog`` (status /
+    """Every scanned skill resolved by ``hermes_agent.agent.skill_utils.resolve_skill_catalog`` (status /
     load_name / tier / path), visible ones only unless *include_hidden*; cached per session.
     Resolution runs over ALL files first — skill_view ignores platform/disabled gates when
     collecting candidates, so it asks for hidden rows too."""
-    from agent.skill_utils import (
+    from hermes_agent.agent.skill_utils import (
         TIER_PROJECT, is_disabled_entry, iter_project_skill_files, iter_skill_index_files, resolve_skill_catalog)
     cache_key = ("with_disabled" if skip_disabled else "filtered", include_hidden)
     disabled = set() if skip_disabled else _get_disabled_skill_names()
@@ -333,7 +333,7 @@ def _resolve_plugin_skill(name, file_path, task_id, preprocess):
     """``plugin:skill`` dispatch: ``(result_json, None)`` when answered, else ``(None,
     local_category_name)`` to fall through to the flat-tree scan — categorized local skills also use
     ``category:skill`` in config/gateway prompts, so the on-disk ``category/skill`` form returns."""
-    from agent.skill_utils import is_valid_namespace, parse_qualified_name
+    from hermes_agent.agent.skill_utils import is_valid_namespace, parse_qualified_name
     from hermes_cli.plugins import discover_plugins, get_plugin_manager
     namespace, bare = parse_qualified_name(name)
     if namespace == "plugin" and ":" in bare:
@@ -405,9 +405,9 @@ def _is_package_owned_markdown(path: Path, search_root: Path) -> bool:
 def _collect_skill_candidates(name, local_category_name, all_dirs):
     """ALL (skill_dir, skill_md) candidates across every dir and lookup strategy (direct path,
     recursive by dir / frontmatter name, legacy flat <name>.md), deduped by resolved path.
-    Every copy is returned so the caller resolves them via ``agent.skill_utils.pick_skill_candidate``
+    Every copy is returned so the caller resolves them via ``hermes_agent.agent.skill_utils.pick_skill_candidate``
     (cross-tier precedence; a same-tier tie of different skills is refused, never guessed)."""
-    from agent.skill_utils import iter_skill_index_files
+    from hermes_agent.agent.skill_utils import iter_skill_index_files
     candidates: list[tuple[Optional[Path], Path]] = []
     seen_md: set = set()
 
@@ -536,7 +536,7 @@ def locate_skill(name: str, local_category_name: Optional[str], roots):
     (project > local > create_dir > external, shadowed copies logged), same-tier collision refusal,
     same-root identical-copy ranking, quarantine gate, not-found listing. ``(error_json, skill_dir,
     skill_md)``; skill_md set iff no error."""
-    from agent.skill_utils import AMBIGUOUS_SKILL_PREFIX, TIER_PROJECT, pick_skill_candidate, skill_candidate_rank
+    from hermes_agent.agent.skill_utils import AMBIGUOUS_SKILL_PREFIX, TIER_PROJECT, pick_skill_candidate, skill_candidate_rank
     all_dirs = [d for _t, d in roots]
     if not all_dirs:
         return _fail(
@@ -572,7 +572,7 @@ def locate_skill(name: str, local_category_name: Optional[str], roots):
     # Quarantine gate: a project-tier skill with a dangerous scan verdict must not
     # load even by explicit name (same chokepoint the index and skills_list use).
     if skill_md is not None and tier_of.get(_owning_search_dir(skill_md, all_dirs)) == TIER_PROJECT:
-        from agent.skill_utils import is_quarantined_project_skill
+        from hermes_agent.agent.skill_utils import is_quarantined_project_skill
         if is_quarantined_project_skill(skill_md):
             return _fail(
                 f"Project skill '{name}' is quarantined: the security scan flagged its content as "

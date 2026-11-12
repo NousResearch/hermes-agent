@@ -49,7 +49,7 @@ def test_invalid_registered_liveness_degrades_to_static(monkeypatch):
 
 def test_live_endpoint_reloads_file_and_registers_token_before_use(tmp_path, monkeypatch, caplog):
     from hermes_cli import agent_plugins
-    from agent import redact
+    from hermes_agent.agent import redact
     from hermes_agent.tools.mcp_tool_transport import _live_endpoint
 
     runtime = tmp_path / "server.json"
@@ -78,7 +78,7 @@ def test_live_endpoint_reloads_file_and_registers_token_before_use(tmp_path, mon
 
 def test_runtime_file_without_token_connects_without_authorization(tmp_path, monkeypatch):
     from hermes_cli import agent_plugins
-    from agent import redact
+    from hermes_agent.agent import redact
     from hermes_agent.tools.mcp_tool_transport import _live_endpoint
 
     runtime = tmp_path / "server.json"

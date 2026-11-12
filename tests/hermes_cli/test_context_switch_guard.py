@@ -28,10 +28,10 @@ def _compressor(
     context_length: int = 200_000,
     threshold_tokens_cap: int | None = None,
 ):
-    from agent.context_compressor import ContextCompressor
+    from hermes_agent.agent.context_compressor import ContextCompressor
 
     monkeypatch.setattr(
-        "agent.context_compressor.get_model_context_length",
+        "hermes_agent.agent.context_compressor.get_model_context_length",
         lambda *a, **k: context_length,
     )
     return ContextCompressor(
@@ -121,11 +121,11 @@ def test_custom_provider_context_avoids_false_shrink_warning(monkeypatch):
     # Force the probe-down path that hit the "qwen" → 131072 catalog match
     # when custom_providers was not threaded through.
     monkeypatch.setattr(
-        "agent.model_metadata._resolve_endpoint_context_length",
+        "hermes_agent.agent.model_metadata._resolve_endpoint_context_length",
         lambda *a, **k: None,
     )
     monkeypatch.setattr(
-        "agent.model_metadata._query_ollama_api_show",
+        "hermes_agent.agent.model_metadata._query_ollama_api_show",
         lambda *a, **k: None,
     )
     monkeypatch.setattr(

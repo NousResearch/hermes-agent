@@ -1,10 +1,10 @@
 """Transport timeouts get a phase-specific summary instead of the SDK's bare
-"Request timed out." / "timed out" text (agent/timeout_error_summary.py)."""
+"Request timed out." / "timed out" text (hermes_agent/agent/timeout_error_summary.py)."""
 
 import httpx
 import openai
 
-from agent.api_error_summary import ApiErrorSummaryMixin
+from hermes_agent.agent.api_error_summary import ApiErrorSummaryMixin
 
 _REQ = httpx.Request("POST", "http://127.0.0.1:1/v1/chat/completions")
 

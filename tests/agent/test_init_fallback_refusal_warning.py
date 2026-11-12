@@ -61,22 +61,22 @@ def test_fully_refusing_ladder_warns_with_each_reason(
     monkeypatch, caplog, primary, ladder, pool_available, raise_match, expected
 ):
     """Primary resolves no client; deepseek resolves none (missing key), kimi raises."""
-    from agent import agent_init
+    from hermes_agent.agent import agent_init
 
     def _fake_resolve(provider, model=None, **kwargs):
         if provider == "kimi":
             raise RuntimeError("kimi auth handshake refused")
         return (None, None)
 
-    monkeypatch.setattr("agent.auxiliary_client.resolve_provider_client", _fake_resolve)
+    monkeypatch.setattr("hermes_agent.agent.auxiliary_client.resolve_provider_client", _fake_resolve)
     monkeypatch.setattr(
         "hermes_cli.fallback_config.resolve_entry_api_key", lambda entry: None
     )
     monkeypatch.setattr(
-        "agent.credential_pool.load_pool", lambda provider: _Pool(pool_available)
+        "hermes_agent.agent.credential_pool.load_pool", lambda provider: _Pool(pool_available)
     )
 
-    with caplog.at_level(logging.WARNING, logger="run_agent"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.run_agent"):
         with pytest.raises(RuntimeError, match=raise_match):
             agent_init._routed_client_kwargs(_agent(primary), ladder, 60)
 
@@ -90,7 +90,7 @@ def test_fully_refusing_ladder_warns_with_each_reason(
 
 def test_recovered_ladder_does_not_warn(monkeypatch, caplog):
     """An entry refusing while a later one serves the init is degraded config, not a failure."""
-    from agent import agent_init
+    from hermes_agent.agent import agent_init
 
     class _Client:
         pass
@@ -100,7 +100,7 @@ def test_recovered_ladder_does_not_warn(monkeypatch, caplog):
             return (_Client(), model)
         return (None, None)
 
-    monkeypatch.setattr("agent.auxiliary_client.resolve_provider_client", _fake_resolve)
+    monkeypatch.setattr("hermes_agent.agent.auxiliary_client.resolve_provider_client", _fake_resolve)
     monkeypatch.setattr(
         "hermes_cli.fallback_config.resolve_entry_api_key", lambda entry: None
     )
@@ -111,7 +111,7 @@ def test_recovered_ladder_does_not_warn(monkeypatch, caplog):
     )
 
     agent = _agent()
-    with caplog.at_level(logging.WARNING, logger="run_agent"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.run_agent"):
         kwargs = agent_init._routed_client_kwargs(agent, _LADDER, 60)
 
     assert kwargs == {"api_key": "k"}

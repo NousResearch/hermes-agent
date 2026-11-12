@@ -91,7 +91,7 @@ def _payload_fields(kwargs: dict[str, Any]) -> dict[str, Any]:
     except OSError:
         cwd = ""
     from hermes_cli.profiles import get_active_profile_name
-    from agent.delegation_context import owned_kanban_task
+    from hermes_agent.agent.delegation_context import owned_kanban_task
     extra = {k: v for k, v in kwargs.items() if k not in _TOP_LEVEL_PAYLOAD_KEYS}
     # Resolve in the firing execution before the descendant environment is scrubbed.
     # This is payload metadata, never permission for the hook to act as the worker.
@@ -276,7 +276,7 @@ def _hook_specs(cfg: Optional[dict[str, Any]]) -> tuple[Optional[list[ShellHookS
     """``(specs, complete)``: the configured hooks, or ``None`` when this process must run none
     (safe worker, safe mode, no config) — the one guard every registrar and the consent path share;
     ``complete`` is False when a configured entry was dropped as malformed."""
-    from agent.safe_worker_policy import safe_worker_enabled
+    from hermes_agent.agent.safe_worker_policy import safe_worker_enabled
     from utils import env_var_enabled
     if safe_worker_enabled() or not isinstance(cfg, dict):
         return None, True
@@ -503,7 +503,7 @@ def _spawn(spec: ShellHookSpec, stdin_json: str) -> dict[str, Any]:
     # HERMES_HOME follows the routed profile (the import-time environ holds the launch profile's), and
     # under multiplexing os.environ carries the DEFAULT profile's secrets, which a secondary's hook
     # script must not inherit; single-profile runs keep the process env byte-for-byte as before.
-    from agent.secret_scope import is_multiplex_active
+    from hermes_agent.agent.secret_scope import is_multiplex_active
     from hermes_agent.tools.environments.local import build_subprocess_env
     try:
         if IS_WINDOWS:
@@ -541,7 +541,7 @@ def _make_callback(spec: ShellHookSpec) -> Callable[..., Optional[dict[str, Any]
     """Build the closure that ``invoke_hook()`` will call per firing."""
 
     def _callback(**kwargs: Any) -> Optional[dict[str, Any]]:
-        from agent.safe_worker_policy import safe_worker_enabled
+        from hermes_agent.agent.safe_worker_policy import safe_worker_enabled
 
         if safe_worker_enabled():
             return None

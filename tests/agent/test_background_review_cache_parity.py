@@ -131,7 +131,7 @@ def test_review_fork_inherits_parent_cached_system_prompt():
     and forces a full re-cache. Inheriting the parent's cached prompt is
     the cheap, mechanical fix.
     """
-    import run_agent
+    from hermes_agent import run_agent
 
     agent = _make_agent_stub(run_agent.AIAgent)
 
@@ -177,7 +177,7 @@ def test_review_fork_inherits_parent_ephemeral_system_prompt():
     base therefore makes every background review diverge at the gateway block
     and miss the parent's warm prefix cache.
     """
-    import run_agent
+    from hermes_agent import run_agent
 
     agent = _make_agent_stub(run_agent.AIAgent)
     captured = {}
@@ -212,7 +212,7 @@ def test_review_fork_inherits_prefill_and_provider_routing():
     the request — prompt caches live per upstream, so an unpinned fork can
     be routed to a different upstream and miss even a byte-identical prefix.
     """
-    import run_agent
+    from hermes_agent import run_agent
 
     agent = _make_agent_stub(run_agent.AIAgent)
     captured = {}
@@ -247,7 +247,7 @@ def test_review_fork_pins_session_start_and_session_id():
     the parent's guarantees byte-identical output from any code path that
     re-renders parts of the system prompt (compression, plugin hooks).
     """
-    import run_agent
+    from hermes_agent import run_agent
 
     agent = _make_agent_stub(run_agent.AIAgent)
 
@@ -290,8 +290,8 @@ def test_routed_review_fork_does_not_inherit_reasoning_config():
     provider defaults, mirroring the ``not _routed`` gate on
     ``_cached_system_prompt`` inheritance.
     """
-    import run_agent
-    import agent.background_review as bg_review
+    from hermes_agent import run_agent
+    import hermes_agent.agent.background_review as bg_review
 
     agent_stub = _make_agent_stub(run_agent.AIAgent)
 
@@ -354,8 +354,8 @@ def test_review_fork_inherited_tools_survive_compaction_refresh():
     the live registry and drops memory provider tools unless the snapshot
     generation staleness check refuses the rebuild.
     """
-    import run_agent
-    from agent.background_review import build_cache_parity_fork
+    from hermes_agent import run_agent
+    from hermes_agent.agent.background_review import build_cache_parity_fork
     from hermes_agent.tools.mcp_tool_agent import refresh_agent_mcp_tools
 
     agent = _make_agent_stub(run_agent.AIAgent)
@@ -396,8 +396,8 @@ def test_unrouted_review_fork_inherits_empty_tool_surface():
     This guarantees late MCP/plugin tools discovered during fork construction or
     mid-review compaction do not break cache parity against the parent's empty surface.
     """
-    import run_agent
-    from agent.background_review import build_cache_parity_fork
+    from hermes_agent import run_agent
+    from hermes_agent.agent.background_review import build_cache_parity_fork
     from hermes_agent.tools.mcp_tool_agent import refresh_agent_mcp_tools
 
     agent = _make_agent_stub(run_agent.AIAgent)
@@ -430,8 +430,8 @@ def test_same_model_review_surfaces_ignored_reasoning_effort_once():
     """#104116: ``auxiliary.background_review.reasoning_effort`` is dropped on the same-model path
     (cache parity, #30532) — that no-op must be visible instead of silent, and must not fire per
     fork (a nudge-per-turn session would spam)."""
-    import run_agent
-    from agent.background_review import build_cache_parity_fork
+    from hermes_agent import run_agent
+    from hermes_agent.agent.background_review import build_cache_parity_fork
 
     agent = _make_agent_stub(run_agent.AIAgent)
     warnings = []
@@ -455,9 +455,9 @@ def test_same_model_review_surfaces_ignored_reasoning_effort_once():
 def test_review_effort_notice_only_for_same_model_review_forks():
     """No notice when the key is unset, when the fork is routed (#94825 owns that path), or for the
     /btw ``side_question`` fork sharing ``build_cache_parity_fork``."""
-    import run_agent
-    import agent.background_review as bg_review
-    from agent.background_review import build_cache_parity_fork
+    from hermes_agent import run_agent
+    import hermes_agent.agent.background_review as bg_review
+    from hermes_agent.agent.background_review import build_cache_parity_fork
 
     _Recorder = _make_recorder_class()
     routed_runtime = {
@@ -487,9 +487,9 @@ def test_same_model_fork_inherits_parent_cache_scope_gateway_key(tmp_path):
     _session_db=None. Pre-fix, both resolvers diverged on their own — the header
     (affinity) and body (prompt_cache_key) keyed a different bucket, costing one
     cold ~full-context request per review."""
-    import run_agent
-    from agent.background_review import build_cache_parity_fork
-    from agent.prompt_cache_scope import (
+    from hermes_agent import run_agent
+    from hermes_agent.agent.background_review import build_cache_parity_fork
+    from hermes_agent.agent.prompt_cache_scope import (
         declared_conversation_scope,
         resolve_prompt_cache_scope,
     )
@@ -529,9 +529,9 @@ def test_same_model_fork_inherits_parent_cache_scope_rotated_lineage(tmp_path):
     Every identity the fork publishes must equal the parent's: body cache key, the
     affinity header (None for both — a physical root is not a declared ``gwk_`` scope)
     and the Portal ``conversation=`` root (fork has no DB to walk the lineage)."""
-    import run_agent
-    from agent.background_review import build_cache_parity_fork
-    from agent.prompt_cache_scope import declared_conversation_scope, resolve_prompt_cache_scope
+    from hermes_agent import run_agent
+    from hermes_agent.agent.background_review import build_cache_parity_fork
+    from hermes_agent.agent.prompt_cache_scope import declared_conversation_scope, resolve_prompt_cache_scope
     from hermes_agent.hermes_state import SessionDB
 
     db = SessionDB(db_path=tmp_path / "state.db")
@@ -562,8 +562,8 @@ def test_routed_fork_does_not_inherit_cache_scope():
     """#109964 invariant 2: a routed (different-model) fork is cache-cold on
     that model anyway — it must NOT inherit the parent's scope. Nor may fresh
     agents (no attribute set) be affected: the fail-closed default stands."""
-    import run_agent
-    from agent.background_review import build_cache_parity_fork
+    from hermes_agent import run_agent
+    from hermes_agent.agent.background_review import build_cache_parity_fork
 
     agent = _make_agent_stub(run_agent.AIAgent)
     agent._gateway_session_key = "gw-key-1"
@@ -572,7 +572,7 @@ def test_routed_fork_does_not_inherit_cache_scope():
     _RoutedRecorder = _make_recorder_class()
 
     with patch.object(run_agent, "AIAgent", _RoutedRecorder), \
-         patch("agent.background_review._resolve_review_runtime",
+         patch("hermes_agent.agent.background_review._resolve_review_runtime",
                lambda *a, **k: {"routed": True, "model": "other-model"}):
         fork, _rt, routed = build_cache_parity_fork(agent, max_iterations=5)
 

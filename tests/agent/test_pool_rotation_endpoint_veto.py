@@ -7,8 +7,8 @@ Azure session onto the public entry on a 429 would send its traffic — and the 
 wrong host. Rotation must be vetoed exactly like a rotation that yields nothing.
 """
 
-from agent.agent_runtime_helpers import recover_with_credential_pool
-from agent.credential_pool import CredentialPool, PooledCredential
+from hermes_agent.agent.agent_runtime_helpers import recover_with_credential_pool
+from hermes_agent.agent.credential_pool import CredentialPool, PooledCredential
 
 _AZURE = "https://res.cognitiveservices.azure.com/openai/v1"
 _PUBLIC = "https://api.openai.com/v1"

@@ -28,8 +28,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.message_metadata import TYPED_ASK
-from agent.turn_context import (
+from hermes_agent.agent.message_metadata import TYPED_ASK
+from hermes_agent.agent.turn_context import (
     _memory_query_text,
     build_turn_context,
     compose_multimodal_context_part,
@@ -61,7 +61,7 @@ class TestMemoryQueryText:
     def test_list_turn_queries_its_text_and_image_only_stays_trivial(self):
         """#71998 execution side: a text+image turn must drive prefetch off its text (it used to
         collapse to ``""`` and skip recall silently); an image-only turn has no text to query."""
-        from agent.memory_provider import is_trivial_prompt
+        from hermes_agent.agent.memory_provider import is_trivial_prompt
 
         image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
         text_plus_image = [{"type": "text", "text": "remind me what my dog's name is"}, image]
@@ -250,7 +250,7 @@ def _build(agent, **overrides):
 
 @pytest.fixture(autouse=True)
 def _stub_runtime_main():
-    with patch("agent.auxiliary_client.set_runtime_main", lambda *a, **k: None):
+    with patch("hermes_agent.agent.auxiliary_client.set_runtime_main", lambda *a, **k: None):
         yield
 
 
@@ -323,7 +323,7 @@ class TestPrologueStamping:
 
 class TestFlushOverrideSidecar:
     def _make_agent(self, db, sid):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key",
@@ -474,7 +474,7 @@ def wire_env():
     prev_home = os.environ.get("HERMES_HOME")
     os.environ["HERMES_HOME"] = os.path.join(test_home, ".hermes")
 
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     from pathlib import Path
 
@@ -586,7 +586,7 @@ class TestWireInvariant:
         wire as a text part, the persisted row carries it, and a resumed turn N+1 replays
         the same view — same contract as the string sidecar path."""
         make_agent, handler, db, sid = wire_env
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
         turn = [{"type": "text", "text": "what is this"}, image]
 
@@ -609,7 +609,7 @@ class TestWireInvariant:
 
     @staticmethod
     def _stored_multimodal_turn(wire_env):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         make_agent, handler, db, sid = wire_env
         image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
         with patch.object(AIAgent, "_model_supports_vision", return_value=True):
@@ -623,11 +623,11 @@ class TestWireInvariant:
     def test_previous_message_after_a_reloaded_multimodal_turn_is_the_ask(self, wire_env):
         """A resumed process must read ``previous_message`` from the typed-ask stamp, or memory
         providers re-key recall on the plugin context and recalled memory."""
-        from agent.turn_context import _previous_user_message_text
+        from hermes_agent.agent.turn_context import _previous_user_message_text
         assert _previous_user_message_text(self._stored_multimodal_turn(wire_env)) == "what is this"
 
     def test_previous_message_after_a_gateway_replayed_multimodal_turn_is_the_ask(self, wire_env):
-        from agent.turn_context import _previous_user_message_text
+        from hermes_agent.agent.turn_context import _previous_user_message_text
         from hermes_agent.gateway.run import _build_gateway_agent_history
         replayed = _build_gateway_agent_history(self._stored_multimodal_turn(wire_env))[0]
         assert _previous_user_message_text(replayed) == "what is this"
@@ -744,7 +744,7 @@ class TestSetLatestUserApiContent:
 
 class TestFlushCompressedSummaryOverrideGuard:
     def _make_agent(self, db, sid):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key",
@@ -762,7 +762,7 @@ class TestFlushCompressedSummaryOverrideGuard:
         """The #48677 override must not replace a compression-merged user
         message: that would silently drop the compaction summary from the
         durable clean transcript."""
-        from agent.context_compressor import COMPRESSED_SUMMARY_METADATA_KEY
+        from hermes_agent.agent.context_compressor import COMPRESSED_SUMMARY_METADATA_KEY
 
         db = SessionDB(db_path=tmp_path / "state.db")
         sid = "sess-merged"
@@ -797,7 +797,7 @@ class TestFlushCompressedSummaryOverrideGuard:
         survive: the summary is the whole pre-compaction history, and this
         list is the continuation history the next turn is built from.
         """
-        from agent.context_compressor import COMPRESSED_SUMMARY_METADATA_KEY
+        from hermes_agent.agent.context_compressor import COMPRESSED_SUMMARY_METADATA_KEY
 
         db = SessionDB(db_path=tmp_path / "state.db")
         sid = "sess-merged-live"
@@ -852,7 +852,7 @@ class TestFlushCompressedSummaryOverrideGuard:
 
 class TestFlushSanitizeDivergenceCapture:
     def _make_agent(self, db, sid):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key",
@@ -870,7 +870,7 @@ class TestFlushSanitizeDivergenceCapture:
         """get_messages_as_conversation strips <memory-context> fences on
         load; the sent bytes must survive in the sidecar so a reloaded
         session replays what was actually on the wire."""
-        from agent.memory_context import sanitize_context
+        from hermes_agent.agent.memory_context import sanitize_context
 
         db = SessionDB(db_path=tmp_path / "state.db")
         sid = "sess-fence"
@@ -916,8 +916,8 @@ class TestMaxIterationsSummaryReplay:
         main-loop call sent — popping the sidecar without substituting sends
         CLEAN content and diverges the prefix at the earliest injected
         message, exactly when the context is largest."""
-        from run_agent import AIAgent
-        from agent.chat_completion_helpers import handle_max_iterations
+        from hermes_agent.run_agent import AIAgent
+        from hermes_agent.agent.chat_completion_helpers import handle_max_iterations
 
         agent = AIAgent(
             api_key="test-key",
@@ -975,7 +975,7 @@ class TestSessionRowExistsBeforePreflightCompaction:
     against a real, empty SessionDB."""
 
     def _make_agent(self, db, sid, *, in_place, current_user_content="hello"):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
             agent = AIAgent(
@@ -1118,7 +1118,7 @@ class TestStaleConfirmationRedactionDropsSidecar:
         """The expired-confirmation redaction rewrites content — replaying
         the sidecar verbatim would resend the dangerous bytes it just
         redacted."""
-        from agent.replay_cleanup import strip_stale_dangerous_confirmations
+        from hermes_agent.agent.replay_cleanup import strip_stale_dangerous_confirmations
 
         history = [
             {

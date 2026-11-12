@@ -61,7 +61,7 @@ def profile(monkeypatch, tmp_path):
 
 def _agent(srv, home, session_id):
     from hermes_agent.hermes_state import SessionDB
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     db = SessionDB(db_path=home / "state.db")
     db.ensure_session(session_id, source="whatsapp")  # the gateway opens the row before the turn
@@ -137,7 +137,7 @@ def test_without_the_verb_a_continuing_session_keeps_its_stored_prompt(profile):
 
 
 def test_the_verb_makes_the_next_turn_adopt_soul_skills_and_project_files_once(profile, monkeypatch, capsys):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     srv, home, project = profile
     history, _ = _turn(srv, home, "chat-a", "hello", [])
@@ -181,7 +181,7 @@ def test_session_flag_refreshes_only_that_session(profile, monkeypatch):
 
 
 def test_a_session_started_after_the_request_is_not_rebuilt_again(profile, monkeypatch):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     srv, home, _project = profile
     _refresh_prompts(monkeypatch, home)
@@ -239,8 +239,8 @@ def test_refresh_request_is_scoped_to_its_profile(profile, monkeypatch, tmp_path
 
 def test_no_request_means_no_rebuild_and_no_prompt_source_reads(profile, monkeypatch):
     """Never ran the verb: the stored prompt is replayed byte-identically with no source reads."""
-    import agent.prompt_builder as pb
-    from run_agent import AIAgent
+    import hermes_agent.agent.prompt_builder as pb
+    from hermes_agent.run_agent import AIAgent
 
     srv, home, project = profile
     history, first = _turn(srv, home, "chat-a", "hello", [])
@@ -263,7 +263,7 @@ def test_refresh_rebuilds_the_skills_index_from_disk_even_when_its_cache_cannot_
     """Coarse filesystem timestamps can leave an in-place, same-size SKILL.md edit with an unchanged
     stat signature (see ``utils.RACY_MTIME_WINDOW_NS``); the skills index cache, keyed on those
     versions, would then keep serving the old render. The refresh must rebuild from disk anyway."""
-    import agent.prompt_builder as pb
+    import hermes_agent.agent.prompt_builder as pb
 
     # A key that never moves on a same-size edit (timestamps and digest frozen).
     monkeypatch.setattr(pb, "file_cache_version", lambda path, st, **_kw: (1, st.st_size, 1, 1))
@@ -316,7 +316,7 @@ def test_refresh_prompts_unknown_session_fails(profile, monkeypatch, capsys):
 
 
 def _count_builds(monkeypatch):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     builds = []
     original = AIAgent._build_system_prompt
     monkeypatch.setattr(AIAgent, "_build_system_prompt",
@@ -327,7 +327,7 @@ def _count_builds(monkeypatch):
 def _bot_chat_branch_once(monkeypatch):
     """Take the Bot Chat capability-refresh branch on the next restore only (its real trigger needs
     a Bot Chat capability fingerprint; the branch body is what is under test)."""
-    import agent.conversation_loop as cl
+    import hermes_agent.agent.conversation_loop as cl
     once = []
     monkeypatch.setattr(cl, "_bot_chat_prompt_stale", lambda agent, prompt: not once and once.append(1) is None)
     monkeypatch.setattr(cl, "_refresh_bot_chat_tools", lambda agent: None)

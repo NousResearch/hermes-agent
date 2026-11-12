@@ -1,7 +1,7 @@
 """No-tool-call (final text) branch of the conversation turn loop: empty/think-only recovery,
 intent-ack / stall-guard continuation, length-continuation joining, dropped-tool-call
 re-prompt, scaffolding pop, stop gates, then the durable final flush. Extracted from
-``run_conversation``; nothing here imports ``agent.conversation_loop`` at module level
+``run_conversation``; nothing here imports ``hermes_agent.agent.conversation_loop`` at module level
 (cycle) — loop-internal nudge constants resolve lazily.
 """
 
@@ -11,23 +11,23 @@ from dataclasses import dataclass
 import logging
 from typing import Any, Callable, Dict, Optional
 
-from agent.message_metadata import append_message
-from agent.reasoning_promotion import answer_in_reasoning_capability
-from agent.repetition_guard import STOP_PATH_MIN_CHARS, is_runaway_repetition
-from agent.stream_delivery import publish_held_final_row
-from agent.turn_failure_copy import stamp_failure
-from agent.turn_empty_response import (
+from hermes_agent.agent.message_metadata import append_message
+from hermes_agent.agent.reasoning_promotion import answer_in_reasoning_capability
+from hermes_agent.agent.repetition_guard import STOP_PATH_MIN_CHARS, is_runaway_repetition
+from hermes_agent.agent.stream_delivery import publish_held_final_row
+from hermes_agent.agent.turn_failure_copy import stamp_failure
+from hermes_agent.agent.turn_empty_response import (
     housekeeping_reply_line, recover_empty_response, take_housekeeping_reply_line,
 )
-from agent.turn_stop_gates import apply_stop_gates
-from agent.turn_truncation import partial_result, repetition_copy
+from hermes_agent.agent.turn_stop_gates import apply_stop_gates
+from hermes_agent.agent.turn_truncation import partial_result, repetition_copy
 
 _REPETITION_STOPPED = repetition_copy(
     "before delivery",
     "so the repeated output was discarded.",
     "; refusing to return a",
 )
-logger = logging.getLogger("agent.conversation_loop")
+logger = logging.getLogger("hermes_agent.agent.conversation_loop")
 
 # Ephemeral retry scaffolding rows popped before the final answer becomes durable.
 _EPHEMERAL_SCAFFOLDING_FLAGS = (
@@ -94,7 +94,7 @@ def _absorb_continuation_fragments(final_response: Any, parts: Any, messages: An
     any. The continuation recovered, so the fragment rows stay in the transcript, unflagged."""
     if not parts:
         return final_response, False
-    from agent.conversation_loop import _join_truncated_parts
+    from hermes_agent.agent.conversation_loop import _join_truncated_parts
 
     for frag in messages:
         if isinstance(frag, dict):
@@ -116,7 +116,7 @@ def finish_text_response(
     continuation path sets ``final_response = None`` so an acknowledgment never suppresses
     iteration-limit summarization; the final message is appended and flushed only after the
     stop gates accept it."""
-    from agent.conversation_loop import (
+    from hermes_agent.agent.conversation_loop import (
         _CODEX_ACK_CONTINUATION_NUDGE, _DEGENERATE_FINAL_NUDGE, _DROPPED_TOOLCALL_NUDGE_CONTENT,
     )
 
@@ -213,7 +213,7 @@ def finish_text_response(
     # heal threshold, deliver the queued notice through the status/warning callback — the normal out-of-band
     # delivery channel (gateway status message / CLI print). NEVER appended to messages/api_messages:
     # conversation context and the cached prompt prefix stay byte-identical.
-    from agent.agent_runtime_helpers import (
+    from hermes_agent.agent.agent_runtime_helpers import (
         intent_ack_continuation_mode, looks_like_degenerate_final, promoted_reasoning_announces_action,
         tool_results_this_turn, trailing_continue_intent,
     )
@@ -388,7 +388,7 @@ def finish_text_response(
     # assistant row as settled, so a transform after this write would reach the user but never
     # the stored/replayed transcript (#44239). finalize_turn reads the recorded outcome; like
     # there, an interrupted turn keeps the raw text.
-    from agent.turn_finalizer import apply_llm_output_transform
+    from hermes_agent.agent.turn_finalizer import apply_llm_output_transform
     _transformed = False
     if not getattr(agent, "_interrupt_requested", False):
         final_response, _transformed, _ = apply_llm_output_transform(

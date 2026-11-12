@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
-from agent.system_prompt import build_system_prompt_parts
+from hermes_agent.agent.system_prompt import build_system_prompt_parts
 
 
 def _stable(platform, valid_tool_names):
@@ -19,9 +19,9 @@ def _stable(platform, valid_tool_names):
         _task_completion_guidance=False, _tool_use_enforcement=False, _environment_probe=False,
         _kanban_worker_guidance="", _memory_store=None, _memory_manager=None, _platform_hint_overrides={},
         model="", provider="", pass_session_id=False, session_id="")
-    with (patch("agent.prompt_builder.load_soul_md", return_value=""),
-          patch("agent.prompt_builder.build_environment_hints", return_value=""),
-          patch("agent.prompt_builder.build_context_files_prompt", return_value="")):
+    with (patch("hermes_agent.agent.prompt_builder.load_soul_md", return_value=""),
+          patch("hermes_agent.agent.prompt_builder.build_environment_hints", return_value=""),
+          patch("hermes_agent.agent.prompt_builder.build_context_files_prompt", return_value="")):
         return build_system_prompt_parts(agent)["stable"]
 
 

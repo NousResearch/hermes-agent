@@ -18,7 +18,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from agent.secret_scope import get_secret
+from hermes_agent.agent.secret_scope import get_secret
 from hermes_agent.tools.registry import registry, tool_error
 
 logger = logging.getLogger(__name__)

@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import unquote, urlparse
 
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 from hermes_agent.gateway.platforms.base import SendResult, cache_document_from_bytes_async, cache_image_from_bytes_async
 
 logger = logging.getLogger("plugins.platforms.wecom.adapter")

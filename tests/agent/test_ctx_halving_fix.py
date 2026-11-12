@@ -33,7 +33,7 @@ class TestParseAvailableOutputTokens:
     """Pure-function tests; no I/O required."""
 
     def _parse(self, msg):
-        from agent.model_metadata import parse_available_output_tokens_from_error
+        from hermes_agent.agent.model_metadata import parse_available_output_tokens_from_error
         return parse_available_output_tokens_from_error(msg)
 
     # ── Should detect and extract ────────────────────────────────────────
@@ -77,8 +77,8 @@ class TestContextOverflowLimitSelection:
     """
 
     def test_generic_overflow_without_provider_limit_keeps_context_length(self):
-        from agent.model_metadata import get_context_length_from_provider_error
-        from agent.model_metadata import parse_context_limit_from_error
+        from hermes_agent.agent.model_metadata import get_context_length_from_provider_error
+        from hermes_agent.agent.model_metadata import parse_context_limit_from_error
 
         old_ctx = 1_000_000
         error_msg = (
@@ -90,14 +90,14 @@ class TestContextOverflowLimitSelection:
         assert get_context_length_from_provider_error(error_msg, old_ctx) is None
 
     def test_explicit_provider_limit_still_selects_that_limit(self):
-        from agent.model_metadata import get_context_length_from_provider_error
+        from hermes_agent.agent.model_metadata import get_context_length_from_provider_error
 
         error_msg = "prompt is too long: 300000 tokens > 272000 maximum"
 
         assert get_context_length_from_provider_error(error_msg, 1_000_000) == 272_000
 
     def test_reported_limit_not_lower_than_current_is_ignored(self):
-        from agent.model_metadata import get_context_length_from_provider_error
+        from hermes_agent.agent.model_metadata import get_context_length_from_provider_error
 
         error_msg = "maximum context length is 1000000 tokens"
 
@@ -113,7 +113,7 @@ class TestBuildAnthropicKwargsClamping:
     """
 
     def _build(self, model, max_tokens=None, context_length=None):
-        from agent.anthropic_adapter import build_anthropic_kwargs
+        from hermes_agent.agent.anthropic_adapter import build_anthropic_kwargs
         return build_anthropic_kwargs(
             model=model,
             messages=[{"role": "user", "content": "hi"}],
@@ -125,7 +125,7 @@ class TestBuildAnthropicKwargsClamping:
 
     def test_no_clamping_when_output_ceiling_fits_in_window(self):
         """Opus 4.6 native output (128K) < context window (200K) — no clamping."""
-        from agent.anthropic_adapter import _get_anthropic_max_output
+        from hermes_agent.agent.anthropic_adapter import _get_anthropic_max_output
         kwargs = self._build("claude-opus-4-6", context_length=200_000)
         assert kwargs["max_tokens"] == _get_anthropic_max_output("claude-opus-4-6") < 200_000
 
@@ -146,7 +146,7 @@ class TestEphemeralMaxOutputTokens:
     def _make_agent(self):
         """Return a minimal AIAgent with api_mode='anthropic_messages' and
         a stubbed context_compressor, bypassing full __init__ cost."""
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         agent = object.__new__(AIAgent)
         # Minimal attributes used by _build_api_kwargs
         agent.api_mode = "anthropic_messages"

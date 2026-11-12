@@ -27,7 +27,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.auxiliary_client import _CodexCompletionsAdapter, call_llm
+from hermes_agent.agent.auxiliary_client import _CodexCompletionsAdapter, call_llm
 
 
 def _content_event(text="tok"):
@@ -74,8 +74,8 @@ class TestNoProgressFailFast:
         adapter = _make_adapter(_zombie())
         start = time.monotonic()
         with (
-            patch("agent.auxiliary_client._AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS", 0.3),
-            patch("agent.codex_runtime._consume_codex_event_stream", _consume),
+            patch("hermes_agent.agent.auxiliary_client._AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS", 0.3),
+            patch("hermes_agent.agent.codex_runtime._consume_codex_event_stream", _consume),
             pytest.raises(TimeoutError, match="no-progress timeout"),
         ):
             adapter.create(
@@ -97,8 +97,8 @@ class TestNoProgressFailFast:
 
         adapter = _make_adapter(_slow_but_alive())
         with (
-            patch("agent.auxiliary_client._AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS", 0.4),
-            patch("agent.codex_runtime._consume_codex_event_stream", _consume),
+            patch("hermes_agent.agent.auxiliary_client._AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS", 0.4),
+            patch("hermes_agent.agent.codex_runtime._consume_codex_event_stream", _consume),
         ):
             response = adapter.create(
                 messages=[{"role": "user", "content": "summarize"}],
@@ -118,8 +118,8 @@ class TestNoProgressFailFast:
         adapter = _make_adapter(_stalls_after_two_tokens())
         start = time.monotonic()
         with (
-            patch("agent.auxiliary_client._AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS", 0.3),
-            patch("agent.codex_runtime._consume_codex_event_stream", _consume),
+            patch("hermes_agent.agent.auxiliary_client._AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS", 0.3),
+            patch("hermes_agent.agent.codex_runtime._consume_codex_event_stream", _consume),
             pytest.raises(TimeoutError, match="stalled: no new output"),
         ):
             adapter.create(
@@ -139,10 +139,10 @@ class TestNoProgressFailFast:
 
         adapter = _make_adapter(_dripper())
         with (
-            patch("agent.auxiliary_client._AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS", 5.0),
-            patch("agent.auxiliary_client._aux_stream_total_ceiling",
+            patch("hermes_agent.agent.auxiliary_client._AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS", 5.0),
+            patch("hermes_agent.agent.auxiliary_client._aux_stream_total_ceiling",
                   return_value=0.3),
-            patch("agent.codex_runtime._consume_codex_event_stream", _consume),
+            patch("hermes_agent.agent.codex_runtime._consume_codex_event_stream", _consume),
             pytest.raises(TimeoutError, match="hard ceiling"),
         ):
             adapter.create(
@@ -171,8 +171,8 @@ class TestNoProgressFailFast:
         owner_result: dict = {}
         try:
             with (
-                patch("agent.auxiliary_client._AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS", 0.3),
-                patch("agent.auxiliary_client._evict_cached_client_instance"),
+                patch("hermes_agent.agent.auxiliary_client._AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS", 0.3),
+                patch("hermes_agent.agent.auxiliary_client._evict_cached_client_instance"),
             ):
                 def _run():
                     owner_result["tid"] = threading.get_ident()
@@ -224,17 +224,17 @@ class TestCompressionRetryGate:
         )
 
         with (
-            patch("agent.auxiliary_client._get_cached_client",
+            patch("hermes_agent.agent.auxiliary_client._get_cached_client",
                   return_value=(primary_client, "gpt-5.6-sol")),
-            patch("agent.auxiliary_client._resolve_task_provider_model",
+            patch("hermes_agent.agent.auxiliary_client._resolve_task_provider_model",
                   return_value=("auto", "gpt-5.6-sol", None, None, None)),
-            patch("agent.auxiliary_client._try_configured_fallback_chain",
+            patch("hermes_agent.agent.auxiliary_client._try_configured_fallback_chain",
                   return_value=(None, None, "")),
-            patch("agent.auxiliary_client._try_main_fallback_chain",
+            patch("hermes_agent.agent.auxiliary_client._try_main_fallback_chain",
                   return_value=(None, None, "")),
-            patch("agent.auxiliary_client._try_payment_fallback",
+            patch("hermes_agent.agent.auxiliary_client._try_payment_fallback",
                   return_value=(fallback_client, "fb", "openrouter")) as mock_fb,
-            patch("agent.auxiliary_client._TRANSIENT_RETRY_BACKOFF_BASE", 0.0),
+            patch("hermes_agent.agent.auxiliary_client._TRANSIENT_RETRY_BACKOFF_BASE", 0.0),
         ):
             result = call_llm(
                 task="compression",
@@ -286,7 +286,7 @@ def test_deadline_hit_is_not_judged_by_the_error_the_stream_then_raised():
     import httpx
     import openai
 
-    from agent.auxiliary_error_policy import Failure, auth_refresh, classify_attempt, fallback_label
+    from hermes_agent.agent.auxiliary_error_policy import Failure, auth_refresh, classify_attempt, fallback_label
 
     def _consume_then_401(_stream, *, on_event, **_kw):
         assert on_event.__self__.timed_out.wait(timeout=5)  # the stream guard's deadline fired
@@ -294,8 +294,8 @@ def test_deadline_hit_is_not_judged_by_the_error_the_stream_then_raised():
                               body={"code": 401, "message": "invalid"})
 
     with (
-        patch("agent.auxiliary_client._AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS", 0.1),
-        patch("agent.codex_runtime._consume_codex_event_stream", _consume_then_401),
+        patch("hermes_agent.agent.auxiliary_client._AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS", 0.1),
+        patch("hermes_agent.agent.codex_runtime._consume_codex_event_stream", _consume_then_401),
         pytest.raises(TimeoutError) as caught,
     ):
         _make_adapter(iter(())).create(messages=[{"role": "user", "content": "summarize"}], timeout=300)

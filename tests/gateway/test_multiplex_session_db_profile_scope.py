@@ -195,7 +195,7 @@ def test_primary_route_keeps_transport_authorization_scope(multiplex_homes):
     pipeline to that profile must not make the gateway reject a sender that the
     live primary transport already admitted.
     """
-    from agent.secret_scope import is_multiplex_active, set_multiplex_active
+    from hermes_agent.agent.secret_scope import is_multiplex_active, set_multiplex_active
     from hermes_agent.gateway.run import GatewayRunner
 
     root, profile = multiplex_homes
@@ -590,7 +590,7 @@ def test_cached_agent_dead_check_reads_the_routed_profile_store(multiplex_homes)
     import threading
     from types import SimpleNamespace
 
-    from agent.secret_scope import is_multiplex_active, set_multiplex_active
+    from hermes_agent.agent.secret_scope import is_multiplex_active, set_multiplex_active
     from hermes_agent.gateway.run_turn_runner import TurnRunner
 
     root, profile = multiplex_homes

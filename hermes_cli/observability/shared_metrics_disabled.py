@@ -144,7 +144,7 @@ def _setting_transitions(old: dict, new: dict) -> Iterable[tuple[str, str, str]]
 
 
 def _names(config: Any, section: str, key: str, *, per_platform: str | None = None) -> set[str]:
-    from agent.skill_utils import parse_config_string_list
+    from hermes_agent.agent.skill_utils import parse_config_string_list
 
     block = config.get(section) if isinstance(config, dict) else None
     if not isinstance(block, dict):

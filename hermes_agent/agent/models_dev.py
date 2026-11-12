@@ -344,7 +344,7 @@ def _fetch_models_dev_from_network(*, conditional: bool = False) -> tuple[dict[s
     errors and on an empty/invalid payload. ``conditional`` sends ``If-None-Match`` with the sidecar's
     ETag and raises ``_NotModified`` on 304 — pass True ONLY while holding ``_models_dev_fetch_lock``
     AND a servable registry, or a 304 leaves the process with no data."""
-    from agent.deadline import DeadlineExpired, run_bounded_sync
+    from hermes_agent.agent.deadline import DeadlineExpired, run_bounded_sync
 
     headers: dict[str, str] = {}
     if conditional and (etag := _load_etag()):
@@ -787,7 +787,7 @@ def _override_int(override: dict[str, Any], key: str) -> Optional[int]:
 
 def _override_context_window(provider: str, model: str) -> Optional[int]:
     """EXPLICITLY overridden context_window, or None. Explicit-only on purpose: this runs early in the
-    resolution chain (agent/model_metadata.py, before custom_providers and live probes) where a
+    resolution chain (hermes_agent/agent/model_metadata.py, before custom_providers and live probes) where a
     ``_default`` must not preempt more specific sources; fill-gap defaults apply in ``lookup_models_dev_context``."""
     ov = _explicit_model_override(provider, model)
     return _override_int(ov, "context_window") if ov is not None else None

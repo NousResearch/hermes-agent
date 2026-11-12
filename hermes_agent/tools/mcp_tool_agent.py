@@ -47,7 +47,7 @@ def _resolve_refresh_toolsets(agent, enabled_override, disabled_override):
     if enabled_override is not None or disabled_override is not None:
         enabled = enabled_override if enabled_override is not None else enabled
         if disabled_override is not None:
-            from agent.oneshot_footprint import agent_is_oneshot
+            from hermes_agent.agent.oneshot_footprint import agent_is_oneshot
             from hermes_agent.toolsets import session_disabled_toolsets
             agent._configured_disabled_toolsets = disabled_override
             disabled = session_disabled_toolsets(
@@ -156,7 +156,7 @@ def refresh_agent_mcp_tools(
     # Generation captured BEFORE the slow get_tool_definitions call (a slower caller holding an
     # OLDER set must not clobber a newer one); definitions computed OUTSIDE the lock.
     snapshot_generation = registry._generation
-    from agent.delegation_backends import adopt_built_backend, saved_backend
+    from hermes_agent.agent.delegation_backends import adopt_built_backend, saved_backend
     built_backend = saved_backend()
     new_defs = agent_tool_surface(agent, list(
         get_tool_definitions(enabled_toolsets=enabled, disabled_toolsets=disabled, quiet_mode=quiet_mode) or []))
@@ -269,7 +269,7 @@ def _config_permitted_names(agent) -> set:
     """Tool names this agent's toolset selection allows before ``check_fn``: all a pin may carry
     forward. A client-surface toolset counts as allowed (only its client can add it, so its absence
     here is no config choice); ``disabled_toolsets`` still strips it."""
-    from agent.oneshot_footprint import ONESHOT_DISABLED_TOOLSETS, agent_is_oneshot
+    from hermes_agent.agent.oneshot_footprint import ONESHOT_DISABLED_TOOLSETS, agent_is_oneshot
     from hermes_agent.model_tools import _select_tool_names
     from hermes_agent.toolsets import CLIENT_SURFACE_TOOLSETS
     enabled = getattr(agent, "enabled_toolsets", None)
@@ -360,7 +360,7 @@ def restore_agent_tool_prefix(agent, saved) -> bool:
             agent.tools = merged
             agent.valid_tool_names = merged_names
     if isinstance(saved, dict) and saved.get("delegation_backend"):
-        from agent.delegation_backends import adopt_built_backend
+        from hermes_agent.agent.delegation_backends import adopt_built_backend
         adopt_built_backend(agent, pinned, saved["delegation_backend"])
     from hermes_agent.tools.delegate_tool import adopt_session_delegation_mode
     adopt_session_delegation_mode(agent)  # the restored delegate_task decides joined vs background from here on
@@ -435,7 +435,7 @@ def _reinject_post_build_tools(agent, tools_list: list, name_set: set) -> set:
     try:
         get_mem_schemas = _schema_getter("_memory_manager", "get_all_tool_schemas")
         if get_mem_schemas is not None:
-            from agent.memory_manager_tools import memory_provider_tools_enabled  # same gate inject_memory_provider_tools uses
+            from hermes_agent.agent.memory_manager_tools import memory_provider_tools_enabled  # same gate inject_memory_provider_tools uses
             if memory_provider_tools_enabled(
                     enabled, getattr(agent, "disabled_toolsets", None), memory_tool_present="memory" in name_set):
                 for schema in get_mem_schemas():

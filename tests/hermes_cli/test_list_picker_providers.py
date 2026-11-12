@@ -99,8 +99,8 @@ def test_passthrough_kwargs_to_base(monkeypatch):
 
 def test_current_custom_endpoint_passthrough_marks_current_row(monkeypatch):
     """Interactive picker should preserve current custom endpoint semantics."""
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
-    monkeypatch.setattr("agent.models_dev.PROVIDER_TO_MODELS_DEV", {})
+    monkeypatch.setattr("hermes_agent.agent.models_dev.fetch_models_dev", dict)
+    monkeypatch.setattr("hermes_agent.agent.models_dev.PROVIDER_TO_MODELS_DEV", {})
     monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
     monkeypatch.setattr("hermes_cli.models.fetch_openrouter_models",
                         lambda *a, **kw: [])
@@ -160,7 +160,7 @@ def _stub_kimi_discovery(monkeypatch, *, canonical):
     offline and deterministic. ``canonical`` is the CANONICAL_PROVIDERS list
     the 2b cross-check pass should iterate.
     """
-    import agent.models_dev as md
+    import hermes_agent.agent.models_dev as md
     import hermes_cli.models as hm
     import hermes_cli.models_catalog_static as hermes_cli_models_catalog_static
     from hermes_cli import models_catalog_static
@@ -253,7 +253,7 @@ def test_non_blocking_listing_opens_no_socket(monkeypatch, tmp_path):
                 "MISTRAL_API_KEY", "XAI_API_KEY", "OPENROUTER_API_KEY"):
         monkeypatch.setenv(key, "dummy")
     (tmp_path / "provider_models_cache.json").write_text("{}", encoding="utf-8")
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda *a, **k: {})
+    monkeypatch.setattr("hermes_agent.agent.models_dev.fetch_models_dev", lambda *a, **k: {})
 
     live: list[str] = []
 

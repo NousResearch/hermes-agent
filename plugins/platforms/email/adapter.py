@@ -22,8 +22,8 @@ from email import encoders
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from agent.async_utils import safe_schedule_threadsafe
-from agent.i18n import t
+from hermes_agent.agent.async_utils import safe_schedule_threadsafe
+from hermes_agent.agent.i18n import t
 from hermes_agent.gateway.platforms.base import (
     BasePlatformAdapter, SendResult,
     cache_document_from_bytes, cache_image_from_bytes,

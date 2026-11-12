@@ -13,8 +13,8 @@ from contextlib import suppress
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from agent.interrupt_compat import _accepts_keyword
-from agent.replay_cleanup import strip_stale_dangerous_confirmations
+from hermes_agent.agent.interrupt_compat import _accepts_keyword
+from hermes_agent.agent.replay_cleanup import strip_stale_dangerous_confirmations
 from hermes_agent.gateway.config import Platform
 from hermes_agent.gateway.media_repair import repair_explicit_computer_use_media_paths
 from hermes_agent.gateway.platforms.base import BasePlatformAdapter

@@ -14,7 +14,7 @@ def _held_receipt(home: Path) -> dict:
     """The settled CLI receipt of a real held turn (``take_cli_result_fields`` over its result)."""
     from hermes_agent.gateway.session_cli_turn import take_cli_result_fields
     from hermes_cli import plugins
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     with FakeLLMServer([Text(RAW)]) as server:
         redactor_home(home, server.base_url, hold=True)

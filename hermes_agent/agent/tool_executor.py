@@ -1,7 +1,7 @@
 """Tool-call execution: sequential and concurrent dispatch, extracted from AIAgent.
 
 Functions take the parent ``AIAgent`` first; ``run_agent`` keeps thin wrappers and is
-reached lazily via ``_ra()`` so ``run_agent._set_interrupt`` patches still work. Every
+reached lazily via ``_ra()`` so ``hermes_agent.run_agent._set_interrupt`` patches still work. Every
 call's identity travels as a ``_ToolCallRef``; both executors end in the same
 observe → commit → project pipeline so the tool-result wire shape is produced once.
 """
@@ -20,7 +20,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
-from agent.display import (
+from hermes_agent.agent.display import (
     KawaiiSpinner,
     build_tool_preview as _build_tool_preview,
     build_tool_label as _build_tool_label,
@@ -30,23 +30,23 @@ from agent.display import (
     redact_tool_args_for_display as _redact_tool_args_for_display,
     _detect_tool_failure,
 )
-from agent.compression_marker import _COMPRESSION_MARKER_PREFIX
-from agent.interrupt_control import _REASON_USER_INTERRUPT, interrupt_skip_wording
-from agent.message_sanitization import coalesce_tool_call_id
-from agent.onboarding import observe_tool_result as observe_onboarding_result
-from agent import plugin_live_notes
-from agent.lsp import deferred as lsp_deferred
-from agent.prompt_cache_scope import conversation_id
-from agent.inline_tool_executors import (
+from hermes_agent.agent.compression_marker import _COMPRESSION_MARKER_PREFIX
+from hermes_agent.agent.interrupt_control import _REASON_USER_INTERRUPT, interrupt_skip_wording
+from hermes_agent.agent.message_sanitization import coalesce_tool_call_id
+from hermes_agent.agent.onboarding import observe_tool_result as observe_onboarding_result
+from hermes_agent.agent import plugin_live_notes
+from hermes_agent.agent.lsp import deferred as lsp_deferred
+from hermes_agent.agent.prompt_cache_scope import conversation_id
+from hermes_agent.agent.inline_tool_executors import (
     INLINE_TOOL_EXECUTORS,
     InlineToolContext,
     apply_transform_tool_result,
     emit_terminal_post_tool_call,
     tool_hook_ids,
 )
-from agent.message_metadata import stamp_data_use
-from agent.session_persistence import sync_rewritten_tool_rows
-from agent.tool_dispatch_helpers import (
+from hermes_agent.agent.message_metadata import stamp_data_use
+from hermes_agent.agent.session_persistence import sync_rewritten_tool_rows
+from hermes_agent.agent.tool_dispatch_helpers import (
     _NEVER_PARALLEL_TOOLS,
     _is_destructive_command,
     _is_multimodal_tool_result,
@@ -101,7 +101,7 @@ def _ensure_file_checkpoint(agent, function_name: str, function_args: dict, effe
     file_path = function_args.get("path", "")
     if not file_path:
         return
-    from agent.file_safety import is_nt_namespace_path
+    from hermes_agent.agent.file_safety import is_nt_namespace_path
     from hermes_agent.tools.file_tools_paths import _resolve_path_for_task, container_backend_for_task
 
     if container_backend_for_task(effective_task_id or "default") is not None:
@@ -158,7 +158,7 @@ def _authorization_gate_lock_timeout() -> float:
     try:
         from hermes_agent.tools.approval_human_wait import human_wait_ceiling
 
-        # human_wait_ceiling is platform-safety-capped (agent/deadline.py MAX_SAFE_TIMEOUT_S): a huge
+        # human_wait_ceiling is platform-safety-capped (hermes_agent/agent/deadline.py MAX_SAFE_TIMEOUT_S): a huge
         # approvals.timeout can no longer overflow Lock.acquire's time_t on macOS (#83220). Deliberately NOT
         # min()'d with _AUTHORIZATION_GATE_LOCK_TIMEOUT_S — the gate must never give up while a legitimate
         # approval prompt is still answerable (#79719), so a configured approvals.timeout above 360s must
@@ -190,7 +190,7 @@ def _parse_tool_arguments(raw_arguments: Any) -> tuple[dict, Optional[str]]:
 def _resolve_concurrent_tool_timeout() -> float | None:
     """Per-batch concurrent deadline: ``timeouts.tools.concurrent_batch`` wins,
     ``HERMES_CONCURRENT_TOOL_TIMEOUT_S`` is the legacy bridge, ``0``/negative disables."""
-    from agent.deadline import resolve_timeout
+    from hermes_agent.agent.deadline import resolve_timeout
 
     return resolve_timeout(
         "tools.concurrent_batch",
@@ -202,8 +202,8 @@ def _resolve_concurrent_tool_timeout() -> float | None:
 def _flush_session_db_after_tool_progress(agent, messages: list, *, stage: str) -> bool:
     """Flush tool-call progress to the session DB before projecting it to any UI: tool side
     effects can kill/restart the process before turn-end persistence runs."""
-    from agent.conversation_loop import _maybe_inject_run_budget_wrapup
-    from agent.turn_iteration_prep import _maybe_inject_iteration_budget_warning
+    from hermes_agent.agent.conversation_loop import _maybe_inject_run_budget_wrapup
+    from hermes_agent.agent.turn_iteration_prep import _maybe_inject_iteration_budget_warning
 
     # Persist exactly the checkpoint text the next model call will see, before stamping
     # this tool result as durable. Already-written rows must never be rewritten later.
@@ -254,8 +254,8 @@ def _max_workers_for_tool_batch(runnable_calls) -> int:
 
 
 def _ra():
-    """Lazy reference to ``run_agent`` so patches like ``run_agent._set_interrupt`` work."""
-    import run_agent
+    """Lazy reference to ``run_agent`` so patches like ``hermes_agent.run_agent._set_interrupt`` work."""
+    from hermes_agent import run_agent
     return run_agent
 
 
@@ -739,10 +739,10 @@ def _dispatch_authorized_once(
     elif ref.name == "skill_manage":
         agent._iters_since_skill = 0
 
-    from agent.terminal_approval_batch import prepare_current_terminal
+    from hermes_agent.agent.terminal_approval_batch import prepare_current_terminal
     prepare_current_terminal(ref)
     _advance_start_order(lambda: _begin_tool_execution(agent, ref, display_index))
-    from agent.tool_progress_relay import bound_tool_progress
+    from hermes_agent.agent.tool_progress_relay import bound_tool_progress
     from hermes_agent.tools.connectors.data_use import collect_data_use
     with bound_tool_progress(agent.tool_progress_callback, ref.name, ref.call_id), collect_data_use() as data_use:
         try:
@@ -766,7 +766,7 @@ def _run_agent_tool_execution_middleware(
     authorization_gate: _ConcurrentToolAuthorizationGate | None = None,
 ) -> _ManagedToolResult:
     """Run Relay rewrites before Hermes policy and dispatch exactly once."""
-    from agent import relay_tools
+    from hermes_agent.agent import relay_tools
     from hermes_cli.middleware import (
         apply_tool_request_middleware,
         run_tool_execution_middleware,
@@ -794,7 +794,7 @@ def _run_agent_tool_execution_middleware(
             authorization_gate=authorization_gate,
         )
 
-    from agent.terminal_approval_batch import bind_prepared_dispatch
+    from hermes_agent.agent.terminal_approval_batch import bind_prepared_dispatch
     _authorized_dispatch = bind_prepared_dispatch(_authorized_dispatch)
 
     def _hermes_pipeline(relay_args: dict[str, Any]) -> Any:
@@ -839,9 +839,9 @@ _SEQUENTIAL_INTERRUPT_POLL_SECONDS = 1.0
 def _resolve_sequential_tool_timeout() -> float | None:
     """Deadline for one sequential call: ``timeouts.tools.sequential_call``, else the
     concurrent batch deadline so the two paths can't drift; ``0``/negative disables.
-    Deliberately NOT ``agent.deadline.run_bounded_sync``: both executors extend the
+    Deliberately NOT ``hermes_agent.agent.deadline.run_bounded_sync``: both executors extend the
     deadline while an approval prompt is open, which a fixed deadline can't express."""
-    from agent.deadline import resolve_timeout
+    from hermes_agent.agent.deadline import resolve_timeout
 
     return resolve_timeout("tools.sequential_call", default=_resolve_concurrent_tool_timeout())
 
@@ -909,13 +909,13 @@ def _run_sequential_tool_execution_middleware(
     generic deadline would report ``tool_timeout`` while the prompt is still live. They
     are ``_NEVER_PARALLEL_TOOLS`` and run inline below, before any deadline is armed, so
     they need no ``_SEQUENTIAL_DEADLINE_EXEMPT_TOOLS`` entry."""
-    from agent.tool_dispatch_helpers import _extend_tool_timeout
+    from hermes_agent.agent.tool_dispatch_helpers import _extend_tool_timeout
 
     timeout_s = None if function_name in _SEQUENTIAL_DEADLINE_EXEMPT_TOOLS else _resolve_sequential_tool_timeout()
     timeout_s = _extend_tool_timeout(function_name, timeout_s)
     ref = _ToolCallRef(function_name, function_args, effective_task_id, tool_call_id, middleware_trace)
     kwargs = dict(ref.middleware_kwargs(), execute=execute, scope_block=scope_block, display_index=display_index)
-    from agent.terminal_approval_batch import take_prepared_call
+    from hermes_agent.agent.terminal_approval_batch import take_prepared_call
     prepared = take_prepared_call(tool_call_id)
     if prepared is not None:
         authorization_gate = prepared.batch.authorization_gate
@@ -1040,7 +1040,7 @@ def _begin_tool_execution(agent, ref: _ToolCallRef, display_index: int | None) -
             if _is_destructive_command(command):
                 from hermes_agent.tools.file_tools_paths import container_backend_for_task
                 if container_backend_for_task(effective_task_id or "default") is None:
-                    from agent.runtime_cwd import scope_terminal_cwd
+                    from hermes_agent.agent.runtime_cwd import scope_terminal_cwd
                     cwd = function_args.get("workdir") or scope_terminal_cwd() or os.getcwd()
                     agent._checkpoint_mgr.ensure_checkpoint(cwd, f"before terminal: {command[:60]}")
 
@@ -1852,7 +1852,7 @@ def _publish_sequential_result(agent, messages: list, ref: _ToolCallRef, managed
     # published, the informed consent collected for later slots describes a
     # batch state that no longer holds — flag it so consume_prepared_guard
     # drops their pre-made decisions and the live guard flow re-runs.
-    from agent.terminal_approval_batch import mark_batch_outcome
+    from hermes_agent.agent.terminal_approval_batch import mark_batch_outcome
     mark_batch_outcome(_is_error_result or bool(managed.blocked))
 
     _emit_tool_complete_and_risk(agent, ref, display_function_result, risk_metadata, managed.blocked)
@@ -1863,7 +1863,7 @@ def _publish_sequential_result(agent, messages: list, ref: _ToolCallRef, managed
 
 def execute_tool_calls_sequential(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0, *, finalize: bool = True) -> None:
     from types import SimpleNamespace
-    from agent.terminal_approval_batch import terminal_approval_batch, terminal_approval_runs
+    from hermes_agent.agent.terminal_approval_batch import terminal_approval_batch, terminal_approval_runs
     for calls in terminal_approval_runs(agent, assistant_message.tool_calls):
         with terminal_approval_batch(agent, calls, messages, effective_task_id):
             _execute_tool_calls_sequential(agent, SimpleNamespace(tool_calls=calls), messages, effective_task_id, api_call_count, finalize=False)

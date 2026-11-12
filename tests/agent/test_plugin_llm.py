@@ -1,4 +1,4 @@
-"""Unit tests for the plugin LLM facade (``agent.plugin_llm``).
+"""Unit tests for the plugin LLM facade (``hermes_agent.agent.plugin_llm``).
 
 These tests exercise the trust gate, JSON parsing, schema validation,
 image input encoding, and the auxiliary-client invocation contract.
@@ -15,7 +15,7 @@ from typing import Any
 
 import pytest
 
-from agent.plugin_llm import (
+from hermes_agent.agent.plugin_llm import (
     PluginLlmCompleteResult,
     PluginLlmImageInput,
     PluginLlmStructuredResult,
@@ -432,7 +432,7 @@ class TestAsyncSurface:
 
 class TestConfigDrivenPolicy:
     def test_policy_loaded_from_yaml(self, tmp_path, monkeypatch):
-        from agent.plugin_llm import _resolve_trust_policy
+        from hermes_agent.agent.plugin_llm import _resolve_trust_policy
 
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
@@ -466,7 +466,7 @@ plugins:
         })
 
     def test_missing_plugin_entry_yields_default_deny(self, tmp_path, monkeypatch):
-        from agent.plugin_llm import _resolve_trust_policy
+        from hermes_agent.agent.plugin_llm import _resolve_trust_policy
 
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
@@ -510,7 +510,7 @@ class TestAttribution:
         """Providers often canonicalise the model name (e.g. ``gpt-4o``
         → ``gpt-4o-2024-08-06``). Whatever they actually returned wins
         for the recorded model so the audit log reflects reality."""
-        from agent.plugin_llm import _resolve_attribution
+        from hermes_agent.agent.plugin_llm import _resolve_attribution
 
         response = SimpleNamespace(model="gpt-4o-2024-08-06", choices=[])
         provider, model = _resolve_attribution(
@@ -525,8 +525,8 @@ class TestAttribution:
     def test_response_model_used_even_when_no_overrides(self, monkeypatch):
         """The provider's canonical model name should still flow through
         when no overrides are set."""
-        from agent import plugin_llm
-        import agent.auxiliary_client as ac
+        from hermes_agent.agent import plugin_llm
+        import hermes_agent.agent.auxiliary_client as ac
 
         monkeypatch.setattr(ac, "_read_main_provider", lambda: "openrouter")
         monkeypatch.setattr(ac, "_read_main_model", lambda: "openai/gpt-4o")

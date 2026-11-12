@@ -9,8 +9,8 @@ session — the control in every test here — keeps the full surface.
 
 import pytest
 
-from agent import oneshot_footprint
-from agent.prompt_builder import build_skills_system_prompt
+from hermes_agent.agent import oneshot_footprint
+from hermes_agent.agent.prompt_builder import build_skills_system_prompt
 
 
 @pytest.fixture

@@ -565,7 +565,7 @@ class TestRunJobSessionPersistence:
                      "api_mode": "chat_completions",
                  },
              ), \
-             patch("run_agent.AIAgent") as mock_agent_cls:
+             patch("hermes_agent.run_agent.AIAgent") as mock_agent_cls:
             mock_agent = MagicMock()
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
             mock_agent_cls.return_value = mock_agent
@@ -629,7 +629,7 @@ class TestRunJobSessionPersistence:
                      "api_mode": "chat_completions",
                  },
              ), \
-             patch("run_agent.AIAgent") as mock_agent_cls:
+             patch("hermes_agent.run_agent.AIAgent") as mock_agent_cls:
             mock_agent = MagicMock()
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
 
@@ -677,7 +677,7 @@ class TestRunJobSessionPersistence:
                     "api_mode": "chat_completions",
                 },
             ),
-            patch("run_agent.AIAgent", return_value=mock_agent),
+            patch("hermes_agent.run_agent.AIAgent", return_value=mock_agent),
         ]
         with contextlib.ExitStack() as stack:
             entered = [stack.enter_context(cm) for cm in base]
@@ -799,7 +799,7 @@ class TestRunJobSessionPersistence:
                      "api_mode": "chat_completions",
                  },
              ), \
-             patch("run_agent.AIAgent", FakeAgent):
+             patch("hermes_agent.run_agent.AIAgent", FakeAgent):
             success, output, final_response, error = _run_owned_job(job, tmp_path, fake_db)
 
         assert success is True
@@ -859,7 +859,7 @@ class TestRunJobSessionPersistence:
                      "api_mode": "chat_completions",
                  },
              ), \
-             patch("run_agent.AIAgent", FakeAgent):
+             patch("hermes_agent.run_agent.AIAgent", FakeAgent):
             success, output, final_response, error = _run_owned_job(job, tmp_path, fake_db)
 
         assert success is True
@@ -943,7 +943,7 @@ class TestRunJobSessionPersistence:
                      "api_mode": "chat_completions",
                  },
              ), \
-             patch("run_agent.AIAgent") as mock_agent_cls:
+             patch("hermes_agent.run_agent.AIAgent") as mock_agent_cls:
             mock_agent = MagicMock()
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
             mock_agent_cls.return_value = mock_agent
@@ -1004,7 +1004,7 @@ class TestRunJobSessionPersistence:
                      "api_mode": "chat_completions",
                  },
              ), \
-             patch("run_agent.AIAgent", FakeAgent):
+             patch("hermes_agent.run_agent.AIAgent", FakeAgent):
             for job in jobs:
                 success, output, final_response, error = _run_owned_job(job, tmp_path, fake_db)
                 assert success is True
@@ -1057,7 +1057,7 @@ class TestRunJobConfigEnvVarExpansion:
              patch("hermes_agent.hermes_state_registry.acquire", return_value=fake_db), \
              patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                    return_value=self._RUNTIME), \
-             patch("run_agent.AIAgent") as mock_agent_cls:
+             patch("hermes_agent.run_agent.AIAgent") as mock_agent_cls:
             mock_agent = MagicMock()
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
             mock_agent_cls.return_value = mock_agent
@@ -1121,7 +1121,7 @@ class TestRunJobConfigEnvVarExpansion:
              patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                    side_effect=resolve_runtime), \
              patch("hermes_agent.tools.mcp_tool_discovery.discover_mcp_tools", return_value=[]), \
-             patch("run_agent.AIAgent") as mock_agent_cls:
+             patch("hermes_agent.run_agent.AIAgent") as mock_agent_cls:
             mock_agent = MagicMock()
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
             mock_agent_cls.return_value = mock_agent
@@ -1173,7 +1173,7 @@ class TestRunJobConfigEnvVarExpansion:
              patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                    side_effect=resolve_runtime), \
              patch("hermes_agent.tools.mcp_tool_discovery.discover_mcp_tools", return_value=[]), \
-             patch("run_agent.AIAgent") as mock_agent_cls:
+             patch("hermes_agent.run_agent.AIAgent") as mock_agent_cls:
             mock_agent = MagicMock()
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
             mock_agent_cls.return_value = mock_agent
@@ -1219,7 +1219,7 @@ class TestRunJobModelResolution:
              patch("hermes_agent.hermes_state_registry.acquire", return_value=fake_db), \
              patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                    return_value=self._RUNTIME), \
-             patch("run_agent.AIAgent") as mock_agent_cls:
+             patch("hermes_agent.run_agent.AIAgent") as mock_agent_cls:
             mock_agent = MagicMock()
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
             mock_agent_cls.return_value = mock_agent
@@ -1244,7 +1244,7 @@ class TestRunJobModelResolution:
              patch("hermes_agent.hermes_state_registry.acquire", return_value=fake_db), \
              patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                    return_value=self._RUNTIME), \
-             patch("run_agent.AIAgent") as mock_agent_cls:
+             patch("hermes_agent.run_agent.AIAgent") as mock_agent_cls:
             success, _, _, error = _run_owned_job(job, tmp_path, fake_db)
 
         assert success is False
@@ -1273,7 +1273,7 @@ class TestRunJobModelResolution:
              patch("hermes_agent.hermes_state_registry.acquire", return_value=fake_db), \
              patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                    return_value=self._RUNTIME), \
-             patch("run_agent.AIAgent") as mock_agent_cls:
+             patch("hermes_agent.run_agent.AIAgent") as mock_agent_cls:
             mock_agent = MagicMock()
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
             mock_agent_cls.return_value = mock_agent
@@ -1298,7 +1298,7 @@ class TestRunJobModelResolution:
              patch("hermes_agent.hermes_state_registry.acquire", return_value=fake_db), \
              patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                    return_value=self._RUNTIME), \
-             patch("run_agent.AIAgent") as mock_agent_cls:
+             patch("hermes_agent.run_agent.AIAgent") as mock_agent_cls:
             mock_agent = MagicMock()
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
             mock_agent_cls.return_value = mock_agent
@@ -1349,7 +1349,7 @@ class TestRunJobSkillBacked:
                  },
              ), \
              patch("hermes_agent.tools.skills_tool.skill_view", side_effect=_skill_view), \
-             patch("run_agent.AIAgent") as mock_agent_cls:
+             patch("hermes_agent.run_agent.AIAgent") as mock_agent_cls:
             mock_agent = MagicMock()
             mock_agent.run_conversation.side_effect = _run_conversation
             mock_agent_cls.return_value = mock_agent
@@ -1577,7 +1577,7 @@ class TestRunJobWakeGate:
 
         with patch.object(sched_script, "_run_job_script",
                           return_value=(True, '{"wakeAgent": false}')), \
-             patch("run_agent.AIAgent") as agent_cls:
+             patch("hermes_agent.run_agent.AIAgent") as agent_cls:
             success, _doc, final, err = _run_owned_job(self._make_job(), tmp_path)
 
         assert success is True
@@ -1598,7 +1598,7 @@ class TestRunJobWakeGate:
         })
         with patch.object(sched_script, "_run_job_script",
                           return_value=(True, script_output)), \
-             patch("run_agent.AIAgent", return_value=agent) as agent_cls:
+             patch("hermes_agent.run_agent.AIAgent", return_value=agent) as agent_cls:
             success, _doc, _final, err = _run_owned_job(self._make_job(), tmp_path)
 
         agent_cls.assert_called_once()

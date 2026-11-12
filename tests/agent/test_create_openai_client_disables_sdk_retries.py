@@ -10,9 +10,9 @@ fix in tests/agent/test_anthropic_adapter.py.
 """
 from unittest.mock import MagicMock, patch
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
-@patch("agent.process_bootstrap.OpenAI")
+@patch("hermes_agent.agent.process_bootstrap.OpenAI")
 def test_create_openai_client_disables_sdk_retries(mock_openai):
     mock_openai.return_value = MagicMock()
     agent = AIAgent(

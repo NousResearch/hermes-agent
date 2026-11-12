@@ -240,7 +240,7 @@ def test_scope_visibility_rejects_a_foreign_or_differently_authenticated_route(
 def test_shared_server_tools_are_callable_and_removed_on_non_owner_reload(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from agent.secret_scope import set_multiplex_active
+    from hermes_agent.agent.secret_scope import set_multiplex_active
     from hermes_constants import (
         hermes_home_key,
         reset_hermes_home_override,

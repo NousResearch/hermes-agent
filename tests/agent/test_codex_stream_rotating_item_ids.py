@@ -7,7 +7,7 @@ import json
 
 import pytest
 
-from agent.codex_runtime import _consume_codex_event_stream
+from hermes_agent.agent.codex_runtime import _consume_codex_event_stream
 
 
 @pytest.mark.parametrize(('completion', 'done_order', 'indexed'), [

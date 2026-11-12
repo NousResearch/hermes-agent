@@ -40,7 +40,7 @@ def tool_unavailable_fields(agent: Any, name: Any, issue: str, route: dict[str, 
         return None
     if getattr(agent, "_delegate_depth", 0) or getattr(agent, "platform", None) == "cron":
         return None
-    from agent.tool_executor import _tool_search_scoped_names
+    from hermes_agent.agent.tool_executor import _tool_search_scoped_names
     from hermes_agent.tools.skill_provenance import is_background_review
 
     if is_background_review() or name in _tool_search_scoped_names(agent):

@@ -48,7 +48,7 @@ def _anthropic_oauth_status() -> dict[str, Any]:
     ``claude-code`` entry, and counting it here would shadow a real ANTHROPIC_API_KEY.
     """
     try:
-        from agent.anthropic_credentials import read_hermes_oauth_credentials, _get_hermes_oauth_file
+        from hermes_agent.agent.anthropic_credentials import read_hermes_oauth_credentials, _get_hermes_oauth_file
         hermes_creds = read_hermes_oauth_credentials()
     except Exception:
         hermes_creds = None
@@ -80,7 +80,7 @@ def _claude_code_only_status() -> dict[str, Any]:
     persisted access token that has already expired is not a usable login.
     """
     try:
-        from agent.anthropic_credentials import (
+        from hermes_agent.agent.anthropic_credentials import (
             is_claude_code_token_valid,
             read_claude_code_credentials,
         )

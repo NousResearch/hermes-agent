@@ -11,7 +11,7 @@ import logging
 
 import pytest
 
-from agent.lsp import eventlog
+from hermes_agent.agent.lsp import eventlog
 
 
 @pytest.fixture(autouse=True)

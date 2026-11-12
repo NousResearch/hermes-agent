@@ -22,9 +22,9 @@ from unittest.mock import MagicMock, call
 
 import pytest
 
-from agent.memory_manager import MemoryManager
-from agent.memory_provider import MemoryProvider
-import agent.memory_manager as _mm_module
+from hermes_agent.agent.memory_manager import MemoryManager
+from hermes_agent.agent.memory_provider import MemoryProvider
+import hermes_agent.agent.memory_manager as _mm_module
 from hermes_agent.gateway.run import GatewayRunner
 
 
@@ -81,7 +81,7 @@ def _make_agent(mgr: MemoryManager) -> SimpleNamespace:
     """Build a minimal agent wired to a real MemoryManager.
 
     ``shutdown_memory_provider`` mirrors ``AIAgent.shutdown_memory_provider``
-    (run_agent.py): end-of-session notification then ``shutdown_all``. The
+    (hermes_agent/run_agent.py): end-of-session notification then ``shutdown_all``. The
     memory manager is the live one carrying the queued writes, so the gateway
     cleanup path exercises the real flush -> shutdown ordering.
     """

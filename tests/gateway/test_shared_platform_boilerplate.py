@@ -12,7 +12,7 @@ import os
 
 import pytest
 
-import agent.secret_scope as ss
+import hermes_agent.agent.secret_scope as ss
 import hermes_agent.gateway.platforms._shared as shared
 import hermes_cli.config as cli_config
 

@@ -5,7 +5,7 @@ every later message. #149708 takes a NEW refusal out of the model context as it 
 (``SessionRewindMixin.retain_refused_turn_for_display``); a refusal stored by an older build is still
 in the transcript, and that chat stays locked. Those builds closed the refused turn with an
 assistant ``failed_turn`` boundary carrying ``display_metadata.error_surface.code ==
-"content_policy_blocked"`` (``agent/conversation_loop.py::_close_durable_failed_turn``), a shape
+"content_policy_blocked"`` (``hermes_agent/agent/conversation_loop.py::_close_durable_failed_turn``), a shape
 current builds never write: their closers skip a refused turn and retain it instead. That boundary
 is the marker this repair keys on.
 
@@ -144,7 +144,7 @@ def _locked_tail(db, rows) -> Optional[list[tuple[Optional[int], list[int]]]]:
     each starts at a user row that is not a compaction carrier. A turn head the user typed (the
     user-originated test #149708's retention uses) is the row shown as refused; an internal head (a
     background-task or process notice, a hidden row) gets ``None``: it leaves the context unshown."""
-    from agent.context_compressor import is_compaction_summary_message, user_originated_turn_view
+    from hermes_agent.agent.context_compressor import is_compaction_summary_message, user_originated_turn_view
     # The newest settled turn (a real answer or a failure boundary) must be a refusal.
     last_boundary = max((i for i, r in enumerate(rows) if r["display_kind"] == "failed_turn" or _is_final_reply(r)),
                         default=-1)
@@ -181,7 +181,7 @@ def _locked_tail(db, rows) -> Optional[list[tuple[Optional[int], list[int]]]]:
 def _repair_session(db, conn, session_id: str, notice: str) -> str:
     """``"repaired"`` / ``"skipped"`` / ``"deferred"`` (live lease or compression lock) for one session,
     inside the caller's write transaction."""
-    from agent.turn_failure_copy import CONTENT_REFUSED_DISPLAY_KIND, CONTENT_REFUSED_METADATA_KEY
+    from hermes_agent.agent.turn_failure_copy import CONTENT_REFUSED_DISPLAY_KIND, CONTENT_REFUSED_METADATA_KEY
     from hermes_agent.hermes_state_errors import SessionCompressionInProgressError, SessionTurnLeaseLostError
     row = conn.execute("SELECT end_reason FROM sessions WHERE id = ?", (session_id,)).fetchone()
     if row is None or row[0] == "compression" or _compaction_holds_refusal(db, conn, session_id):
@@ -257,7 +257,7 @@ def repair_legacy_refused_turns(db, conn) -> dict[str, int]:
     chat another process already repaired is skipped). The pass shares one ``_SCAN_BUDGET_S`` budget,
     with at least one repair per open; unreached and deferred chats stay queued (``_PENDING``). One
     last short transaction records the cursor and queue, or the done marker. Returns outcome counts."""
-    from agent.turn_failure_copy import CONTENT_REFUSED_NOTICE
+    from hermes_agent.agent.turn_failure_copy import CONTENT_REFUSED_NOTICE
     counts = {"repaired": 0, "skipped": 0, "deferred": 0}
     if _meta(conn, LEGACY_REFUSAL_REPAIR_DONE) is not None:
         return counts  # a finished store pays this one read per open

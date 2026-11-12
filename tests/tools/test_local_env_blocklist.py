@@ -384,7 +384,7 @@ def test_runtime_adapter_secret_follows_the_bound_profiles_registry(child_env, m
 @pytest.mark.parametrize("declared_by", ["skill", "config"])
 def test_passthrough_accepted_before_an_adapter_owns_the_name_stops_forwarding_it(
         child_env, monkeypatch, declared_by):
-    from agent import secret_scope as ss
+    from hermes_agent.agent import secret_scope as ss
     from hermes_agent.gateway.platform_registry import PlatformEntry, platform_registry
     from hermes_agent.tools.code_execution_env import _scrub_child_env
     from hermes_agent.tools.env_passthrough import register_env_passthrough
@@ -477,7 +477,7 @@ def test_force_prefix_is_not_plugin_passthrough(child_env, monkeypatch, builder,
 @pytest.mark.parametrize("managed,platform,allowed", [(True, "telegram", True), (False, "buzz", True), (False, "telegram", False)])
 @pytest.mark.parametrize("scope", [None, {"BUZZ_PRIVATE_KEY": "fake-scoped"}])
 def test_buzz_context_and_plain_process_value(child_env, monkeypatch, managed, platform, allowed, scope):
-    from agent import secret_scope as ss
+    from hermes_agent.agent import secret_scope as ss
     from hermes_agent.gateway.session_context import _SESSION_PLATFORM
     from hermes_agent.tools.code_execution_env import _scrub_child_env
     from hermes_agent.tools.env_passthrough import register_env_passthrough, is_env_passthrough
@@ -506,7 +506,7 @@ def test_buzz_context_and_plain_process_value(child_env, monkeypatch, managed, p
 @pytest.mark.platforms("linux", "macos", "windows")
 @pytest.mark.parametrize("first_platform,first_value", [("buzz", "fake-profile-a"), ("telegram", None)], ids=["buzz", "other"])
 def test_buzz_secret_never_reaches_second_profile_via_snapshot(child_env, monkeypatch, first_platform, first_value):
-    from agent import secret_scope as ss
+    from hermes_agent.agent import secret_scope as ss
     from hermes_agent.gateway.session_context import _SESSION_PLATFORM
     monkeypatch.setenv("BUZZ_PRIVATE_KEY", "fake-profile-a")
     ss.set_multiplex_active(True)
@@ -534,7 +534,7 @@ def test_buzz_secret_never_reaches_second_profile_via_snapshot(child_env, monkey
 
 @pytest.mark.parametrize("scoped,expected", [({"SERVICE_TOKEN": "fake-routed"}, "fake-routed"), ({}, None)])
 def test_profile_passthrough_in_terminal_child(child_env, monkeypatch, scoped, expected):
-    from agent import secret_scope as ss
+    from hermes_agent.agent import secret_scope as ss
     from hermes_agent.tools.env_passthrough import register_env_passthrough
     register_env_passthrough(["SERVICE_TOKEN"])
     monkeypatch.setenv("SERVICE_TOKEN", "fake-default")
@@ -1362,7 +1362,7 @@ class TestPythonhomeSanitized:
 class TestProfileScopedPassthrough:
     def test_make_run_env_uses_active_profile_for_passthrough(self, monkeypatch):
         """Allowlisted values must come from the routed profile, not os.environ."""
-        from agent import secret_scope as ss
+        from hermes_agent.agent import secret_scope as ss
         from hermes_agent.tools.env_passthrough import clear_env_passthrough, register_env_passthrough
         from hermes_agent.tools.environments.local import _make_run_env
 
@@ -1382,7 +1382,7 @@ class TestProfileScopedPassthrough:
 
     def test_make_run_env_omits_missing_scoped_passthrough(self, monkeypatch):
         """A missing routed secret must not fall back to the default profile."""
-        from agent import secret_scope as ss
+        from hermes_agent.agent import secret_scope as ss
         from hermes_agent.tools.env_passthrough import clear_env_passthrough, register_env_passthrough
         from hermes_agent.tools.environments.local import _make_run_env
 

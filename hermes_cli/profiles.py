@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from agent.file_safety import HOME_CREDENTIAL_DIRS
+from hermes_agent.agent.file_safety import HOME_CREDENTIAL_DIRS
 from hermes_cli.archive_safe import archive_root_dirs, make_targz, normalize_archive_parts, safe_extract_targz
 from hermes_cli import config_backend as _config_backend
 from hermes_cli.profiles_config import _migrate_profile_config_if_outdated
@@ -818,7 +818,7 @@ def _walk_skill_count(skills_dir: Path) -> int:
     instead of statting them). Best-effort: a subtree that vanishes mid-walk (a concurrent
     skill install/update) is skipped, never raised — ``os.walk`` (``onerror=None``) swallows
     scandir errors itself, so one profile's churn cannot abort the whole enumeration."""
-    from agent.skill_utils import iter_skill_index_files
+    from hermes_agent.agent.skill_utils import iter_skill_index_files
     return sum(1 for _ in iter_skill_index_files(skills_dir, "SKILL.md"))
 
 
@@ -1245,7 +1245,7 @@ def _clone_all_into(source_dir: Path, profile_dir: Path, canon: str) -> Optional
             "profile %s: dropped cloned single-use OAuth grants %s "
             "(inherits the root grant instead)", canon, stripped,
         )
-    from agent.vault_store import VaultError, VaultStore
+    from hermes_agent.agent.vault_store import VaultError, VaultStore
     try:  # a keychain-mode vault's copied pointer names the source's entry: the clone gets its own
         return VaultStore(profile_dir / "vault").own_copied_key(get_profile_dir(canon) / "vault")
     except VaultError as exc:
@@ -1763,7 +1763,7 @@ def delete_profile(name: str, yes: bool = False) -> Path:
         if _closed:
             print(f"✓ Released {_closed} session database connection(s) held by this process")
 
-    # The Desktop serve process routes its agent/errors logs for every profile through one
+    # The Desktop serve process routes its hermes_agent/agent/errors logs for every profile through one
     # QueueListener. On Windows those ConcurrentRotatingFileHandler instances retain their
     # ``.__*.lock`` files until explicitly closed, so rmtree otherwise fails with WinError 32.
     with contextlib.suppress(Exception):

@@ -1,7 +1,7 @@
 """Redaction applied to monitoring data before egress.
 
 One unconditional scrub, no modes, no knobs. Every string that leaves the process passes
-through ``redact_for_export``: secrets via ``agent/redact.py::redact_for_egress`` (the single
+through ``redact_for_export``: secrets via ``hermes_agent/agent/redact.py::redact_for_egress`` (the single
 pattern source; fails CLOSED so a broken redactor never emits the raw string), then PII
 (e-mail, phone, UUID-shaped ids -> ``[email]`` / ``[phone]`` / ``[id]``).
 """
@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 from typing import Any, Optional
 
-from agent.redact import REDACTION_UNAVAILABLE as UNAVAILABLE, redact_for_egress
+from hermes_agent.agent.redact import REDACTION_UNAVAILABLE as UNAVAILABLE, redact_for_egress
 
 # ── PII shapes ───────────────────────────────────────────────────────────────
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")

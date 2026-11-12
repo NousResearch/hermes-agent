@@ -5,7 +5,7 @@ Active-provider precedence (see :func:`_resolve`): ``browser.cloud_provider`` in
 regardless of ``is_available()`` (so the dispatcher surfaces a typed "X_API_KEY is not set" error
 instead of silently switching); else the legacy auto-detect walk ``browser-use`` → ``browserbase``
 filtered by availability; else ``None`` (local browser mode). There is no capability split here —
-every provider implements the full :class:`agent.browser_provider.BrowserProvider` lifecycle.
+every provider implements the full :class:`hermes_agent.agent.browser_provider.BrowserProvider` lifecycle.
 """
 
 from __future__ import annotations
@@ -13,8 +13,8 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from agent.browser_provider import BrowserProvider
-from agent.provider_registry import ProviderRegistry, is_available_safe
+from hermes_agent.agent.browser_provider import BrowserProvider
+from hermes_agent.agent.provider_registry import ProviderRegistry, is_available_safe
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +34,7 @@ _LEGACY_PREFERENCE = ("browser-use", "browserbase")
 def _resolve(configured: Optional[str]) -> Optional[BrowserProvider]:
     """Resolve the active browser provider (rules in the module docstring).
 
-    Intentionally NO "single-eligible shortcut" (unlike ``agent.web_search_registry._resolve``): only
+    Intentionally NO "single-eligible shortcut" (unlike ``hermes_agent.agent.web_search_registry._resolve``): only
     ``_LEGACY_PREFERENCE`` names are auto-eligible. Firecrawl shares its API key with the *web* extract
     plugin, so a user with ``FIRECRAWL_API_KEY`` must never be routed to a paid cloud browser without
     setting ``browser.cloud_provider``; the same gate applies to third-party browser-provider plugins.

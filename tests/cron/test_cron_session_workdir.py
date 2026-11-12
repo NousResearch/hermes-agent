@@ -57,7 +57,7 @@ def _run_job_in_owner(job, db, tmp_path):
          patch("hermes_cli.env_loader.reset_secret_source_cache"), \
          patch("hermes_agent.hermes_state_registry.acquire", return_value=db), \
          patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value=_RUNTIME), \
-         patch("run_agent.AIAgent", _FakeCronAgent):
+         patch("hermes_agent.run_agent.AIAgent", _FakeCronAgent):
         return run_job(job)
 
 

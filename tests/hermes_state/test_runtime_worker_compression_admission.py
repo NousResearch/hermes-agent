@@ -1,7 +1,7 @@
 """Physical worker rotation cannot re-key an accepted input or unblock its FIFO."""
 import pytest
 
-from agent.runtime_session_store import RuntimeSessionStore
+from hermes_agent.agent.runtime_session_store import RuntimeSessionStore
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_runtime import (
     admit_session_input, begin_runtime_epoch, claim_session_input,

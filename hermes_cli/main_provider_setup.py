@@ -140,7 +140,7 @@ def _aux_task_cfg_for_display(cfg: dict, task: str) -> dict:
     with contextlib.suppress(Exception):
         from hermes_cli.plugins import get_plugin_auxiliary_tasks
         if any(e.get("key") == task and e.get("inherit_from") for e in get_plugin_auxiliary_tasks()):
-            from agent.auxiliary_client import _get_auxiliary_task_config
+            from hermes_agent.agent.auxiliary_client import _get_auxiliary_task_config
             return _get_auxiliary_task_config(task)
     return _aux_task_cfg(cfg, task)
 
@@ -690,7 +690,7 @@ def _main_model_reasoning_efforts(model: str, provider: str) -> Optional[list[st
     if declared is not None:
         return list(declared) or None
     try:
-        from agent.models_dev import get_model_capabilities
+        from hermes_agent.agent.models_dev import get_model_capabilities
         meta = get_model_capabilities(slug, model)
     except Exception:
         meta = None
@@ -773,7 +773,7 @@ def _stepfun_base_url_for_region(region: str) -> str:
 
 def _run_anthropic_oauth_flow(save_env_value):
     """Run the Claude OAuth setup-token flow. Returns True if credentials were saved."""
-    from agent.anthropic_credentials import run_oauth_setup_token, read_claude_code_credentials, is_claude_code_token_valid
+    from hermes_agent.agent.anthropic_credentials import run_oauth_setup_token, read_claude_code_credentials, is_claude_code_token_valid
     from hermes_cli.config import save_anthropic_oauth_token, use_anthropic_claude_code_credentials
 
     def _activate_claude_code_credentials_if_available() -> bool:

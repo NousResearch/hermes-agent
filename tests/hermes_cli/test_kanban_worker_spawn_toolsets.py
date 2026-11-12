@@ -130,7 +130,7 @@ def test_default_spawn_resolves_env_passthrough_under_multiplex(monkeypatch, tmp
     monkeypatch.setenv("HERMES_HOME", str(root))
     monkeypatch.setenv("MY_PASSTHROUGH_VAR", "dispatcher-value")
 
-    from agent.secret_scope import set_multiplex_active
+    from hermes_agent.agent.secret_scope import set_multiplex_active
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_dispatch as kbd
 

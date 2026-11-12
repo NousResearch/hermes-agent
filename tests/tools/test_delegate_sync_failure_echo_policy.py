@@ -15,15 +15,15 @@ def configure(home, setting, monkeypatch):
 def test_sync_failure_real_run_to_spinner_three_modes(tmp_path, monkeypatch):
     from hermes_agent.tools.delegate_tool import _run_single_child
     from hermes_agent.tools.delegate_tool_progress import _build_child_progress_callback
-    from agent.notification_presentation import notification_policy_snapshot
+    from hermes_agent.agent.notification_presentation import notification_policy_snapshot
     from tests.tools.test_delegate_output_schema import _StubChild, _StubParent
     rows=[]
     for setting in (None,False,True):
         configure(tmp_path/f'sync-{setting}',setting,monkeypatch)
         import io
         from contextlib import redirect_stdout
-        from agent.display import KawaiiSpinner
-        from agent.notification_presentation import notification_config_snapshot
+        from hermes_agent.agent.display import KawaiiSpinner
+        from hermes_agent.agent.notification_presentation import notification_config_snapshot
         buffer=io.StringIO();events=[]
         parent=_StubParent();parent.session_id='parent'
         with redirect_stdout(buffer):parent._delegate_spinner=KawaiiSpinner('delegating')

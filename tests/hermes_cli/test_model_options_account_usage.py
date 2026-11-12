@@ -7,9 +7,9 @@ refresh in the background: a slow or hung usage endpoint can't be allowed to sta
 import threading
 from datetime import datetime, timedelta, timezone, UTC
 
-from agent import account_usage
-from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
-from agent.account_usage_cache import cached_account_usage
+from hermes_agent.agent import account_usage
+from hermes_agent.agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
+from hermes_agent.agent.account_usage_cache import cached_account_usage
 from hermes_cli.inventory import build_model_options_payload, load_picker_context
 from tests.waiting import wait_until
 

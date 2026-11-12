@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.conversation_compression_manual import compress_now, parse_compress_args
+from hermes_agent.agent.conversation_compression_manual import compress_now, parse_compress_args
 
 
 def _aux_llm(**kwargs):
@@ -30,13 +30,13 @@ def _reply(content, prompt_tokens):
 @pytest.fixture
 def session(tmp_path, monkeypatch):
     from hermes_agent.hermes_state import SessionDB
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
-    monkeypatch.setattr("agent.context_compressor.call_llm", _aux_llm)
-    monkeypatch.setattr("agent.title_generator.call_llm", _aux_llm)
+    monkeypatch.setattr("hermes_agent.agent.context_compressor.call_llm", _aux_llm)
+    monkeypatch.setattr("hermes_agent.agent.title_generator.call_llm", _aux_llm)
     db = SessionDB(db_path=tmp_path / "state.db")
-    with patch("agent.process_bootstrap.OpenAI"):
+    with patch("hermes_agent.agent.process_bootstrap.OpenAI"):
         agent = AIAgent(api_key="test-key-1234567890", base_url="https://openrouter.ai/api/v1", model="test/model",
                         quiet_mode=True, session_db=db, session_id="sid", skip_context_files=True, skip_memory=True)
     agent.client, agent.tool_delay, agent.save_trajectories = MagicMock(), 0, False

@@ -125,7 +125,7 @@ def _page_target(cdp_url: str, target_url: str) -> Iterator[str]:
     fills never leak live pages into the shared real-profile browser."""
     from websockets.sync.client import connect
 
-    from agent.proxy_bypass import loopback_connect_kwargs
+    from hermes_agent.agent.proxy_bypass import loopback_connect_kwargs
     target_id: Optional[str] = None
     with connect(cdp_url, open_timeout=_CDP_TIMEOUT_S, close_timeout=2, max_size=None,
                  **loopback_connect_kwargs(cdp_url)) as ws:
@@ -225,7 +225,7 @@ _READ_PASSWORD_VALUE_JS = (
 def _same_origin(page_origin: str, saved_origin: str) -> bool:
     """True when the live page's ``location.origin`` is the handle's saved origin, compared through
     the vault's own normalizer (so ``:443`` / case differences never cause a false mismatch)."""
-    from agent.vault_store import VaultError, normalize_origin
+    from hermes_agent.agent.vault_store import VaultError, normalize_origin
     try:
         return normalize_origin(page_origin) == normalize_origin(saved_origin)
     except VaultError:
@@ -262,7 +262,7 @@ def resolve_login_password(cdp_url: str, nav_url: str, origin: str, username: st
     """
     from websockets.sync.client import connect
 
-    from agent.proxy_bypass import loopback_connect_kwargs
+    from hermes_agent.agent.proxy_bypass import loopback_connect_kwargs
     ids = itertools.count(1)
     with _page_target(cdp_url, nav_url) as page_url:
         with connect(page_url, open_timeout=_CDP_TIMEOUT_S, close_timeout=2, max_size=None,

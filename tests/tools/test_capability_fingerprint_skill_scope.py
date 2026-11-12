@@ -5,7 +5,7 @@ stored Bot Chat system prompt — re-prefilling the whole prompt cache behind it
 move for a real capability change and stay still for anything that is not one.
 
 A raw ``**/SKILL.md`` glob counted files under the dirs every other reader of this tree prunes
-(``agent.skill_utils.EXCLUDED_SKILL_DIRS``: ``.archive``, ``.curator_backups``, ``node_modules`` …)
+(``hermes_agent.agent.skill_utils.EXCLUDED_SKILL_DIRS``: ``.archive``, ``.curator_backups``, ``node_modules`` …)
 and each skill's support dirs — files ``skills_list``/``skill_view`` never offer, ``skill_count``
 never counts, and the prompt's own skills index never lists. So archiving a skill, or the curator
 writing a backup, flipped the epoch and rebuilt a prompt whose skills section had not changed.

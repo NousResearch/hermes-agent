@@ -12,7 +12,7 @@ from contextlib import nullcontext, suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from agent.interrupt_compat import _accepts_keyword
+from hermes_agent.agent.interrupt_compat import _accepts_keyword
 from hermes_agent.gateway.config import Platform
 from hermes_agent.gateway.session import SessionSource, build_session_context_prompt
 from hermes_agent.gateway.session_prompt_pin import PROMPT_PIN_VERSION, sanitize_prompt_pin
@@ -909,7 +909,7 @@ class GatewayAgentCacheMixin:
         key: a named profile's home, else the DEFAULT profile (``agent:main:`` keys), which is the
         root Hermes dir even when the gateway was launched under a named profile. Its scope is
         entered unless the current one already is the owner's."""
-        from agent.secret_scope import current_secret_scope, is_multiplex_active
+        from hermes_agent.agent.secret_scope import current_secret_scope, is_multiplex_active
         scope = nullcontext()
         if is_multiplex_active():
             from hermes_agent.gateway.run import _profile_runtime_scope
@@ -969,7 +969,7 @@ class GatewayAgentCacheMixin:
         # persisted session JSON on the next turn, so dropping it here is safe.
         if hasattr(agent, "_session_messages"):
             agent._session_messages = []
-        # _db_flush_scan_prefix (run_agent.py, stamped on every successful flush) is a shallow copy
+        # _db_flush_scan_prefix (hermes_agent/run_agent.py, stamped on every successful flush) is a shallow copy
         # sharing every message dict of the flushed transcript, so leaving it pins the multi-MB strings
         # this eviction frees. Pressure-evictable agents have flushed by definition, so it's populated.
         if hasattr(agent, "_db_flush_scan_prefix"):

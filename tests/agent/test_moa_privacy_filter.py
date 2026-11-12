@@ -1,7 +1,7 @@
 """MoA privacy redaction filter (config: moa.privacy_filter — display | full).
 
 Reworked from PR #60463 (issue #59959). Secret/credential shapes are handled
-by the central redactor (agent.redact.redact_sensitive_text); the MoA filter
+by the central redactor (hermes_agent.agent.redact.redact_sensitive_text); the MoA filter
 adds conservative email + formatted-phone patterns and wires two modes:
 
   display — redact user-visible surfaces only (reference display events +
@@ -13,7 +13,7 @@ adds conservative email + formatted-phone patterns and wires two modes:
 
 from types import SimpleNamespace
 
-from agent.moa_loop import _redact_reference_text
+from hermes_agent.agent.moa_loop import _redact_reference_text
 
 
 def _response(content="done", *, tool_calls=None):
@@ -96,7 +96,7 @@ def _install_fake_llm(monkeypatch):
             return _response(SENSITIVE_ADVICE)
         return _response("acted")
 
-    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+    monkeypatch.setattr("hermes_agent.agent.moa_loop.call_llm", fake_call_llm)
     return calls
 
 
@@ -106,7 +106,7 @@ def _run_facade(monkeypatch, tmp_path, privacy_filter):
     monkeypatch.setenv("HERMES_HOME", str(home))
     _install_fake_llm(monkeypatch)
 
-    from agent.moa_loop import MoAChatCompletions
+    from hermes_agent.agent.moa_loop import MoAChatCompletions
 
     events = []
     facade = MoAChatCompletions(
@@ -170,7 +170,7 @@ def test_full_mode_covers_one_shot_aggregate_moa_context(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(home))
     calls = _install_fake_llm(monkeypatch)
 
-    from agent.moa_loop import aggregate_moa_context
+    from hermes_agent.agent.moa_loop import aggregate_moa_context
 
     aggregate_moa_context(
         user_prompt="review this",

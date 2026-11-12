@@ -42,10 +42,10 @@ def _grouped(tools):
 
 
 def _policy_tools(policy, config):
-    """The tool list the session's next agent build loads (``agent/agent_init.py`` tool snapshot):
+    """The tool list the session's next agent build loads (``hermes_agent/agent/agent_init.py`` tool snapshot):
     the policy's toolsets minus the configured, platform-gated and one-shot disabled ones."""
     from hermes_agent import model_tools
-    from agent.skill_utils import parse_config_string_list
+    from hermes_agent.agent.skill_utils import parse_config_string_list
     from hermes_agent.toolsets import session_disabled_toolsets, session_platform_tool_drops
     enabled = list(policy.current_toolsets(config))
     disabled = session_disabled_toolsets(
@@ -142,7 +142,7 @@ def session_inventory(authority, policy, agent, cwd):
     with owner_scope(authority):
         config = policy.config(authority, secrets=False) if policy is not None else {}
         if agent is not None:
-            from agent.voice_turn_route import session_runtime_view
+            from hermes_agent.agent.voice_turn_route import session_runtime_view
             info["provider"] = _session_provider(session_runtime_view(agent), config if policy is not None else None)
             info["tools"] = _grouped(getattr(agent, "tools", None))
             info["system_prompt"] = getattr(agent, "_cached_system_prompt", "") or ""
@@ -212,7 +212,7 @@ def agent_inventory(agent) -> dict:
     length. Cheap attribute reads, safe on the agent thread at turn end."""
     info: dict = {}
     with contextlib.suppress(Exception):
-        from agent.voice_turn_route import session_runtime_view
+        from hermes_agent.agent.voice_turn_route import session_runtime_view
         info["provider"] = _session_provider(session_runtime_view(agent))
     with contextlib.suppress(Exception):
         info["tools"] = _grouped(getattr(agent, "tools", None))

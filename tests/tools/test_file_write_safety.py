@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from agent.file_safety import is_write_denied as _is_write_denied
+from hermes_agent.agent.file_safety import is_write_denied as _is_write_denied
 
 
 class TestStaticDenyList:
@@ -27,24 +27,24 @@ class TestSshConfigApprovalGate:
     """~/.ssh/config is approval-gated, not hard-denied (private keys stay denied)."""
 
     def test_ssh_config_not_hard_denied(self):
-        from agent.file_safety import is_write_denied
+        from hermes_agent.agent.file_safety import is_write_denied
 
         # The client config carries no key material — it must NOT be in the
         # flat credential deny (it is routed through approval instead).
         assert is_write_denied(os.path.expanduser("~/.ssh/config")) is False
 
     def test_ssh_config_get_write_denied_error_is_none(self):
-        from agent.file_safety import get_write_denied_error
+        from hermes_agent.agent.file_safety import get_write_denied_error
 
         assert get_write_denied_error(os.path.expanduser("~/.ssh/config")) is None
 
     def test_ssh_config_is_approval_required(self):
-        from agent.file_safety import is_write_approval_required
+        from hermes_agent.agent.file_safety import is_write_approval_required
 
         assert is_write_approval_required(os.path.expanduser("~/.ssh/config")) is True
 
     def test_private_keys_still_hard_denied(self):
-        from agent.file_safety import is_write_approval_required, is_write_denied
+        from hermes_agent.agent.file_safety import is_write_approval_required, is_write_denied
 
         for name in ("id_rsa", "id_ed25519", "authorized_keys"):
             p = os.path.expanduser(f"~/.ssh/{name}")
@@ -53,7 +53,7 @@ class TestSshConfigApprovalGate:
             assert is_write_approval_required(p) is False, name
 
     def test_other_ssh_dir_files_still_hard_denied(self):
-        from agent.file_safety import is_write_denied
+        from hermes_agent.agent.file_safety import is_write_denied
 
         # The ~/.ssh/ directory prefix deny still covers everything else,
         # e.g. a known_hosts or an arbitrary key file.
@@ -61,7 +61,7 @@ class TestSshConfigApprovalGate:
         assert is_write_denied(os.path.expanduser("~/.ssh/secret_key")) is True
 
     def test_regular_file_not_approval_required(self, tmp_path: Path):
-        from agent.file_safety import is_write_approval_required
+        from hermes_agent.agent.file_safety import is_write_approval_required
 
         assert is_write_approval_required(str(tmp_path / "notes.txt")) is False
 
@@ -146,7 +146,7 @@ class TestGetWriteDeniedError:
     """get_write_denied_error() should distinguish credential vs safe-root blocks."""
 
     def test_credential_path_message(self):
-        from agent.file_safety import get_write_denied_error
+        from hermes_agent.agent.file_safety import get_write_denied_error
 
         err = get_write_denied_error(os.path.expanduser("~/.ssh/id_rsa"))
         assert err is not None
@@ -154,7 +154,7 @@ class TestGetWriteDeniedError:
         assert "HERMES_WRITE_SAFE_ROOT" not in err
 
     def test_safe_root_message(self, tmp_path: Path, monkeypatch):
-        from agent.file_safety import get_write_denied_error
+        from hermes_agent.agent.file_safety import get_write_denied_error
 
         safe_root = tmp_path / "workspace"
         outside = tmp_path / "outside.txt"
@@ -168,7 +168,7 @@ class TestGetWriteDeniedError:
         assert "protected system/credential file" not in err
 
     def test_allowed_path_returns_none(self, tmp_path: Path):
-        from agent.file_safety import get_write_denied_error
+        from hermes_agent.agent.file_safety import get_write_denied_error
 
         target = tmp_path / "ok.txt"
         assert get_write_denied_error(str(target)) is None

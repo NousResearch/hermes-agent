@@ -718,7 +718,7 @@ class TestImageApiSurface:
         """A response carrying token usage records one ``image_generation`` row on the ambient
         session — also when it carries no image (the provider billed the tokens anyway); a body
         without usage records nothing."""
-        from agent import aux_accounting
+        from hermes_agent.agent import aux_accounting
 
         recorded = []
 
@@ -828,7 +828,7 @@ class TestRegistration:
         assert set(registered) == {"openrouter", "nous"}
 
     def test_both_are_reference_capable_for_pets(self):
-        from agent.pet.generate.imagegen import _REF_CAPABLE
+        from hermes_agent.agent.pet.generate.imagegen import _REF_CAPABLE
 
         assert "openrouter" in _REF_CAPABLE
         assert "nous" in _REF_CAPABLE

@@ -100,12 +100,12 @@ Path(os.environ["HERMES_HOME"] + "/config.yaml").write_text(
     yaml.safe_dump(config), encoding="utf-8"
 )
 from hermes_cli.runtime_provider import resolve_runtime_provider
-from agent.auxiliary_client import resolve_provider_client
+from hermes_agent.agent.auxiliary_client import resolve_provider_client
 
 try:
-    from agent.client_lifecycle import _swap_fallback_clients
+    from hermes_agent.agent.client_lifecycle import _swap_fallback_clients
 except ImportError:
-    from agent.chat_completion_helpers import _swap_fallback_clients
+    from hermes_agent.agent.chat_completion_helpers import _swap_fallback_clients
 from openai import OpenAI
 from types import SimpleNamespace
 
@@ -154,7 +154,7 @@ from hermes_cli.timeouts import get_provider_request_timeout
 
 out["timeout_resolved"] = get_provider_request_timeout("fixture-provider", "model-b")
 fb2, _ = resolve_provider_client("fixture-provider", model="model-b", raw_codex=True)
-from agent.client_lifecycle import ClientLifecycleMixin
+from hermes_agent.agent.client_lifecycle import ClientLifecycleMixin
 
 
 class ProbeAgent(ClientLifecycleMixin):

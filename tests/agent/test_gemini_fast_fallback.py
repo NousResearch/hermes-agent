@@ -9,8 +9,8 @@ immediately.
 import inspect
 from unittest.mock import MagicMock
 
-from agent import conversation_loop
-from run_agent import _pool_may_recover_from_rate_limit
+from hermes_agent.agent import conversation_loop
+from hermes_agent.run_agent import _pool_may_recover_from_rate_limit
 
 
 def _pool(entries: int = 2):

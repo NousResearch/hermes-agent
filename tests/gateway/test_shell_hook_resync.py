@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent import shell_hooks
+from hermes_agent.agent import shell_hooks
 
 
 @pytest.fixture

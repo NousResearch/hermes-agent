@@ -3,7 +3,7 @@ import copy
 
 import pytest
 
-from agent.gemini_native_adapter import _translate_tools_to_gemini
+from hermes_agent.agent.gemini_native_adapter import _translate_tools_to_gemini
 
 
 @pytest.mark.parametrize("types", [["string", "null"], ["integer", "null"], ["string", "integer"], ["string", "integer", "boolean", "null"], ["array", "object", "string"], ["null"], [], "string"])

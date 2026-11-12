@@ -26,19 +26,19 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.context_compressor import SUMMARY_PREFIX, ContextCompressor, _DB_PERSISTED_MARKER
-from agent.conversation_compression import (
+from hermes_agent.agent.context_compressor import SUMMARY_PREFIX, ContextCompressor, _DB_PERSISTED_MARKER
+from hermes_agent.agent.conversation_compression import (
     CompressionCommitFence,
     _is_real_user_message,
 )
-from agent.message_metadata import DB_ROW_SNAPSHOT
+from hermes_agent.agent.message_metadata import DB_ROW_SNAPSHOT
 from hermes_agent.hermes_state import SessionDB
 import itertools
 
 
 def _build_agent_with_db(db: SessionDB, session_id: str, platform: str = "telegram"):
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key",
@@ -113,7 +113,7 @@ def _count_rows(rows, *, content: Any = None, role: str | None = None):
 
 def _bound_context_compressor(db: SessionDB, session_id: str) -> ContextCompressor:
     with patch(
-        "agent.context_compressor.get_model_context_length",
+        "hermes_agent.agent.context_compressor.get_model_context_length",
         return_value=100_000,
     ):
         compressor = ContextCompressor(
@@ -751,7 +751,7 @@ class TestRotationChildFlushDedup:
         fallback lands on a trailing production-shaped todo-snapshot row
         (index 2) while the anchor-source scan selects the rewritten carrier
         (index 1). The stamp must land on the carrier, not the todo row."""
-        from agent.turn_context import reanchor_current_turn_user_idx
+        from hermes_agent.agent.turn_context import reanchor_current_turn_user_idx
 
         db = SessionDB(db_path=tmp_path / "state.db")
         parent = "PARENT_ROT_REANCHOR_DRIFT"
@@ -996,7 +996,7 @@ class TestFallbackStreakFollowsRotation:
         parent = "PARENT_FALLBACK_ROT"
         db.create_session(parent, source="telegram")
         with patch(
-            "agent.context_compressor.get_model_context_length",
+            "hermes_agent.agent.context_compressor.get_model_context_length",
             return_value=100_000,
         ):
             compressor = ContextCompressor(
@@ -1046,7 +1046,7 @@ class TestFallbackStreakFollowsRotation:
         agent = _build_agent_with_db(db, parent, platform="telegram")
 
         with patch(
-            "agent.context_compressor.get_model_context_length",
+            "hermes_agent.agent.context_compressor.get_model_context_length",
             return_value=100_000,
         ):
             compressor = ContextCompressor(
@@ -1764,7 +1764,7 @@ class TestArchivedParentActivityLabelsCleared:
         last_activity_at + terminal label forever, while the child keeps its
         lineage.
         """
-        from agent.session_activity import ActivityProvenance
+        from hermes_agent.agent.session_activity import ActivityProvenance
 
         db = SessionDB(db_path=tmp_path / "state.db")
         parent = "PARENT_ACTIVITY_LABELS"

@@ -30,20 +30,20 @@ from pathlib import Path
 from datetime import datetime
 from typing import Callable, Dict, Optional, Any, List, Tuple, cast
 
-from agent.async_utils import safe_schedule_threadsafe
-from agent.i18n import t
-from agent.conversation_compression import (
+from hermes_agent.agent.async_utils import safe_schedule_threadsafe
+from hermes_agent.agent.i18n import t
+from hermes_agent.agent.conversation_compression import (
     COMPACTION_DONE_STATUS, COMPACTION_HEARTBEAT_STATUS, COMPACTION_STATUS, COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE,
     COMPRESSION_REFUSED_WOULD_GROW_WARNING, COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE, COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE,
     COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE, IDLE_COMPACTION_STATUS_TEMPLATE,
     PRE_API_COMPRESSION_STATUS_TEMPLATE, PREFLIGHT_COMPRESSION_STATUS_TEMPLATE)
 from hermes_agent.gateway.run_status_filter import _status_template_to_regex, hidden_outside_dm, is_terminal_failure_status
-from agent.conversation_compression_archive import MERGED_DURABLE_ROWS, RETIRED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS
-from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
-from agent.interrupt_compat import request_hard_interrupt
-from agent.message_metadata import ABSORBED_MESSAGE_UIDS, MESSAGE_UID, copy_identity_fields, is_compaction_scaffolding, replay_metadata_fields
-from agent.turn_context import compression_made_progress
-from agent.session_activity import ActivityProvenance, AwakeIdleMeter
+from hermes_agent.agent.conversation_compression_archive import MERGED_DURABLE_ROWS, RETIRED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS
+from hermes_agent.agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
+from hermes_agent.agent.interrupt_compat import request_hard_interrupt
+from hermes_agent.agent.message_metadata import ABSORBED_MESSAGE_UIDS, MESSAGE_UID, copy_identity_fields, is_compaction_scaffolding, replay_metadata_fields
+from hermes_agent.agent.turn_context import compression_made_progress
+from hermes_agent.agent.session_activity import ActivityProvenance, AwakeIdleMeter
 from hermes_cli.config import _is_ssh_remote_tilde_cwd, cfg_get, config_exists
 from hermes_agent.gateway.run_common import _csv_or_list_to_set
 from hermes_cli.fallback_config import pre_agent_fallback_notice
@@ -305,7 +305,7 @@ def _record_hygiene_cooldown(
     ``error`` must be forwarded: the recorder writes compression_failure_error UNCONDITIONALLY (NULL clobber).
 
     Uses the same ``compression_failure_cooldown_until`` column and ``record_compression_failure_cooldown``
-    method that the in-conversation compression path (``agent/context_compressor.py``) already uses, so the
+    method that the in-conversation compression path (``hermes_agent/agent/context_compressor.py``) already uses, so the
     cooldown survives gateway restarts (#74136).
     """
     recorder = getattr(_gateway_session_db_inner(gateway), "record_compression_failure_cooldown", None)
@@ -563,7 +563,7 @@ def _gateway_loop_exception_handler(
 def _redact_gateway_user_facing_secrets(text: str) -> str:
     """Secret redaction before text can leave the gateway for a chat platform: the shared egress scrub
     (``force=True`` holds even when ``security.redact_secrets`` is off; fails closed). See #23810."""
-    from agent.redact import redact_for_egress
+    from hermes_agent.agent.redact import redact_for_egress
 
     return redact_for_egress(text)
 
@@ -576,7 +576,7 @@ def _redact_approval_command(cmd: str | None) -> str:
     the prompt honors redaction even when ``security.redact_secrets`` is off. Module-level so the wiring is
     unit-testable (the call site is a deeply nested gateway closure that cannot be driven directly).
     """
-    from agent.redact import redact_approval_display
+    from hermes_agent.agent.redact import redact_approval_display
 
     return redact_approval_display(cmd, force=True)
 
@@ -637,8 +637,8 @@ def _context_overflow_reply() -> str:
 def _rate_limit_reply(text: str) -> str:
     """Name the reset window a quota 429 carries (``resets_in_seconds`` body field, the credential
     pool's ``retry after Ns``, ``resets in 4hr``) so a weekly cap is not sold as "wait a moment"
-    (#89401). One grammar table with the retry loop: ``agent.retry_utils.RETRY_DELAY_PATTERNS``."""
-    from agent.retry_utils import format_reset_window, reset_delay_from_message
+    (#89401). One grammar table with the retry loop: ``hermes_agent.agent.retry_utils.RETRY_DELAY_PATTERNS``."""
+    from hermes_agent.agent.retry_utils import format_reset_window, reset_delay_from_message
     seconds = reset_delay_from_message(text) or 0
     if seconds < 120:
         return t("gateway.errors.rate_limited")
@@ -690,7 +690,7 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     # ``build_assistant_message`` and ``finalize_turn`` scrubs the returned ``final_response``, but this
     # boundary is the last line of defense for every legacy/plugin delivery path that hands us raw text.
     # Raw-text/programmatic surfaces above keep passthrough — their JSON consumers escape surrogates safely.
-    from agent.message_sanitization import _sanitize_surrogates
+    from hermes_agent.agent.message_sanitization import _sanitize_surrogates
 
     text = _sanitize_surrogates(str(text))
 
@@ -957,7 +957,7 @@ def _warm_turn_machinery_sync() -> int:
     TTL cache), the local Python toolchain probe (#106064), and the default route's context-window
     metadata (#105986) — a catalog HTTP probe that must not sit between the first inbound turn and its
     inference request. Context files remain lazy because they need the active turn's agent."""
-    import run_agent  # heavy import graph, cached in sys.modules
+    from hermes_agent import run_agent  # heavy import graph, cached in sys.modules
     from hermes_agent import model_tools
 
     # Warm the schemas the turn will actually build: the profile's own toolsets (`video`, `image_gen`
@@ -1230,7 +1230,7 @@ def _has_replayable_sidecar(role: Any, content: Any, msg: dict[str, Any]) -> boo
     """True for an assistant row whose reply lives only in the ``api_content`` sidecar.
 
     A reasoning-only clean stop persists ``content=""`` and the promoted text in ``api_content``
-    (agent/turn_final_response.py). Gating replay on ``content`` alone dropped that row, so the
+    (hermes_agent/agent/turn_final_response.py). Gating replay on ``content`` alone dropped that row, so the
     next gateway turn lost the assistant's answer and replayed user->user."""
     return (
         role == "assistant"
@@ -1288,7 +1288,7 @@ def _build_gateway_agent_history(
                             replay_timestamp = embedded_timestamp
                 if not content:
                     continue
-            # Keep user timestamps for the stale-dangerous-confirmation stripper in agent/replay_cleanup.py.
+            # Keep user timestamps for the stale-dangerous-confirmation stripper in hermes_agent/agent/replay_cleanup.py.
             entry = _build_replay_entry(role, content, msg, preserve_timestamp=(role == "user"))
             if inject_timestamps and role == "user" and isinstance(content, str) and not is_compaction_scaffolding(msg):
                 rendered = _render_msg_ts(content, replay_timestamp, tz=_msg_tz)
@@ -1330,7 +1330,7 @@ def _select_cached_agent_history(
     retention.
     """
     if isinstance(live_history, list) and len(live_history) > len(persisted_history):
-        from agent.session_persistence import _is_ephemeral_scaffolding
+        from hermes_agent.agent.session_persistence import _is_ephemeral_scaffolding
 
         has_unpersisted_row = any(
             isinstance(message, dict) and not message.get("_db_persisted")
@@ -1383,9 +1383,9 @@ def _last_transcript_timestamp(history: Optional[list[dict[str, Any]]]) -> Any:
 # Tool output may hold literal MEDIA: examples (docs, logs); only deliberate media producers may auto-append.
 _AUTO_APPEND_MEDIA_TOOL_NAMES = {"text_to_speech", "text_to_speech_tool", "image_generate"}
 
-# Replay-history canonicalization lives in agent/replay_cleanup.py so every resume
+# Replay-history canonicalization lives in hermes_agent/agent/replay_cleanup.py so every resume
 # surface and the send path share one implementation.
-from agent.replay_cleanup import canonicalize_replay_history
+from hermes_agent.agent.replay_cleanup import canonicalize_replay_history
 
 
 _AUTO_CONTINUE_NOTE_PREFIX = "[System note: Your previous turn"
@@ -1577,7 +1577,7 @@ def _reload_runtime_env_preserving_config_authority() -> None:
     stale HERMES_MAX_ITERATIONS wins). Multiplex never reloads .env globally: secrets come from the
     per-turn ``set_secret_scope`` and mutating ``os.environ`` would leak the default profile's keys to
     every profile; it still honors the max_turns bridge."""
-    from agent.secret_scope import is_multiplex_active
+    from hermes_agent.agent.secret_scope import is_multiplex_active
     if not is_multiplex_active():
         load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(project_root_str()) / '.env')
     _bridge_max_turns_from_config(_hermes_home)
@@ -1794,7 +1794,7 @@ def _profile_runtime_scope(
     ``set_secret_scope`` makes the profile ``.env`` the credential source without mutating
     ``os.environ``, so subprocesses never inherit cross-profile secrets."""
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
-    from agent.secret_scope import set_secret_scope, reset_secret_scope
+    from hermes_agent.agent.secret_scope import set_secret_scope, reset_secret_scope
 
     home_token = secret_token = None
     try:
@@ -1851,7 +1851,7 @@ def load_gateway_config_for_runner() -> "GatewayConfig":
     if not cfg.multiplex_profiles:
         return cfg
     try:
-        from agent.secret_scope import set_multiplex_active
+        from hermes_agent.agent.secret_scope import set_multiplex_active
         set_multiplex_active(True)
     except Exception:
         logger.debug("could not set multiplex-active before primary config load", exc_info=True)
@@ -2104,7 +2104,7 @@ def _load_bridge_config(config_path: Path) -> dict:
     """Effective USER config (no defaults) for the presence-sensitive env bridge: only keys the user
     or the managed layer wrote get bridged, else all of DEFAULT_CONFIG would be exported. A bypass
     worker bridges its frozen explicit snapshot instead: the profile file is exactly what it must not read."""
-    from agent.safe_worker_policy import worker_config_snapshot
+    from hermes_agent.agent.safe_worker_policy import worker_config_snapshot
     snapshot = worker_config_snapshot()
     if snapshot is not None:
         return snapshot
@@ -2349,8 +2349,8 @@ def _resolve_gateway_model_context(
     ``context_source`` is ``"default"`` only for a model no source knows that fell through to a resolver
     default (Bedrock's static 128K, or ``DEFAULT_FALLBACK_CONTEXT``) — a catalog-listed model is ``"detected"``.
     """
-    from agent.context_pin import is_fallback_context_length
-    from agent.model_metadata import get_model_context_length
+    from hermes_agent.agent.context_pin import is_fallback_context_length
+    from hermes_agent.agent.model_metadata import get_model_context_length
     resolved_model = model or _resolve_gateway_model()
     config_context_length = provider = base_url = api_key = custom_providers = None
     configured_model = configured_provider = configured_base_url = None
@@ -2801,7 +2801,7 @@ def _check_unavailable_skill(command_name: str) -> str | None:
     normalized = command_name.lower().replace("_", "-")
     try:
         from hermes_agent.tools.skills_tool import _get_disabled_skill_names
-        from agent.skill_utils import get_all_skills_dirs, is_excluded_skill_path
+        from hermes_agent.agent.skill_utils import get_all_skills_dirs, is_excluded_skill_path
         disabled = _get_disabled_skill_names()
 
         for skills_dir in get_all_skills_dirs():
@@ -3121,7 +3121,7 @@ def _normalize_empty_agent_response(
             # A loop site code (truncated, context_overflow, ...) already wrote the full
             # what-happened / what-to-do sentence: deliver it verbatim. Wrapping it would cut it
             # mid-sentence at 200 chars and append a second, conflicting set of instructions.
-            from agent.turn_failure_copy import SITE_FAILURE_CODES
+            from hermes_agent.agent.turn_failure_copy import SITE_FAILURE_CODES
             if (str(agent_result.get("failure_reason") or "") in SITE_FAILURE_CODES
                     and err.strip() and not _looks_like_gateway_provider_error(err)):
                 return err if err.startswith("⚠️") else f"⚠️ {err}"
@@ -3410,10 +3410,10 @@ class GatewayRunner(
             decision = standalone_launcher_decision(self.config)
             if decision is not None:
                 log_multiplex_decision(decision)
-        # Multiplexer flag flips agent.secret_scope.get_secret() to fail-closed on unscoped credential
+        # Multiplexer flag flips hermes_agent.agent.secret_scope.get_secret() to fail-closed on unscoped credential
         # reads, so a missed migration crashes loudly instead of leaking a cross-profile value.
         try:
-            from agent.secret_scope import set_multiplex_active
+            from hermes_agent.agent.secret_scope import set_multiplex_active
             set_multiplex_active(bool(getattr(self.config, "multiplex_profiles", False)))
         except Exception:
             logger.debug("could not set multiplex-active flag", exc_info=True)
@@ -4319,7 +4319,7 @@ def _housekeeping_misfire_catch_up(cron_provider, adapters, loop) -> None:
 
 def _housekeeping_curator() -> None:
     """maybe_run_curator() is gated by config.interval_hours (7 days default); this is the poll."""
-    from agent.curator import maybe_run_curator
+    from hermes_agent.agent.curator import maybe_run_curator
     maybe_run_curator(idle_for_seconds=float("inf"), on_summary=lambda msg: logger.info("curator: %s", msg))
 
 
@@ -4629,7 +4629,7 @@ def _shutdown_gateway_health_export(runner: Any) -> None:
 
 def _gateway_stderr_formatter() -> logging.Formatter:
     """Return the redacting formatter used by the gateway stderr stream."""
-    from agent.redact import RedactingFormatter
+    from hermes_agent.agent.redact import RedactingFormatter
     return RedactingFormatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
 
 

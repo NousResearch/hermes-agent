@@ -15,7 +15,7 @@ and overwrite real results.
 The isolation is a **ContextVar**, deliberately not an ``os.environ`` clear:
 ``os.environ`` is process-global and shared with
 
-  * the worker's own claim heartbeat (``run_agent._touch_activity`` ->
+  * the worker's own claim heartbeat (``hermes_agent.run_agent._touch_activity`` ->
     ``heartbeat_current_worker_from_env``), which would starve and let the
     dispatcher reclaim a task whose worker is still alive;
   * the gateway's kanban watchers, which do their own board save/restore;
@@ -37,7 +37,7 @@ import pytest
 @pytest.fixture(autouse=True)
 def _clear_kanban_detect_cache():
     """`_detect_environment` memoizes per process; kanban is context-dependent."""
-    import agent.skill_utils as su
+    import hermes_agent.agent.skill_utils as su
 
     su._ENV_DETECT_CACHE.pop("kanban", None)
     yield
@@ -61,7 +61,7 @@ def worker_env(monkeypatch):
 class TestDispatcherOwnedPredicate:
 
     def test_false_inside_non_dispatcher_context(self):
-        from agent.delegation_context import (
+        from hermes_agent.agent.delegation_context import (
             is_dispatcher_owned_worker_context,
             non_dispatcher_owned_context,
         )
@@ -71,7 +71,7 @@ class TestDispatcherOwnedPredicate:
         assert is_dispatcher_owned_worker_context() is True
 
     def test_token_form_restores(self):
-        from agent.delegation_context import (
+        from hermes_agent.agent.delegation_context import (
             enter_non_dispatcher_owned_context,
             exit_non_dispatcher_owned_context,
             is_dispatcher_owned_worker_context,
@@ -83,7 +83,7 @@ class TestDispatcherOwnedPredicate:
         assert is_dispatcher_owned_worker_context() is True
 
     def test_nesting_restores_outer_value(self):
-        from agent.delegation_context import (
+        from hermes_agent.agent.delegation_context import (
             is_dispatcher_owned_worker_context,
             non_dispatcher_owned_context,
         )
@@ -96,7 +96,7 @@ class TestDispatcherOwnedPredicate:
 
     def test_delegated_child_still_not_dispatcher_owned(self, monkeypatch):
         """The pre-existing delegate_task flag keeps its meaning."""
-        import agent.delegation_context as dc
+        import hermes_agent.agent.delegation_context as dc
 
         token = dc._DELEGATED_CHILD_CONTEXT.set(True)
         try:
@@ -110,7 +110,7 @@ class TestDispatcherOwnedPredicate:
         This is the property an os.environ clear cannot provide, and the reason
         concurrent cron jobs can't corrupt each other.
         """
-        from agent.delegation_context import (
+        from hermes_agent.agent.delegation_context import (
             is_dispatcher_owned_worker_context,
             non_dispatcher_owned_context,
         )
@@ -144,7 +144,7 @@ class TestDispatcherOwnedPredicate:
 
 class TestKanbanGatesRespectContext:
     def test_task_tools_hidden_from_cron_agent(self, worker_env):
-        from agent.delegation_context import non_dispatcher_owned_context
+        from hermes_agent.agent.delegation_context import non_dispatcher_owned_context
         from hermes_agent.tools import kanban_tools
 
         assert kanban_tools._check_kanban_mode() is True
@@ -153,7 +153,7 @@ class TestKanbanGatesRespectContext:
 
     def test_complete_does_not_default_to_worker_task(self, worker_env):
         """The damage path: kanban_complete must not inherit the task id."""
-        from agent.delegation_context import non_dispatcher_owned_context
+        from hermes_agent.agent.delegation_context import non_dispatcher_owned_context
         from hermes_agent.tools import kanban_tools
 
         assert kanban_tools._default_task_id(None) == "t_worker_real_task"
@@ -162,7 +162,7 @@ class TestKanbanGatesRespectContext:
 
     def test_explicit_task_id_still_honoured(self, worker_env):
         """Only the implicit default is suppressed, not an explicit argument."""
-        from agent.delegation_context import non_dispatcher_owned_context
+        from hermes_agent.agent.delegation_context import non_dispatcher_owned_context
         from hermes_agent.tools import kanban_tools
 
         with non_dispatcher_owned_context():
@@ -172,8 +172,8 @@ class TestKanbanGatesRespectContext:
     def test_kanban_env_verdict_is_not_memoized(self, worker_env):
         """`kanban` must bypass _ENV_DETECT_CACHE: caching it process-wide would
         freeze whichever context asked first and leak it to the others."""
-        from agent.delegation_context import non_dispatcher_owned_context
-        import agent.skill_utils as su
+        from hermes_agent.agent.delegation_context import non_dispatcher_owned_context
+        import hermes_agent.agent.skill_utils as su
 
         su._ENV_DETECT_CACHE.pop("kanban", None)
         assert su._detect_environment("kanban") is True
@@ -184,7 +184,7 @@ class TestKanbanGatesRespectContext:
         assert su._detect_environment("kanban") is True
 
     def test_toolset_force_add_suppressed(self, worker_env):
-        from agent.delegation_context import non_dispatcher_owned_context
+        from hermes_agent.agent.delegation_context import non_dispatcher_owned_context
         from hermes_agent import model_tools
 
         assert model_tools._is_dispatcher_owned_worker() is True
@@ -204,7 +204,7 @@ class TestRunJobKanbanIsolation:
 
         import hermes_agent.cron.scheduler as sched
         from hermes_agent.cron import scheduler_delivery as sched_delivery
-        from agent.delegation_context import is_dispatcher_owned_worker_context
+        from hermes_agent.agent.delegation_context import is_dispatcher_owned_worker_context
 
         class FakeAgent:
             def __init__(self, **kwargs):
@@ -229,7 +229,7 @@ class TestRunJobKanbanIsolation:
 
         fake_mod = type(sys)("run_agent")
         fake_mod.AIAgent = agent_cls or FakeAgent
-        monkeypatch.setitem(sys.modules, "run_agent", fake_mod)
+        monkeypatch.setitem(sys.modules, "hermes_agent.run_agent", fake_mod)
 
         from hermes_cli import runtime_provider as _rtp
 
@@ -300,7 +300,7 @@ class TestRunJobKanbanIsolation:
 
     def test_context_reset_even_when_job_raises(self, monkeypatch, worker_env):
         import hermes_agent.cron.scheduler as sched
-        from agent.delegation_context import is_dispatcher_owned_worker_context
+        from hermes_agent.agent.delegation_context import is_dispatcher_owned_worker_context
 
         class ExplodingAgent:
             def __init__(self, **kwargs):

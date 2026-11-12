@@ -19,7 +19,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Union
 
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 from hermes_agent.gateway.config import HomeChannel, Platform, PlatformConfig, persist_home_channel
 from hermes_agent.gateway.platforms.base import EphemeralReply
 from hermes_agent.gateway.platforms.event import MessageEvent
@@ -891,7 +891,7 @@ class GatewaySlashCommandsMixin(
         preview = _preview(question)
 
         async def _run_side_question() -> None:
-            from agent.side_question import answer_side_question
+            from hermes_agent.agent.side_question import answer_side_question
             try:
                 answer = await asyncio.to_thread(
                     answer_side_question, question, history_snapshot,
@@ -1125,7 +1125,7 @@ class GatewaySlashCommandsMixin(
         goes into ``_pending_skills_reload_notes[session_key]``, prepended to the NEXT user message —
         nothing out-of-band, so alternation is preserved."""
         try:
-            from agent.skill_commands import reload_skills
+            from hermes_agent.agent.skill_commands import reload_skills
 
             # _run_in_executor_with_context, not a bare hop: the rescan walks
             # get_hermes_home()/skills, a contextvar override under multiplex.

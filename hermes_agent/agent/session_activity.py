@@ -10,7 +10,7 @@ from contextlib import suppress
 from enum import Enum
 from typing import Any, Mapping, Optional
 
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 
 ACTIVITY_DESCRIPTION_MAX = 120
 

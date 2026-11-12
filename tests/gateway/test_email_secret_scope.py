@@ -2,7 +2,7 @@
 
 Verifies that the email adapter reads EMAIL_ADDRESS, EMAIL_PASSWORD,
 EMAIL_IMAP_HOST, and EMAIL_SMTP_HOST from the profile-scoped secret
-store (agent.secret_scope.get_secret) instead of os.getenv, so that
+store (hermes_agent.agent.secret_scope.get_secret) instead of os.getenv, so that
 a secondary profile in a multiplexed gateway does not inherit the
 default profile's email credentials via os.environ.
 
@@ -14,7 +14,7 @@ import os
 import unittest
 from unittest.mock import patch, MagicMock
 
-from agent import secret_scope as ss
+from hermes_agent.agent import secret_scope as ss
 
 
 class TestEmailAdapterSecretScope(unittest.TestCase):

@@ -5,7 +5,7 @@ import runpy
 import signal
 from types import SimpleNamespace
 
-from agent.conversation_compression import _publish_rotated_compaction
+from hermes_agent.agent.conversation_compression import _publish_rotated_compaction
 from hermes_agent.gateway.session_authority import SessionAuthority
 from hermes_agent.hermes_state_runtime import list_session_admissions
 

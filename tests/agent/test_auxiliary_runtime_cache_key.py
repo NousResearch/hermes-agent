@@ -8,7 +8,7 @@
 
 import pytest
 
-import agent.auxiliary_client as aux
+import hermes_agent.agent.auxiliary_client as aux
 
 
 @pytest.fixture(autouse=True)

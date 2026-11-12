@@ -58,7 +58,7 @@ def test_rest_projection_hides_untyped_gateway_notices_and_keeps_typed_ones():
 
 
 def test_rest_projection_still_projects_compaction_summaries():
-    from agent.context_compressor import COMPRESSED_SUMMARY_METADATA_KEY
+    from hermes_agent.agent.context_compressor import COMPRESSED_SUMMARY_METADATA_KEY
 
     summary = {
         "role": "user",
@@ -82,7 +82,7 @@ def test_rest_projection_unwraps_steer_rows_for_display():
     REST projection must agree, or the persisted row ships marker-wrapped and never pairs
     with the optimistic plain-text copy Desktop already holds.
     """
-    from agent.prompt_builder import STEER_MARKER_CLOSE, STEER_MARKER_OPEN
+    from hermes_agent.agent.prompt_builder import STEER_MARKER_CLOSE, STEER_MARKER_OPEN
 
     steer_row = {
         "role": "user",

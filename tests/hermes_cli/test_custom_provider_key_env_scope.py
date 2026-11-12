@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from agent import secret_scope
+from hermes_agent.agent import secret_scope
 
 
 @pytest.fixture

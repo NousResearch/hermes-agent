@@ -229,7 +229,7 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
         # re-derived when an install-environment rotation deleted the imported one (#137255).
         import ssl as _ssl
 
-        from agent.ssl_verify import certifi_bundle_path
+        from hermes_agent.agent.ssl_verify import certifi_bundle_path
         cafile = certifi_bundle_path()
         _ssl_ctx = _ssl.create_default_context(cafile=cafile)
         self._session = aiohttp.ClientSession(trust_env=gateway_trust_env(), connector=aiohttp.TCPConnector(ssl=_ssl_ctx))

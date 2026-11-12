@@ -38,10 +38,10 @@ from hermes_agent.acp_adapter.permissions import make_approval_callback
 from hermes_agent.acp_adapter.provenance import session_provenance_meta
 from hermes_agent.acp_adapter.session import SessionManager, SessionState, _expand_acp_enabled_toolsets
 from hermes_agent.acp_adapter.tools import build_tool_complete, build_tool_start, coerce_tool_args
-from agent.context_compressor import (COMPRESSED_SUMMARY_METADATA_KEY, ContextCompressor)
-from agent.turn_failure_copy import (
+from hermes_agent.agent.context_compressor import (COMPRESSED_SUMMARY_METADATA_KEY, ContextCompressor)
+from hermes_agent.agent.turn_failure_copy import (
     CONTENT_REFUSED_DISPLAY_KIND, CONTENT_REFUSED_METADATA_KEY, CONTENT_REFUSED_NOTICE)
-from agent.interrupt_compat import request_hard_interrupt
+from hermes_agent.agent.interrupt_compat import request_hard_interrupt
 from hermes_agent.tools.approval_context import reset_hermes_interactive_context, set_hermes_interactive_context
 
 logger = logging.getLogger(__name__)
@@ -467,7 +467,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         if not mcp_servers:
             return
         try:
-            from agent.runtime_cwd import set_session_cwd
+            from hermes_agent.agent.runtime_cwd import set_session_cwd
             from hermes_agent.tools.mcp_tool_discovery import register_mcp_servers
 
             configs = {s.name: _mcp_server_config(s) for s in mcp_servers}
@@ -484,14 +484,14 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             return
         try:
             from hermes_agent.model_tools import get_tool_definitions
-            from agent.memory_manager_tools import inject_memory_provider_tools
+            from hermes_agent.agent.memory_manager_tools import inject_memory_provider_tools
 
             agent = state.agent
             agent.enabled_toolsets = _expand_acp_enabled_toolsets(
                 getattr(agent, "enabled_toolsets", None),
                 mcp_server_names=[s.name for s in mcp_servers],
             )
-            from agent.delegation_backends import saved_backend
+            from hermes_agent.agent.delegation_backends import saved_backend
             agent._delegation_backend = saved_backend()  # the session routes on what its delegate_task is built from
             agent.tools = get_tool_definitions(
                 enabled_toolsets=agent.enabled_toolsets,
@@ -517,7 +517,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
 
         Cache safety: only pre-first-turn (nothing cached yet); afterwards the snapshot stays
         frozen and late servers land via the between-turns prologue refresh
-        (``agent/turn_context.py``). No-op if discovery finished, join timed out, registry
+        (``hermes_agent/agent/turn_context.py``). No-op if discovery finished, join timed out, registry
         unchanged, or session closed."""
         try:
             from hermes_cli.mcp_startup import mcp_discovery_in_flight
@@ -1012,7 +1012,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                 if (result.get("failure_reason") == "content_policy_blocked"
                         and _adb is not None and _adb is self.session_manager._get_db()
                         and getattr(state.agent, "_session_db_created", False)):
-                    from agent.turn_failure_copy import CONTENT_REFUSED_NOTICE
+                    from hermes_agent.agent.turn_failure_copy import CONTENT_REFUSED_NOTICE
                     from hermes_agent.hermes_state_rewind import retain_refused_turn_for_display
                     retain_refused_turn_for_display(
                         _adb, getattr(state.agent, "session_id", session_id),
@@ -1033,7 +1033,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             final_response = result.get("final_response") or ""  # None on an interrupted turn
             cancelled = bool(state.cancel_event and state.cancel_event.is_set())
             # The local "waiting for model" interrupt status is metadata, not prose; stop_reason carries it.
-            from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
+            from hermes_agent.agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 
             interrupted = bool(result.get("interrupted")) or cancelled
             suppress = interrupted and final_response.startswith(INTERRUPT_WAITING_FOR_MODEL_PREFIX)

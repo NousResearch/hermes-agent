@@ -24,7 +24,7 @@ import importlib
 
 import pytest
 
-from agent import secret_scope as ss
+from hermes_agent.agent import secret_scope as ss
 
 # (module path, representative credential env var owned by that adapter)
 MIGRATED_ADAPTER_MODULES = [

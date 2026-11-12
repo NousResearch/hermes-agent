@@ -10,7 +10,7 @@ agent close, and never while a turn runs.
 
 import pytest
 
-from agent import review_idle_queue
+from hermes_agent.agent import review_idle_queue
 from hermes_cli import mem_trim
 
 

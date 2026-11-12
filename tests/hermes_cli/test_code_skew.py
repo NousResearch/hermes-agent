@@ -95,7 +95,7 @@ class TestModelOptionsSkewGuard:
 
     Regression for #86207: a dashboard kept alive across ``hermes update``
     serves stale modules, so the picker's lazy import of names the update added
-    (``agent.model_metadata.is_grok_46_family``) raised ImportError and the
+    (``hermes_agent.agent.model_metadata.is_grok_46_family``) raised ImportError and the
     handler collapsed it into a generic 500.  With the guard, the stale process
     surfaces "Restart required" (503) and never reaches the payload build.
     """

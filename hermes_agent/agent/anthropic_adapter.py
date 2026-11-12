@@ -16,17 +16,17 @@ from typing import Any, Dict, List, Optional
 
 from utils import normalize_proxy_env_vars
 
-from agent.anthropic_credentials import _is_oauth_token, anthropic_route_is_oauth, is_native_anthropic_host
-from agent.anthropic_endpoints import (
+from hermes_agent.agent.anthropic_credentials import _is_oauth_token, anthropic_route_is_oauth, is_native_anthropic_host
+from hermes_agent.agent.anthropic_endpoints import (
     _base_url_needs_context_1m_beta, _is_azure_anthropic_endpoint, _is_kimi_coding_endpoint,
     _is_minimax_anthropic_endpoint, _is_nous_portal_endpoint, _is_opencode_endpoint,
     _is_third_party_anthropic_endpoint, _model_name_is_kimi_family, _normalize_base_url_text,
     _requires_bearer_auth,
 )
-from agent.anthropic_message_convert import (
+from hermes_agent.agent.anthropic_message_convert import (
     convert_messages_to_anthropic, convert_tools_to_anthropic, normalize_model_name,
 )
-from agent.errors import EmptyStreamError
+from hermes_agent.agent.errors import EmptyStreamError
 
 from hermes_cli.version_info import get_version_info
 
@@ -199,7 +199,7 @@ def _accepts_thinking_disable(model: str) -> bool:
 
 def _is_pre_thinking_haiku(model: str) -> bool:
     """Haiku generations that never get a thinking request (through 4.5). Haiku 5.5+ uses adaptive thinking."""
-    from agent.anthropic_thinking_policy import claude_family_version
+    from hermes_agent.agent.anthropic_thinking_policy import claude_family_version
 
     if "haiku" not in model.lower():
         return False
@@ -218,8 +218,8 @@ def _forbids_sampling_params(model: str) -> bool:
 
 def _supports_fast_mode(model: str) -> bool:
     """True for models accepting ``speed: "fast"`` (Opus 4.8 / Opus 5 / Opus 5.5, Claude API only).
-    The list lives in ``agent.model_metadata`` so the wire gate and the ``/fast`` toggle agree."""
-    from agent.model_metadata import is_anthropic_fast_mode_model
+    The list lives in ``hermes_agent.agent.model_metadata`` so the wire gate and the ``/fast`` toggle agree."""
+    from hermes_agent.agent.model_metadata import is_anthropic_fast_mode_model
 
     return is_anthropic_fast_mode_model(model)
 
@@ -407,7 +407,7 @@ def _build_anthropic_client_with_bearer_hook(
     placeholder ``auth_token`` is still required at construction and makes any leak diagnosable."""
     sdk = _require_sdk("Azure Foundry Anthropic-style endpoints with Entra ID auth", verb="Install with")
     normalize_proxy_env_vars()
-    from agent.azure_identity_adapter import build_bearer_http_client
+    from hermes_agent.agent.azure_identity_adapter import build_bearer_http_client
     normalized_base_url, kwargs = _base_client_kwargs(base_url, timeout)
     # A key_cmd on the native host can print a Console API key, which (as in the static path's
     # _auth_style) belongs in x-api-key; OAuth tokens and Azure/third-party routes keep Bearer. The
@@ -528,7 +528,7 @@ def build_anthropic_bedrock_client(region: str, timeout: float | None = None):
     A configured ``bedrock.guardrail`` rides as InvokeModel headers so every client built here
     (primary, auxiliary, per-request rebuild) enforces it. ``timeout`` is the resolved
     ``providers.bedrock`` request timeout; None keeps the 900s read / 10s connect default."""
-    from agent.bedrock_adapter import bedrock_guardrail_headers, scoped_aws_session_kwargs
+    from hermes_agent.agent.bedrock_adapter import bedrock_guardrail_headers, scoped_aws_session_kwargs
     sdk = _require_sdk("the Bedrock provider")
     if not hasattr(sdk, "AnthropicBedrock"):
         raise ImportError("anthropic.AnthropicBedrock not available. Run: hermes pm repair")
@@ -807,7 +807,7 @@ def _is_stream_unavailable_error(exc: Exception) -> bool:
         return True
     if "invokemodelwithresponsestream" not in err_lower:
         return False
-    from agent.bedrock_adapter import is_streaming_access_denied_error
+    from hermes_agent.agent.bedrock_adapter import is_streaming_access_denied_error
     return is_streaming_access_denied_error(exc)
 
 

@@ -1,4 +1,4 @@
-"""Tests for agent.trace_upload — Hugging Face session-trace upload.
+"""Tests for hermes_agent.agent.trace_upload — Hugging Face session-trace upload.
 
 Covers the Claude Code JSONL converter, HF token resolution, the no-token
 message path, and the upload path with a mocked ``HfApi`` (verifying repo
@@ -10,8 +10,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent import trace_upload
-from agent.trace_upload import (
+from hermes_agent.agent import trace_upload
+from hermes_agent.agent.trace_upload import (
     build_trace_jsonl,
     load_session_messages,
     upload_session_trace,
@@ -69,7 +69,7 @@ def test_converter_refuses_unredacted_passthrough_when_redactor_fails(monkeypatc
     def boom(_text, *, force=False):
         raise RuntimeError("redactor unavailable")
 
-    monkeypatch.setattr("agent.redact.redact_sensitive_text", boom)
+    monkeypatch.setattr("hermes_agent.agent.redact.redact_sensitive_text", boom)
     msgs = [{"role": "user", "content": "OPENAI_API_KEY=sk-abc123def456ghi789jklmno"}]
 
     with pytest.raises(trace_upload.TraceRedactionError):
@@ -82,7 +82,7 @@ def test_upload_blocks_when_redactor_fails(monkeypatch):
     def boom(_text, *, force=False):
         raise RuntimeError("redactor unavailable")
 
-    monkeypatch.setattr("agent.redact.redact_sensitive_text", boom)
+    monkeypatch.setattr("hermes_agent.agent.redact.redact_sensitive_text", boom)
     with patch.object(trace_upload, "load_session_messages", return_value=(_sample_messages(), {})), \
          patch.object(trace_upload, "_do_upload") as upload_mock:
         msg = upload_session_trace("s1")

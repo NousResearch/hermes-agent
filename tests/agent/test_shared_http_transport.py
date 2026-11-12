@@ -14,9 +14,9 @@ import certifi
 import httpx
 import pytest
 
-from agent import process_bootstrap
-from agent.agent_runtime_helpers import _iter_pool_sockets, force_close_tcp_sockets
-from agent.process_bootstrap import build_keepalive_http_client
+from hermes_agent.agent import process_bootstrap
+from hermes_agent.agent.agent_runtime_helpers import _iter_pool_sockets, force_close_tcp_sockets
+from hermes_agent.agent.process_bootstrap import build_keepalive_http_client
 
 
 @pytest.fixture

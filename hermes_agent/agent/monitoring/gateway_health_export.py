@@ -15,8 +15,8 @@ from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional
 
-from agent.monitoring import emitter, otlp_exporter
-from agent.monitoring.gateway_health import (
+from hermes_agent.agent.monitoring import emitter, otlp_exporter
+from hermes_agent.agent.monitoring.gateway_health import (
     GatewayDiagnosticLogHandler,
     GatewayMetric,
     _safe_profile as _profile,
@@ -24,7 +24,7 @@ from agent.monitoring.gateway_health import (
     build_gateway_health_snapshot,
     source_logger_for_export,
 )
-from agent.monitoring.otlp_exporter import (
+from hermes_agent.agent.monitoring.otlp_exporter import (
     EmitterStreamer,
     _allowlisted_attrs,
     _install_id,
@@ -34,7 +34,7 @@ from agent.monitoring.otlp_exporter import (
     _runtime_resource_attributes,
     _signal_endpoint,
 )
-from agent.monitoring.redaction import redact_bounded
+from hermes_agent.agent.monitoring.redaction import redact_bounded
 
 logger = logging.getLogger(__name__)
 
@@ -141,7 +141,7 @@ def _read_gateway_snapshot(config: dict[str, Any]):
 
 
 def _read_cron_snapshot():
-    from agent.monitoring.cron_health import build_cron_health_snapshot
+    from hermes_agent.agent.monitoring.cron_health import build_cron_health_snapshot
     return build_cron_health_snapshot()
 
 

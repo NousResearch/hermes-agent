@@ -10,7 +10,7 @@ from pathlib import Path
 from hermes_cli.config import get_hermes_home, get_env_path, get_project_root, load_config
 from hermes_cli.env_loader import load_hermes_dotenv
 from hermes_constants import display_hermes_home
-from agent.skill_utils import is_excluded_skill_path
+from hermes_agent.agent.skill_utils import is_excluded_skill_path
 from datetime import UTC
 
 
@@ -95,7 +95,7 @@ def _get_git_commit_date(project_root: Path) -> str:
 
 def _redact(value: str) -> str:
     """Redact all but first 4 and last 4 chars; ``""`` for an empty value (dump formats empties as blank)."""
-    from agent.redact import mask_secret
+    from hermes_agent.agent.redact import mask_secret
     return mask_secret(value)
 
 
@@ -282,7 +282,7 @@ def _api_key_lines(show_keys: bool) -> list[str]:
         # (#42130).
         if not val and label == "openrouter":
             try:
-                from agent.credential_pool import load_pool as _load_pool
+                from hermes_agent.agent.credential_pool import load_pool as _load_pool
                 if _load_pool("openrouter").has_credentials():
                     display = "set (auth pool)"
             except Exception:

@@ -278,6 +278,6 @@ auth code 是一次性的且有效期很短（通常几分钟）。发送 `/setu
 
 - **Service Account scope**：适配器请求 `chat.bot` 和 `pubsub` scope。IAM 应作为实际执行层——仅授予 SA 最小权限（订阅上的 `roles/pubsub.subscriber` + `roles/pubsub.viewer`），不要授予项目级或组织级 Pub/Sub 角色。
 - **附件下载保护**：Hermes 只会将 SA bearer token 附加到主机名匹配 Google 自有域名短名单的 URL（`googleapis.com`、`drive.google.com`、`lh[3-6].googleusercontent.com` 等）。其他主机在发起 HTTP 请求前即被拒绝，以防范 SSRF 场景——即精心构造的事件将 bearer token 重定向到 GCE 元数据服务。
-- **脱敏处理**：Service Account 邮箱、订阅路径和 topic 路径会被 `agent/redact.py` 从日志输出中剥离。调试信封转储（`GOOGLE_CHAT_DEBUG_RAW=1`）经过同一脱敏过滤器，以 DEBUG 级别记录。
+- **脱敏处理**：Service Account 邮箱、订阅路径和 topic 路径会被 `hermes_agent/agent/redact.py` 从日志输出中剥离。调试信封转储（`GOOGLE_CHAT_DEBUG_RAW=1`）经过同一脱敏过滤器，以 DEBUG 级别记录。
 - **合规性**：如果你计划将此机器人接入受监管的 Workspace（任何有数据驻留或 AI 治理政策的环境），请在首次安装前获得相应审批。
 - **用户 OAuth scope**：每用户附件流程*仅*请求 `chat.messages.create`——覆盖 `media.upload` 及后续 `messages.create` 所需的最小权限。token 以明文 JSON 形式持久化在 `~/.hermes/google_chat_user_tokens/<sanitized_email>.json`（文件系统权限是保护手段——与 SA 密钥文件采用相同模型）。每个 token 归属于唯一一位用户；撤销操作仅限于该用户。

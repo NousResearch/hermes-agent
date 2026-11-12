@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent.prompt_builder import CONTROL_FRAME_OPENERS
+from hermes_agent.agent.prompt_builder import CONTROL_FRAME_OPENERS
 from hermes_cli.plugins_activation_live import live_notice
 from hermes_agent.tools.registry import registry
 

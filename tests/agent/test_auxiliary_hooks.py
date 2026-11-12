@@ -10,7 +10,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from agent.auxiliary_client import call_llm
+from hermes_agent.agent.auxiliary_client import call_llm
 from hermes_cli import plugins as plugins_mod
 from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
 
@@ -34,10 +34,10 @@ def aux_client(request, monkeypatch):
         usage=SimpleNamespace(prompt_tokens=10, completion_tokens=5),
     )
     api_mode = getattr(request, "param", None)
-    monkeypatch.setattr("agent.auxiliary_client._resolve_task_provider_model",
+    monkeypatch.setattr("hermes_agent.agent.auxiliary_client._resolve_task_provider_model",
                         lambda *a, **k: ("openrouter", "mock-model", None, None, api_mode))
-    monkeypatch.setattr("agent.auxiliary_client._get_cached_client", lambda *a, **k: (client, "mock-model"))
-    monkeypatch.setattr("agent.auxiliary_client._validate_llm_response", lambda resp, _task, **_kw: resp)
+    monkeypatch.setattr("hermes_agent.agent.auxiliary_client._get_cached_client", lambda *a, **k: (client, "mock-model"))
+    monkeypatch.setattr("hermes_agent.agent.auxiliary_client._validate_llm_response", lambda resp, _task, **_kw: resp)
     return client
 
 

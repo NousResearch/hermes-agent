@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
+from hermes_agent.agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
 
@@ -43,7 +43,7 @@ def _under(home: Path, fn):
 
 def test_bedrock_clients_sign_with_the_routed_profiles_aws_keys(two_profiles):
     pytest.importorskip("boto3")
-    from agent import bedrock_adapter as ba
+    from hermes_agent.agent import bedrock_adapter as ba
 
     a, b = two_profiles
     ba.reset_client_cache()
@@ -62,7 +62,7 @@ def test_bedrock_clients_sign_with_the_routed_profiles_aws_keys(two_profiles):
 
 
 def test_azure_entra_credential_is_built_from_the_routed_profiles_scope(two_profiles):
-    from agent import azure_identity_adapter as az
+    from hermes_agent.agent import azure_identity_adapter as az
 
     a, b = two_profiles
     seen: list[tuple] = []

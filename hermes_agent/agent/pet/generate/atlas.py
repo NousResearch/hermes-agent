@@ -17,7 +17,7 @@ from pathlib import Path
 
 from PIL import Image, ImageChops, ImageFilter
 
-from agent.pet.constants import FRAME_H, FRAME_W
+from hermes_agent.agent.pet.constants import FRAME_H, FRAME_W
 
 logger = logging.getLogger(__name__)
 

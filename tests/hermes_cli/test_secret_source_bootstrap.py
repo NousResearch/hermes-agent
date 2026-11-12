@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from agent.secret_sources.base import (
+from hermes_agent.agent.secret_sources.base import (
     SECRET_SOURCE_API_VERSION,
     FetchResult,
     SecretSource,
@@ -39,7 +39,7 @@ def test_refresh_secret_sources_noop_without_plugin_sources(monkeypatch):
     mgr = PluginManager()
     called = {"reset": 0, "load": 0}
 
-    import agent.secret_sources.registry as reg
+    import hermes_agent.agent.secret_sources.registry as reg
 
     monkeypatch.setattr(reg, "list_plugin_sources", list)
     monkeypatch.setattr(
@@ -60,7 +60,7 @@ def test_refresh_secret_sources_noop_when_only_builtins(monkeypatch):
     mgr = PluginManager()
     called = {"reset": 0, "load": 0}
 
-    import agent.secret_sources.registry as reg
+    import hermes_agent.agent.secret_sources.registry as reg
 
     reg._reset_registry_for_tests()
     assert reg.list_plugin_sources() == []
@@ -85,7 +85,7 @@ def test_refresh_secret_sources_repulls_when_plugin_enabled(monkeypatch):
     mgr = PluginManager()
     called = {"reset": 0, "load": 0}
 
-    import agent.secret_sources.registry as reg
+    import hermes_agent.agent.secret_sources.registry as reg
 
     monkeypatch.setattr(reg, "list_plugin_sources", lambda: [_StubSource()])
     monkeypatch.setattr(
@@ -110,7 +110,7 @@ def test_refresh_respects_custom_is_enabled(monkeypatch):
     mgr = PluginManager()
     called = {"reset": 0, "load": 0}
 
-    import agent.secret_sources.registry as reg
+    import hermes_agent.agent.secret_sources.registry as reg
 
     monkeypatch.setattr(
         reg, "list_plugin_sources", lambda: [_CustomActivationSource()]
@@ -137,7 +137,7 @@ def test_refresh_skips_custom_source_when_not_activated(monkeypatch):
     mgr = PluginManager()
     called = {"reset": 0, "load": 0}
 
-    import agent.secret_sources.registry as reg
+    import hermes_agent.agent.secret_sources.registry as reg
 
     monkeypatch.setattr(
         reg, "list_plugin_sources", lambda: [_CustomActivationSource()]
@@ -168,7 +168,7 @@ def test_refresh_skips_source_whose_is_enabled_raises(monkeypatch):
         def is_enabled(self, cfg: dict) -> bool:
             raise RuntimeError("boom")
 
-    import agent.secret_sources.registry as reg
+    import hermes_agent.agent.secret_sources.registry as reg
 
     monkeypatch.setattr(reg, "list_plugin_sources", lambda: [_Boom()])
     monkeypatch.setattr(
@@ -192,7 +192,7 @@ def test_refresh_skips_source_whose_is_enabled_raises(monkeypatch):
 
 def test_real_plugin_source_discovery_applies_dotenv(monkeypatch, tmp_path):
     """A cold process discovers a real plugin and applies its credential."""
-    import agent.secret_sources.registry as reg
+    import hermes_agent.agent.secret_sources.registry as reg
     from hermes_cli import env_loader
 
     reg._reset_registry_for_tests()
@@ -282,8 +282,8 @@ def test_removing_the_last_plugin_source_revokes_its_process_env_value(
     single-profile ``get_secret()`` served it through its ``os.environ`` fallback until restart. A value
     another owner wrote over the plugin's since is theirs and stays. A sibling home (A -> B -> A) never
     has its own view disturbed by the revocation."""
-    import agent.secret_sources.registry as reg
-    from agent.secret_scope import get_secret
+    import hermes_agent.agent.secret_sources.registry as reg
+    from hermes_agent.agent.secret_scope import get_secret
     from hermes_cli import env_loader
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 

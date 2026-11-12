@@ -24,8 +24,8 @@ import types
 
 import pytest
 
-import agent.auxiliary_client as aux
-import agent.auxiliary_managed_local as managed_local
+import hermes_agent.agent.auxiliary_client as aux
+import hermes_agent.agent.auxiliary_managed_local as managed_local
 from hermes_cli.local_runtime.supervisor import LlamaServerSupervisor
 
 

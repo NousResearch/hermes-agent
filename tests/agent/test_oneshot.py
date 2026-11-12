@@ -1,8 +1,8 @@
-"""Tests for agent.oneshot — shared one-off (stateless) LLM requests."""
+"""Tests for hermes_agent.agent.oneshot — shared one-off (stateless) LLM requests."""
 
 from unittest.mock import MagicMock, patch
 
-from agent.oneshot import (
+from hermes_agent.agent.oneshot import (
     render_template,
     run_oneshot,
     _truncate,
@@ -39,7 +39,7 @@ class TestRunOneshot:
 
     def test_explicit_instructions_path(self):
         with patch(
-            "agent.oneshot.call_llm",
+            "hermes_agent.agent.oneshot.call_llm",
             return_value=self._mock_response("hello"),
         ) as llm:
             out = run_oneshot(instructions="be brief", user_input="say hi")
@@ -51,7 +51,7 @@ class TestRunOneshot:
 
     def test_strips_wrapping_code_fence(self):
         with patch(
-            "agent.oneshot.call_llm",
+            "hermes_agent.agent.oneshot.call_llm",
             return_value=self._mock_response("```\nfix: bug\n```"),
         ):
             assert run_oneshot(instructions="x", user_input="y") == "fix: bug"

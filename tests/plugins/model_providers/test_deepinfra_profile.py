@@ -46,7 +46,7 @@ def test_profile_translates_reasoning_config_to_top_level_effort(deepinfra_profi
 def test_transport_main_turn_carries_reasoning_effort_without_capability_gate(deepinfra_profile):
     """The main turn builds through ``_build_kwargs_from_profile`` with ``supports_reasoning=False``
     (core allowlist excludes this host) — the field must still reach the request."""
-    from agent.transports.chat_completions import ChatCompletionsTransport
+    from hermes_agent.agent.transports.chat_completions import ChatCompletionsTransport
 
     build = ChatCompletionsTransport().build_kwargs
     on = build(

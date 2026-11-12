@@ -17,16 +17,16 @@ from concurrent.futures import Future, ThreadPoolExecutor, wait
 from functools import partial
 from typing import Any, Callable, Dict, List, Optional
 
-from agent.redact import redact_for_egress
+from hermes_agent.agent.redact import redact_for_egress
 
-from agent.memory_caller_scope import bound_scope, caller_scope, claim_instance, in_owner_home, refused_tool_message
-# Moved to agent.memory_context / agent.memory_manager_tools; still importable here because agent.memory_manager is a public
+from hermes_agent.agent.memory_caller_scope import bound_scope, caller_scope, claim_instance, in_owner_home, refused_tool_message
+# Moved to hermes_agent.agent.memory_context / hermes_agent.agent.memory_manager_tools; still importable here because hermes_agent.agent.memory_manager is a public
 # module for plugins (hermes_cli/data/plugin_api.json).
-from agent.memory_context import StreamingContextScrubber, build_memory_context_block, sanitize_context
-from agent.memory_manager_tools import (inject_memory_provider_tools, memory_provider_tools_enabled,
+from hermes_agent.agent.memory_context import StreamingContextScrubber, build_memory_context_block, sanitize_context
+from hermes_agent.agent.memory_manager_tools import (inject_memory_provider_tools, memory_provider_tools_enabled,
                                         memory_provider_tools_exposed, normalize_tool_schema)
-from agent.memory_provider import MemoryProvider, PRE_COMPRESS_CHECKPOINT_API_VERSION, ctx_bound, spawn_context_thread
-from agent.skill_commands import extract_user_instruction_from_skill_message
+from hermes_agent.agent.memory_provider import MemoryProvider, PRE_COMPRESS_CHECKPOINT_API_VERSION, ctx_bound, spawn_context_thread
+from hermes_agent.agent.skill_commands import extract_user_instruction_from_skill_message
 from hermes_constants import hermes_home_key
 from hermes_agent.tools.hook_output_spill import get_spill_config, spill_if_oversized
 from hermes_agent.tools.registry import tool_error
@@ -138,7 +138,7 @@ def _redact_for_provider(*values: Any) -> Any:
 def _redact_messages_for_egress(messages: Optional[list[Any]]) -> Optional[list[Any]]:
     """Scrubbed copies of whole transcript rows for a provider; a ``pre_llm_call`` veto's typed text
     (display-only metadata) never leaves the host."""
-    from agent.message_metadata import without_withheld_prompts
+    from hermes_agent.agent.message_metadata import without_withheld_prompts
     return None if messages is None else list(_redact_for_provider(without_withheld_prompts(messages)))
 
 
@@ -255,7 +255,7 @@ class MemoryManager:
 
     def _owner_allows(self, hook: str) -> bool:
         """Whether a lifecycle hook may reach the providers: only from the profile they were initialized
-        for (#140058; see ``agent/memory_caller_scope.py``). Nothing to reach, nothing to refuse."""
+        for (#140058; see ``hermes_agent/agent/memory_caller_scope.py``). Nothing to reach, nothing to refuse."""
         return not self._providers or caller_scope(self._bound_scope, f"hook {hook}") is not None
 
     def _fork_turn_hooks_suppressed(self) -> bool:
@@ -733,7 +733,7 @@ class MemoryManager:
             return ""
         parts = []
         checkpoint_succeeded = False
-        from agent.message_metadata import without_withheld_prompts
+        from hermes_agent.agent.message_metadata import without_withheld_prompts
         messages, evidence_messages = _redact_for_provider(
             without_withheld_prompts(messages or []), without_withheld_prompts(evidence_messages))
         for provider in self._providers:

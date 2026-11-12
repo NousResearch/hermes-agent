@@ -10,10 +10,10 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from agent.agent_runtime_helpers import recover_with_credential_pool
-from agent.credential_pool import STATUS_EXHAUSTED, CredentialPool, PooledCredential
-from agent.turn_response_check import retry_invalid_response
-from agent.turn_retry_state import TurnRetryState
+from hermes_agent.agent.agent_runtime_helpers import recover_with_credential_pool
+from hermes_agent.agent.credential_pool import STATUS_EXHAUSTED, CredentialPool, PooledCredential
+from hermes_agent.agent.turn_response_check import retry_invalid_response
+from hermes_agent.agent.turn_retry_state import TurnRetryState
 
 _BASE_URL = "https://chatgpt.com/backend-api/codex"
 
@@ -46,7 +46,7 @@ class _Agent:
         return recover_with_credential_pool(self, **kwargs)
 
     def _extract_api_error_context(self, error):
-        from agent.agent_runtime_helpers import extract_api_error_context
+        from hermes_agent.agent.agent_runtime_helpers import extract_api_error_context
 
         return extract_api_error_context(error)
 

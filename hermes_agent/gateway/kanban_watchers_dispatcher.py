@@ -306,7 +306,7 @@ def _default_profile_secret_scope():
     LLM reads ``auxiliary.*`` from ``get_hermes_home()``, so its credentials come
     from that same home. No-op for single-profile gateways.
     """
-    from agent.secret_scope import is_multiplex_active, reset_secret_scope, set_secret_scope
+    from hermes_agent.agent.secret_scope import is_multiplex_active, reset_secret_scope, set_secret_scope
     from hermes_constants import get_hermes_home
     from hermes_agent.tui_gateway.launch_profile_policy import owner_secret_scope
 

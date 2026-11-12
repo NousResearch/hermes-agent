@@ -1,4 +1,4 @@
-"""Tests for the sandbox-mirror write guard in agent/file_safety.
+"""Tests for the sandbox-mirror write guard in hermes_agent/agent/file_safety.
 
 The guard fires when a tool tries to write into the per-task mirror
 directory created by a non-local terminal backend (Docker, Daytona, etc.).
@@ -28,7 +28,7 @@ import pytest
 class TestClassifySandboxMirrorTarget:
     def test_docker_mirror_soul_md_classified(self, tmp_path):
         """The exact path shape reported in #32049."""
-        from agent.file_safety import classify_sandbox_mirror_target
+        from hermes_agent.agent.file_safety import classify_sandbox_mirror_target
 
         target = (
             tmp_path
@@ -57,7 +57,7 @@ class TestClassifySandboxMirrorTarget:
     )
     def test_other_backends_and_inner_files_match(self, tmp_path, backend, inner):
         """The detector is backend-agnostic — sandbox-mirror shape is what matters."""
-        from agent.file_safety import classify_sandbox_mirror_target
+        from hermes_agent.agent.file_safety import classify_sandbox_mirror_target
 
         target = (
             tmp_path
@@ -85,7 +85,7 @@ class TestClassifySandboxMirrorTarget:
 
 class TestGetSandboxMirrorWarning:
     def test_non_mirror_returns_none(self, tmp_path):
-        from agent.file_safety import get_sandbox_mirror_warning
+        from hermes_agent.agent.file_safety import get_sandbox_mirror_warning
 
         target = tmp_path / ".hermes" / "profiles" / "group1" / "SOUL.md"
         target.parent.mkdir(parents=True)
@@ -94,7 +94,7 @@ class TestGetSandboxMirrorWarning:
         assert get_sandbox_mirror_warning(str(target)) is None
 
     def test_mirror_warning_names_mirror_root_and_inner_path(self, tmp_path):
-        from agent.file_safety import get_sandbox_mirror_warning
+        from hermes_agent.agent.file_safety import get_sandbox_mirror_warning
 
         target = (
             tmp_path
@@ -127,7 +127,7 @@ class TestSandboxMirrorIsOrthogonalToCrossProfile:
     profile mismatch."""
 
     def test_same_profile_mirror_still_flagged(self, tmp_path, monkeypatch):
-        import agent.file_safety as fs
+        import hermes_agent.agent.file_safety as fs
         monkeypatch.setattr(fs, "_hermes_root_path", lambda: tmp_path)
         monkeypatch.setattr(fs, "_hermes_home_path", lambda: tmp_path / "profiles" / "group1")
 

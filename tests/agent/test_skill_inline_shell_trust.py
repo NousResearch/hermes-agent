@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from agent.skill_preprocessing import preprocess_skill_content
+from hermes_agent.agent.skill_preprocessing import preprocess_skill_content
 
 CFG = {"inline_shell": True, "inline_shell_timeout": 5}
 SNIPPET = "Dynamic: !`printf SENTINEL`"
@@ -62,13 +62,13 @@ def test_local_skill_without_hub_entry_still_expands(tmp_path):
 def test_slash_invocation_leaves_community_snippet_raw(tmp_path):
     """The slash/bundle surface routes through the same gate: a community hub
     skill's message shows the raw snippet, never the executed output."""
-    from agent.skill_commands import build_skill_invocation_message, scan_skill_commands
+    from hermes_agent.agent.skill_commands import build_skill_invocation_message, scan_skill_commands
 
     _make_skill(tmp_path, "dyn-comm")
     _record_hub_install("dyn-comm", "community")
     with (
         patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path),
-        patch("agent.skill_commands._load_skills_config",
+        patch("hermes_agent.agent.skill_commands._load_skills_config",
               return_value={"template_vars": True, "inline_shell": True,
                             "inline_shell_timeout": 5}),
     ):

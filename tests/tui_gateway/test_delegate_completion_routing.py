@@ -11,7 +11,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from agent.prompt_refresh import stamp_prompt_epoch
+from hermes_agent.agent.prompt_refresh import stamp_prompt_epoch
 from hermes_agent.hermes_state import SessionDB
 from tests.tools import test_delegate_transcript_readiness as transcript_readiness
 from hermes_agent.tools.delegate_tool import _build_child_agent

@@ -13,9 +13,9 @@ import logging
 import threading
 from typing import Optional
 
-from agent.lsp.manager import LSPService
+from hermes_agent.agent.lsp.manager import LSPService
 
-logger = logging.getLogger("agent.lsp")
+logger = logging.getLogger("hermes_agent.agent.lsp")
 
 _service: Optional[LSPService] = None
 # Routed multiplex profiles (HERMES_HOME override) each get their own service: ``lsp.*`` config

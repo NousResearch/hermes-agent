@@ -490,7 +490,7 @@ def test_auth_add_codex_oauth_keeps_distinct_pool_accounts(tmp_path, monkeypatch
     monkeypatch.setattr("hermes_cli.auth._codex_device_code_login", lambda: next(logins))
 
     from hermes_cli.auth_commands import auth_add_command
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
 
     class _Args:
         provider = "openai-codex"
@@ -561,7 +561,7 @@ def test_auth_add_codex_warns_when_login_is_same_account_as_pooled_entry(tmp_pat
     the provider revokes the older one, so the extra entry buys no quota. Different accounts
     get no warning — they rotate independently.
     """
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
 
     err = _add_codex_twice(tmp_path, monkeypatch, capsys, _codex_jwt("me@example.com", "acct-A", "user-1"))
     assert "me@example.com" in err
@@ -642,7 +642,7 @@ def test_auth_add_xai_oauth_keeps_distinct_pool_accounts(tmp_path, monkeypatch):
     )
 
     from hermes_cli.auth_commands import auth_add_command
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
 
     class _Args:
         provider = "xai-oauth"
@@ -690,7 +690,7 @@ def test_auth_remove_reindexes_priorities(tmp_path, monkeypatch):
     monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
     monkeypatch.setattr(
-        "agent.credential_pool._seed_from_singletons",
+        "hermes_agent.agent.credential_pool._seed_from_singletons",
         lambda provider, entries: (False, set()),
     )
     _write_auth_store(
@@ -760,7 +760,7 @@ def test_auth_remove_codex_migrates_legacy_dict_suppression(tmp_path, monkeypatc
         "manual:device_code",
     ]
 
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
 
     assert load_pool("openai-codex").peek() is None
 
@@ -877,7 +877,7 @@ def test_unsuppress_credential_source_preserves_other_markers(tmp_path, monkeypa
 
 # =============================================================================
 # Unified credential-source stickiness — every source Hermes reads from has a
-# registered RemovalStep in agent.credential_sources, and every seeding path
+# registered RemovalStep in hermes_agent.agent.credential_sources, and every seeding path
 # gates on is_source_suppressed.  Below: one test per source proving remove
 # sticks across a fresh load_pool() call.
 # =============================================================================
@@ -898,13 +898,13 @@ def test_seed_from_singletons_respects_hermes_pkce_suppression(tmp_path, monkeyp
     }))
 
     # Stub the readers so only hermes_pkce is "available"; claude_code returns None
-    import agent.anthropic_credentials as aa
+    import hermes_agent.agent.anthropic_credentials as aa
     monkeypatch.setattr(aa, "read_hermes_oauth_credentials", lambda: {
         "accessToken": "tok", "refreshToken": "r", "expiresAt": 9999999999000,
     })
     monkeypatch.setattr(aa, "read_claude_code_credentials", lambda: None)
 
-    from agent.credential_pool import _seed_from_singletons
+    from hermes_agent.agent.credential_pool import _seed_from_singletons
     entries = []
     _changed, active = _seed_from_singletons("anthropic", entries)
     # hermes_pkce suppressed, claude_code returns None → nothing should be seeded

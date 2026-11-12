@@ -3,7 +3,7 @@
 Hermes Agent saves conversation trajectories in ShareGPT-compatible JSONL format
 for use as training data, debugging artifacts, and reinforcement learning datasets.
 
-Source files: `agent/trajectory.py`, `agent/session_persistence.py` (search for `_save_trajectory`), `hermes_agent/batch_runner.py`
+Source files: `hermes_agent/agent/trajectory.py`, `hermes_agent/agent/session_persistence.py` (search for `_save_trajectory`), `hermes_agent/batch_runner.py`
 
 
 ## File Naming Convention
@@ -215,11 +215,11 @@ preventing Arrow schema mismatch errors during dataset loading.
 
 ## Controlling Trajectory Saving
 
-Trajectory saving is a `run_agent.py` / library-level switch — the `hermes` CLI
+Trajectory saving is a `hermes_agent/run_agent.py` / library-level switch — the `hermes` CLI
 does not expose a config key or flag for it:
 
 ```bash
-python run_agent.py --save_trajectories --query='your question here'
+python hermes_agent/run_agent.py --save_trajectories --query='your question here'
 ```
 
 Or programmatically: `AIAgent(..., save_trajectories=True)` /

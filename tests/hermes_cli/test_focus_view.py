@@ -9,7 +9,7 @@ rather than adding a second suppression mechanism.  These tests cover:
 * status-bar segment composition in both CLI renderers;
 * the CLI command handler's stash/restore of ``tool_progress_mode``;
 * **the prompt-cache invariant** — a real fake turn is dispatched through
-  ``agent.tool_executor`` with focus on and with focus off, and the resulting
+  ``hermes_agent.agent.tool_executor`` with focus on and with focus off, and the resulting
   model-facing ``messages`` lists must be byte-identical.
 """
 
@@ -219,7 +219,7 @@ class TestStatusBarSegment:
 
 def _make_agent(tool_progress_mode: str):
     """Build a real AIAgent whose display mode is the only difference."""
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     tool_defs = [
         {
@@ -235,7 +235,7 @@ def _make_agent(tool_progress_mode: str):
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=tool_defs),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("hermes_cli.config.load_config", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(
             api_key="test-key-1234567890",
@@ -286,7 +286,7 @@ def _run_fake_turn(tool_progress_mode: str, dispatch_mode: str = "sequential"):
         patch("hermes_agent.model_tools.handle_function_call", side_effect=fake_dispatch),
         patch.object(agent, "_invoke_tool", side_effect=fake_dispatch),
         patch(
-            "agent.tool_executor.maybe_persist_tool_result",
+            "hermes_agent.agent.tool_executor.maybe_persist_tool_result",
             side_effect=lambda **kwargs: kwargs["content"],
         ),
         # Swallow display writes so the test doesn't spam stdout; the point is
@@ -306,7 +306,7 @@ class TestModelFacingMessagesUnchanged:
     def test_model_facing_messages_identical_with_focus_on_vs_off(self, dispatch_mode):
         # Creation timestamps are durable metadata, so hold the clock steady
         # while comparing otherwise identical turns.
-        with patch("agent.message_metadata.wall_time", return_value=1_700_000_000.0):
+        with patch("hermes_agent.agent.message_metadata.wall_time", return_value=1_700_000_000.0):
             # Focus ON == the existing tool_progress "off" suppression path.
             focus_on = _run_fake_turn(FOCUS_TOOL_PROGRESS_MODE, dispatch_mode)
             # Focus OFF == the default noisy display mode.

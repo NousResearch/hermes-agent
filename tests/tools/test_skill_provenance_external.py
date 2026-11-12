@@ -30,7 +30,7 @@ def external_home(tmp_path, monkeypatch):
     (home / "config.yaml").write_text(f"skills:\n  external_dirs:\n    - {ext_dir}\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(home))
 
-    from agent import skill_utils
+    from hermes_agent.agent import skill_utils
     skill_utils._external_dirs_cache_clear()
     yield home
     skill_utils._external_dirs_cache_clear()
@@ -71,7 +71,7 @@ class TestProvenanceTier:
 class TestLearningGraphExcludesExternal:
     def test_used_external_skill_produces_no_learning_node(self, external_home):
         """Even a USED external skill is not a learning milestone (#108032)."""
-        from agent import learning_graph
+        from hermes_agent.agent import learning_graph
         with _patched_usage({"ext-skill": {"use_count": 5, "created_by": None}}):
             skill_ids = {n["id"] for n in learning_graph.build_learning_graph()["nodes"]
                          if n["kind"] == "skill"}
@@ -79,7 +79,7 @@ class TestLearningGraphExcludesExternal:
 
     def test_used_local_skill_still_produces_learning_node(self, external_home):
         _write_local_skill(external_home, "my-local")
-        from agent import learning_graph
+        from hermes_agent.agent import learning_graph
         with _patched_usage({"my-local": {"use_count": 3, "created_by": None}}):
             skill_ids = {n["id"] for n in learning_graph.build_learning_graph()["nodes"]
                          if n["kind"] == "skill"}
@@ -93,7 +93,7 @@ class TestLearningGraphExcludesExternal:
         is why it masqueraded as a runner/env-dependence (run_tests.sh vs bare pytest) rather
         than the scan-order bug it was."""
         from pathlib import Path
-        from agent import learning_graph
+        from hermes_agent.agent import learning_graph
         _write_local_skill(external_home, "my-local")
         real_rglob = Path.rglob
 
@@ -111,7 +111,7 @@ class TestLearningGraphExcludesExternal:
 
 def _patched_usage(data):
     from unittest.mock import patch
-    from agent import learning_graph
+    from hermes_agent.agent import learning_graph
     return patch.object(learning_graph, "_load_usage", lambda: data)
 
 

@@ -70,7 +70,7 @@ def test_managed_gateway_worker_is_spawned_in_restart_safe_scope(
 
     monkeypatch.setenv("INVOCATION_ID", "managed-gateway-test")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "must-not-cross-profile")
-    monkeypatch.setattr("agent.secret_scope.is_multiplex_active", lambda: True)
+    monkeypatch.setattr("hermes_agent.agent.secret_scope.is_multiplex_active", lambda: True)
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
     monkeypatch.setattr("hermes_agent.tools.process_registry._is_supervised_gateway_process", lambda: True)
     monkeypatch.setattr("hermes_agent.tools.process_registry._systemd_run_user_scope_available", lambda: True)

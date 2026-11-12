@@ -13,11 +13,11 @@ import threading
 import unicodedata
 from urllib.parse import unquote_plus
 
-# Shared with agent/file_safety's read-block list so the two defenses can't
+# Shared with hermes_agent/agent/file_safety's read-block list so the two defenses can't
 # drift: a blocked file_tools read that falls back to ``cat`` is still caught.
-from agent.file_safety import _BLOCKED_PROJECT_ENV_BASENAMES as _ENV_FILE_BASENAMES
-from agent.redact_connstr import _KV_CONNSTR_GATE_RE, _redact_kv_connection_strings
-from agent.redact_headers import (
+from hermes_agent.agent.file_safety import _BLOCKED_PROJECT_ENV_BASENAMES as _ENV_FILE_BASENAMES
+from hermes_agent.agent.redact_connstr import _KV_CONNSTR_GATE_RE, _redact_kv_connection_strings
+from hermes_agent.agent.redact_headers import (
     _COOKIE_HEADER_JSON_RE, _COOKIE_HEADER_JSON_UNTERMINATED_RE, _SECRET_HEADER_JSON_RE,
     _SECRET_HEADER_JSON_UNTERMINATED_RE, json_header_value_is_credential, redact_cookie_assignments,
     redact_header_credentials,
@@ -150,7 +150,7 @@ def _redact_enabled() -> bool:
     if get_hermes_home_override() is None:
         return _REDACT_ENABLED
     home_key = hermes_home_key()
-    from agent.secret_scope import current_secret_scope
+    from hermes_agent.agent.secret_scope import current_secret_scope
     scope = current_secret_scope()
     raw = scope.get("HERMES_REDACT_SECRETS") if scope else None
     if raw is None and scope is None:
@@ -1701,7 +1701,7 @@ def _is_under_hermes_home(path: str) -> bool:
     Compare against the resolved homes instead. Only reached for a ``config.yaml`` basename,
     so the resolve cost stays off the per-token command scan.
     """
-    from agent.file_safety import _hermes_dirs
+    from hermes_agent.agent.file_safety import _hermes_dirs
 
     try:
         target = os.path.normcase(os.path.realpath(os.path.expanduser(path)))

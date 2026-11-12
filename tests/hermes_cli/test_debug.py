@@ -498,7 +498,7 @@ class TestRunDebugShareRedaction:
         ("clientApiKey", "'opaque***CamelKey0123456789'", "opaque***CamelKey0123456789"),
     ])
     def test_fallback_secret_fields_masked_by_repo_policy(self, hermes_home_with_secret, field, yaml_value, secret):
-        """Every field ``agent.redact`` treats as a credential is masked by field, not only ``api_key``;
+        """Every field ``hermes_agent.agent.redact`` treats as a credential is masked by field, not only ``api_key``;
         env-var names and token budgets stay readable."""
         from hermes_cli.debug import _capture_dump, collect_debug_report, run_debug_share
 

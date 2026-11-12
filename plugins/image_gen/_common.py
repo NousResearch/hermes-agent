@@ -9,7 +9,7 @@ import os
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
-from agent.image_gen_provider import (
+from hermes_agent.agent.image_gen_provider import (
     ImageGenProvider, error_response, normalize_reference_images, save_b64_image, save_url_image)
 
 logger = logging.getLogger(__name__)
@@ -265,7 +265,7 @@ def record_token_usage(usage: Any, *, model: str, provider: str, base_url: Optio
         return
     from types import SimpleNamespace
 
-    from agent.aux_accounting import record_aux_usage
+    from hermes_agent.agent.aux_accounting import record_aux_usage
 
     record_aux_usage(
         SimpleNamespace(model=model, usage=usage), "image_generation", provider=provider, base_url=base_url)

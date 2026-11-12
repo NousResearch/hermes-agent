@@ -85,7 +85,7 @@ HERMES_OVERLAYS: dict[str, HermesOverlay] = {
     # Azure Foundry serves OpenAI- and Anthropic-style endpoints; transport comes from model.api_mode.
     "azure-foundry": HermesOverlay(base_url_env_var="AZURE_FOUNDRY_BASE_URL"),
     "bedrock": HermesOverlay(transport="bedrock_converse", auth_type="aws_sdk"),
-    # Vertex is OAuth2 (service-account JSON / ADC), resolved by agent/vertex_adapter.py. Without an
+    # Vertex is OAuth2 (service-account JSON / ADC), resolved by hermes_agent/agent/vertex_adapter.py. Without an
     # overlay get_provider("vertex") is None and auxiliary_client._preserve_provider_with_base_url
     # would treat a Vertex MoA slot as an unknown custom endpoint, losing the identity
     # _refresh_provider_credentials() needs to re-mint an expired token on 401.
@@ -244,7 +244,7 @@ def _models_dev_info(canonical: str, allow_network: bool = True):
     """models.dev entry or None. Single-arg call on the default path: test sites monkeypatch
     ``get_provider_info`` with single-arg lambdas."""
     try:
-        from agent.models_dev import get_provider_info as _mdev_provider
+        from hermes_agent.agent.models_dev import get_provider_info as _mdev_provider
         return _mdev_provider(canonical) if allow_network else _mdev_provider(canonical, allow_network=False)
     except Exception:
         return None
@@ -442,7 +442,7 @@ def nous_api_mode(model: str = "") -> str:
     signed native blocks, and cache_control scopes are translated by the portal's adapter.
     Empty/unknown model defaults to ``chat_completions`` (the historical Nous transport)."""
     if str(model or "").strip().lower().startswith("anthropic/"):
-        # ``auto`` starts on chat too: it is safe on every upstream, and ``agent/nous_wire.py``
+        # ``auto`` starts on chat too: it is safe on every upstream, and ``hermes_agent/agent/nous_wire.py``
         # promotes the session to native from the first response when the upstream allows it.
         return "anthropic_messages" if _nous_anthropic_wire() == "native" else "chat_completions"
     return "chat_completions"
@@ -450,7 +450,7 @@ def nous_api_mode(model: str = "") -> str:
 
 def _nous_anthropic_wire() -> str:
     """``nous.anthropic_wire``: ``"chat"`` (default), ``"native"``, or ``"auto"`` (chat, then per-session
-    promotion decided from the first response; see ``agent/nous_wire.py``). Anything else reads as ``chat``."""
+    promotion decided from the first response; see ``hermes_agent/agent/nous_wire.py``). Anything else reads as ``chat``."""
     try:
         from hermes_cli.config import load_config_readonly
         value = str(((load_config_readonly().get("nous") or {}).get("anthropic_wire")) or "chat").strip().lower()
@@ -475,7 +475,7 @@ def determine_api_mode(provider: str, base_url: str = "", model: str = "") -> st
         if pdef.transport in TRANSPORT_TO_API_MODE:
             return TRANSPORT_TO_API_MODE[pdef.transport]
         # A plugin profile's transport IS its api_mode when a plugin registered that dialect.
-        from agent.transports import registered_api_modes
+        from hermes_agent.agent.transports import registered_api_modes
         return pdef.transport if pdef.transport in registered_api_modes() else "chat_completions"
     if provider == "bedrock":
         return "bedrock_converse"
@@ -496,7 +496,7 @@ def resolve_user_provider(name: str, user_config: dict[str, Any]) -> Optional[Pr
     A ``providers.<name>`` block that carries no endpoint (``api``/``url``/``base_url``) is not a
     custom-endpoint definition — it is tuning for a BUILT-IN provider of the same name (e.g.
     ``providers.bedrock: {stale_timeout_seconds: 600}``, the documented path in
-    ``agent/turn_recovery.py`` / ``thinking_timeout_guidance.py``). Resolving it here would shadow
+    ``hermes_agent/agent/turn_recovery.py`` / ``thinking_timeout_guidance.py``). Resolving it here would shadow
     the built-in's real transport/base_url/auth_type with an empty ``openai_chat``/``api_key``
     stub, routing e.g. AWS Bedrock through the generic custom-endpoint ``/models`` probe (#110402).
     """

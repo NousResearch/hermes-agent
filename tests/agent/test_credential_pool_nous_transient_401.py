@@ -15,8 +15,8 @@ import time
 
 import hermes_cli.auth as auth_mod
 from hermes_cli import auth_nous
-from agent.agent_runtime_helpers import _recover_auth_failure
-from agent.credential_pool import load_pool
+from hermes_agent.agent.agent_runtime_helpers import _recover_auth_failure
+from hermes_agent.agent.credential_pool import load_pool
 
 from tests.hermes_cli.test_auth_nous_provider import _invoke_jwt, _setup_nous_auth
 
@@ -98,7 +98,7 @@ def test_one_refresh_per_episode_then_bounded_backoff(tmp_path, monkeypatch):
     (entry,) = pool.entries()
     posts = _count_refresh_posts(monkeypatch)
     try:  # absent on base: let the refresh-POST count, not an ImportError, be what fails there
-        from agent import credential_auth_recovery
+        from hermes_agent.agent import credential_auth_recovery
         monkeypatch.setattr(credential_auth_recovery, "TRANSIENT_AUTH_BACKOFF_S", (0.01, 0.02, 0.03))
     except ImportError:
         pass

@@ -30,7 +30,7 @@ def registry(monkeypatch):
 
 
 def _build(provider: str, base: str) -> dict:
-    from agent.auxiliary_client import _build_call_kwargs
+    from hermes_agent.agent.auxiliary_client import _build_call_kwargs
 
     return _build_call_kwargs(
         provider, "some-model", MSGS, max_tokens=800, base_url=base, task="compression"

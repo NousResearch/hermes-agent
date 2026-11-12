@@ -85,7 +85,7 @@ def _resolved_https_context() -> ssl.SSLContext | None:
     installed process-wide — already verifies against the platform's
     certificates. There is nothing to resolve here any more.
     """
-    from agent.ssl_verify import install_truststore
+    from hermes_agent.agent.ssl_verify import install_truststore
 
     install_truststore()
     return None
@@ -143,7 +143,7 @@ def open_credentialed_url(
     policy for this request only. It is used to honor a custom provider's
     ``ssl_ca_cert`` / ``ssl_verify`` on the ``/models`` discovery path, which
     otherwise falls back to the process-wide platform trust store
-    (``agent.ssl_verify.install_truststore``).
+    (``hermes_agent.agent.ssl_verify.install_truststore``).
     """
     if opener_factory is None:
         opener = _secure_opener_from_installed_policy(request.full_url, ssl_context=ssl_context)

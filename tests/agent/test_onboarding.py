@@ -1,10 +1,10 @@
-"""Tests for agent/onboarding.py — contextual first-touch hint helpers."""
+"""Tests for hermes_agent/agent/onboarding.py — contextual first-touch hint helpers."""
 
 from __future__ import annotations
 
 import hermes_yaml as yaml
 
-from agent.onboarding import (
+from hermes_agent.agent.onboarding import (
     BUSY_INPUT_FLAG,
     TOOL_PROGRESS_FLAG,
     detect_openclaw_residue,
@@ -91,7 +91,7 @@ class TestDetectOpenclawResidue:
 class TestProfileBuildMode:
 
     def test_non_mapping_config_safe(self):
-        from agent.onboarding import profile_build_mode
+        from hermes_agent.agent.onboarding import profile_build_mode
 
         assert profile_build_mode("not a dict") == "ask"  # type: ignore[arg-type]
         assert profile_build_mode({"onboarding": "nope"}) == "ask"
@@ -99,7 +99,7 @@ class TestProfileBuildMode:
 
 class TestFirstContactTurnNote:
     def test_returns_profile_directive_and_marks_seen(self, tmp_path):
-        from agent.onboarding import (
+        from hermes_agent.agent.onboarding import (
             PROFILE_BUILD_FLAG,
             first_contact_turn_note,
             profile_build_directive,
@@ -120,7 +120,7 @@ class TestFirstContactTurnNote:
     def test_every_first_contact_note_puts_a_real_task_first(self, tmp_path):
         # Default "ask" (profile-build offer) and "off" (plain intro) must both
         # tell the model to do a first-message task before the intro/offer.
-        from agent.onboarding import TASK_FIRST_CLAUSE, first_contact_turn_note
+        from hermes_agent.agent.onboarding import TASK_FIRST_CLAUSE, first_contact_turn_note
 
         for mode in ("ask", "off"):
             note = first_contact_turn_note(
@@ -132,7 +132,7 @@ class TestFirstContactTurnNote:
             assert TASK_FIRST_CLAUSE in note, mode
 
     def test_returns_none_when_not_first_contact(self, tmp_path):
-        from agent.onboarding import first_contact_turn_note
+        from hermes_agent.agent.onboarding import first_contact_turn_note
 
         cfg_path = tmp_path / "config.yaml"
         assert (

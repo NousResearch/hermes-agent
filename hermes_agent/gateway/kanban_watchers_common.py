@@ -104,7 +104,7 @@ def _kanban_dispatch_allowed() -> bool:
     in-flight workers are never touched. Fails open if estop is unimportable.
     """
     try:
-        from agent.estop import check_paused
+        from hermes_agent.agent.estop import check_paused
     except ImportError:
         return True
     return not check_paused("kanban", logger)

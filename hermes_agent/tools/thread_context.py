@@ -23,7 +23,7 @@ def _callback_api():
     (lazy: terminal_tool imports hermes_agent.tools.approval at load, so a top-level import risks a cycle).
     Add a new per-thread prompt here — a callback missing from this table is silently absent on
     every parallel/timeout worker, so the tool believes nobody can answer."""
-    from agent.vault_backends import unlock as vault_unlock
+    from hermes_agent.agent.vault_backends import unlock as vault_unlock
     from hermes_agent.tools import terminal_tool as tt
 
     return ((tt._get_approval_callback, tt.set_approval_callback),

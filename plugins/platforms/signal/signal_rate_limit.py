@@ -12,8 +12,8 @@ import re
 import time
 from typing import Any, Optional
 
-from agent.i18n import t
-from agent.retry_utils import parse_retry_after_seconds
+from hermes_agent.agent.i18n import t
+from hermes_agent.agent.retry_utils import parse_retry_after_seconds
 
 logger = logging.getLogger(__name__)
 

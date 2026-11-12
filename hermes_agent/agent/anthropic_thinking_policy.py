@@ -17,7 +17,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from agent.anthropic_endpoints import (
+from hermes_agent.agent.anthropic_endpoints import (
     _is_claude_platform_endpoint,
     _is_deepseek_anthropic_endpoint,
     _is_kimi_family_endpoint,

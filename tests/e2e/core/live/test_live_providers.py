@@ -201,7 +201,7 @@ def test_three_turn_tool_conversation(case: LiveCase, live_home: Path, monkeypat
 
     from hermes_constants import parse_reasoning_effort
     from hermes_agent.hermes_state import SessionDB
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     db = SessionDB(live_home / "state.db")
     agent = AIAgent(

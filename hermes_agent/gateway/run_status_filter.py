@@ -11,7 +11,7 @@ so similar or user-quoted text is never swallowed.
 import re
 from typing import Any
 
-from agent.conversation_compression import CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE
+from hermes_agent.agent.conversation_compression import CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE
 
 # "" = an unclassified source: keep the warning (the pre-#101003 behaviour) rather than guess it is shared.
 _DM_CHAT_TYPES = frozenset({"dm", "private", "direct", ""})

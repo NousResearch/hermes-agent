@@ -116,7 +116,7 @@ async def _rename(agent, client, session_id, title):
 async def _rewind(agent, client, session_id, command, arg):
     """``/undo [N]`` reports the removed message (an editor has no composer to put it back in);
     ``/retry`` resubmits the last user turn's lossless text as this prompt."""
-    from agent.i18n import t
+    from hermes_agent.agent.i18n import t
     from hermes_cli.gateway_chat_commands import _rewind_to
     retry = command == 'retry'
     if not retry and arg and not (arg.isdigit() and int(arg) > 0):
@@ -141,7 +141,7 @@ async def _rewind(agent, client, session_id, command, arg):
     agent._mutations.acknowledge(session_id, 'rewind', payload)
     content = (result.get('target_message') or {}).get('content')
     if retry:
-        from agent.context_compressor import retryable_user_text
+        from hermes_agent.agent.context_compressor import retryable_user_text
         try:
             text = retryable_user_text(content)
         except ValueError as exc:
@@ -180,7 +180,7 @@ async def _steer(agent, session_id, text):
     if result.get('voice_stopped') is True:
         # TUI-26: the guidance was a bare stop phrase that ended this LOCAL session's voice chat;
         # no turn saw it, and sending it on as a prompt would admit ``stop`` as a turn.
-        from agent.i18n import t
+        from hermes_agent.agent.i18n import t
         return t('cli.voice.stop_phrase_typed')
     if result.get('status') != 'queued':
         return None
@@ -208,7 +208,7 @@ async def _mutate(agent, client, session_id, command, arg):
 
 
 def _cancelled_text(_result):
-    from agent.i18n import t
+    from hermes_agent.agent.i18n import t
     return t('cli.model.switch_cancelled')
 
 
@@ -230,7 +230,7 @@ async def _refresh_context(agent, client, session_id, operation):
     after a reset, the compressed messages' estimate (the summary's own figure) after a compress."""
     stats = await client.rpc('session.stats', session_id=session_id)
     if stats.get('context_length') is None:
-        from agent.model_metadata import estimate_request_tokens_rough
+        from hermes_agent.agent.model_metadata import estimate_request_tokens_rough
         messages = [m for m in agent._snapshots[session_id].get('messages') or [] if not m.get('archived')]
         stats = {**stats, 'context_length': (agent._usage.get(session_id) or {}).get('context_length'),
                  'context_tokens': estimate_request_tokens_rough(messages) if operation == 'compress' else 0}

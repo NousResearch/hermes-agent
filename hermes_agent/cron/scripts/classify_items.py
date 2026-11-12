@@ -124,7 +124,7 @@ def main() -> int:
 
     # Import here so --help works without the package importable.
     try:
-        from agent.auxiliary_client import call_llm
+        from hermes_agent.agent.auxiliary_client import call_llm
     except Exception as e:  # pragma: no cover - import guard
         _eprint(f"classify_items: cannot import auxiliary client: {e}")
         return 3

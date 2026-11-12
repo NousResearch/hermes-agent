@@ -13,7 +13,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from agent.deadline import poll_until
+from hermes_agent.agent.deadline import poll_until
 
 # A custom KeepAlive supervisor keeps its own respawn interval (launchd's is ~once per 10s,
 # per LAUNCHD_SUPERVISION_VERIFY_TIMEOUT); 15s matches _wait_for_launchd_service_pid's budget.

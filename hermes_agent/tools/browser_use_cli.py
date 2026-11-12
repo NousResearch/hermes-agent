@@ -173,7 +173,7 @@ def _code_url_verdict(code: str) -> _CodeUrlVerdict:
 def _harness_credentials() -> dict:
     """The harness's own credential from the active profile's secret scope, never ``os.environ``: under
     multiplex that holds the LAUNCH profile's key, and a served profile's browser runs on its own (or none)."""
-    from agent.secret_scope import current_secret_scope, get_secret, serves_routed_profile
+    from hermes_agent.agent.secret_scope import current_secret_scope, get_secret, serves_routed_profile
     routed = serves_routed_profile()
     scope = (current_secret_scope() or {}) if routed else None
     values = {key: (scope.get(key) if routed else get_secret(key)) for key in _HARNESS_PASSTHROUGH_KEYS}
@@ -252,7 +252,7 @@ def is_legacy_browser_use_cloud_config(browser_cfg: dict) -> bool:
 def _browser_use_api_key_set() -> bool:
     """BROWSER_USE_API_KEY for the served profile: the only credential Hermes autospawns BU cloud with.
     Profile-scoped so a multiplexed secondary never inherits the default's cloud mode."""
-    from agent.secret_scope import get_secret
+    from hermes_agent.agent.secret_scope import get_secret
     return bool(get_secret("BROWSER_USE_API_KEY", ""))
 
 
@@ -691,7 +691,7 @@ def _own_harness_daemon(env: dict) -> Optional[bool]:
     daemon another Hermes started), None when there is nothing to own yet."""
     if os.name != "posix":
         return False  # Windows: the harness daemon is outside this process's job; nothing to register.
-    from agent.runtime_session_store import is_worker_process
+    from hermes_agent.agent.runtime_session_store import is_worker_process
     if is_worker_process():
         # A managed per-turn worker never owns it, so a killed worker does not take the browser the
         # next turn's worker drives along (its clean exit still runs the atexit browser cleanup).
@@ -774,7 +774,7 @@ def _take_real_profile_note(route_key: str) -> dict:
 def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT_S,
                  task_id: Optional[str] = None, local: bool = False):
     """Run Python code through the browser-use CLI, and return its output"""
-    from agent.redact import redact_sensitive_text
+    from hermes_agent.agent.redact import redact_sensitive_text
     from hermes_agent.tools.registry import tool_error, tool_result
     if not code or not code.strip():
         return tool_error("No code provided. Pass Python that uses the pre-imported helpers, e.g. new_tab(\"https://example.com\") then print(page_info()).")
@@ -841,7 +841,7 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
             _driven_daemons[daemon] = hermes_home_key()
         # The first call starts the daemon and may run long (navigation, user code): own it as soon as
         # it publishes its pid, so a Hermes killed mid-call takes it along (the call's end owns it too).
-        from agent.periodic_scheduler import schedule
+        from hermes_agent.agent.periodic_scheduler import schedule
         owning = schedule(lambda: _own_harness_daemon_until_owned(env), _OWN_DURING_CALL_S)
         try:
             return {"proc": _run_cli_killing_process_group(cmd, code, env, timeout)}

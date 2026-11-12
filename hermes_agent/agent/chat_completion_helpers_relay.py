@@ -12,9 +12,9 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
-from agent.chat_completion_helpers_tool_calls import _ToolCallAccumulator
-from agent.message_content import flatten_message_text
-from agent.reasoning_summaries import separate_glued_reasoning_blocks
+from hermes_agent.agent.chat_completion_helpers_tool_calls import _ToolCallAccumulator
+from hermes_agent.agent.message_content import flatten_message_text
+from hermes_agent.agent.reasoning_summaries import separate_glued_reasoning_blocks
 
 
 def _tool_call_delta_view(tc_delta: Any) -> Any:

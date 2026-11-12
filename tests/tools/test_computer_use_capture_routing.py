@@ -223,9 +223,9 @@ class TestRoutingDecisionWiring:
                 }
             },
         }
-        with patch("agent.auxiliary_client._read_main_provider",
+        with patch("hermes_agent.agent.auxiliary_client._read_main_provider",
                    return_value="openrouter"), \
-             patch("agent.auxiliary_client._read_main_model",
+             patch("hermes_agent.agent.auxiliary_client._read_main_model",
                    return_value="tencent/hy3-preview"), \
              patch("hermes_cli.config.load_config_readonly", return_value=cfg):
             assert cu_tool._should_route_through_aux_vision() is True
@@ -234,9 +234,9 @@ class TestRoutingDecisionWiring:
     def test_helper_decision_exception_is_swallowed(self):
         from hermes_agent.tools.computer_use import tool as cu_tool
 
-        with patch("agent.auxiliary_client._read_main_provider",
+        with patch("hermes_agent.agent.auxiliary_client._read_main_provider",
                    return_value="openrouter"), \
-             patch("agent.auxiliary_client._read_main_model",
+             patch("hermes_agent.agent.auxiliary_client._read_main_model",
                    return_value="x"), \
              patch("hermes_cli.config.load_config_readonly", return_value={}), \
              patch("hermes_agent.tools.vision_tools._native_tool_result_images",
@@ -247,10 +247,10 @@ class TestRoutingDecisionWiring:
 def _route(provider, model, cfg, *, catalog, provider_takes_media, veto=False):
     """The capture route through the real shared gate; only the capability lookups underneath are patched."""
     from hermes_agent.tools.computer_use import tool as cu_tool
-    with patch("agent.auxiliary_client._read_main_provider", return_value=provider), \
-         patch("agent.auxiliary_client._read_main_model", return_value=model), \
+    with patch("hermes_agent.agent.auxiliary_client._read_main_provider", return_value=provider), \
+         patch("hermes_agent.agent.auxiliary_client._read_main_model", return_value=model), \
          patch("hermes_cli.config.load_config_readonly", return_value=cfg), \
-         patch("agent.image_routing._lookup_supports_vision", return_value=catalog), \
+         patch("hermes_agent.agent.image_routing._lookup_supports_vision", return_value=catalog), \
          patch("hermes_agent.tools.vision_tools._supports_media_in_tool_results", return_value=provider_takes_media), \
          patch("hermes_agent.tools.vision_tools._profile_rejects_tool_media", return_value=veto):
         return cu_tool._should_route_through_aux_vision()

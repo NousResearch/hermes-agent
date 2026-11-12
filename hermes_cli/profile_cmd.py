@@ -32,7 +32,7 @@ def _is_active(p, active: str) -> bool:
 
 def _env_file_has_key(env_path: Path, key: str) -> bool:
     """True when *key* is assigned in *env_path* (unreadable/mis-encoded file → False, never aborts)."""
-    from agent.secret_scope import load_env_file
+    from hermes_agent.agent.secret_scope import load_env_file
 
     return key in load_env_file(env_path)
 

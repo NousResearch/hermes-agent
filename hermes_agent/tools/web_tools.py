@@ -4,7 +4,7 @@
 Backend is selected during ``hermes tools`` (``web.backend`` in config.yaml; per
 capability via ``web.search_backend`` / ``web.extract_backend``). Every vendor
 implementation lives in ``plugins/web/<vendor>/provider.py`` and registers with
-``agent.web_search_registry``; this module owns selection, safety gates,
+``hermes_agent.agent.web_search_registry``; this module owns selection, safety gates,
 caching, keyless rescue, and the truncate-and-store result pipeline.
 Debug: ``WEB_TOOLS_DEBUG=true`` writes ``logs/web_tools_debug_<UUID>.json``.
 """
@@ -67,9 +67,9 @@ def _configured_backend(key: str = "backend") -> str:
 
 
 def _registry_call(func_name: str, default, *args):
-    """``agent.web_search_registry.<func_name>(*args)``, or *default* if it raised (registry never fatal)."""
+    """``hermes_agent.agent.web_search_registry.<func_name>(*args)``, or *default* if it raised (registry never fatal)."""
     try:
-        import agent.web_search_registry as registry_mod
+        import hermes_agent.agent.web_search_registry as registry_mod
         return getattr(registry_mod, func_name)(*args)
     except Exception as exc:
         logger.debug("web provider registry %s%r failed: %s", func_name, args, exc)
@@ -144,7 +144,7 @@ def _keyless_backend() -> Optional[str]:
     loaded plugins (subprocess runs, delegate children)."""
     try:
         _ensure_web_plugins_loaded()
-        from agent.web_search_registry import _keyless_preference, _keyless_tier_enabled
+        from hermes_agent.agent.web_search_registry import _keyless_preference, _keyless_tier_enabled
         if _keyless_tier_enabled():
             for name in _keyless_preference():
                 provider = _registered_web_provider(name)
@@ -268,7 +268,7 @@ _debug = DebugSession("web_tools", env_var="WEB_TOOLS_DEBUG")
 # ─── Exa / Parallel inline helpers — moved into plugins ────────────────────── After PR #25182, the exa
 # client + search/extract and parallel client + search/extract helpers all live in their respective plugins:
 # - plugins/web/exa/provider.py - plugins/web/parallel/provider.py Both plugins register through
-# agent.web_search_registry and the dispatchers in this file resolve them via get_active_*_provider().
+# hermes_agent.agent.web_search_registry and the dispatchers in this file resolve them via get_active_*_provider().
 def _ensure_web_plugins_loaded() -> None:
     """Idempotently run plugin discovery so the web registry is populated. Dispatch is reachable from contexts
     that never triggered discovery (subprocess agent runs, delegate children, scripts); without it a
@@ -320,7 +320,7 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             return tool_error("Interrupted", success=False)
         # Sync only — every provider's search() is sync.
         _ensure_web_plugins_loaded()
-        from agent.web_search_registry import get_active_search_provider, get_provider as _wsp_get_provider
+        from hermes_agent.agent.web_search_registry import get_active_search_provider, get_provider as _wsp_get_provider
         backend = _get_search_backend()
         provider = _wsp_get_provider(backend) if backend else None
         if provider is None or not provider.supports_search():
@@ -492,7 +492,7 @@ def check_web_api_key() -> bool:
     # Plugin path. Discovery must run first: check_fn fires at tool-registration time, before any dispatch.
     try:
         _ensure_web_plugins_loaded()
-        from agent.web_search_registry import get_active_search_provider, get_active_extract_provider
+        from hermes_agent.agent.web_search_registry import get_active_search_provider, get_active_extract_provider
         for provider in (get_active_search_provider(), get_active_extract_provider()):
             if provider is not None and getattr(provider, "name", None) in _WEB_CHECK_SKIP:
                 # The registry's single-eligible / legacy walk picked a built-in that _get_backend

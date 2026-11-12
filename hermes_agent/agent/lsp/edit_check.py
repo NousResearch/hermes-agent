@@ -12,7 +12,7 @@ Both snapshots are the bytes the write itself held, never a later read of the fi
 queued check runs, another session may have written the file again, and that session's errors are not
 this edit's.
 The caller waits for it only within its latency budget (:func:`inline_wait`); a slower verdict is delivered later through
-:mod:`agent.lsp.deferred`.  Checks of one file run one at a time (two checks syncing one document at
+:mod:`hermes_agent.agent.lsp.deferred`.  Checks of one file run one at a time (two checks syncing one document at
 once would satisfy each other's waits).  A newer check by the SAME session takes an unfinished one over
 (its baseline, the undelivered notes it carried, and its result when the newer check gets no verdict),
 so a superseded edit's errors are still caught unless the newer edit fixed them; a check by another
@@ -30,18 +30,18 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Optional
 
-from agent.lsp import eventlog, sync_diagnostics
-from agent.lsp.client import _diagnostic_key, as_disk_read
-from agent.lsp.servers import language_id_for
+from hermes_agent.agent.lsp import eventlog, sync_diagnostics
+from hermes_agent.agent.lsp.client import _diagnostic_key, as_disk_read
+from hermes_agent.agent.lsp.servers import language_id_for
 
 if TYPE_CHECKING:
-    from agent.lsp.manager import LSPService
+    from hermes_agent.agent.lsp.manager import LSPService
 
-logger = logging.getLogger("agent.lsp.edit_check")
+logger = logging.getLogger("hermes_agent.agent.lsp.edit_check")
 
 # A write waits for its verdict only while it stays inside WRITE_BUDGET (from write entry).  A warm
 # tsserver answers its synchronous request in ~10-30ms and a warm pyright its pull in ~10-90ms, so the
-# common verdict is reported inline; a slower one is delivered later (agent.lsp.deferred).
+# common verdict is reported inline; a slower one is delivered later (hermes_agent.agent.lsp.deferred).
 WRITE_BUDGET = 0.08
 INLINE_GRACE = 0.08
 _VERDICT_CAP = 256  # per-file last verdicts kept for baseline reuse
@@ -110,8 +110,8 @@ def start(svc: LSPService, path: str, *, pre_text: Optional[str], post_text: Opt
     :class:`CheckResult`.  ``pre_text`` None = the file is new; ``post_text`` = the content this edit
     wrote (None: read the file when the check runs).  ``owner`` = the editing session (None:
     no later delivery, nothing to take over); ``carry`` = that session's undelivered notes for this
-    file (``agent.lsp.deferred``) this edit supersedes: the oldest one's baseline becomes ours."""
-    from agent.async_utils import safe_schedule_threadsafe
+    file (``hermes_agent.agent.lsp.deferred``) this edit supersedes: the oldest one's baseline becomes ours."""
+    from hermes_agent.agent.async_utils import safe_schedule_threadsafe
     loop = svc._loop._loop
     if loop is None:
         return None
@@ -238,7 +238,7 @@ async def _check(svc: LSPService, abs_path: str, baseline_text: Optional[str], p
             base = await _verdict(svc, client, abs_path, base_version, budget, use_sync)
             if base is not None:
                 baseline = base
-        from agent.lsp.range_shift import build_line_shift, shift_baseline
+        from hermes_agent.agent.lsp.range_shift import build_line_shift, shift_baseline
         seen = {_diagnostic_key(d) for d in shift_baseline(baseline, build_line_shift(baseline_text, synced))}
         diags = [d for d in diags if _diagnostic_key(d) not in seen]
     if synced is not None:
@@ -264,7 +264,7 @@ async def _resync_disk(svc: LSPService, client: Any, abs_path: str, language_id:
 async def _verdict(svc: LSPService, client: Any, abs_path: str, version: int, budget: float,
                    use_sync: bool) -> Optional[_Diags]:
     """Diagnostics on the text synced at ``version``: a synchronous request where the server has one
-    (``agent.lsp.sync_diagnostics``, ~10ms, so the write can report it inline), else the push/pull
+    (``hermes_agent.agent.lsp.sync_diagnostics``, ~10ms, so the write can report it inline), else the push/pull
     wait.  None = no verdict within ``budget``."""
     if use_sync:
         try:

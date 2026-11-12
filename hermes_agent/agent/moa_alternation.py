@@ -33,7 +33,7 @@ def merge_same_role_messages(messages: list[dict[str, Any]]) -> list[dict[str, A
     """Return ``messages`` with adjacent user turns folded into one (the only same-role adjacency
     the aggregator request produces); other rows are shared, never mutated. Returns the input
     object itself when nothing merged so callers can detect a no-op."""
-    from agent.agent_runtime_helpers import _UNMERGEABLE, _merge_user_content
+    from hermes_agent.agent.agent_runtime_helpers import _UNMERGEABLE, _merge_user_content
 
     merged: list[dict[str, Any]] = []
     changed = False
@@ -52,7 +52,7 @@ def merge_same_role_messages(messages: list[dict[str, Any]]) -> list[dict[str, A
 
 def is_role_alternation_rejection(exc: Exception, runtime: dict[str, Any]) -> bool:
     """True when the aggregator destination rejected the request for adjacent same-role messages."""
-    from agent.error_classifier import FailoverReason, classify_api_error
+    from hermes_agent.agent.error_classifier import FailoverReason, classify_api_error
 
     try:
         classified = classify_api_error(

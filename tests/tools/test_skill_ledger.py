@@ -31,7 +31,7 @@ Original body.
 @pytest.fixture
 def ledger_env(tmp_path, monkeypatch):
     """Isolated HERMES_HOME + skills dir for skill_manage and the ledger."""
-    from agent import skill_utils
+    from hermes_agent.agent import skill_utils
     from hermes_agent.tools import skill_ledger, skill_manager_tool, skill_usage
 
     home = tmp_path / "home"
@@ -419,7 +419,7 @@ def test_user_actor_override(ledger_env):
 
 def _write_skills_tarball(home: Path, files: dict, stamp: str = "2026-08-01T00-00-00Z"):
     """Write a curator-shaped ``skills.tar.gz`` under *home* (arcnames are
-    relative to skills/, exactly like agent.curator_backup.snapshot_skills)."""
+    relative to skills/, exactly like hermes_agent.agent.curator_backup.snapshot_skills)."""
     import io
     import tarfile
 

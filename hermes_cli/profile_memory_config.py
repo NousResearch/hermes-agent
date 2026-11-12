@@ -17,7 +17,7 @@ import shutil
 from pathlib import Path
 from typing import Callable, Optional
 
-from agent.memory_provider import MemoryProvider
+from hermes_agent.agent.memory_provider import MemoryProvider
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +29,7 @@ _PROVIDER_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 def active_memory_provider(config: Optional[dict]) -> Optional[str]:
     """The external ``memory.provider`` named in a parsed config.yaml, or None for the built-in
     store or an unsafe name."""
-    from agent.memory_provider import is_core_memory_provider
+    from hermes_agent.agent.memory_provider import is_core_memory_provider
 
     memory = (config or {}).get("memory")
     name = memory.get("provider") if isinstance(memory, dict) else None
@@ -82,7 +82,7 @@ def _load_config_dict(profile_dir: Path) -> Optional[dict]:
 def _names_external_provider(profile_dir: Path) -> bool:
     """Cheap pre-check before binding a profile's secrets: does its config.yaml, or the managed
     overlay, name a non-core ``memory.provider`` (a ``${VAR}`` selector counts)?"""
-    from agent.memory_provider import is_core_memory_provider
+    from hermes_agent.agent.memory_provider import is_core_memory_provider
     from hermes_cli import managed_scope
 
     from hermes_cli.config import cfg_get
@@ -110,7 +110,7 @@ def notify_memory_provider(profile_dir: Path, call: Callable[[MemoryProvider], N
     try:
         if not _names_external_provider(profile_dir):
             return  # the common case: no provider, so no secret scope, effective config or load
-        from agent.secret_scope import build_profile_secret_scope, set_secret_scope
+        from hermes_agent.agent.secret_scope import build_profile_secret_scope, set_secret_scope
         from hermes_cli.plugin_isolation import transient_plugin_host
         from plugins.memory import load_memory_provider, provider_registration_scope
         # Secrets first: the effective config (managed scope, ``${VAR}`` refs) expands through them.
@@ -130,7 +130,7 @@ def notify_memory_provider(profile_dir: Path, call: Callable[[MemoryProvider], N
         logger.warning("memory provider %r: profile hook failed for %s", name, profile_dir, exc_info=True)
     finally:
         if secret_token is not None:
-            from agent.secret_scope import reset_secret_scope
+            from hermes_agent.agent.secret_scope import reset_secret_scope
             reset_secret_scope(secret_token)
         reset_hermes_home_override(home_token)
 

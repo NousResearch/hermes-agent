@@ -203,7 +203,7 @@ class SamplingHandler:
 
     def _build_llm_call(self, params, resolved_model: str) -> Callable[[], object]:
         """Sampling params -> zero-arg sync ``call_llm`` thunk (run off-loop); server tools are forwarded."""
-        from agent.auxiliary_client import call_llm
+        from hermes_agent.agent.auxiliary_client import call_llm
 
         messages = self._convert_messages(params)
         system_prompt = mcp_field(params, "system_prompt", "systemPrompt")

@@ -55,8 +55,8 @@ def _set_legacy_attribution(profile, enabled):
 @pytest.fixture
 def wire(profile, monkeypatch):
     """Replace only HTTP transports; use Hermes routing and the real SDK."""
-    from agent import auxiliary_client
-    from run_agent import AIAgent
+    from hermes_agent.agent import auxiliary_client
+    from hermes_agent.run_agent import AIAgent
 
     requests = []
     response = {
@@ -135,7 +135,7 @@ def _assert_identity(request, account_id="acct-attribution-test"):
     ],
 )
 def test_new_identity_is_limited_to_the_official_endpoint(base_url, attributed):
-    from agent.auxiliary_client import _codex_cloudflare_headers
+    from hermes_agent.agent.auxiliary_client import _codex_cloudflare_headers
 
     headers = _codex_cloudflare_headers(_jwt(), base_url=base_url)
 
@@ -149,7 +149,7 @@ def test_new_identity_is_limited_to_the_official_endpoint(base_url, attributed):
 def test_primary_client_and_credential_rebuild_send_expected_headers(
     profile, wire,
 ):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     agent = AIAgent(
         api_key=_jwt(),
@@ -189,7 +189,7 @@ def test_primary_client_and_credential_rebuild_send_expected_headers(
 def test_auxiliary_raw_and_async_clients_send_expected_headers(
     profile, wire, monkeypatch,
 ):
-    from agent import auxiliary_client
+    from hermes_agent.agent import auxiliary_client
 
     monkeypatch.setattr(auxiliary_client, "_select_pool_entry", lambda _p, _m=None: (False, None))
     monkeypatch.setattr(auxiliary_client, "_read_codex_singleton_token", _jwt)
@@ -232,7 +232,7 @@ def test_auxiliary_raw_and_async_clients_send_expected_headers(
 def test_credential_pool_custom_endpoint_keeps_existing_identity(
     wire, monkeypatch,
 ):
-    from agent import auxiliary_client
+    from hermes_agent.agent import auxiliary_client
 
     entry = SimpleNamespace(
         runtime_api_key=_jwt(),
@@ -256,7 +256,7 @@ def test_credential_pool_custom_endpoint_keeps_existing_identity(
 def test_legacy_disabled_setting_cannot_disable_attribution_for_new_clients(
     profile, wire, monkeypatch,
 ):
-    from agent import auxiliary_client
+    from hermes_agent.agent import auxiliary_client
 
     monkeypatch.setattr(auxiliary_client, "_select_pool_entry", lambda _p, _m=None: (False, None))
     monkeypatch.setattr(auxiliary_client, "_read_codex_singleton_token", _jwt)
@@ -281,8 +281,8 @@ def test_legacy_disabled_setting_cannot_disable_attribution_for_new_clients(
 def test_required_identity_wins_over_configured_header_defaults(
     profile, wire,
 ):
-    from agent import auxiliary_client
-    from run_agent import AIAgent
+    from hermes_agent.agent import auxiliary_client
+    from hermes_agent.run_agent import AIAgent
 
     overrides = {
         "Originator": "codex_cli_rs",

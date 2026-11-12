@@ -26,7 +26,7 @@ def is_thinking_timeout(classified: object, model: str, error_msg: str) -> bool:
     and ``error_msg`` carries a transport-kill substring. The caller gates on the error having
     no HTTP ``status_code``.
     """
-    from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
+    from hermes_agent.agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
 
     if getattr(getattr(classified, "reason", None), "value", None) != "timeout":
         return False

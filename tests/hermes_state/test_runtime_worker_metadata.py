@@ -92,13 +92,13 @@ def test_worker_route_and_api_content_preserve_exact_usage_and_target_fences(tmp
 
 
 def test_turn_prologue_row_backfills_land_through_the_worker_like_direct(worker):
-    """The real prologue (agent/turn_context.py) updates an already-materialized user row by ``_row_id``:
+    """The real prologue (hermes_agent/agent/turn_context.py) updates an already-materialized user row by ``_row_id``:
     the api_content sidecar after in-place preflight compaction, and the multimodal context part. The
     managed facade must implement both row-addressed ops, fenced to its own session's active user rows,
     or the durable row silently diverges from what the model saw (helix4u #4)."""
     import threading
     import types
-    from agent.turn_context import _append_multimodal_context, _stamp_api_content_sidecar
+    from hermes_agent.agent.turn_context import _append_multimodal_context, _stamp_api_content_sidecar
     db, store = worker
     db.create_session('direct', 'cli')
 

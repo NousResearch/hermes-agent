@@ -2,7 +2,7 @@
 
 Providers register via ``PluginContext.register_video_gen_provider()`` and live
 in ``<repo>/plugins/video_gen/<name>/`` (built-in) or
-``~/.hermes/plugins/video_gen/<name>/``; mirrors ``agent/image_gen_provider.py``.
+``~/.hermes/plugins/video_gen/<name>/``; mirrors ``hermes_agent/agent/image_gen_provider.py``.
 One tool covers text-to-video and image-to-video: ``image_url`` present routes to
 the provider's image-to-video endpoint. Video edit/extend are deliberately NOT
 exposed — backends are too inconsistent for one unified tool.
@@ -21,9 +21,9 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from agent import provider_media
-from agent.provider_base import CatalogProviderBase
-from agent.secret_scope import get_secret_str
+from hermes_agent.agent import provider_media
+from hermes_agent.agent.provider_base import CatalogProviderBase
+from hermes_agent.agent.secret_scope import get_secret_str
 
 logger = logging.getLogger(__name__)
 
@@ -236,7 +236,7 @@ class OpenAICompatibleVideoGenProvider(VideoGenProvider):
 
         # Env-only-proxy httpx client: a macOS system proxy (ExceptionsList invisible to httpx)
         # must not swallow a local/custom ``<NAME>_BASE_URL`` (#64888).
-        from agent.process_bootstrap import build_keepalive_http_client
+        from hermes_agent.agent.process_bootstrap import build_keepalive_http_client
 
         client_kwargs: dict[str, Any] = {"api_key": self._api_key(), "base_url": self._base_url()}
         http_client = build_keepalive_http_client(client_kwargs["base_url"])

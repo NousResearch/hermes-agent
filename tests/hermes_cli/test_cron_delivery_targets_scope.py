@@ -2,7 +2,7 @@
 
 The dashboard/desktop ``serve`` backend flips multi-profile hosting
 (``hermes_agent.tui_gateway.launch_profile_policy.activate_multi_profile_hosting`` →
-``agent.secret_scope.set_multiplex_active(True)``) as soon as it hosts a second
+``hermes_agent.agent.secret_scope.set_multiplex_active(True)``) as soon as it hosts a second
 profile home; after that ``get_secret`` fails closed for an unscoped read.
 
 ``GET /api/cron/delivery-targets`` calls
@@ -27,7 +27,7 @@ def test_delivery_targets_route_binds_profile_scope(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / ".env").write_text("TELEGRAM_HOME_CHANNEL=12345\n")
 
-    from agent import secret_scope
+    from hermes_agent.agent import secret_scope
 
     secret_scope.set_multiplex_active(True)
 

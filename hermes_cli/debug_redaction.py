@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import re
 
-from agent.redact import (
+from hermes_agent.agent.redact import (
     _SENSITIVE_QUERY_PARAMS,
     REDACTION_UNAVAILABLE,
     _canonical_url_param_name,
     redact_sensitive_text,
 )
-from agent.redact_headers import SECRET_HEADER_NAME_LIST
+from hermes_agent.agent.redact_headers import SECRET_HEADER_NAME_LIST
 
 _REDACTED = "[REDACTED]"
 _EMAIL_ADDRESS_RE = re.compile(
@@ -19,7 +19,7 @@ _EMAIL_ADDRESS_RE = re.compile(
     r"(?![A-Za-z0-9._%+-])"
 )
 
-# Support uploads are a strict opt-in surface: agent.redact's query-param names
+# Support uploads are a strict opt-in surface: hermes_agent.agent.redact's query-param names
 # plus a few support-only extras, compared by compact name so snake_case,
 # kebab-case and camelCase match without widening ordinary tool-output redaction.
 _SENSITIVE_URL_PARAM_NAMES = frozenset(
@@ -64,7 +64,7 @@ _KEY_CHARS = r"A-Za-z0-9._~+/\-"
 _KEY_END = rf"(?![{_KEY_CHARS}=]|:[{_KEY_CHARS}])"
 _KEY = rf"[{_KEY_CHARS}]+(?::[{_KEY_CHARS}]+)*=*{_KEY_END}"
 _NOT_WORD = rf"(?!(?-i:[A-Z]?[a-z]{{1,19}}|[A-Z]{{1,19}}){_KEY_END})"
-# agent.redact masks the scheme of ``x-api-key: Basic <key>`` to ``***`` and
+# hermes_agent.agent.redact masks the scheme of ``x-api-key: Basic <key>`` to ``***`` and
 # keeps the key, so ``***`` is a scheme too and the key is the value when it
 # is 8+ key chars (any case, letters-only included: fail closed), key-shaped
 # (not a word; 4+ chars before any colon, or 6+ mixing letters and digits) or

@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.inline_tool_executors import INLINE_TOOL_EXECUTORS
+from hermes_agent.agent.inline_tool_executors import INLINE_TOOL_EXECUTORS
 from hermes_cli.config import load_config, save_config
 from hermes_agent.tools.memory_tool import MemoryStore, apply_memory_pending
 from hermes_agent.tools.registry import registry

@@ -16,7 +16,7 @@ from unittest.mock import patch
 
 import pytest
 
-from agent.turn_context import (
+from hermes_agent.agent.turn_context import (
     append_notes_to_multimodal_content,
     build_turn_context,
     compose_user_api_content,
@@ -117,7 +117,7 @@ def _build(agent, **overrides):
 
 @pytest.fixture(autouse=True)
 def _stub_runtime_main():
-    with patch("agent.auxiliary_client.set_runtime_main", lambda *a, **k: None):
+    with patch("hermes_agent.agent.auxiliary_client.set_runtime_main", lambda *a, **k: None):
         yield
 
 

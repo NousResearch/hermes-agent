@@ -11,8 +11,8 @@ import shlex
 from pathlib import Path
 from typing import Dict, Any, Optional, Set
 
-from agent.prompt_builder import _read_text_with_timeout, _scan_context_content, _truncate_content
-from agent.search_policy import SEARCH_PRUNE_DIR_NAMES
+from hermes_agent.agent.prompt_builder import _read_text_with_timeout, _scan_context_content, _truncate_content
+from hermes_agent.agent.search_policy import SEARCH_PRUNE_DIR_NAMES
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +59,7 @@ def _resolved_hint_target(hint_path: Path, working_dir: Path) -> Optional[Path]:
     if not inside:
         return None
     try:
-        from agent.file_safety import get_read_block_error
+        from hermes_agent.agent.file_safety import get_read_block_error
         blocked = get_read_block_error(str(resolved)) is not None
     except Exception:
         # Mirror context_references: a deny-list lookup that fails re-opens the
@@ -71,7 +71,7 @@ def _resolved_hint_target(hint_path: Path, working_dir: Path) -> Optional[Path]:
 def _first_hint_file(directory: Path):
     """``(path, stripped content)`` of the first readable non-empty hint file
     in *directory* (priority order), or None. Unreadable files are skipped."""
-    from agent.safe_worker_policy import safe_worker_enabled
+    from hermes_agent.agent.safe_worker_policy import safe_worker_enabled
 
     if safe_worker_enabled():
         return None
@@ -186,7 +186,7 @@ class SubdirectoryHintTracker:
 
     def check_tool_call(self, tool_name: str, tool_args: dict[str, Any]) -> Optional[str]:
         """Return formatted hint text for newly visited directories, or None."""
-        from agent.safe_worker_policy import safe_worker_enabled
+        from hermes_agent.agent.safe_worker_policy import safe_worker_enabled
 
         if not self.enabled or safe_worker_enabled():
             return None

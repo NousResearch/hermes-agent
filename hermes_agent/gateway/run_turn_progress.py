@@ -12,9 +12,9 @@ from contextlib import suppress
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from agent.i18n import t
-from agent.interrupt_compat import _accepts_keyword
-from agent.replay_cleanup import strip_stale_dangerous_confirmations
+from hermes_agent.agent.i18n import t
+from hermes_agent.agent.interrupt_compat import _accepts_keyword
+from hermes_agent.agent.replay_cleanup import strip_stale_dangerous_confirmations
 from hermes_agent.gateway.config import Platform
 from hermes_agent.gateway.media_repair import repair_explicit_computer_use_media_paths
 from hermes_agent.gateway.platforms.base import BasePlatformAdapter
@@ -97,7 +97,7 @@ def _settle_progress_send(st, result) -> None:
 def _tool_lifecycle_payload(call_id, tool_name, args) -> dict:
     """The ``ToolStartPayload`` contract every client reads (``tool_id``/``name``/``context``),
     plus the ``tool_call_id``/``tool_name`` the gateway's own consumers were built on."""
-    from agent.display import build_tool_preview, tool_labels_for_call
+    from hermes_agent.agent.display import build_tool_preview, tool_labels_for_call
     name = str(tool_name or "tool")
     args = args if isinstance(args, dict) else {}
     from hermes_agent.gateway.session_tool_events import bounded_args
@@ -113,7 +113,7 @@ def _tool_complete_payload(call_id, tool_name, args, result, *, is_error=None, v
     the result (ACP renders paths/output and failure from it), and ``result_text`` under /verbose."""
     from hermes_agent.gateway.session_tool_events import bounded_result
     if is_error is None:
-        from agent.display import _detect_tool_failure
+        from hermes_agent.agent.display import _detect_tool_failure
         is_error = _detect_tool_failure(tool_name, result)[0]
     payload = {**_tool_lifecycle_payload(call_id, tool_name, args), "is_error": bool(is_error),
                "result": bounded_result(result, is_error)}
@@ -145,7 +145,7 @@ def publish_worker_tool_event(authority, session_id, generation, frame) -> bool:
     # A worker sends no progress events: progress-only observers get the executor's preview of its
     # args and the frame's own verdict, taken before the result was bounded.
     if kind == "tool.start":
-        from agent.display import build_tool_preview
+        from hermes_agent.agent.display import build_tool_preview
         publish_api_tool_progress(authority, session_id, generation, "tool.started", name,
                                   build_tool_preview(name, args), args)
     else:
@@ -286,7 +286,7 @@ class GatewayTurnProgressMixin:
             return
         try:
             if event_type == "tool.started" and tool_name and ctx._run_still_current():
-                from agent.display import build_status_phrase
+                from hermes_agent.agent.display import build_status_phrase
                 adapter.set_status_text(ctx.source.chat_id, build_status_phrase(tool_name, args if ctx._live_status_mode == "full" else None))
             elif event_type == "tool.completed":
                 # Between tools the model is genuinely "thinking" again — revert to the static default.
@@ -301,7 +301,7 @@ class GatewayTurnProgressMixin:
         ctx = self._ctx
         try:
             if (kwargs.get("duration") or 0) >= ctx._LONG_TOOL_THRESHOLD_S and ctx.progress_mode == "all":
-                from agent.onboarding import TOOL_PROGRESS_FLAG, is_seen, mark_seen, tool_progress_hint_gateway
+                from hermes_agent.agent.onboarding import TOOL_PROGRESS_FLAG, is_seen, mark_seen, tool_progress_hint_gateway
                 cfg = _load_gateway_config()
                 gate_on = is_truthy_value(cfg_get(cfg, "display", "tool_progress_command"), default=False)
                 if gate_on and not is_seen(cfg, TOOL_PROGRESS_FLAG):
@@ -314,7 +314,7 @@ class GatewayTurnProgressMixin:
     @staticmethod
     def _preview_cap() -> int:
         """tool_preview_length (default 40): the one-line preview budget for "all"/"new" modes."""
-        from agent.display import get_tool_preview_max_len
+        from hermes_agent.agent.display import get_tool_preview_max_len
         pl = get_tool_preview_max_len()
         return pl if pl > 0 else 40
 
@@ -344,7 +344,7 @@ class GatewayTurnProgressMixin:
     def _progress_build_message(self, tool_name, preview, args) -> Optional[str]:
         """Render the progress line. Verbose mode queues directly (no dedup) and returns None."""
         ctx = self._ctx
-        from agent.display import get_tool_emoji
+        from hermes_agent.agent.display import get_tool_emoji
         emoji = get_tool_emoji(tool_name, default="⚙️")
         try:
             adapter = self._runner._delivery_adapter_for(ctx.source)
@@ -356,7 +356,7 @@ class GatewayTurnProgressMixin:
         ctx.last_was_terminal_block[0] = code is not None
         if verbose:
             if code is None and args:
-                from agent.display import get_tool_preview_max_len, verbose_tool_args_text
+                from hermes_agent.agent.display import get_tool_preview_max_len, verbose_tool_args_text
                 # tool_preview_length 0 (default) = no truncation in verbose mode; the user asked
                 # for full detail and platform message-length limits handle the rest.
                 args_str = verbose_tool_args_text(args, get_tool_preview_max_len(),
@@ -371,7 +371,7 @@ class GatewayTurnProgressMixin:
             return code
         if not preview:
             return t("gateway.progress.tool_pending", emoji=emoji, tool=tool_name)
-        from agent.display import get_tool_verb, prepare_tool_preview, tool_verb_connector, verb_drops_preview
+        from hermes_agent.agent.display import get_tool_verb, prepare_tool_preview, tool_verb_connector, verb_drops_preview
         prepared = prepare_tool_preview(tool_name, args, fallback=preview, max_len=self._preview_cap())
         preview = adapter.format_tool_preview(prepared) if adapter is not None else prepared.text
         # Friendly labels: human-phrased line for built-in tools ("🔍 Searching the web for ...")
@@ -1031,7 +1031,7 @@ class GatewayTurnProgressMixin:
         """Queue an ID-correlated native progress start from the agent thread."""
         if not self._native_card_gate():
             return
-        from agent.display import build_tool_preview
+        from hermes_agent.agent.display import build_tool_preview
         name = str(tool_name or "tool")
         self._ctx.progress_queue.put({
             "type": "tool.started", "tool_call_id": str(call_id or ""), "tool_name": name,
@@ -1042,7 +1042,7 @@ class GatewayTurnProgressMixin:
         """Queue the matching native completion using the real tool-call ID."""
         if not self._native_card_gate():
             return
-        from agent.display import _detect_tool_failure
+        from hermes_agent.agent.display import _detect_tool_failure
         name = str(tool_name or "tool")
         is_error, _ = _detect_tool_failure(name, result)
         self._ctx.progress_queue.put({
@@ -1062,7 +1062,7 @@ class GatewayTurnProgressMixin:
             self.native_tool_start_callback(call_id, tool_name, args)
 
     def combined_tool_complete_callback(self, call_id, tool_name, args, result):
-        from agent.display import _detect_tool_failure
+        from hermes_agent.agent.display import _detect_tool_failure
         is_error, _ = _detect_tool_failure(tool_name, result)
         owner = self._approval_owner
         live = owner[0].sessions.get(owner[1]) if owner is not None else None
@@ -1238,5 +1238,5 @@ def local_viewer_turn(runner) -> bool:
 
 def _viewer_status_kind(kind, text):
     """The TUI's ``status.update`` kind: auto-compaction progress is re-tagged ``compacting``."""
-    from agent.conversation_compression import is_compaction_progress_status
+    from hermes_agent.agent.conversation_compression import is_compaction_progress_status
     return "compacting" if kind == "lifecycle" and is_compaction_progress_status(text) else str(kind)

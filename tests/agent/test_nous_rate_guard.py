@@ -1,4 +1,4 @@
-"""Tests for agent/nous_rate_guard.py — cross-session Nous Portal rate limit guard."""
+"""Tests for hermes_agent/agent/nous_rate_guard.py — cross-session Nous Portal rate limit guard."""
 
 import json
 import os
@@ -23,7 +23,7 @@ class TestRecordNousRateLimit:
     """Test recording rate limit state."""
 
     def test_records_with_header_reset(self, rate_guard_env):
-        from agent.nous_rate_guard import record_nous_rate_limit, _state_path
+        from hermes_agent.agent.nous_rate_guard import record_nous_rate_limit, _state_path
 
         headers = {"x-ratelimit-reset-requests-1h": "1800"}
         record_nous_rate_limit(headers=headers)
@@ -39,7 +39,7 @@ class TestRecordNousRateLimit:
 
 
     def test_falls_back_to_error_context_reset_at(self, rate_guard_env):
-        from agent.nous_rate_guard import record_nous_rate_limit, _state_path
+        from hermes_agent.agent.nous_rate_guard import record_nous_rate_limit, _state_path
 
         future_reset = time.time() + 900
         record_nous_rate_limit(
@@ -55,7 +55,7 @@ class TestRecordNousRateLimit:
     def test_the_429_bodys_wait_outranks_the_hourly_window_end(self, rate_guard_env):
         # A welcome-tier fair-share 429 said retry after 410 s; the hourly bucket's reset header (its
         # window end, ~1 h) turned that into an hour-long block on the next turns.
-        from agent.nous_rate_guard import record_nous_rate_limit, _state_path
+        from hermes_agent.agent.nous_rate_guard import record_nous_rate_limit, _state_path
 
         record_nous_rate_limit(
             headers={"x-ratelimit-remaining-requests-1h": "37", "x-ratelimit-reset-requests-1h": "3594"},
@@ -68,7 +68,7 @@ class TestRecordNousRateLimit:
         assert state["reset_seconds"] == pytest.approx(410, abs=2)
 
     def test_custom_default_cooldown(self, rate_guard_env):
-        from agent.nous_rate_guard import record_nous_rate_limit, _state_path
+        from hermes_agent.agent.nous_rate_guard import record_nous_rate_limit, _state_path
 
         record_nous_rate_limit(headers=None, default_cooldown=120.0)
 
@@ -83,7 +83,7 @@ class TestNousRateLimitRemaining:
 
 
     def test_returns_remaining_seconds_when_active(self, rate_guard_env):
-        from agent.nous_rate_guard import record_nous_rate_limit, nous_rate_limit_remaining
+        from hermes_agent.agent.nous_rate_guard import record_nous_rate_limit, nous_rate_limit_remaining
 
         record_nous_rate_limit(headers={"x-ratelimit-reset-requests-1h": "600"})
         remaining = nous_rate_limit_remaining()
@@ -91,7 +91,7 @@ class TestNousRateLimitRemaining:
         assert 595 < remaining <= 605  # ~600 seconds, allowing for test execution time
 
     def test_returns_none_when_expired(self, rate_guard_env):
-        from agent.nous_rate_guard import nous_rate_limit_remaining, _state_path
+        from hermes_agent.agent.nous_rate_guard import nous_rate_limit_remaining, _state_path
 
         # Write an already-expired state
         path = _state_path()
@@ -110,7 +110,7 @@ class TestClearNousRateLimit:
     """Test clearing rate limit state."""
 
     def test_clears_existing_file(self, rate_guard_env):
-        from agent.nous_rate_guard import (
+        from hermes_agent.agent.nous_rate_guard import (
             record_nous_rate_limit,
             clear_nous_rate_limit,
             nous_rate_limit_remaining,
@@ -135,19 +135,19 @@ class TestParseResetSeconds:
     """Test header parsing for reset times."""
 
     def test_case_insensitive_headers(self, rate_guard_env):
-        from agent.nous_rate_guard import _parse_reset_seconds
+        from hermes_agent.agent.nous_rate_guard import _parse_reset_seconds
 
         headers = {"X-Ratelimit-Reset-Requests-1h": "1200"}
         assert _parse_reset_seconds(headers) == 1200.0
 
     def test_returns_none_for_empty_headers(self):
-        from agent.nous_rate_guard import _parse_reset_seconds
+        from hermes_agent.agent.nous_rate_guard import _parse_reset_seconds
 
         assert _parse_reset_seconds(None) is None
         assert _parse_reset_seconds({}) is None
 
     def test_ignores_zero_values(self):
-        from agent.nous_rate_guard import _parse_reset_seconds
+        from hermes_agent.agent.nous_rate_guard import _parse_reset_seconds
 
         headers = {"x-ratelimit-reset-requests-1h": "0"}
         assert _parse_reset_seconds(headers) is None
@@ -158,13 +158,13 @@ class TestAuxiliaryClientIntegration:
     """Test that the auxiliary client respects the rate guard."""
 
     def test_try_nous_skips_when_rate_limited(self, rate_guard_env, monkeypatch):
-        from agent.nous_rate_guard import record_nous_rate_limit
+        from hermes_agent.agent.nous_rate_guard import record_nous_rate_limit
 
         # Record a rate limit
         record_nous_rate_limit(headers={"retry-after": "600"})
 
         # Mock _read_nous_auth to return valid creds (would normally succeed)
-        import agent.auxiliary_client as aux
+        import hermes_agent.agent.auxiliary_client as aux
         monkeypatch.setattr(aux, "_read_nous_auth", lambda: {
             "access_token": "test-token",
             "inference_base_url": "https://api.nous.test/v1",
@@ -185,7 +185,7 @@ class TestIsGenuineNousRateLimit:
     """
 
     def test_exhausted_hourly_bucket_in_429_headers_is_genuine(self):
-        from agent.nous_rate_guard import is_genuine_nous_rate_limit
+        from hermes_agent.agent.nous_rate_guard import is_genuine_nous_rate_limit
 
         headers = {
             "x-ratelimit-limit-requests-1h": "800",
@@ -200,7 +200,7 @@ class TestIsGenuineNousRateLimit:
     def test_a_welcome_host_429_with_exhausted_buckets_trips_the_breaker(
         self, rate_guard_env, monkeypatch,
     ):
-        from agent.nous_rate_guard import (
+        from hermes_agent.agent.nous_rate_guard import (
             is_genuine_nous_rate_limit,
             nous_rate_limit_remaining,
             record_nous_rate_limit,
@@ -221,7 +221,7 @@ class TestIsGenuineNousRateLimit:
         assert "/login" in statuses[0]
 
     def test_bare_429_with_no_headers_is_upstream(self):
-        from agent.nous_rate_guard import is_genuine_nous_rate_limit
+        from hermes_agent.agent.nous_rate_guard import is_genuine_nous_rate_limit
 
         assert is_genuine_nous_rate_limit(headers=None) is False
         assert is_genuine_nous_rate_limit(headers={}) is False
@@ -234,8 +234,8 @@ class TestIsGenuineNousRateLimit:
     def test_last_known_state_all_healthy_stays_upstream(self):
         # Prior state was healthy; bare 429 arrives; should be treated
         # as upstream capacity.
-        from agent.nous_rate_guard import is_genuine_nous_rate_limit
-        from agent.rate_limit_tracker import parse_rate_limit_headers
+        from hermes_agent.agent.nous_rate_guard import is_genuine_nous_rate_limit
+        from hermes_agent.agent.rate_limit_tracker import parse_rate_limit_headers
 
         prior_headers = {
             "x-ratelimit-limit-requests-1h": "800",
@@ -263,8 +263,8 @@ class TestWelcomeRouteCopy:
     def _drive_guard(base_url, monkeypatch):
         from types import SimpleNamespace
 
-        from agent import nous_rate_guard
-        from agent.turn_api_call import nous_rate_limit_guard
+        from hermes_agent.agent import nous_rate_guard
+        from hermes_agent.agent.turn_api_call import nous_rate_limit_guard
 
         monkeypatch.setattr(nous_rate_guard, "nous_rate_limit_remaining", lambda **kw: 600)
         buffered = []
@@ -280,7 +280,7 @@ class TestWelcomeRouteCopy:
             _flush_status_buffer=lambda: None,
             _persist_session=lambda *_args: None,
         )
-        from agent.status_output import StatusOutputMixin
+        from hermes_agent.agent.status_output import StatusOutputMixin
         agent._buffer_diagnostic_status = StatusOutputMixin._buffer_diagnostic_status.__get__(agent)
         verdict = nous_rate_limit_guard(
             agent,
@@ -324,7 +324,7 @@ class TestRateGuardStateEncoding:
     def test_read_uses_utf8_under_non_utf8_locale(self, rate_guard_env, monkeypatch):
         import builtins
 
-        from agent.nous_rate_guard import nous_rate_limit_remaining, _state_path
+        from hermes_agent.agent.nous_rate_guard import nous_rate_limit_remaining, _state_path
 
         path = _state_path()
         os.makedirs(os.path.dirname(path), exist_ok=True)

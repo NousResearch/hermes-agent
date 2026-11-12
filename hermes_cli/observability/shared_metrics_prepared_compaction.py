@@ -2,8 +2,8 @@
 
 The daily snapshot carries ``compression_prepare_ahead`` (``on``/``off``), read with the agent's own
 truthiness, so "active installs with the feature on" needs no join. ``hermes.prepared_compaction.count``
-counts each pass and splice outcome from ``agent/prepared_compaction.py`` (and a spliced compaction that
-then failed, from ``agent/conversation_compression_telemetry.py``) over closed sets only: the event, the
+counts each pass and splice outcome from ``hermes_agent/agent/prepared_compaction.py`` (and a spliced compaction that
+then failed, from ``hermes_agent/agent/conversation_compression_telemetry.py``) over closed sets only: the event, the
 hook that started the pass, a reason code (never the free-text miss reason), the compression failure
 class, and how long a compaction waited on a running pass, bucketed.
 

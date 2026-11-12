@@ -23,7 +23,7 @@ async def probe():
     from hermes_cli import web_server
     from hermes_cli.dashboard_auth.ws_tickets import mint_ticket
     from tests.gateway.fixtures.local_recovery_probe import Model
-    from agent import estop
+    from hermes_agent.agent import estop
     from websockets.asyncio.client import connect
 
     home = Path(os.environ['HERMES_HOME'])

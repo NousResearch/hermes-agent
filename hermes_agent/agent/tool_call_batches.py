@@ -3,8 +3,8 @@
 from copy import deepcopy
 import json
 
-from agent.message_sanitization import coalesce_tool_call_id, deterministic_call_id, uniquify_tool_call_ids
-from agent.transports.types import ToolCall
+from hermes_agent.agent.message_sanitization import coalesce_tool_call_id, deterministic_call_id, uniquify_tool_call_ids
+from hermes_agent.agent.transports.types import ToolCall
 from hermes_agent.tools.connectors import is_connector_name
 from hermes_agent.tools.connectors.gateway.config import MAX_CALLS_PER_DISPATCH
 from hermes_agent.tools.tool_search_catalog import TOOL_CALL_NAME

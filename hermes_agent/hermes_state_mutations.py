@@ -152,7 +152,7 @@ def _rewind(db, conn, session_id, payload):
     target = db._row_to_message_dict(target, warn_context='rewind receipt', summary_flag=True)
     if live is not None:
         target['content'] = live.get('content')
-    from agent.message_metadata import typed_prompt_content  # /retry, /undo: the typed ask, not the placeholder
+    from hermes_agent.agent.message_metadata import typed_prompt_content  # /retry, /undo: the typed ask, not the placeholder
     target['content'] = typed_prompt_content(target.get('content'), target)
     conn.execute('UPDATE sessions SET runtime_generation=runtime_generation+1 WHERE id=?', (session_id,))
     return {session_id, physical}, {'rewound_count': len(ids), 'target_message': target,
@@ -190,7 +190,7 @@ def _summarized_by_compaction(conn, physical, message_id):
 
 
 def _carrier_live_view(db, conn, session_id, message_id):
-    from agent.context_compressor import split_user_originated_turn
+    from hermes_agent.agent.context_compressor import split_user_originated_turn
     row = conn.execute('SELECT * FROM messages WHERE id=? AND session_id=? AND active=1',
                        (message_id, session_id)).fetchone()
     message = row and db._row_to_message_dict(row, warn_context='rewind target', summary_flag=True)

@@ -34,7 +34,7 @@ def _offered_tier_overrides(tier: str, model: Any, provider: Any, base_url: Any,
     from hermes_cli.models import resolve_fast_mode_overrides
     fast = resolve_fast_mode_overrides(model, provider=provider, base_url=base_url, tier=tier)
     if fast and tier == "ultrafast":
-        from agent.codex_service_tiers import ultrafast_offered
+        from hermes_agent.agent.codex_service_tiers import ultrafast_offered
         # The Codex backend accepts ultrafast from a plan without it and serves another tier instead.
         if not ultrafast_offered(model, provider=provider, base_url=base_url, access_token=access_token):
             return None
@@ -44,7 +44,7 @@ def _offered_tier_overrides(tier: str, model: Any, provider: Any, base_url: Any,
 def task_service_tier(word: str, creds: dict[str, Any], parent_agent) -> dict[str, Any]:
     """Creds keys for a per-task speed tier on the child's resolved route; a tier the route can't serve raises.
     ``task_tier_overrides`` is re-applied to the built child by :func:`pin_child_service_tier`."""
-    from agent.fast_mode import STATIC_TIERS, parse_exact_service_tier
+    from hermes_agent.agent.fast_mode import STATIC_TIERS, parse_exact_service_tier
     try:
         tier = parse_exact_service_tier(word)
     except ValueError:

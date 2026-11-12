@@ -5,7 +5,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from agent.notification_presentation import notification_turn
+from hermes_agent.agent.notification_presentation import notification_turn
 from hermes_agent.tui_gateway import server
 
 

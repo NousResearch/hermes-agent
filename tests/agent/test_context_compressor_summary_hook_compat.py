@@ -2,7 +2,7 @@
 
 import pytest
 
-from agent.context_compressor import ContextCompressor
+from hermes_agent.agent.context_compressor import ContextCompressor
 
 
 class _LegacySummaryCompressor(ContextCompressor):

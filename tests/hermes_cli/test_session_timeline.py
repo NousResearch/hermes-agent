@@ -57,7 +57,7 @@ def test_timeline_pages_project_human_prompts_without_tool_payloads(timeline_sto
 
 @pytest.mark.parametrize("legacy", [False, True])
 def test_compacted_timeline_and_jump_share_display_order_and_visibility(timeline_store, legacy):
-    from agent.context_compressor import COMPRESSION_CONTINUATION_USER_CONTENT, SUMMARY_PREFIX, _SUMMARY_END_MARKER
+    from hermes_agent.agent.context_compressor import COMPRESSION_CONTINUATION_USER_CONTENT, SUMMARY_PREFIX, _SUMMARY_END_MARKER
 
     db, client, _ = timeline_store
     sid = "timeline-root"

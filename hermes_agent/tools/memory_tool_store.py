@@ -18,7 +18,7 @@ from hermes_agent.tools.threat_patterns import first_threat_message as _first_th
 
 logger = logging.getLogger("hermes_agent.tools.memory_tool")
 
-# Block header prefixes rendered by _render_block; agent/conversation_compression.py
+# Block header prefixes rendered by _render_block; hermes_agent/agent/conversation_compression.py
 # matches them to detect a leftover block for an emptied target — keep in lockstep.
 MEMORY_BLOCK_HEADERS = {
     "memory": "MEMORY (your personal notes)", "user": "USER PROFILE (who the user is)"}

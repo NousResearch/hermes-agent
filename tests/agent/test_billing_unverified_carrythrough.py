@@ -15,8 +15,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from agent.conversation_loop import _billing_failure_result
-from agent.error_classifier import FailoverReason, classify_api_error
+from hermes_agent.agent.conversation_loop import _billing_failure_result
+from hermes_agent.agent.error_classifier import FailoverReason, classify_api_error
 
 
 class MockAPIError(Exception):
@@ -118,7 +118,7 @@ class TestPoolFailureReason:
     def _run_recovery(self, *, billing_unverified: bool) -> dict:
         """Drive recover_with_credential_pool with a billing classification and
         capture what the pool is told."""
-        from agent.agent_runtime_helpers import recover_with_credential_pool
+        from hermes_agent.agent.agent_runtime_helpers import recover_with_credential_pool
 
         captured: dict = {}
         next_entry = SimpleNamespace(label="secondary")

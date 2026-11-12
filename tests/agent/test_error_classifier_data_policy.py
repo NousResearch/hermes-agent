@@ -1,6 +1,6 @@
 """A Nous 403 ``data_policy_denied`` is deterministic for this context: no retry, no rotation, no fallback."""
 
-from agent.error_classifier import FailoverReason, classify_api_error
+from hermes_agent.agent.error_classifier import FailoverReason, classify_api_error
 
 
 class _ForbiddenError(Exception):
@@ -21,7 +21,7 @@ def test_403_data_policy_denied_never_retries_or_falls_back():
 def test_data_policy_copy_gives_free_tier_users_a_way_out():
     from types import SimpleNamespace
 
-    from agent.turn_failure_copy import nonretryable_copy
+    from hermes_agent.agent.turn_failure_copy import nonretryable_copy
 
     copy = nonretryable_copy(SimpleNamespace(reason=FailoverReason.data_policy_denied), provider="nous",
                              model="some/model", summary="No endpoint qualifies.")
@@ -33,7 +33,7 @@ def test_limit_reset_line_only_explains_a_limit():
     import time
     from types import SimpleNamespace
 
-    from agent.turn_recovery import _stamp_limit_reset
+    from hermes_agent.agent.turn_recovery import _stamp_limit_reset
 
     agent = SimpleNamespace(_extract_api_error_context=lambda _e: {"reset_at": time.time() + 600})
     refused = {"final_response": "refused"}

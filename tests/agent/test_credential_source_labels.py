@@ -3,7 +3,7 @@
 ``/config`` (``cli.py`` ``show_config``) and the agent's key banner (``_print_key_banner``) printed
 "Microsoft Entra ID" for every callable key, so a custom provider's ``key_cmd`` bearer or MiniMax
 OAuth read as Azure. Each builder now tags its callable with a source, and both surfaces resolve the
-label through one table in ``agent.credential_source``. An untagged callable gets a neutral label.
+label through one table in ``hermes_agent.agent.credential_source``. An untagged callable gets a neutral label.
 No test may let the display path call the callable: that would mint a token just to mask it.
 """
 
@@ -15,7 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 
 
 def _never_called() -> str:
@@ -36,14 +36,14 @@ def _config_api_line(capsys, api_key) -> str:
 
 
 def _banner(capsys, key) -> str:
-    from agent.agent_init import _print_key_banner
+    from hermes_agent.agent.agent_init import _print_key_banner
 
     _print_key_banner(key, "API key")
     return capsys.readouterr().out
 
 
 def _entra_provider(monkeypatch):
-    from agent import azure_identity_adapter as adapter
+    from hermes_agent.agent import azure_identity_adapter as adapter
 
     fake = SimpleNamespace(get_bearer_token_provider=lambda credential, scope: (lambda: _never_called()))
     monkeypatch.setitem(sys.modules, "azure", SimpleNamespace(identity=fake))
@@ -54,14 +54,14 @@ def _entra_provider(monkeypatch):
 
 
 def _vertex_provider(monkeypatch):
-    import agent.vertex_adapter as va
+    import hermes_agent.agent.vertex_adapter as va
 
     monkeypatch.setattr(va, "get_vertex_credentials", lambda *_a, **_k: _never_called())
     return va.vertex_access_token
 
 
 def _key_cmd_provider(monkeypatch):
-    import agent.command_token_source as cts
+    import hermes_agent.agent.command_token_source as cts
 
     monkeypatch.setattr(cts, "_mint", lambda *_a, **_k: _never_called())
     return cts.build_command_token_provider("print-token", "corp")
@@ -107,7 +107,7 @@ def test_key_banner_labels_a_callable_key_by_its_source(capsys, monkeypatch, bui
 
 
 def test_both_surfaces_share_one_source_table():
-    from agent import credential_source as cs
+    from hermes_agent.agent import credential_source as cs
 
     labels = {cs.credential_label(cs.tag_credential_source(lambda: "", s)) for s in cs.SOURCE_LABEL_KEYS}
     assert labels == {t(k) for k in cs.SOURCE_LABEL_KEYS.values()}

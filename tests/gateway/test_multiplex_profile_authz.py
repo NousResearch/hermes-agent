@@ -166,7 +166,7 @@ def test_startup_guard_gateway_allow_all_reads_scope_not_environ(monkeypatch):
     profile's env-only opt-in must not leak into a secondary profile that
     never opted in, and a secondary profile's own scoped opt-in must be
     honored."""
-    from agent import secret_scope
+    from hermes_agent.agent import secret_scope
     from hermes_agent.gateway.run import _own_policy_open_startup_violation
 
     _clear_auth_env(monkeypatch)

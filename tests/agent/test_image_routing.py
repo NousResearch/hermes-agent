@@ -1,4 +1,4 @@
-"""Tests for agent/image_routing.py — the per-turn image input mode decision."""
+"""Tests for hermes_agent/agent/image_routing.py — the per-turn image input mode decision."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 
-from agent.image_routing import (
+from hermes_agent.agent.image_routing import (
     _coerce_capability_bool,
     _coerce_mode,
     _lookup_supports_vision,
@@ -54,7 +54,7 @@ class TestDecideImageInputMode:
 
 
     def test_auto_with_unknown_model(self):
-        with patch("agent.image_routing._lookup_supports_vision", return_value=None):
+        with patch("hermes_agent.agent.image_routing._lookup_supports_vision", return_value=None):
             assert decide_image_input_mode("openrouter", "brand-new-slug", {}) == "text"
 
     def test_auto_explicit_aux_backend_is_the_defacto_route(self):
@@ -63,14 +63,14 @@ class TestDecideImageInputMode:
         main model has native vision. Config that only takes effect when
         the main model gets worse is a trap, not a setting."""
         cfg = {"auxiliary": {"vision": {"provider": "openrouter", "model": "google/gemini-2.5-flash"}}}
-        with patch("agent.image_routing._lookup_supports_vision", return_value=True):
+        with patch("hermes_agent.agent.image_routing._lookup_supports_vision", return_value=True):
             assert decide_image_input_mode("anthropic", "claude-sonnet-4", cfg) == "text"
 
     def test_auto_unset_aux_backend_native_remains_default(self):
         """No configured aux backend -> native for vision-capable mains
         (the unconfigured-install default is unchanged)."""
         for cfg in ({}, {"auxiliary": {}}, {"auxiliary": {"vision": {"provider": "auto"}}}):
-            with patch("agent.image_routing._lookup_supports_vision", return_value=True):
+            with patch("hermes_agent.agent.image_routing._lookup_supports_vision", return_value=True):
                 assert decide_image_input_mode("anthropic", "claude-sonnet-4", cfg) == "native"
 
     def test_image_input_mode_native_overrides_aux_backend(self):
@@ -78,12 +78,12 @@ class TestDecideImageInputMode:
         forces native attach even with an explicit aux backend."""
         cfg = {"agent": {"image_input_mode": "native"},
                "auxiliary": {"vision": {"provider": "openrouter", "model": "google/gemini-2.5-flash"}}}
-        with patch("agent.image_routing._lookup_supports_vision", return_value=True):
+        with patch("hermes_agent.agent.image_routing._lookup_supports_vision", return_value=True):
             assert decide_image_input_mode("anthropic", "claude-sonnet-4", cfg) == "native"
 
 
     def test_none_config_is_auto(self):
-        with patch("agent.image_routing._lookup_supports_vision", return_value=True):
+        with patch("hermes_agent.agent.image_routing._lookup_supports_vision", return_value=True):
             assert decide_image_input_mode("anthropic", "claude-sonnet-4", None) == "native"
 
 
@@ -148,26 +148,26 @@ class TestLookupSupportsVisionOverride:
 
     def test_no_override_falls_back_to_models_dev(self):
         fake_caps = type("Caps", (), {"supports_vision": True})()
-        with patch("agent.models_dev.get_model_capabilities", return_value=fake_caps):
+        with patch("hermes_agent.agent.models_dev.get_model_capabilities", return_value=fake_caps):
             assert _lookup_supports_vision("anthropic", "claude-sonnet-4", {}) is True
 
     def test_models_dev_unknown_capability_stays_fail_open(self):
         fake_caps = type("Caps", (), {"supports_vision": None})()
-        with patch("agent.models_dev.get_model_capabilities", return_value=fake_caps):
+        with patch("hermes_agent.agent.models_dev.get_model_capabilities", return_value=fake_caps):
             assert _lookup_supports_vision("custom-gateway", "upstream-model", {}) is None
 
 
     def test_ollama_probe_when_models_dev_missing(self):
         cfg = {"model": {"base_url": "http://localhost:11434/v1"}}
-        with patch("agent.models_dev.get_model_capabilities", return_value=None), \
-             patch("agent.image_routing._should_probe_ollama_vision", return_value=True), \
-             patch("agent.model_metadata.query_ollama_supports_vision", return_value=True):
+        with patch("hermes_agent.agent.models_dev.get_model_capabilities", return_value=None), \
+             patch("hermes_agent.agent.image_routing._should_probe_ollama_vision", return_value=True), \
+             patch("hermes_agent.agent.model_metadata.query_ollama_supports_vision", return_value=True):
             assert _lookup_supports_vision("ollama", "gemma4:e2b", cfg) is True
 
 
     def test_cfg_none_falls_back_to_models_dev(self):
         # Caller didn't pass cfg at all — old call sites must still work.
-        with patch("agent.models_dev.get_model_capabilities", return_value=None):
+        with patch("hermes_agent.agent.models_dev.get_model_capabilities", return_value=None):
             assert _lookup_supports_vision("openrouter", "x", None) is None
 
 
@@ -211,7 +211,7 @@ class TestShouldProbeOllamaVision:
         # A local endpoint is still probed; the api_key must be forwarded so
         # keyed local servers don't 401.
         with patch(
-            "agent.model_metadata.detect_local_server_type",
+            "hermes_agent.agent.model_metadata.detect_local_server_type",
             return_value="ollama",
         ) as mock_detect:
             result = _should_probe_ollama_vision(
@@ -225,7 +225,7 @@ class TestShouldProbeOllamaVision:
     def test_local_endpoint_without_key(self):
         # Legacy call: no api_key → forwarded as "" (existing behaviour).
         with patch(
-            "agent.model_metadata.detect_local_server_type",
+            "hermes_agent.agent.model_metadata.detect_local_server_type",
             return_value="ollama",
         ) as mock_detect:
             result = _should_probe_ollama_vision(
@@ -243,12 +243,12 @@ class TestAutoModeRespectsOverride:
 
     def test_auto_text_for_custom_with_supports_vision_false(self):
         cfg = {"model": {"supports_vision": False}}
-        with patch("agent.models_dev.get_model_capabilities", return_value=None):
+        with patch("hermes_agent.agent.models_dev.get_model_capabilities", return_value=None):
             assert decide_image_input_mode("custom", "some-text-only", cfg) == "text"
 
     def test_auto_text_for_custom_with_no_override(self):
         # Unchanged baseline: unknown custom model → text.
-        with patch("agent.models_dev.get_model_capabilities", return_value=None):
+        with patch("hermes_agent.agent.models_dev.get_model_capabilities", return_value=None):
             assert decide_image_input_mode("custom", "unknown", {}) == "text"
 
 
@@ -321,13 +321,13 @@ class TestBuildNativeContentParts:
 
 class TestLargeImageHandling:
     """Large images attach at native size; shrink is handled reactively at
-    retry time in ``run_agent._try_shrink_image_parts_in_messages`` rather
+    retry time in ``hermes_agent.run_agent._try_shrink_image_parts_in_messages`` rather
     than proactively here.
     """
 
     def test_large_image_passes_through_unchanged(self, tmp_path: Path):
         """A multi-MB image is attached as-is — no resize, no skip."""
-        from agent import image_routing as _ir
+        from hermes_agent.agent import image_routing as _ir
 
         img = tmp_path / "medium.png"
         # 200 KB of real bytes; not huge but enough to verify no size gate fires.
@@ -339,7 +339,7 @@ class TestLargeImageHandling:
         assert len(url) > 200_000
 
     def test_missing_file_returns_none(self, tmp_path: Path):
-        from agent import image_routing as _ir
+        from hermes_agent.agent import image_routing as _ir
         missing = tmp_path / "does_not_exist.png"
         assert _ir._file_to_data_url(missing) is None
 
@@ -459,7 +459,7 @@ class TestFormatCompatibility:
 
 
     def test_svg_sniffed_correctly(self):
-        from agent.image_routing import _sniff_mime_from_bytes
+        from hermes_agent.agent.image_routing import _sniff_mime_from_bytes
         assert _sniff_mime_from_bytes(b'<svg xmlns="http://www.w3.org/2000/svg"/>') == "image/svg+xml"
         assert _sniff_mime_from_bytes(b'<?xml version="1.0"?><svg/>') == "image/svg+xml"
 
@@ -468,7 +468,7 @@ class TestFormatCompatibility:
         because not every provider (Anthropic) accepts BMP."""
         import pytest
         Image = pytest.importorskip("PIL.Image", reason="Pillow not installed; transcode is best-effort")
-        from agent.image_routing import _file_to_data_url
+        from hermes_agent.agent.image_routing import _file_to_data_url
 
         img_path = tmp_path / "scan.bmp"
         Image.new("RGB", (4, 4), (255, 0, 0)).save(img_path, format="BMP")
@@ -481,7 +481,7 @@ class TestFormatCompatibility:
 
     def test_png_passes_through_no_transcode(self, tmp_path: Path):
         """Universal-safe formats must NOT be re-encoded — preserves bytes."""
-        from agent.image_routing import _file_to_data_url
+        from hermes_agent.agent.image_routing import _file_to_data_url
 
         img_path = tmp_path / "ok.png"
         img_path.write_bytes(_png_bytes())
@@ -493,7 +493,7 @@ class TestFormatCompatibility:
 
     def test_file_to_data_url_blocks_read_denied_image_path(self, tmp_path: Path):
         """Native image routing must honor the shared credential read guard."""
-        from agent.image_routing import _file_to_data_url
+        from hermes_agent.agent.image_routing import _file_to_data_url
 
         img_path = tmp_path / ".env"
         img_path.write_bytes(_png_bytes())
@@ -502,7 +502,7 @@ class TestFormatCompatibility:
 
 
     def test_native_content_parts_blocks_image_symlink_to_read_denied_file(self, tmp_path: Path):
-        from agent.image_routing import build_native_content_parts
+        from hermes_agent.agent.image_routing import build_native_content_parts
         import os
         import pytest
 
@@ -595,14 +595,14 @@ class TestProbeApiKeyForwarding:
     """
 
     def test_resolve_inference_api_key_model_block(self):
-        from agent.image_routing import _resolve_inference_api_key
+        from hermes_agent.agent.image_routing import _resolve_inference_api_key
 
         key = _fake_key("model")
         cfg = {"model": {"api_key": key}}
         assert _resolve_inference_api_key(cfg, "custom") == key
 
     def test_resolve_inference_api_key_providers_block(self):
-        from agent.image_routing import _resolve_inference_api_key
+        from hermes_agent.agent.image_routing import _resolve_inference_api_key
 
         key = _fake_key("prov")
         cfg = {
@@ -614,7 +614,7 @@ class TestProbeApiKeyForwarding:
         assert _resolve_inference_api_key(cfg, "custom:remote") == key
 
     def test_resolve_inference_api_key_custom_providers_list(self):
-        from agent.image_routing import _resolve_inference_api_key
+        from hermes_agent.agent.image_routing import _resolve_inference_api_key
 
         key = _fake_key("list")
         cfg = {
@@ -626,7 +626,7 @@ class TestProbeApiKeyForwarding:
         assert _resolve_inference_api_key(cfg, "remote") == key
 
     def test_resolve_inference_api_key_absent(self):
-        from agent.image_routing import _resolve_inference_api_key
+        from hermes_agent.agent.image_routing import _resolve_inference_api_key
 
         assert _resolve_inference_api_key({"model": {}}, "custom") == ""
         assert _resolve_inference_api_key(None, "custom") == ""
@@ -636,14 +636,14 @@ class TestProbeApiKeyForwarding:
         """The full lookup path resolves the key from cfg and hands it to the
         probe — the exact chain that sprayed 401s in #89863."""
         key = _fake_key("lookup")
-        import agent.models_dev
+        import hermes_agent.agent.models_dev
         with patch(
-            "agent.models_dev.get_model_capabilities", return_value=None
+            "hermes_agent.agent.models_dev.get_model_capabilities", return_value=None
         ), patch(
-            "agent.image_routing._resolve_inference_base_url",
+            "hermes_agent.agent.image_routing._resolve_inference_base_url",
             return_value="https://remote/v1",
         ), patch(
-            "agent.model_metadata.detect_local_server_type", return_value=None
+            "hermes_agent.agent.model_metadata.detect_local_server_type", return_value=None
         ) as detect:
             _lookup_supports_vision("custom", "llava", {"model": {"api_key": key}})
         assert detect.call_args.kwargs.get("api_key") == key
@@ -655,8 +655,8 @@ class TestCodexContextVariantVisionLookup:
 
     def test_valid_variant_resolves_against_base_slug(self, monkeypatch):
         from types import SimpleNamespace
-        from agent import models_dev
-        from agent import image_routing
+        from hermes_agent.agent import models_dev
+        from hermes_agent.agent import image_routing
 
         seen = []
 

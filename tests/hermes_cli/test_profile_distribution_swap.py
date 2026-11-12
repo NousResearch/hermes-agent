@@ -69,7 +69,7 @@ def test_force_install_restores_existing_dir_when_staged_swap_fails(
 
 
 def test_force_install_locked_old_tree_is_not_discovered(profile_env, monkeypatch):
-    from agent.skill_utils import is_excluded_skill_path, iter_skill_index_files
+    from hermes_agent.agent.skill_utils import is_excluded_skill_path, iter_skill_index_files
     import hermes_cli.profile_distribution as pd
 
     staged = _make_staging_dir(profile_env, "src")

@@ -1,7 +1,7 @@
 """Turn-liveness activity tracking for ``AIAgent`` (gateway watchdog + session activity persistence).
 
 ``_touch_activity`` is the single write path; persistence is rate-limited and never raises.
-Extracted from ``run_agent.py``; every method resolves through ``AIAgent``'s MRO unchanged.
+Extracted from ``hermes_agent/run_agent.py``; every method resolves through ``AIAgent``'s MRO unchanged.
 """
 import logging
 import os
@@ -10,10 +10,10 @@ import time
 from contextlib import suppress
 from typing import Optional
 
-from agent.session_activity import ActivityProvenance
+from hermes_agent.agent.session_activity import ActivityProvenance
 
 # Same logger name as the origin module so log records / caplog filters are unchanged.
-logger = logging.getLogger("run_agent")
+logger = logging.getLogger("hermes_agent.run_agent")
 
 
 def _activity_lock(obj) -> threading.Lock:
@@ -55,7 +55,7 @@ class ActivityTrackingMixin:
         Bridge is rate-limited (60s) and best-effort — it never raises into the agent loop. See #31752.
         See #72016, #72039.
         """
-        from agent.session_activity import (
+        from hermes_agent.agent.session_activity import (
             bound_activity_description, is_terminal_compression_provenance,
             normalize_activity_provenance, reset_session_activity_persist_window,
         )
@@ -101,7 +101,7 @@ class ActivityTrackingMixin:
         touch = getattr(session_db, "touch_session_activity", None)
         if not callable(touch):
             return
-        from agent.session_activity import (
+        from hermes_agent.agent.session_activity import (
             SESSION_ACTIVITY_HEARTBEAT_MIN_INTERVAL_SECONDS, normalize_activity_provenance
         )
 
@@ -112,7 +112,7 @@ class ActivityTrackingMixin:
         if last_mono and (now_mono - last_mono) < SESSION_ACTIVITY_HEARTBEAT_MIN_INTERVAL_SECONDS:
             return
         self._session_activity_last_persist_mono = now_mono
-        from agent.runtime_session_store import call_off_event_loop  # Relay callbacks run on a loop (#139029)
+        from hermes_agent.agent.runtime_session_store import call_off_event_loop  # Relay callbacks run on a loop (#139029)
         try:
             call_off_event_loop(
                 touch,
@@ -144,6 +144,6 @@ class ActivityTrackingMixin:
         clear = getattr(session_db, "clear_session_activity_labels", None)
         if not callable(clear):
             return
-        from agent.runtime_session_store import call_off_event_loop
+        from hermes_agent.agent.runtime_session_store import call_off_event_loop
         with suppress(Exception):  # never let durable cleanup I/O break turn teardown
             call_off_event_loop(clear, session_id)

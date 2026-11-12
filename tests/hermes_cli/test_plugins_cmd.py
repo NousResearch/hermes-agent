@@ -970,7 +970,7 @@ def prepared_publication(client, tmp_path, monkeypatch):
 
 
 def test_default_compressor_does_not_activate_an_offered_plugin(monkeypatch):
-    from agent.agent_init import _select_context_engine
+    from hermes_agent.agent.agent_init import _select_context_engine
     from types import SimpleNamespace
     candidate = SimpleNamespace(name='offered', clone_for_agent=lambda: candidate)
     monkeypatch.setattr('plugins.context_engine.load_context_engine', lambda _: None)

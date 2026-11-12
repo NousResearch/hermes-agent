@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from agent.turn_failure_copy import FAILED_TURN_NOTICE
+from hermes_agent.agent.turn_failure_copy import FAILED_TURN_NOTICE
 import hermes_agent.gateway.run as gateway_run
 from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
 from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
@@ -53,7 +53,7 @@ class CaptureSlackAdapter(BasePlatformAdapter):
 
 def _make_incomplete_result() -> dict:
     # Mirror the REAL conversation-loop exhaustion shape: the sentinel text is
-    # returned as BOTH final_response and error (agent/conversation_loop.py's
+    # returned as BOTH final_response and error (hermes_agent/agent/conversation_loop.py's
     # "remained incomplete after 3 continuation attempts" return).
     _sentinel = "Codex response remained incomplete after 3 continuation attempts"
     return {
@@ -131,7 +131,7 @@ async def test_incomplete_codex_turn_closes_transcript_without_slack_delivery(mo
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
     monkeypatch.setattr(
-        "agent.model_metadata.get_model_context_length",
+        "hermes_agent.agent.model_metadata.get_model_context_length",
         lambda *_args, **_kwargs: 100,
     )
     monkeypatch.setenv("SLACK_HOME_CHANNEL", "C123")

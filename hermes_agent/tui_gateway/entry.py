@@ -346,9 +346,9 @@ def _serve():
     set_process_surface("tui_gateway")
 
     # One TLS authority: trust the OS store process-wide before any
-    # outbound call resolves a CA bundle (see agent/ssl_verify.py).
+    # outbound call resolves a CA bundle (see hermes_agent/agent/ssl_verify.py).
     try:
-        from agent.ssl_verify import install_truststore
+        from hermes_agent.agent.ssl_verify import install_truststore
 
         install_truststore()
     except Exception:

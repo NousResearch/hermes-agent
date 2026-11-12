@@ -54,7 +54,7 @@ def latch_first_install() -> bool:
 def set_run(value: bool, *, mark_profile_offered: bool = False) -> None:
     """Persist ``onboarding.run`` (and, with *mark_profile_offered*, ``onboarding.seen.profile_build_offered``)
     in the root ``config.yaml`` as one write, keeping every other key and comment. A failed write raises."""
-    from agent.onboarding import PROFILE_BUILD_FLAG
+    from hermes_agent.agent.onboarding import PROFILE_BUILD_FLAG
     from hermes_cli import config as config_mod
 
     path = _root_config()

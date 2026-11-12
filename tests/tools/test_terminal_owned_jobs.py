@@ -239,7 +239,7 @@ def test_unowned_jobs_are_never_handed_to_the_supervisor(monkeypatch, tmp_path):
 def test_a_managed_workers_jobs_are_never_handed_to_the_supervisor(monkeypatch, tmp_path):
     """A managed worker is a per-turn interpreter: the next turn's worker adopts its jobs from the
     checkpoint and reads their output log, so the jobs must outlive the worker that started them."""
-    from agent import runtime_session_store
+    from hermes_agent.agent import runtime_session_store
     from hermes_agent.tools.process_registry import ProcessRegistry
 
     calls = _record_calls(monkeypatch)

@@ -37,7 +37,7 @@ def worktree(tmp_path):
 
 def _gateway_prompt(source, cwd):
     """System prompt a gateway turn builds for a local session frozen at *cwd*."""
-    from agent.system_prompt import build_system_prompt
+    from hermes_agent.agent.system_prompt import build_system_prompt
     from hermes_agent.gateway.session_policy import build_policy, policy_scope
 
     policy = build_policy({"source": source, "cwd": str(cwd), "model": "m"}, {})
@@ -50,8 +50,8 @@ def _gateway_prompt(source, cwd):
         _environment_probe=False, _bot_mode_protocol=False, _kanban_worker_guidance="",
         pass_session_id=False, session_id="s1", _emit_status=lambda *a, **k: None,
     )
-    with patch("agent.prompt_builder.load_soul_md", return_value=""), \
-            patch("agent.prompt_builder.build_environment_hints", return_value=""), \
+    with patch("hermes_agent.agent.prompt_builder.load_soul_md", return_value=""), \
+            patch("hermes_agent.agent.prompt_builder.build_environment_hints", return_value=""), \
             policy_scope(policy):
         return build_system_prompt(agent)
 

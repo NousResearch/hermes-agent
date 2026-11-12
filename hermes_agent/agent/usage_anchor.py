@@ -111,7 +111,7 @@ def anchored_context_tokens(messages: list[dict[str, Any]], anchor: Optional[dic
     in completion_tokens). ``charge_stale_thinking`` is forwarded to the delta estimate."""
     if not isinstance(anchor, dict) or not isinstance(messages, list) or not _anchor_matches(messages, anchor):
         return None
-    from agent.model_metadata import estimate_messages_tokens_rough
+    from hermes_agent.agent.model_metadata import estimate_messages_tokens_rough
 
     total = int(anchor["prompt_tokens"]) + int(anchor.get("completion_tokens") or 0)
     delta = messages[int(anchor["base_count"]):]

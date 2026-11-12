@@ -5,7 +5,7 @@ the deployment it really routed to in a response header (``x-litellm-model-id``,
 upstream ``x-litellm-model-api-base``). The OpenAI SDK's parsed objects drop headers, so the
 capture rides an ``httpx`` response hook on the client Hermes builds for the agent; it stores
 the header onto ``agent.last_served_model`` (``None`` when the response carried none, so a
-value never outlives the request that produced it). Consumers: ``agent/turn_finalizer.py``
+value never outlives the request that produced it). Consumers: ``hermes_agent/agent/turn_finalizer.py``
 (result ``served_model`` / ``requested_model``) and the opt-in gateway footer field
 ``served_model`` (``hermes_agent/gateway/runtime_footer.py``). Fail-open everywhere.
 """

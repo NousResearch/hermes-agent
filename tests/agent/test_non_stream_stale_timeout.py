@@ -21,7 +21,7 @@ def _write_config(tmp_path: Path, body: str) -> None:
 
 
 def _make_agent(tmp_path: Path, **overrides):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     kwargs = dict(
         model="gpt-5.5",
         provider="openai-codex",
@@ -42,7 +42,7 @@ def _make_agent(tmp_path: Path, **overrides):
 
 
 def test_estimator_responses_api_input():
-    from agent.chat_completion_helpers import estimate_request_context_tokens
+    from hermes_agent.agent.chat_completion_helpers import estimate_request_context_tokens
     payload = {
         "model": "gpt-5.5",
         "instructions": "i" * 1000,
@@ -59,7 +59,7 @@ def test_estimator_responses_api_input():
 
 
 def test_estimator_empty_inputs():
-    from agent.chat_completion_helpers import estimate_request_context_tokens
+    from hermes_agent.agent.chat_completion_helpers import estimate_request_context_tokens
     assert estimate_request_context_tokens({}) == 0
     assert estimate_request_context_tokens([]) == 0
     assert estimate_request_context_tokens(None) == 0
@@ -105,7 +105,7 @@ providers:
 
 
 def test_openai_codex_stale_floor_tiers():
-    from agent.chat_completion_helpers import openai_codex_stale_timeout_floor
+    from hermes_agent.agent.chat_completion_helpers import openai_codex_stale_timeout_floor
 
     # Contract, not literals: a bigger request never gets a shorter floor.
     small, large = openai_codex_stale_timeout_floor(55_000), openai_codex_stale_timeout_floor(120_000)

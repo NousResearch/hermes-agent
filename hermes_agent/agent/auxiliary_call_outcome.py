@@ -50,7 +50,7 @@ def error_class(error: BaseException, *, provider: str = "", model: str = "") ->
     if not isinstance(error, Exception):
         return "unknown"
     try:
-        from agent.error_classifier import classify_api_error
+        from hermes_agent.agent.error_classifier import classify_api_error
 
         embedded = getattr(error, PROVIDER_ERROR_ATTR, None)
         target = _EmbeddedProviderError(embedded) if isinstance(embedded, dict) else error

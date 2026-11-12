@@ -394,7 +394,7 @@ def _require_staging_space(extracted: str, entries: list[str], project_root: str
         # same-filesystem renames and rolls back every swap if any one fails. Replacing entries
         # one-at-a-time (the previous shape) meant an interruption partway left `agent/` new and `tools/`
         # stale — all files valid, the tree unbootable. Files matter as much as directories here: the repo
-        # root holds 20 first-party modules (run_agent.py, cli.py, hermes_constants.py, ...). Check up front
+        # root holds 20 first-party modules (hermes_agent/run_agent.py, cli.py, hermes_constants.py, ...). Check up front
         # so we fail with a clear message instead of running out mid-copy.
         os.path.getsize(os.path.join(dirpath, f))
         for entry in entries

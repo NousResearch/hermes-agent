@@ -226,8 +226,8 @@ def test_raft_stop_releases_the_bridge_it_stopped(monkeypatch):
 
 
 def test_verify_start_phase_owns_then_releases_the_app_group(monkeypatch, tmp_path, owned):
-    from agent.verify import runner
-    from agent.verify.recipes import Recipe
+    from hermes_agent.agent.verify import runner
+    from hermes_agent.agent.verify.recipes import Recipe
 
     released = []
     monkeypatch.setattr(process_identity, "release_process_groups", lambda pgids: released.append(list(pgids)))

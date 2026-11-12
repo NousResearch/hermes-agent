@@ -11,7 +11,7 @@ import os
 
 import pytest
 
-from agent.secret_scope import (
+from hermes_agent.agent.secret_scope import (
     reset_secret_scope,
     set_multiplex_active,
     set_secret_scope,

@@ -47,7 +47,7 @@ def _redact_cdp_error_text(exc: object) -> str:
     messages, so every egress point turning one into log/re-raise text MUST route through
     here; falls back to a fixed sentinel if redaction itself raises (err toward masking)."""
     try:
-        from agent.redact import redact_cdp_url
+        from hermes_agent.agent.redact import redact_cdp_url
 
         return redact_cdp_url(str(exc))
     except Exception:
@@ -60,7 +60,7 @@ class _LoopUnavailable(RuntimeError):
 
 def _schedule(coro, loop, *, timeout: float):
     """Run ``coro`` on the supervisor loop from a sync caller and wait for its result."""
-    from agent.async_utils import safe_schedule_threadsafe
+    from hermes_agent.agent.async_utils import safe_schedule_threadsafe
 
     fut = safe_schedule_threadsafe(coro, loop)
     if fut is None:
@@ -284,7 +284,7 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             return sid
 
         async def _focus() -> dict[str, Any]:
-            from agent.vault_store import normalize_origin
+            from hermes_agent.agent.vault_store import normalize_origin
             targets = (await self._cdp("Target.getTargets", timeout=timeout)).get("result", {}).get("targetInfos", [])
             candidates = []
             for t in targets:
@@ -374,7 +374,7 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         A failure before the first successful attach is fatal for ``start()``."""
         reconnect_failures, last_success_at, backoff = 0, 0.0, 0.5
         import websockets  # deferred: only supervisors that connect pay the import
-        from agent.proxy_bypass import loopback_connect_kwargs
+        from hermes_agent.agent.proxy_bypass import loopback_connect_kwargs
         connect_kwargs = {"max_size": 50 * 1024 * 1024, **loopback_connect_kwargs(self.cdp_url)}
         while not self._stop_requested:
             try:

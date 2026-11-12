@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import cli as cli_module
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 from cli import HermesCLI
 
 
@@ -246,7 +246,7 @@ class TestCliApprovalUi:
                     "failed": False,
                 }
 
-        with patch("run_agent.AIAgent", FakeAgent), \
+        with patch("hermes_agent.run_agent.AIAgent", FakeAgent), \
              patch.object(cli_module, "_cprint"), \
              patch.object(cli_module, "ChatConsole") as chat_console:
             chat_console.return_value.print = MagicMock()

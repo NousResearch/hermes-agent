@@ -28,7 +28,7 @@ from typing import Any, Dict, Optional
 
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write, base_url_hostname
-from agent.secret_scope import get_secret as _get_secret
+from hermes_agent.agent.secret_scope import get_secret as _get_secret
 
 logger = logging.getLogger(__name__)
 
@@ -192,7 +192,7 @@ def _append_spent_rotation_sidecar(source_path: Path, fingerprints: list) -> Non
 
 
 def _fingerprint(secret: Any) -> Optional[str]:
-    from agent.credential_persistence import fingerprint_secret_value
+    from hermes_agent.agent.credential_persistence import fingerprint_secret_value
     value = str(secret or "").strip()
     return fingerprint_secret_value(value) if value else None
 
@@ -363,7 +363,7 @@ def read_claude_code_credentials() -> Optional[dict[str, Any]]:
 
     This is the only reader of the borrowed login, so ``auth.adopt_external_logins: false`` is enforced here:
     every resolver, pool seed/sync and 401 refresher then sees "no Claude Code login" and never touches the file."""
-    from agent.credential_sources import adopt_external_logins_enabled
+    from hermes_agent.agent.credential_sources import adopt_external_logins_enabled
     if not adopt_external_logins_enabled():
         return None
     kc_creds = _read_claude_code_credentials_from_keychain()
@@ -653,7 +653,7 @@ def _resolve_anthropic_pool_token(*, skip_borrowed: bool = False) -> Optional[st
     refresh=False`` (never ``select()``) so diagnostic call sites (account_usage, ``hermes models``) never mutate
     auth.json or hit the network; refresh-on-expiry belongs to the API call path's pool recovery."""
     try:
-        from agent.credential_pool import AUTH_TYPE_OAUTH, load_pool
+        from hermes_agent.agent.credential_pool import AUTH_TYPE_OAUTH, load_pool
         entries, _pending = load_pool("anthropic")._available_entries(clear_expired=False, refresh=False)
     except Exception:
         logger.debug("Failed to read Anthropic credential_pool", exc_info=True)
@@ -687,7 +687,7 @@ def _available_anthropic_token(token: Optional[str], model: Optional[str]) -> Op
     if not token or not model:
         return token or None
     try:
-        from agent.credential_pool import load_pool
+        from hermes_agent.agent.credential_pool import load_pool
         if load_pool("anthropic").token_is_blocked(token, model=model):
             return None
     except Exception:
@@ -720,7 +720,7 @@ def resolve_anthropic_token(*, model: Optional[str] = None) -> Optional[str]:
 
 def run_oauth_setup_token() -> Optional[str]:
     """Run 'claude setup-token' interactively; the resulting token or None. FileNotFoundError if no 'claude' CLI."""
-    from agent.anthropic_adapter import find_claude_code_cli  # late: the adapter imports this module
+    from hermes_agent.agent.anthropic_adapter import find_claude_code_cli  # late: the adapter imports this module
     claude_path = find_claude_code_cli("claude")
     if not claude_path:
         raise FileNotFoundError("The 'claude' CLI is not installed. Install it with: npm install -g @anthropic-ai/claude-code")

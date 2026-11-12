@@ -157,7 +157,7 @@ EVAL_USAGE = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "cached_to
 
 
 def _call(prompt: str, max_tokens: int = 2000) -> str:
-    from agent.auxiliary_client import call_llm
+    from hermes_agent.agent.auxiliary_client import call_llm
 
     resp = call_llm(
         messages=[{"role": "user", "content": prompt}],
@@ -204,7 +204,7 @@ def serialize_for_exam(messages, char_cap: int = 600_000) -> str:
 def summarized_region(compressor_module, messages):
     """The middle region the current policy would summarize: everything
     between the protected head and the tail cut. Questions come from here."""
-    from agent.context_compressor import ContextCompressor
+    from hermes_agent.agent.context_compressor import ContextCompressor
 
     comp = ContextCompressor(model=EVAL_MODEL, quiet_mode=True)
     head_end = comp.protect_first_n
@@ -215,7 +215,7 @@ def summarized_region(compressor_module, messages):
 def generate_questions(messages, n: int, cache_path: Path) -> list:
     if cache_path.exists():
         return json.loads(cache_path.read_text(encoding="utf-8"))
-    import agent.context_compressor as cc
+    import hermes_agent.agent.context_compressor as cc
 
     region = summarized_region(cc, messages)
     text = serialize_for_exam(region)
@@ -259,7 +259,7 @@ class _AuxMeter:
         self.models: list = []
 
     def __enter__(self):
-        import agent.context_compressor as cc
+        import hermes_agent.agent.context_compressor as cc
         self._cc, self._orig = cc, cc.call_llm
 
         def metered(*args, **kwargs):
@@ -317,7 +317,7 @@ def _compress_with_policy(spec: dict, messages) -> tuple:
         }
         return compressed, comp, cost
 
-    from agent.context_compressor import ContextCompressor
+    from hermes_agent.agent.context_compressor import ContextCompressor
 
     comp = apply_policy(ContextCompressor(model=EVAL_MODEL, quiet_mode=True), spec)
     for key, value in (spec.get("ctor") or {}).items():

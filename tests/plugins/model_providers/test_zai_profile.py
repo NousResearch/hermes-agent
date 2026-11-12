@@ -231,7 +231,7 @@ class TestZaiFullKwargsIntegration:
 
 
     def test_glm_5_2_effort_reaches_top_level(self, zai_profile):
-        from agent.transports.chat_completions import ChatCompletionsTransport
+        from hermes_agent.agent.transports.chat_completions import ChatCompletionsTransport
 
         kwargs = ChatCompletionsTransport().build_kwargs(
             model="glm-5.2",
@@ -251,7 +251,7 @@ class TestZaiFullKwargsIntegration:
         ("glm-5.3", None, None, None),
     ])
     def test_glm_thinking_preference_reaches_transport(self, zai_profile, model, reasoning, thinking, effort):
-        from agent.transports.chat_completions import ChatCompletionsTransport
+        from hermes_agent.agent.transports.chat_completions import ChatCompletionsTransport
 
         kwargs = ChatCompletionsTransport().build_kwargs(
             model=model,

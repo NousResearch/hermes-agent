@@ -127,7 +127,7 @@ def _xai_credentials_present() -> bool:
     if str(get_env_value("XAI_API_KEY") or "").strip():
         return True
     try:
-        from agent.secret_scope import get_secret
+        from hermes_agent.agent.secret_scope import get_secret
     except ImportError:  # pragma: no cover — secret_scope is in-repo
         get_secret = os.environ.get
     return bool(str(get_secret("XAI_API_KEY") or "").strip())
@@ -638,7 +638,7 @@ def _get_platform_tools(config: dict, platform: str, *, include_default_mcp_serv
     # above. It may arrive as a JSON-array string ("['memory']") from `hermes config set` or a JSON-mode editor.
     disabled_toolsets = (config.get("agent") or {}).get("disabled_toolsets")
     if disabled_toolsets:
-        from agent.skill_utils import parse_config_string_list
+        from hermes_agent.agent.skill_utils import parse_config_string_list
         disabled_names = [name.strip() for name in parse_config_string_list(disabled_toolsets) if name.strip()]
         enabled_toolsets = _prune_toolsets_stripped_by_disabled(enabled_toolsets, disabled_names)
 
@@ -684,7 +684,7 @@ def toolsets_partially_stripped(config: dict, enabled_toolsets: set[str]) -> dic
     #134593). ``_prune_toolsets_stripped_by_disabled`` keeps such a toolset "enabled" because some of its
     tools survive, so inspection surfaces need this to say which ones did not. The hint offers
     ``hermes tools enable`` only when that save clears every entry (``_save_platform_tools`` coverage)."""
-    from agent.skill_utils import parse_config_string_list
+    from hermes_agent.agent.skill_utils import parse_config_string_list
     from hermes_agent.model_tools import _apply_toolset_selection
     from hermes_agent.toolsets import resolve_toolset, validate_toolset
 
@@ -717,7 +717,7 @@ def _recover_platform_native_toolsets(enabled_toolsets: set[str], platform: str,
     claimed = {t for ts_key in enabled_toolsets for t in resolve_toolset(ts_key)}
     skip = skip | {k for k in TOOLSETS if k.startswith("hermes-")} | (set(_DEFAULT_OFF_TOOLSETS) - {platform})
     for ts_key, ts_def in TOOLSETS.items():
-        # Posture toolsets (``coding``) are session-level selections made by agent/coding_context.py, not
+        # Posture toolsets (``coding``) are session-level selections made by hermes_agent/agent/coding_context.py, not
         # per-platform capabilities to recover.
         if ts_key in skip or ts_def.get("includes") or ts_def.get("posture"):
             continue
@@ -814,7 +814,7 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: set[
     agent_cfg = config.get("agent")
     newly_enabled = enabled_toolset_keys - preserved_entries
     if isinstance(agent_cfg, dict) and agent_cfg.get("disabled_toolsets") and newly_enabled:
-        from agent.skill_utils import parse_config_string_list
+        from hermes_agent.agent.skill_utils import parse_config_string_list
         parsed_disabled = parse_config_string_list(agent_cfg["disabled_toolsets"])
         # Also clear entries whose tools are entirely covered by a newly enabled toolset: Blank Slate writes
         # subset toolsets like `search` (only web_search), which have no checklist row, so enabling `web`
@@ -847,7 +847,7 @@ def _toolset_has_keys(
         config = load_config()
     if ts_key == "vision":
         try:
-            from agent.auxiliary_client import resolve_vision_provider_client
+            from hermes_agent.agent.auxiliary_client import resolve_vision_provider_client
             return resolve_vision_provider_client()[1] is not None
         except Exception:
             return False

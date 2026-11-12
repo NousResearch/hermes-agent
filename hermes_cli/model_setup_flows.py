@@ -666,7 +666,7 @@ def _gemini_tier_ok(existing_key: str, pconfig, base_url_env: str) -> bool:
     handful of agent turns, so refuse a free-tier key. The probe is best-effort; network or
     auth errors fall through without blocking."""
     try:
-        from agent.gemini_native_adapter import probe_gemini_tier
+        from hermes_agent.agent.gemini_native_adapter import probe_gemini_tier
     except Exception:
         return True
     print("  Checking Gemini API tier...")
@@ -873,7 +873,7 @@ def _model_flow_anthropic(config, current_model=""):
     existing_key = get_anthropic_key()
     cc_available = False
     with contextlib.suppress(Exception):
-        from agent.anthropic_credentials import read_claude_code_credentials, is_claude_code_token_valid, _is_oauth_token
+        from hermes_agent.agent.anthropic_credentials import read_claude_code_credentials, is_claude_code_token_valid, _is_oauth_token
         cc_creds = read_claude_code_credentials()
         if cc_creds and is_claude_code_token_valid(cc_creds):
             cc_available = True
@@ -985,7 +985,7 @@ def _plugin_flow_oauth(provider_id: str, profile) -> tuple[str, str] | None:
         _say(f"  ⚠ Not signed in to {profile.display_name or provider_id}.",
              f"  {missing.code if missing else status.get('hint') or f'Run `hermes auth add {provider_id}` to sign in.'}")
         return None
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
     entry = load_pool(provider_id).select()
     base_url = (entry.runtime_base_url if entry else "") or status.get("base_url") or profile.base_url or ""
     return str(base_url), (entry.runtime_api_key if entry else "") or ""

@@ -10,8 +10,8 @@ from types import SimpleNamespace
 home = Path(os.environ["HERMES_HOME"])
 home.mkdir(parents=True, exist_ok=True)
 (home / "config.yaml").write_text("sessions:\n  write_json_snapshots: true\n", encoding="utf-8")
-from agent.agent_init import _init_session_state
-from agent.session_persistence import SessionPersistenceMixin
+from hermes_agent.agent.agent_init import _init_session_state
+from hermes_agent.agent.session_persistence import SessionPersistenceMixin
 from hermes_cli.cli_session_mixin import CLISessionMixin
 from hermes_agent.hermes_state import SessionDB
 

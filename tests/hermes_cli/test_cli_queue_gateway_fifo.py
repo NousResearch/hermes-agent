@@ -542,7 +542,7 @@ def _busy_enter(cli, mode, text, images=()):
     """Enter typed while the turn runs, through main's ``_tui_enter_while_busy``."""
     cli.busy_input_mode = mode
     cli.agent = getattr(cli, "agent", None)
-    with patch("agent.onboarding.is_seen", lambda *a: True), patch("cli._cprint"):
+    with patch("hermes_agent.agent.onboarding.is_seen", lambda *a: True), patch("cli._cprint"):
         cli._tui_enter_while_busy(text, list(images), (text, list(images)) if images else text)
 
 

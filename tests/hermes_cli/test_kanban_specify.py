@@ -54,7 +54,7 @@ def _patch_aux_client(content: str, *, model: str = "test-model"):
     callers can still assert on the call.
     """
     mock_fn = MagicMock(return_value=_fake_aux_response(content))
-    return patch("agent.auxiliary_client.call_llm", mock_fn), mock_fn
+    return patch("hermes_agent.agent.auxiliary_client.call_llm", mock_fn), mock_fn
 
 
 # ---------------------------------------------------------------------------

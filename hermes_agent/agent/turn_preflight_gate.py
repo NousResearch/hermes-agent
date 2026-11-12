@@ -2,7 +2,7 @@
 the provider-overflow re-check arming, the insufficient-progress blocker (compares fully
 assembled requests, not raw ``messages``) and the call into
 ``turn_preflight.run_preflight_compression``. Nothing here imports
-``agent.conversation_loop`` at module level (cycle)."""
+``hermes_agent.agent.conversation_loop`` at module level (cycle)."""
 
 from __future__ import annotations
 
@@ -10,11 +10,11 @@ import logging
 from contextlib import suppress
 from typing import Any
 
-from agent.message_metadata import append_message
-from agent.turn_context import _compression_warrants_another_preflight_pass
-from agent.turn_preflight import PreflightGateVerdict, run_preflight_compression
+from hermes_agent.agent.message_metadata import append_message
+from hermes_agent.agent.turn_context import _compression_warrants_another_preflight_pass
+from hermes_agent.agent.turn_preflight import PreflightGateVerdict, run_preflight_compression
 
-logger = logging.getLogger("agent.conversation_loop")
+logger = logging.getLogger("hermes_agent.agent.conversation_loop")
 
 
 def run_preflight_gate(
@@ -29,7 +29,7 @@ def run_preflight_gate(
     """Run the pre-API guard chain in the original order. ``_last_preflight_pressure`` is
     consumed here (set to None) and re-armed only by a compression pass, so a blocked
     preflight never compares against a stale figure."""
-    from agent.conversation_loop import _ollama_context_limit_error
+    from hermes_agent.agent.conversation_loop import _ollama_context_limit_error
 
     v = PreflightGateVerdict(
         action="fallthrough", pending_moa_prepared_request=pending_moa_prepared_request,

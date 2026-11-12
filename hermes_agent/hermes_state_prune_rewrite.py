@@ -11,8 +11,8 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from agent.context_compressor import _DB_PERSISTED_MARKER as _DB_PERSISTED_MARKER_KEY
-from agent.message_metadata import DB_ROW_SNAPSHOT
+from hermes_agent.agent.context_compressor import _DB_PERSISTED_MARKER as _DB_PERSISTED_MARKER_KEY
+from hermes_agent.agent.message_metadata import DB_ROW_SNAPSHOT
 from hermes_agent.hermes_state_common import _id_chunks, _placeholders
 from hermes_agent.hermes_state_messages import _INSERT_MESSAGE_SQL, _parse_tool_calls
 
@@ -37,7 +37,7 @@ class SessionPruneRewriteMixin:
         The comparison is representation-safe, never raw storage against a loaded view. A dict's content
         passed through the loader lens (``_loaded_view_content`` sanitizes and strips user/assistant
         strings), so the stored bytes are compared through the same lens; when the dict carries the
-        stored-row CAS digest (``DB_ROW_SNAPSHOT``, see ``agent.transcript_repair``) that wins instead,
+        stored-row CAS digest (``DB_ROW_SNAPSHOT``, see ``hermes_agent.agent.transcript_repair``) that wins instead,
         covering every owned column including assistant ``tool_calls`` arguments. Absent or inactive
         rows are NOT reported — that is the activity check's job and it has its own fallback rules.
         Every model-transcript role is compared (user/assistant/tool): the callers gate the FULL
@@ -62,8 +62,8 @@ class SessionPruneRewriteMixin:
         live-replay loaders stamp exactly that pair, and a rewritten-in-place row is as lost a race
         there as a row-addressed one (#124102).
         """
-        from agent.message_metadata import message_uid_or_none
-        from agent.transcript_repair import transcript_row_snapshot
+        from hermes_agent.agent.message_metadata import message_uid_or_none
+        from hermes_agent.agent.transcript_repair import transcript_row_snapshot
 
         def _exact_id(message: dict[str, Any]) -> Optional[int]:
             rid = message.get("_row_id")
@@ -152,7 +152,7 @@ class SessionPruneRewriteMixin:
         through ``archive_and_compact``. A named row whose stored payload moved on raises the
         :class:`PruneRowStaleError` subclass instead: that is another writer's generation, not ambiguity,
         and the full writer must not be handed the stale transcript. The staleness check is the repo's
-        row-version CAS (``DB_ROW_SNAPSHOT`` / ``transcript_row_snapshot``, see ``agent/transcript_repair``)
+        row-version CAS (``DB_ROW_SNAPSHOT`` / ``transcript_row_snapshot``, see ``hermes_agent/agent/transcript_repair``)
         when the held dict carries the digest — it covers every owned column including assistant
         ``tool_calls`` arguments — and the representation-safe loader-lens identity compare otherwise
         (raw storage bytes are never compared against a loaded/normalized view; #124102).
@@ -161,9 +161,9 @@ class SessionPruneRewriteMixin:
         Returns the rows rewritten. Each rewritten dict is stamped with its row's new digest, so a second
         prune of the same transcript compares against what this commit wrote, not what it replaced.
         """
-        from agent.conversation_compression_archive import ABSORBED_ROW_IDS
-        from agent.message_metadata import DB_ROW_SNAPSHOT
-        from agent.transcript_repair import transcript_row_snapshot
+        from hermes_agent.agent.conversation_compression_archive import ABSORBED_ROW_IDS
+        from hermes_agent.agent.message_metadata import DB_ROW_SNAPSHOT
+        from hermes_agent.agent.transcript_repair import transcript_row_snapshot
         from hermes_agent.hermes_state_errors import PruneRowStaleError, PruneRowUnresolvedError
 
         def _call_ids(tool_calls: Any) -> list[Any]:

@@ -193,7 +193,7 @@ def _runtime_model_config(agent, existing: dict | None = None) -> dict:
     attributes DELETE the key rather than skip the write: resume reads provider/endpoint from this JSON
     (model column written separately), so a stale provider would route the resumed chat to the wrong endpoint."""
     config = dict(existing or {})
-    from agent.voice_turn_route import session_runtime_view
+    from hermes_agent.agent.voice_turn_route import session_runtime_view
     agent = session_runtime_view(agent)
     attr = lambda k: str(getattr(agent, k, "") or "").strip()
     model, base_url = attr("model"), attr("base_url")
@@ -281,7 +281,7 @@ def _load_reasoning_config(model: str = "") -> dict | None:
 
 
 def _load_service_tier() -> str | None:
-    from agent.fast_mode import parse_service_tier
+    from hermes_agent.agent.fast_mode import parse_service_tier
 
     return parse_service_tier((_load_cfg().get("agent") or {}).get("service_tier", ""))
 
@@ -401,7 +401,7 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
     fallback_notice = None
     if not explicit:
         with contextlib.suppress(Exception):
-            from agent.coding_context import coding_selection
+            from hermes_agent.agent.coding_context import coding_selection
             selection = coding_selection(platform=session_platform)
             if selection is not None:
                 return sorted(_with_session_toolsets(selection, session_platform))
@@ -454,7 +454,7 @@ def _load_disabled_toolsets() -> list[str] | None:
     default toolset (#44499).
     """
     try:
-        from agent.skill_utils import parse_config_string_list
+        from hermes_agent.agent.skill_utils import parse_config_string_list
 
         from hermes_cli.config import load_config
 
@@ -617,7 +617,7 @@ def _startup_system_prompt(cfg: dict, task_id: str) -> str:
     startup_skills = _parse_tui_skills_env()
     if not startup_skills:
         return system_prompt
-    from agent.skill_commands import build_preloaded_skills_prompt, format_missing_skills
+    from hermes_agent.agent.skill_commands import build_preloaded_skills_prompt, format_missing_skills
     skills_prompt, loaded_skills, missing_skills = build_preloaded_skills_prompt(startup_skills, task_id=task_id)
     if missing_skills:
         if not loaded_skills:
@@ -640,8 +640,8 @@ def _make_agent(
     synthetic = maybe_build_synthetic_agent(session_id or key, model_override)
     if synthetic is not None:
         return synthetic
-    from agent.onboarding_session import onboarding_toolsets
-    from run_agent import AIAgent
+    from hermes_agent.agent.onboarding_session import onboarding_toolsets
+    from hermes_agent.run_agent import AIAgent
     # MCP discovery runs in a daemon thread (a dead server can't freeze the shell); the agent snapshots its tool
     # list once, so briefly wait for in-flight discovery. Dashboard /api/ws uses mcp_startup; TUI stdio uses entry.
     for _mod in ("hermes_cli.mcp_startup", "hermes_agent.tui_gateway.entry"):
@@ -649,7 +649,7 @@ def _make_agent(
             importlib.import_module(_mod).wait_for_mcp_discovery()
     cfg = _load_cfg()
     # Load hooks alongside the same profile config used to construct this agent.
-    from agent.shell_hooks import register_from_config
+    from hermes_agent.agent.shell_hooks import register_from_config
     register_from_config(cfg)
     system_prompt = _startup_system_prompt(cfg, session_id or key)
     model, runtime = _resolve_agent_model_runtime(model_override, provider_override)

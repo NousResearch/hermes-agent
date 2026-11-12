@@ -1,4 +1,4 @@
-"""Behavior contracts for journey node edit/delete (agent.learning_mutations).
+"""Behavior contracts for journey node edit/delete (hermes_agent.agent.learning_mutations).
 
 Exercises the real on-disk resolution (skills dir + MEMORY.md/USER.md chunking)
 against a temp HERMES_HOME, never mocks — the id→file mapping is the whole point.
@@ -10,7 +10,7 @@ import threading
 
 import pytest
 
-from agent import learning_mutations as lm
+from hermes_agent.agent import learning_mutations as lm
 from hermes_constants import get_hermes_home
 
 _SKILL = """---
@@ -119,7 +119,7 @@ def test_memory_writes_match_memory_tool_format(home):
     # A Notepad BOM must not make the first card's id permanently "stale": the graph and the
     # store must parse the file the same way.
     path.write_text("alpha note\n§\nbeta note", encoding="utf-8-sig")
-    from agent.learning_graph import build_learning_graph
+    from hermes_agent.agent.learning_graph import build_learning_graph
 
     first = next(n for n in build_learning_graph()["nodes"] if n["kind"] == "memory")
     assert first["label"] == "alpha note"  # the BOM is not part of the card's title
@@ -139,7 +139,7 @@ def _race_memory_tool_add(monkeypatch, content: str) -> threading.Thread:
     read-modify-write), then give it a moment to land. Under a correct lock the
     writer blocks until the mutation has written; without one it interleaves and
     the mutation's write clobbers it."""
-    from agent import learning_graph
+    from hermes_agent.agent import learning_graph
     from hermes_agent.tools.memory_tool import MemoryStore
 
     located, landed = threading.Event(), threading.Event()
@@ -232,7 +232,7 @@ def _write_memory_file(home, *entries):
 
 def _journey_id(home, label: str) -> str:
     """The node id Journey renders for the card whose text starts with *label*."""
-    from agent.learning_graph import build_learning_graph
+    from hermes_agent.agent.learning_graph import build_learning_graph
 
     nodes = [n for n in build_learning_graph()["nodes"] if n["kind"] == "memory"]
     index = next(i for i, entry in enumerate(_memory_entries(home)) if entry.startswith(label))

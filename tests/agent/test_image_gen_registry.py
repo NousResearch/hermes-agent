@@ -1,11 +1,11 @@
-"""Tests for agent/image_gen_registry.py — provider registration & active lookup."""
+"""Tests for hermes_agent/agent/image_gen_registry.py — provider registration & active lookup."""
 
 from __future__ import annotations
 
 import pytest
 
-from agent import image_gen_registry
-from agent.image_gen_provider import ImageGenProvider
+from hermes_agent.agent import image_gen_registry
+from hermes_agent.agent.image_gen_provider import ImageGenProvider
 
 
 class _FakeProvider(ImageGenProvider):

@@ -1,7 +1,7 @@
 """Outer-loop exception handler for the conversation turn loop: phase-aware classification
 (interpreter shutdown, deterministic local post-processing bug vs API-path failure),
 unanswered tool_call error results, and the per-turn error cap that stops the loop from
-spinning until the budget is gone. Nothing here imports ``agent.conversation_loop`` at
+spinning until the budget is gone. Nothing here imports ``hermes_agent.agent.conversation_loop`` at
 module level (cycle); loop-internal constants resolve lazily.
 """
 
@@ -13,10 +13,10 @@ import os
 import sys
 from typing import Any
 
-from agent.message_metadata import append_message
-from agent.turn_failure_copy import short_detail, site_copy
+from hermes_agent.agent.message_metadata import append_message
+from hermes_agent.agent.turn_failure_copy import short_detail, site_copy
 
-logger = logging.getLogger("agent.conversation_loop")
+logger = logging.getLogger("hermes_agent.agent.conversation_loop")
 
 
 @dataclass
@@ -41,7 +41,7 @@ def handle_outer_loop_error(
     ``min(_MAX_OUTER_LOOP_ERRORS, max_iterations)`` escaped exceptions. The assistant
     message is never appended here: a prefill/interim assistant may already be the tail
     (assistant→assistant); ``finalize_turn`` appends only when safe."""
-    from agent.conversation_loop import (
+    from hermes_agent.agent.conversation_loop import (
         _API_CALL_MODULES, _LOCAL_PROCESSING_MODULES, _MAX_OUTER_LOOP_ERRORS,
         _is_interpreter_shutdown_error, _ra,
     )

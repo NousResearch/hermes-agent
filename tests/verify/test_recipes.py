@@ -1,10 +1,10 @@
-"""Tests for agent/verify/recipes.py — static run-recipe detection."""
+"""Tests for hermes_agent/agent/verify/recipes.py — static run-recipe detection."""
 
 import json
 
 import pytest
 
-from agent.verify.recipes import Recipe, detect_package_manager, detect_recipe
+from hermes_agent.agent.verify.recipes import Recipe, detect_package_manager, detect_recipe
 
 
 def write_pkg(root, data):

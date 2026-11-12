@@ -10,7 +10,7 @@ and the atexit hook is a weak reference, so abandoned handles are eventually
 GC-collectible -- but eventual collection is not deterministic release.
 
 Owning call sites are still expected to close explicitly; the ownership
-comments in ``run_agent.py`` and ``hermes_agent/tui_gateway/methods_session.py`` say so in
+comments in ``hermes_agent/run_agent.py`` and ``hermes_agent/tui_gateway/methods_session.py`` say so in
 those words. This module pins the ergonomic half of that contract: an owner can
 scope a handle with ``with`` and be exception-safe by construction, instead of
 hand-writing a ``try/finally`` at each of the ~59 instantiation sites (#88033).

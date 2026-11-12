@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from agent.secret_scope import (
+from hermes_agent.agent.secret_scope import (
     UnscopedSecretError, build_profile_secret_scope, get_secret, reset_secret_scope, set_multiplex_active,
     set_secret_scope,
 )
@@ -46,7 +46,7 @@ def _observe_scope(seen: dict, done: threading.Event) -> None:
 
 def test_auto_title_thread_runs_in_the_turns_profile_scope(served_home, monkeypatch):
     """``maybe_auto_title`` fires ``auto_title_session`` on a thread; it must see the turn's profile."""
-    import agent.title_generator as tg
+    import hermes_agent.agent.title_generator as tg
 
     _a, b = served_home
     seen, done = {}, threading.Event()

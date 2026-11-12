@@ -68,7 +68,7 @@ def two_homes(tmp_path, monkeypatch):
 
 def _record_credential_chores(monkeypatch):
     """Replace the credential-reading chores with recorders of (home, Nous override) they see."""
-    from agent import curator
+    from hermes_agent.agent import curator
     from hermes_cli.auth_nous import _nous_inference_env_override
     from hermes_constants import get_hermes_home
 
@@ -89,7 +89,7 @@ def test_multiplexed_credential_chores_run_once_per_profile_in_its_own_scope(two
     """Under multiplex every credential-reading chore visits each served profile inside ITS scope:
     A's tick reads A's override, B's reads B's (B never sees A's), and no fail-closed credential
     read fires the ``no profile secret scope`` warning. The ambient home is untouched afterwards."""
-    from agent.secret_scope import set_multiplex_active
+    from hermes_agent.agent.secret_scope import set_multiplex_active
     from hermes_constants import get_hermes_home
 
     a, b = two_homes
@@ -114,7 +114,7 @@ def test_multiplexed_auto_archive_tick_sweeps_every_served_profile_store(two_hom
     launch profile's store only — and `hermes serve`/the dashboard defer to the gateway for
     every profile it owns, so a served secondary would have had no archiver at all.
     """
-    from agent.secret_scope import set_multiplex_active
+    from hermes_agent.agent.secret_scope import set_multiplex_active
     from hermes_agent.hermes_state import SessionDB
 
     a, b = two_homes
@@ -142,7 +142,7 @@ def test_multiplexed_maintenance_tick_prunes_every_served_profile_store(two_home
     without bound while the launch profile's ``retention_days`` decided whether it happened at all.
     Real stores, real config files: nothing here is patched.
     """
-    from agent.secret_scope import set_multiplex_active
+    from hermes_agent.agent.secret_scope import set_multiplex_active
     from hermes_agent.hermes_state import SessionDB
 
     homes = two_homes
@@ -183,7 +183,7 @@ def test_a_failing_profile_does_not_strand_the_profiles_after_it(two_homes, monk
     profile's sweep to this loop, so B had no archiver at all.
     """
     import hermes_agent.hermes_state_registry as registry
-    from agent.secret_scope import set_multiplex_active
+    from hermes_agent.agent.secret_scope import set_multiplex_active
     from hermes_constants import get_hermes_home
     from hermes_agent.hermes_state import SessionDB
 
@@ -220,7 +220,7 @@ def test_profile_scope_setup_failure_restores_the_callers_home(two_homes, monkey
     ``yield``, so a raising ``.env`` load left the housekeeping thread (or a turn's context)
     resolving ``get_hermes_home()`` to the failed profile for every later unscoped read.
     """
-    from agent.secret_scope import current_secret_scope
+    from hermes_agent.agent.secret_scope import current_secret_scope
     from hermes_constants import get_hermes_home
 
     a, b = two_homes
@@ -245,7 +245,7 @@ def test_prune_unlinks_transcripts_under_the_configured_sessions_dir(two_homes, 
     Hardcoding ``<home>/sessions`` made the prune unlink under a directory nothing writes to, so an
     override left every pruned session's ``.json``/``.jsonl``/``request_dump_*`` orphaned forever.
     """
-    from agent.secret_scope import set_multiplex_active
+    from hermes_agent.agent.secret_scope import set_multiplex_active
     from hermes_agent.hermes_state import SessionDB
 
     a, b = two_homes
@@ -293,7 +293,7 @@ def test_multiplexed_plugin_update_check_visits_every_served_profiles_plugins(tw
     """The plugin update check runs once per served profile, against THAT profile's plugins dir
     and marker, under that profile's ``plugins:`` config. Unscoped it checked the launch home's
     plugins only, so B's plugins were never checked and B's ``plugins.auto_apply`` was ignored."""
-    from agent.secret_scope import set_multiplex_active
+    from hermes_agent.agent.secret_scope import set_multiplex_active
     from hermes_cli import plugins_cadence
 
     a, b = two_homes

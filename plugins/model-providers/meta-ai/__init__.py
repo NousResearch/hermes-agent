@@ -9,7 +9,7 @@ emission is gated by a core host allowlist a third-party plugin must not edit.
 import os
 from typing import Any
 
-from agent.reasoning_effort import META_AI_EFFORTS, clamp_effort
+from hermes_agent.agent.reasoning_effort import META_AI_EFFORTS, clamp_effort
 from providers import register_provider
 from providers.base import ProviderProfile
 

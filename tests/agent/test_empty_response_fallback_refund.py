@@ -2,7 +2,7 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from agent import turn_empty_response as ter
+from hermes_agent.agent import turn_empty_response as ter
 
 
 def _agent():
@@ -20,7 +20,7 @@ def _agent():
 def _recover(agent):
     msg = SimpleNamespace(reasoning=None, reasoning_content=None, reasoning_details=None)
     with patch.object(ter, "_retry_empty", return_value=(None, None, False)), \
-            patch("agent.conversation_loop._sync_failover_system_message", return_value="sys"):
+            patch("hermes_agent.agent.conversation_loop._sync_failover_system_message", return_value="sys"):
         return ter.recover_empty_response(
             agent, msg, None, "stop", final_response="", messages=[{"role": "user", "content": "hi"}],
             api_messages=[], conversation_history=[], active_system_prompt="sys", api_call_count=5,

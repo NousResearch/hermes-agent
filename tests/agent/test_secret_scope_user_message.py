@@ -4,7 +4,7 @@
 
 import pytest
 
-import agent.secret_scope as ss
+import hermes_agent.agent.secret_scope as ss
 
 
 @pytest.fixture

@@ -8,7 +8,7 @@ gate in :mod:`hermes_agent.tools.approval`.
 import contextvars
 import logging
 import os
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 from hermes_cli.config import cfg_get
 from utils import env_var_enabled, is_truthy_value
 
@@ -318,7 +318,7 @@ def _get_approval_mode() -> str:
 def _get_approval_timeout() -> int:
     """Read ``approvals.timeout`` (default 300s: gateway push notifications may
     not be seen for minutes; 60s failed closed before Telegram taps landed).
-    Clamped to ``agent.deadline.MAX_SAFE_TIMEOUT_S`` (~1 year): a larger value
+    Clamped to ``hermes_agent.agent.deadline.MAX_SAFE_TIMEOUT_S`` (~1 year): a larger value
     overflows ``time_t`` inside ``Thread.join`` / ``Lock.acquire`` on macOS and
     crashed every parallel tool batch; clamping at the single config-read site
     keeps every consumer platform-safe at once."""
@@ -327,7 +327,7 @@ def _get_approval_timeout() -> int:
     except (ValueError, TypeError):
         return 300
     try:
-        from agent.deadline import MAX_SAFE_TIMEOUT_S
+        from hermes_agent.agent.deadline import MAX_SAFE_TIMEOUT_S
         safe_cap = int(MAX_SAFE_TIMEOUT_S)
     except Exception:
         safe_cap = 300  # dependency failure must keep the safe default

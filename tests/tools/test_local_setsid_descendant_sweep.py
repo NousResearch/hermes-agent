@@ -5,7 +5,7 @@ SIGKILL).  A descendant that called ``setsid`` escapes the group and survives
 the group-kill — the local sibling of issue #84967.  The fix snapshots the
 descendant set via psutil BEFORE the first signal (children reparent to init
 after the parent dies, so a later parent walk finds nothing — same rationale
-as agent/deadline.py kill_process_tree) and sweeps any snapshotted survivor
+as hermes_agent/agent/deadline.py kill_process_tree) and sweeps any snapshotted survivor
 outside the (now-dead) group with SIGKILL afterwards.
 """
 

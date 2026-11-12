@@ -15,8 +15,8 @@ def test_sudo_request_preserves_command_without_leaking_prompt_context(monkeypat
     from hermes_agent.tui_gateway import server, server_requests
     from hermes_agent.tui_gateway.contracts.registry import SERVER_REQUESTS
     from hermes_agent.gateway.run import _redact_approval_command
-    from agent import redact
-    from agent.vault_backends import unlock
+    from hermes_agent.agent import redact
+    from hermes_agent.agent.vault_backends import unlock
     from hermes_agent.tools import project_tools, skills_tool, terminal_tool, terminal_tool_sudo
 
     # Restore the real registrations, including unrelated callbacks wired by the gateway.

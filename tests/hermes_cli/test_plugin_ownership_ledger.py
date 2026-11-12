@@ -655,8 +655,8 @@ def test_provider_overlay_switches_profiles_and_reveals_fresh_global_fallback(
     monkeypatch,
 ):
     """Provider consumers see A→B→A, and unload never pins a stale base."""
-    from agent.image_gen_provider import ImageGenProvider
-    import agent.image_gen_registry as image_registry
+    from hermes_agent.agent.image_gen_provider import ImageGenProvider
+    import hermes_agent.agent.image_gen_registry as image_registry
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
 
@@ -721,8 +721,8 @@ def test_provider_overlay_switches_profiles_and_reveals_fresh_global_fallback(
 
 def test_reused_provider_singleton_keeps_registration_generations_distinct():
     """Reusing one object after unload must not revive its retired generation."""
-    from agent.image_gen_provider import ImageGenProvider
-    from agent.image_gen_registry import (
+    from hermes_agent.agent.image_gen_provider import ImageGenProvider
+    from hermes_agent.agent.image_gen_registry import (
         get_provider,
         restore_registration,
         snapshot_registration,
@@ -780,8 +780,8 @@ def test_reused_provider_singleton_keeps_registration_generations_distinct():
 
 def test_same_provider_singleton_can_have_two_live_owners():
     """Retiring an older identical lease must not remove the newer owner."""
-    from agent.image_gen_provider import ImageGenProvider
-    from agent.image_gen_registry import (
+    from hermes_agent.agent.image_gen_provider import ImageGenProvider
+    from hermes_agent.agent.image_gen_registry import (
         get_provider,
         restore_registration,
         snapshot_registration,
@@ -822,8 +822,8 @@ def test_same_provider_singleton_can_have_two_live_owners():
 
 def test_provider_cleanup_uses_the_captured_normalized_name():
     """Whitespace and later name mutation cannot orphan a provider entry."""
-    from agent.image_gen_provider import ImageGenProvider
-    from agent.image_gen_registry import (
+    from hermes_agent.agent.image_gen_provider import ImageGenProvider
+    from hermes_agent.agent.image_gen_registry import (
         get_provider,
         restore_registration,
         snapshot_registration,
@@ -864,8 +864,8 @@ def test_provider_cleanup_uses_the_captured_normalized_name():
 
 def test_registration_transaction_excludes_concurrent_disposal(monkeypatch):
     """A lease cannot be retired between another generation's write/acquire."""
-    from agent.image_gen_provider import ImageGenProvider
-    import agent.image_gen_registry as image_registry
+    from hermes_agent.agent.image_gen_provider import ImageGenProvider
+    import hermes_agent.agent.image_gen_registry as image_registry
     from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
 
     class Provider(ImageGenProvider):

@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from agent.context_references import preprocess_context_references
+from hermes_agent.agent.context_references import preprocess_context_references
 from hermes_agent.tui_gateway import server
 
 

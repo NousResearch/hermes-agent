@@ -151,8 +151,8 @@ def _run_test(coro_factory, timeout=10.0):
 @pytest.fixture
 def gateway_tts_turn(monkeypatch, tmp_path):
     """Real agent delivery + real TurnRunner callback wiring; only the speech provider and PCM sink are fake."""
-    from agent.agent_runtime_helpers import strip_think_blocks
-    from agent.stream_delivery import StreamDeliveryMixin
+    from hermes_agent.agent.agent_runtime_helpers import strip_think_blocks
+    from hermes_agent.agent.stream_delivery import StreamDeliveryMixin
     from hermes_agent.gateway.config import StreamingConfig
     from hermes_agent.gateway.run_turn_runner import TurnRunner
     from hermes_agent.gateway.stream_consumer import StreamConsumerConfig

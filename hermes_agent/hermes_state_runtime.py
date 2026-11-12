@@ -7,8 +7,8 @@ import json
 import uuid
 from typing import NamedTuple, Optional
 
-from agent.conversation_compression_archive import ABSORBED_ROW_IDS
-from agent.message_metadata import (
+from hermes_agent.agent.conversation_compression_archive import ABSORBED_ROW_IDS
+from hermes_agent.agent.message_metadata import (
     CANONICAL_ROW, DATA_USE, DB_ROW_SNAPSHOT, MESSAGE_UID, PERSISTENCE_ONLY_MESSAGE_FIELDS, TOOL_CALL_UID, TOOL_CALL_UIDS,
 )
 from hermes_agent.hermes_state_keys import admission_fingerprint

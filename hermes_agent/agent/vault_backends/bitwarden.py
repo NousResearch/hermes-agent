@@ -17,10 +17,10 @@ import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from agent.secret_sources.base import run_cli, scrub_ansi
-from agent.vault_backends import unlock as _unlock
-from agent.vault_backends.base import LoginBackend, UnlockRequired, run_with_secret_env
-from agent.vault_store import VaultItemMeta, normalize_origin
+from hermes_agent.agent.secret_sources.base import run_cli, scrub_ansi
+from hermes_agent.agent.vault_backends import unlock as _unlock
+from hermes_agent.agent.vault_backends.base import LoginBackend, UnlockRequired, run_with_secret_env
+from hermes_agent.agent.vault_store import VaultItemMeta, normalize_origin
 
 logger = logging.getLogger(__name__)
 

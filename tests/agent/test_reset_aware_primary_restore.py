@@ -17,8 +17,8 @@ later than it does today.
 import time
 from unittest.mock import MagicMock, patch
 
-from run_agent import AIAgent
-from agent.credential_pool import (
+from hermes_agent.run_agent import AIAgent
+from hermes_agent.agent.credential_pool import (
     STATUS_DEAD,
     STATUS_EXHAUSTED,
     STATUS_OK,
@@ -98,7 +98,7 @@ def _make_agent(fallback_model=None):
     with (
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=_make_tool_defs("web_search")),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(
             api_key="test-key-12345678",
@@ -118,7 +118,7 @@ def _activate_fallback(agent):
     mock_client.api_key = "fallback-key-1234"
     mock_client.base_url = "https://openrouter.ai/api/v1"
     with patch(
-        "agent.auxiliary_client.resolve_provider_client",
+        "hermes_agent.agent.auxiliary_client.resolve_provider_client",
         return_value=(mock_client, None),
     ):
         assert agent._try_activate_fallback() is True
@@ -256,7 +256,7 @@ class TestResetAwareRestoreGate:
 
         agent._credential_pool = _FakePool("custom", next_at=None)
 
-        with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
+        with patch("hermes_agent.agent.process_bootstrap.OpenAI", return_value=MagicMock()):
             assert agent._restore_primary_runtime() is True
         assert agent._fallback_activated is False
         assert agent.model == original_model
@@ -269,7 +269,7 @@ class TestResetAwareRestoreGate:
 
         agent._credential_pool = _FakePool("custom", next_at=time.time() - 5)
 
-        with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
+        with patch("hermes_agent.agent.process_bootstrap.OpenAI", return_value=MagicMock()):
             assert agent._restore_primary_runtime() is True
         assert agent._fallback_activated is False
 
@@ -281,7 +281,7 @@ class TestResetAwareRestoreGate:
 
         agent._credential_pool = _FakePool("custom", raise_on_next=True)
 
-        with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
+        with patch("hermes_agent.agent.process_bootstrap.OpenAI", return_value=MagicMock()):
             assert agent._restore_primary_runtime() is True
         assert agent._fallback_activated is False
 
@@ -296,7 +296,7 @@ class TestResetAwareRestoreGate:
         agent._credential_pool = _FakePool("openrouter", next_at=None)
         primary_pool = _FakePool("custom", next_at=time.time() + 3600)
 
-        with patch("agent.credential_pool.load_pool", return_value=primary_pool) as lp:
+        with patch("hermes_agent.agent.credential_pool.load_pool", return_value=primary_pool) as lp:
             assert agent._restore_primary_runtime() is False
         assert any(c.args == ("custom",) for c in lp.call_args_list)
         assert primary_pool.next_available_calls == 1

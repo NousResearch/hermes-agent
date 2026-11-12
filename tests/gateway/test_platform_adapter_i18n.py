@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import pytest
 
-from agent import i18n
-from agent.i18n import t
+from hermes_agent.agent import i18n
+from hermes_agent.agent.i18n import t
 from hermes_agent.gateway.platforms.base import utf16_len
 
 import plugins.platforms.discord.adapter as discord_adapter

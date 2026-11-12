@@ -311,11 +311,11 @@ def test_anthropic_oauth_presence_accepts_pool_only_oauth_entry():
 
     with (
         patch(
-            "agent.anthropic_credentials.read_hermes_oauth_credentials",
+            "hermes_agent.agent.anthropic_credentials.read_hermes_oauth_credentials",
             return_value=None,
         ),
         patch(
-            "agent.anthropic_credentials.read_claude_code_credentials",
+            "hermes_agent.agent.anthropic_credentials.read_claude_code_credentials",
             return_value=None,
         ),
         patch(
@@ -331,11 +331,11 @@ def test_anthropic_oauth_presence_accepts_pool_only_oauth_entry():
     # (they are handled by the explicit-config gate / env var paths).
     with (
         patch(
-            "agent.anthropic_credentials.read_hermes_oauth_credentials",
+            "hermes_agent.agent.anthropic_credentials.read_hermes_oauth_credentials",
             return_value=None,
         ),
         patch(
-            "agent.anthropic_credentials.read_claude_code_credentials",
+            "hermes_agent.agent.anthropic_credentials.read_claude_code_credentials",
             return_value=None,
         ),
         patch(
@@ -684,7 +684,7 @@ def test_picker_metadata_uses_one_config_read_for_real_models_dev_lookups(tmp_pa
     the seeded models.dev catalog.  Removing snapshot threading from that
     path makes the larger payload re-open config.yaml once per lookup.
     """
-    from agent import models_dev
+    from hermes_agent.agent import models_dev
     from hermes_cli import config as config_module
 
     home = tmp_path / "hermes"
@@ -814,7 +814,7 @@ def test_apply_limits_skips_window_plan_rows():
         {"slug": "example", "models": ["a/b"]},
     ]
     with patch("hermes_cli.auth.read_credential_pool", return_value={"nous": [{}], "example": [{}]}), \
-            patch("agent.credential_pool.load_pool", return_value=_Pool()):
+            patch("hermes_agent.agent.credential_pool.load_pool", return_value=_Pool()):
         inventory._apply_limits(rows)
     assert "limit" not in rows[0]
     assert rows[1]["limit"]["scope"] == "account"

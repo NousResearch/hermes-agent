@@ -8,7 +8,7 @@ from datetime import datetime, timezone, UTC
 
 import pytest
 
-from agent.portal_tags import reset_conversation_context, set_conversation_context
+from hermes_agent.agent.portal_tags import reset_conversation_context, set_conversation_context
 from hermes_cli import lifecycle
 from hermes_cli.observability import relay_shared_metrics
 from hermes_cli.observability import shared_metrics_engagement as engagement
@@ -197,7 +197,7 @@ def test_compression_commit_hands_the_segment_off(monkeypatch):
     """The committed rotation (and a stale agent adopting the live tip) is the hand-off seam."""
     from types import SimpleNamespace
 
-    from agent import conversation_compression
+    from hermes_agent.agent import conversation_compression
 
     calls = []
     monkeypatch.setattr(relay_shared_metrics, "rotate_segment", lambda old, new: calls.append((old, new)))

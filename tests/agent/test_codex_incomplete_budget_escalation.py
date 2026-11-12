@@ -9,7 +9,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from agent.turn_truncation import continue_codex_incomplete
+from hermes_agent.agent.turn_truncation import continue_codex_incomplete
 
 
 def _agent(max_tokens: int | None = 2000):

@@ -38,7 +38,7 @@ def two_homes(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(root))
     monkeypatch.delenv("HERMES_TUI_TOOLSETS", raising=False)
     monkeypatch.setattr(server, "_hermes_home", root)
-    from agent import secret_scope
+    from hermes_agent.agent import secret_scope
     monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
     server._cfg_cache = server._cfg_mtime = server._cfg_path = None
     sessions = {

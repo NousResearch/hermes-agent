@@ -111,7 +111,7 @@ def test_boot_retry_warning_through_the_real_redacting_formatter(plane, monkeypa
     no config, so it neither re-enters the boot nor waits for a lock a config reader holds."""
     import logging
 
-    from agent.redact import RedactingFormatter
+    from hermes_agent.agent.redact import RedactingFormatter
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     backend = remote_pkg.get_remote_backend()
@@ -150,8 +150,8 @@ def test_the_formatter_never_reads_config(tmp_path, monkeypatch):
     import logging
 
     import hermes_cli.config_backend as cb
-    from agent import redact
-    from agent.redact import RedactingFormatter
+    from hermes_agent.agent import redact
+    from hermes_agent.agent.redact import RedactingFormatter
     from hermes_constants import hermes_home_key, reset_hermes_home_override, set_hermes_home_override
 
     reads: list = []

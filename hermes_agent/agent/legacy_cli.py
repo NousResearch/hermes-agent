@@ -1,9 +1,9 @@
-"""Argument layer for the legacy ``hermes-agent`` runner (``run_agent.main``).
+"""Argument layer for the legacy ``hermes-agent`` runner (``hermes_agent.run_agent.main``).
 
 A console script calls its target with no arguments, so pointing ``hermes-agent``
-at ``run_agent.main`` ignored argv entirely: ``--help``, ``--version`` and a bare
+at ``hermes_agent.run_agent.main`` ignored argv entirely: ``--help``, ``--version`` and a bare
 invocation all ran a real model turn with ``main()``'s built-in demo query, and
-``--query`` was silently dropped (#54648). ``python run_agent.py`` routes through
+``--query`` was silently dropped (#54648). ``python hermes_agent/run_agent.py`` routes through
 here too, so the installer's PATH launcher behaves the same way.
 """
 
@@ -58,10 +58,10 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Optional[list[str]] = None, *, run: Optional[Callable[..., object]] = None) -> int:
-    """Parse ``argv`` (default ``sys.argv[1:]``) and run one query through ``run_agent.main``.
+    """Parse ``argv`` (default ``sys.argv[1:]``) and run one query through ``hermes_agent.run_agent.main``.
 
     Metadata flags and a bare invocation never reach the runner; ``run`` lets
-    ``python run_agent.py`` pass its own ``main`` instead of importing the module twice.
+    ``python hermes_agent/run_agent.py`` pass its own ``main`` instead of importing the module twice.
     """
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -75,7 +75,7 @@ def main(argv: Optional[list[str]] = None, *, run: Optional[Callable[..., object
         return 0
 
     if run is None:
-        from run_agent import main as run
+        from hermes_agent.run_agent import main as run
 
     run(
         query=query,

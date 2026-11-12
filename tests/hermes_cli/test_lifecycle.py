@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from agent import relay_runtime
+from hermes_agent.agent import relay_runtime
 from hermes_cli import lifecycle, observability, plugins
 
 

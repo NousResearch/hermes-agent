@@ -77,7 +77,7 @@ def _plugin_reference_items(pfx: str, qval: str) -> list[dict] | None:
     """`@<prefix>:<query>` autocomplete for a plugin ContextReferenceProvider; None when
     no provider owns ``pfx`` or it fails."""
     try:
-        from agent.context_references import get_context_reference_providers
+        from hermes_agent.agent.context_references import get_context_reference_providers
         import asyncio
         if (prov := get_context_reference_providers().get(pfx)) is None:
             return None
@@ -139,7 +139,7 @@ def _at_root_items() -> list[dict]:
     """Completions for a bare ``@``: directive hints, agent profiles, plugin ``@<prefix>:`` providers."""
     items = [_item(t, m) for t, m in _AT_DIRECTIVE_HINTS] + _profile_mention_items("")
     with contextlib.suppress(Exception):
-        from agent.context_references import get_context_reference_providers
+        from hermes_agent.agent.context_references import get_context_reference_providers
         for pfx, prov in sorted(get_context_reference_providers().items()):
             items.append(_item(f"@{pfx}:", prov.description or f"plugin: {pfx}"))
     return items
@@ -310,7 +310,7 @@ def _model_skew_err(rid) -> dict | None:
     if not skew:
         return None
     boot_rev, disk_rev = skew
-    from agent.i18n import t
+    from hermes_agent.agent.i18n import t
 
     return _err(rid, 5098, t("gateway.model.error_prefix", error=t(
         "gateway.model.err_skew", boot_rev=boot_rev, disk_rev=disk_rev)))

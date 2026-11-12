@@ -22,7 +22,7 @@ def build_secrets_parser(subparsers) -> None:
     # Lazy import: secrets_cli pulls cryptography's native extension, which on Windows
     # maps into the updater process and defers its self-lock preflight. secrets_cli
     # defers its backend import to first use, so register_cli here costs no crypto load.
-    # Lazy-import secrets_cli: the module imports agent.secret_sources.bitwarden which loads
+    # Lazy-import secrets_cli: the module imports hermes_agent.agent.secret_sources.bitwarden which loads
     # cryptography._rust.pyd. See #86781.
     from hermes_cli import secrets_cli as _secrets_cli
     from hermes_cli import onepassword_secrets_cli as _op_secrets_cli

@@ -137,7 +137,7 @@ class TestPersistenceGuard:
 
     def _agent(self, tmp_path, session_id):
         from hermes_agent.hermes_state import SessionDB
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         db = SessionDB(db_path=tmp_path / "sessions.db")
         agent = AIAgent(

@@ -19,11 +19,11 @@ REASONING = "嗯，长度合适。Let me check the file first."
 
 @pytest.fixture()
 def loop_agent():
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     with (
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(
             api_key="test-key-1234567890",

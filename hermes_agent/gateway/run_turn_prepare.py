@@ -11,8 +11,8 @@ import os
 import queue
 import threading
 import time
-from agent.i18n import t
-from agent.session_activity import format_iteration_progress
+from hermes_agent.agent.i18n import t
+from hermes_agent.agent.session_activity import format_iteration_progress
 from contextlib import nullcontext, suppress
 from contextvars import copy_context
 from hermes_agent.gateway.config import Platform
@@ -95,7 +95,7 @@ def _recover_or_remember_model(runner, skey, model):
 def _managed_oauth_env_host(provider: str) -> str:
     """The profile's documented host override for a managed OAuth provider, read through the
     secret scope like the resolver reads it: the process env holds the launch profile's value."""
-    from agent.secret_scope import get_secret_str
+    from hermes_agent.agent.secret_scope import get_secret_str
     from hermes_cli.auth_xai import DEFAULT_XAI_OAUTH_BASE_URL, _xai_validate_inference_base_url
 
     if provider == "openai-codex":
@@ -294,7 +294,7 @@ class GatewayTurnPrepareMixin:
         ``tier`` defaults to the runner's per-turn ``_service_tier``; an off-turn builder (a cold
         ``/review``) passes the session's own instead of writing that shared slot."""
         from hermes_agent.gateway.run import _deep_merge_request_overrides
-        from agent.fast_mode import STATIC_TIERS
+        from hermes_agent.agent.fast_mode import STATIC_TIERS
         from hermes_cli.models import resolve_fast_mode_overrides
         # Tests bind this method onto bare namespaces, so no class-level tables here.
         runtime = {
@@ -317,7 +317,7 @@ class GatewayTurnPrepareMixin:
         if tier is _TIER_FROM_RUNNER:
             tier = getattr(self, "_service_tier", None)
         if tier not in STATIC_TIERS:
-            # None / auto / cold: the bounded window is applied per request by agent.fast_mode.
+            # None / auto / cold: the bounded window is applied per request by hermes_agent.agent.fast_mode.
             route["request_overrides"] = base_request_overrides
             return route
         try:
@@ -591,7 +591,7 @@ class GatewayTurnPrepareMixin:
         """Prepend topic/channel-bound skill payload(s) to ``event.text`` on a new session."""
         _skill_names = [_auto] if isinstance(_auto, str) else list(_auto)
         try:
-            from agent.skill_commands import _load_skill_payload, _build_skill_message
+            from hermes_agent.agent.skill_commands import _load_skill_payload, _build_skill_message
             _combined_parts: list[str] = []
             _loaded_names: list[str] = []
             for _sname in _skill_names:
@@ -650,7 +650,7 @@ class GatewayTurnPrepareMixin:
         if human_platform and source.chat_type == "dm" and not await self.async_session_store.has_any_sessions():
             # Same branch logic as the TUI (profile-build offer once when "ask", else plain intro);
             # first_contact_turn_note already falls back to the plain intro on error.
-            from agent.onboarding import first_contact_turn_note
+            from hermes_agent.agent.onboarding import first_contact_turn_note
             note = first_contact_turn_note(
                 _load_gateway_config(), _gateway_config_home() / "config.yaml",
                 session_history_empty=True, install_has_prior_sessions=False,
@@ -668,7 +668,7 @@ class GatewayTurnPrepareMixin:
         if env_key:
             # A secondary with no home channel must not borrow the default profile's from
             # os.environ; only an UNSCOPED single-profile read may fall back to the process env.
-            from agent.secret_scope import UnscopedSecretError, get_secret
+            from hermes_agent.agent.secret_scope import UnscopedSecretError, get_secret
             try:
                 home_env = (get_secret(env_key) or "").strip()
             except UnscopedSecretError:

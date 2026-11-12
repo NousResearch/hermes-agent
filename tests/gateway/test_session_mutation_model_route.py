@@ -44,7 +44,7 @@ def endpoints():
 
 @pytest.fixture
 def home(monkeypatch):
-    from agent import models_dev
+    from hermes_agent.agent import models_dev
     from hermes_agent.gateway import run
     from hermes_constants import get_hermes_home
     home = get_hermes_home()

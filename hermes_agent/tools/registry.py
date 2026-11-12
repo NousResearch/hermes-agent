@@ -123,7 +123,7 @@ def discover_builtin_tools(tools_dir: Optional[Path] = None) -> list[str]:
     per-file AST scan costs ~145 ms over ~100 files, so verdicts are memoized on disk keyed
     by ``(mtime_ns, size)``; a mismatch or corrupt cache re-scans that file. The write is
     best-effort and atomic, so concurrent processes race harmlessly."""
-    from agent.safe_worker_policy import safe_worker_enabled
+    from hermes_agent.agent.safe_worker_policy import safe_worker_enabled
     if safe_worker_enabled():
         # Toolset filtering happens AFTER import. Keep the troubleshooting worker's
         # import graph closed over reviewed core tools, not plugin-backed wrappers
@@ -339,7 +339,7 @@ def check_fn_cache_scope() -> Optional[str]:
     processes keep the process-wide cache; a multiplex gateway installs a Hermes-home override
     per profile turn, so the canonical profile key is the boundary."""
     try:
-        from agent.secret_scope import serves_routed_profile
+        from hermes_agent.agent.secret_scope import serves_routed_profile
         from hermes_constants import get_hermes_home_override
         if not serves_routed_profile():
             return None
@@ -444,7 +444,7 @@ def _call_check_fn(fn: Callable, *, shared: bool = True) -> bool:
 
 def _run_check_fn_uncached(fn: Callable) -> bool:
     """Run an availability check without cache/grace handling."""
-    from agent.secret_scope import UnscopedSecretError, current_secret_scope
+    from hermes_agent.agent.secret_scope import UnscopedSecretError, current_secret_scope
     try:
         return _call_check_fn(fn, shared=False)
     except CheckFnTimeout as exc:

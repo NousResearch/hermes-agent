@@ -6,7 +6,7 @@ description: "Detailed walkthrough of AIAgent execution, API modes, tools, callb
 
 # Agent Loop Internals
 
-The core orchestration engine is the `AIAgent` class. `run_agent.py` is now a thin facade: the loop itself lives in `agent/conversation_loop.py`, each turn phase in `agent/turn_*.py` (iteration prep, API call, API error, overflow, truncation, recovery), constructor wiring in `agent/agent_init.py`, and everything from prompt assembly to tool dispatch to provider failover in focused `agent/*.py` modules mixed into `AIAgent`.
+The core orchestration engine is the `AIAgent` class. `hermes_agent/run_agent.py` is now a thin facade: the loop itself lives in `hermes_agent/agent/conversation_loop.py`, each turn phase in `hermes_agent/agent/turn_*.py` (iteration prep, API call, API error, overflow, truncation, recovery), constructor wiring in `hermes_agent/agent/agent_init.py`, and everything from prompt assembly to tool dispatch to provider failover in focused `hermes_agent/agent/*.py` modules mixed into `AIAgent`.
 
 ## Core Responsibilities
 
@@ -149,7 +149,7 @@ for each tool_call in response.tool_calls:
 
 ### Agent-Level Tools
 
-Some tools are intercepted by `agent/tool_executor.py` (called from `agent/conversation_loop.py`) *before* reaching `handle_function_call()`:
+Some tools are intercepted by `hermes_agent/agent/tool_executor.py` (called from `hermes_agent/agent/conversation_loop.py`) *before* reaching `handle_function_call()`:
 
 | Tool | Why intercepted |
 |------|--------------------|
@@ -223,15 +223,15 @@ After each turn:
 
 | File | Purpose |
 |------|---------|
-| `run_agent.py` | `AIAgent` facade — public entry points; loop and turn phases live in `agent/` |
-| `agent/conversation_loop.py` | The agent loop (`run_conversation()` body) |
-| `agent/turn_*.py` | Turn phases: iteration_prep, api_call, api_error, overflow, truncation, recovery |
-| `agent/tool_executor.py` | Tool-call execution and agent-level tool interception |
-| `agent/prompt_builder.py` | System prompt assembly from memory, skills, context files, personality |
-| `agent/context_engine.py` | ContextEngine ABC — pluggable context management |
-| `agent/context_compressor.py` | Default engine — lossy summarization algorithm |
-| `agent/prompt_caching.py` | Anthropic prompt caching markers and cache metrics |
-| `agent/auxiliary_client.py` | Auxiliary LLM client for side tasks (vision, summarization) |
+| `hermes_agent/run_agent.py` | `AIAgent` facade — public entry points; loop and turn phases live in `agent/` |
+| `hermes_agent/agent/conversation_loop.py` | The agent loop (`run_conversation()` body) |
+| `hermes_agent/agent/turn_*.py` | Turn phases: iteration_prep, api_call, api_error, overflow, truncation, recovery |
+| `hermes_agent/agent/tool_executor.py` | Tool-call execution and agent-level tool interception |
+| `hermes_agent/agent/prompt_builder.py` | System prompt assembly from memory, skills, context files, personality |
+| `hermes_agent/agent/context_engine.py` | ContextEngine ABC — pluggable context management |
+| `hermes_agent/agent/context_compressor.py` | Default engine — lossy summarization algorithm |
+| `hermes_agent/agent/prompt_caching.py` | Anthropic prompt caching markers and cache metrics |
+| `hermes_agent/agent/auxiliary_client.py` | Auxiliary LLM client for side tasks (vision, summarization) |
 | `hermes_agent/model_tools.py` | Tool schema collection, `handle_function_call()` dispatch |
 
 ## Related Docs

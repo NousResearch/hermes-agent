@@ -4,11 +4,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from agent.compression_marker import _COMPRESSION_MARKER_RE
+from hermes_agent.agent.compression_marker import _COMPRESSION_MARKER_RE
 
 
 def _make_agent(memory_manager, compressor):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     agent = AIAgent(
         api_key="test-key",
@@ -158,7 +158,7 @@ def test_provider_context_is_strictly_sanitized_before_plugin_engine(monkeypatch
 
     # Provider-to-engine handoff is an external-LLM egress boundary, so it
     # remains strict even when display/log redaction was explicitly disabled.
-    monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+    monkeypatch.setattr("hermes_agent.agent.redact._REDACT_ENABLED", False)
     agent._compress_context(_messages(), "sys", approx_tokens=100_000)
 
     assert len(received) == 1

@@ -37,7 +37,7 @@ def test_manual_compress_keeps_tui_composer_editable(capsys):
 
     shell.agent._compress_context.side_effect = compress
 
-    with patch("agent.model_metadata.estimate_request_tokens_rough", return_value=100):
+    with patch("hermes_agent.agent.model_metadata.estimate_request_tokens_rough", return_value=100):
         shell._manual_compress()
 
     assert observed == {"running": True, "blocks_input": False}
@@ -80,7 +80,7 @@ def test_manual_compress_syncs_session_id_after_split():
     shell.agent.session_id = old_id  # starts in sync
     shell._pending_title = "stale title"
 
-    with patch("agent.model_metadata.estimate_request_tokens_rough", return_value=100):
+    with patch("hermes_agent.agent.model_metadata.estimate_request_tokens_rough", return_value=100):
         shell._manual_compress()
 
     # CLI session_id must now point at the continuation child, not the parent.
@@ -121,7 +121,7 @@ def test_manual_compress_flushes_compressed_history_to_child_session_db():
     shell.agent._compress_context.side_effect = _fake_compress
     shell.agent._compression_skipped_due_to_lock = False
 
-    with patch("agent.model_metadata.estimate_messages_tokens_rough", return_value=100):
+    with patch("hermes_agent.agent.model_metadata.estimate_messages_tokens_rough", return_value=100):
         shell._manual_compress()
 
     shell.agent._flush_messages_to_session_db.assert_called_once_with(compressed, None)
@@ -133,7 +133,7 @@ def test_manual_compress_runs_when_auto_compaction_disabled(capsys):
     """compression.enabled: false disables *automatic* compaction only.
 
     Manual /compress must still work: the context-overflow error path
-    (agent/conversation_loop.py) explicitly directs users to /compress when
+    (hermes_agent/agent/conversation_loop.py) explicitly directs users to /compress when
     auto-compaction is off, and the gateway's /compress handler has never
     gated on the flag. Regression for the CLI refusing with "Compression is
     disabled in config."
@@ -154,7 +154,7 @@ def test_manual_compress_runs_when_auto_compaction_disabled(capsys):
     # Explicit non-lock-skip: MagicMock getattr would return a truthy mock.
     shell.agent._compression_skipped_due_to_lock = False
 
-    with patch("agent.model_metadata.estimate_request_tokens_rough", return_value=100):
+    with patch("hermes_agent.agent.model_metadata.estimate_request_tokens_rough", return_value=100):
         shell._manual_compress()
 
     output = capsys.readouterr().out
@@ -191,7 +191,7 @@ def test_manual_compress_shows_lock_skip_without_confirmed_holder(capsys):
 
     shell.agent._compress_context.side_effect = _fake_compress
 
-    with patch("agent.model_metadata.estimate_request_tokens_rough", return_value=100):
+    with patch("hermes_agent.agent.model_metadata.estimate_request_tokens_rough", return_value=100):
         shell._manual_compress()
 
     output = capsys.readouterr().out
@@ -222,7 +222,7 @@ def test_manual_compress_shows_lock_in_progress_with_holder(capsys):
 
     shell.agent._compress_context.side_effect = _fake_compress
 
-    with patch("agent.model_metadata.estimate_request_tokens_rough", return_value=100):
+    with patch("hermes_agent.agent.model_metadata.estimate_request_tokens_rough", return_value=100):
         shell._manual_compress()
 
     output = capsys.readouterr().out

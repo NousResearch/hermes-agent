@@ -38,8 +38,8 @@ class TestAgentCloseMethod:
         """close() should release every session-owned execution backend."""
         from unittest.mock import patch
 
-        with patch("run_agent.AIAgent.__init__", return_value=None):
-            from run_agent import AIAgent
+        with patch("hermes_agent.run_agent.AIAgent.__init__", return_value=None):
+            from hermes_agent.run_agent import AIAgent
             agent = AIAgent.__new__(AIAgent)
             agent.session_id = "test-close-cleanup"
             agent._process_owner_task_ids = {"sa-owned"}
@@ -48,8 +48,8 @@ class TestAgentCloseMethod:
             agent.client = None
 
             with patch("hermes_agent.tools.process_registry.process_registry") as mock_registry, \
-                 patch("run_agent.cleanup_vm") as mock_cleanup_vm, \
-                 patch("run_agent.cleanup_browser") as mock_cleanup_browser, \
+                 patch("hermes_agent.run_agent.cleanup_vm") as mock_cleanup_vm, \
+                 patch("hermes_agent.run_agent.cleanup_browser") as mock_cleanup_browser, \
                  patch("hermes_agent.tools.computer_use.tool.release_computer_use_session") as mock_cleanup_cua:
                 mock_registry.list_sessions.return_value = [
                     {"session_id": "owned", "owner_task_id": "sa-owned", "status": "running"},
@@ -70,8 +70,8 @@ class TestAgentCloseMethod:
         """close() can be called multiple times without error."""
         from unittest.mock import patch
 
-        with patch("run_agent.AIAgent.__init__", return_value=None):
-            from run_agent import AIAgent
+        with patch("hermes_agent.run_agent.AIAgent.__init__", return_value=None):
+            from hermes_agent.run_agent import AIAgent
             agent = AIAgent.__new__(AIAgent)
             agent.session_id = "test-close-idempotent"
             agent._active_children = []
@@ -86,8 +86,8 @@ class TestAgentCloseMethod:
         """One failed cleanup step must not strand the computer-use session."""
         from unittest.mock import patch
 
-        with patch("run_agent.AIAgent.__init__", return_value=None):
-            from run_agent import AIAgent
+        with patch("hermes_agent.run_agent.AIAgent.__init__", return_value=None):
+            from hermes_agent.run_agent import AIAgent
             agent = AIAgent.__new__(AIAgent)
             agent.session_id = "test-close-after-failure"
             agent._active_children = []
@@ -110,8 +110,8 @@ class TestAgentCloseMethod:
         """Cache eviction is not a hard session boundary."""
         from unittest.mock import patch
 
-        with patch("run_agent.AIAgent.__init__", return_value=None):
-            from run_agent import AIAgent
+        with patch("hermes_agent.run_agent.AIAgent.__init__", return_value=None):
+            from hermes_agent.run_agent import AIAgent
             agent = AIAgent.__new__(AIAgent)
             agent.session_id = "test-soft-release"
             agent._active_children = []
@@ -129,8 +129,8 @@ class TestAgentCloseMethod:
         """close() should call close() on all active child agents."""
         from unittest.mock import MagicMock, patch
 
-        with patch("run_agent.AIAgent.__init__", return_value=None):
-            from run_agent import AIAgent
+        with patch("hermes_agent.run_agent.AIAgent.__init__", return_value=None):
+            from hermes_agent.run_agent import AIAgent
             agent = AIAgent.__new__(AIAgent)
             agent.session_id = "test-close-children"
             agent._active_children_lock = threading.Lock()
@@ -150,8 +150,8 @@ class TestAgentCloseMethod:
         """close() finalizes the agent's owned SQLite session row."""
         from unittest.mock import MagicMock, patch
 
-        with patch("run_agent.AIAgent.__init__", return_value=None):
-            from run_agent import AIAgent
+        with patch("hermes_agent.run_agent.AIAgent.__init__", return_value=None):
+            from hermes_agent.run_agent import AIAgent
             agent = AIAgent.__new__(AIAgent)
             agent.session_id = "test-close-session-row"
             agent._active_children = []
@@ -170,8 +170,8 @@ class TestAgentCloseMethod:
         """Helper agents that handed session ownership forward opt out."""
         from unittest.mock import MagicMock, patch
 
-        with patch("run_agent.AIAgent.__init__", return_value=None):
-            from run_agent import AIAgent
+        with patch("hermes_agent.run_agent.AIAgent.__init__", return_value=None):
+            from hermes_agent.run_agent import AIAgent
             agent = AIAgent.__new__(AIAgent)
             agent.session_id = "test-close-forwarded-session"
             agent._active_children = []
@@ -277,7 +277,7 @@ class TestDelegationCleanup:
             reset_hermes_home_override,
             set_hermes_home_override,
         )
-        from agent import relay_runtime
+        from hermes_agent.agent import relay_runtime
         from hermes_agent.tools.delegate_tool import _run_single_child
 
         parent = MagicMock()
@@ -322,7 +322,7 @@ class TestDelegationCleanup:
     def test_active_child_turn_owns_relay_scope_cleanup(self, monkeypatch):
         from unittest.mock import MagicMock
 
-        from agent import relay_runtime
+        from hermes_agent.agent import relay_runtime
         from hermes_agent.tools.delegate_tool import _run_single_child
 
         parent = MagicMock()
@@ -356,7 +356,7 @@ class TestDelegationCleanup:
     ):
         from unittest.mock import MagicMock
 
-        from agent import relay_runtime
+        from hermes_agent.agent import relay_runtime
         from hermes_constants import (
             reset_hermes_home_override,
             set_hermes_home_override,

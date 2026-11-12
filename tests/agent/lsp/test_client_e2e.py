@@ -15,8 +15,8 @@ from pathlib import Path
 
 import pytest
 
-from agent.lsp.client import _STREAM_LIMIT, LSPClient
-from agent.lsp.protocol import LSPProtocolError, LSPRequestError
+from hermes_agent.agent.lsp.client import _STREAM_LIMIT, LSPClient
+from hermes_agent.agent.lsp.protocol import LSPProtocolError, LSPRequestError
 
 
 MOCK_SERVER = str(Path(__file__).parent / "_mock_lsp_server.py")
@@ -284,7 +284,7 @@ async def test_shutdown_never_signals_a_server_that_honours_exit(tmp_path: Path)
 async def test_docs_cache_is_lru_bounded_and_reopens_evicted(tmp_path: Path, monkeypatch):
     """`_docs` never exceeds MAX_TRACKED_FILES; an evicted file is didClose'd and re-didOpen'ed
     (version 0) with diagnostics flowing again, so the cap is invisible to callers."""
-    import agent.lsp.client as client_mod
+    import hermes_agent.agent.lsp.client as client_mod
 
     monkeypatch.setattr(client_mod, "MAX_TRACKED_FILES", 3)
     files = [tmp_path / f"f{i}.py" for i in range(5)]

@@ -22,9 +22,9 @@ from pathlib import Path
 
 from hermes_constants import get_hermes_home
 from hermes_agent.hermes_state import SessionDB
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
-from agent.agent_init_compression_notice import (
+from hermes_agent.agent.agent_init_compression_notice import (
     _codex_gpt55_autoraise_notice_marker,
     _codex_gpt55_autoraise_notice_seen,
     _record_codex_gpt55_autoraise_notice,

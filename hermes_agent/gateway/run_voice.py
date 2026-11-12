@@ -18,7 +18,7 @@ from difflib import SequenceMatcher
 from types import SimpleNamespace
 from typing import Dict, List, Optional
 
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 from hermes_agent.gateway.config import Platform
 from hermes_agent.gateway.platforms.base import build_auto_tts_output_path
 from hermes_agent.gateway.platforms.event import MessageEvent, MessageType

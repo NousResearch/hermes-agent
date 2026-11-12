@@ -14,8 +14,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.prompt_cache_scope import resolve_prompt_cache_scope
-from agent.transports.codex import _cache_scope_from_session_id, _content_cache_key
+from hermes_agent.agent.prompt_cache_scope import resolve_prompt_cache_scope
+from hermes_agent.agent.transports.codex import _cache_scope_from_session_id, _content_cache_key
 from hermes_agent.hermes_state import SessionDB
 
 
@@ -177,7 +177,7 @@ class TestResolvePromptCacheScope:
         agent = _agent("rotated-1", None)
         # No DB -> physical id, memoized for the DB-less state.
         assert resolve_prompt_cache_scope(agent) == "rotated-1"
-        # Lazy attach (run_agent._get_session_db_for_recall pattern).
+        # Lazy attach (hermes_agent.run_agent._get_session_db_for_recall pattern).
         agent._session_db = db
         assert resolve_prompt_cache_scope(agent) == "root-sess"
 
@@ -189,7 +189,7 @@ class TestResolvePromptCacheScope:
         assert resolve_prompt_cache_scope(_agent("sess-y", WeirdDB())) == "sess-y"
 
     def test_safe_variant_never_raises(self):
-        from agent.prompt_cache_scope import resolve_prompt_cache_scope_safe
+        from hermes_agent.agent.prompt_cache_scope import resolve_prompt_cache_scope_safe
 
         class ExplodingAgent:
             @property
@@ -242,7 +242,7 @@ class TestTransportWiring:
     """cache_scope_id reaches the key derivation on both transports."""
 
     def test_codex_build_kwargs_prefers_cache_scope_id(self):
-        from agent.transports.codex import ResponsesApiTransport
+        from hermes_agent.agent.transports.codex import ResponsesApiTransport
 
         transport = ResponsesApiTransport()
         base = dict(
@@ -267,7 +267,7 @@ class TestTransportWiring:
 
     def test_codex_session_header_keeps_physical_id(self):
         """Transcript identity (#57012 contract) must NOT be rewritten."""
-        from agent.transports.codex import ResponsesApiTransport
+        from hermes_agent.agent.transports.codex import ResponsesApiTransport
 
         transport = ResponsesApiTransport()
         kwargs = transport.build_kwargs(
@@ -288,7 +288,7 @@ class TestTransportWiring:
         ]
 
     def test_xai_conv_id_uses_logical_scope(self):
-        from agent.transports.codex import ResponsesApiTransport
+        from hermes_agent.agent.transports.codex import ResponsesApiTransport
 
         transport = ResponsesApiTransport()
         kwargs = transport.build_kwargs(
@@ -305,7 +305,7 @@ class TestTransportWiring:
         assert kwargs["extra_headers"]["x-grok-conv-id"] == "root-sess"
 
     def test_chat_completions_prefers_cache_scope_id(self):
-        from agent.transports.chat_completions import _add_prompt_cache_key
+        from hermes_agent.agent.transports.chat_completions import _add_prompt_cache_key
 
         messages = [{"role": "system", "content": "sys"}]
 
@@ -326,7 +326,7 @@ class TestTransportWiring:
 
     def test_cron_normalization_still_applies_to_scope(self):
         """cron_<job>_<ts> scopes still normalize per-fire timestamps away."""
-        from agent.transports.codex import ResponsesApiTransport
+        from hermes_agent.agent.transports.codex import ResponsesApiTransport
 
         transport = ResponsesApiTransport()
         base = dict(
@@ -380,7 +380,7 @@ class TestPerResponseRunNonceIsolation:
 
     @staticmethod
     def _prompt_cache_key(session_id: str) -> str:
-        from agent.transports.codex import ResponsesApiTransport
+        from hermes_agent.agent.transports.codex import ResponsesApiTransport
 
         return ResponsesApiTransport().build_kwargs(
             model="gpt-5.5",
@@ -469,8 +469,8 @@ class TestPerResponseRunNonceIsolation:
         provider profiles — and these call sites pass neither, exactly as an
         undeclared conversation would.
         """
-        from agent.transports.chat_completions import _add_prompt_cache_key
-        from agent.transports.codex import ResponsesApiTransport
+        from hermes_agent.agent.transports.chat_completions import _add_prompt_cache_key
+        from hermes_agent.agent.transports.codex import ResponsesApiTransport
 
         transport = ResponsesApiTransport()
         base = dict(model="gpt-5.5", messages=self.SYS, tools=[])
@@ -515,7 +515,7 @@ class TestPerResponseRunNonceIsolation:
         identity would arrive through the conversation contextvar, not from
         re-reading this id.
         """
-        from agent.portal_tags import (
+        from hermes_agent.agent.portal_tags import (
             reset_conversation_context,
             set_conversation_context,
         )

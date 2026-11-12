@@ -8,7 +8,7 @@ compaction is a chance to lose detail, so the cap is opt-in. The validation matt
 """
 from types import SimpleNamespace
 
-from agent.context_compressor import ContextCompressor
+from hermes_agent.agent.context_compressor import ContextCompressor
 from hermes_agent.tools.delegate_tool import _apply_child_compression_cap, _child_compression_cap_tokens
 
 

@@ -284,8 +284,8 @@ def test_a_lookalike_host_is_not_use(tmp_path, url):
 
 
 def test_a_request_rejected_at_the_rows_host_names_the_install(acme_row, monkeypatch, capsys):
-    from agent.error_classifier import classify_api_error
-    from agent.turn_recovery import nonretryable_client_error_result
+    from hermes_agent.agent.error_classifier import classify_api_error
+    from hermes_agent.agent.turn_recovery import nonretryable_client_error_result
     monkeypatch.setattr(lcm, "LEFT_CORE", (replace(ACME, hosts=("acme.test",)),))
     printed = []
 

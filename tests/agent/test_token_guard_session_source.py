@@ -13,7 +13,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from hermes_agent.hermes_state import SessionDB
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 SID = "20260913_210721_c89ac8"
 
@@ -31,7 +31,7 @@ def test_guard_first_writer_carries_the_agent_source(tmp_path):
     with (
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(
             api_key="test-key-1234567890", base_url="https://openrouter.ai/api/v1", quiet_mode=True,

@@ -23,7 +23,7 @@ class TestInterruptPropagationToChild(unittest.TestCase):
 
     def _make_bare_agent(self):
         """Create a bare AIAgent via __new__ with all interrupt-related attrs."""
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         agent = AIAgent.__new__(AIAgent)
         agent._interrupt_requested = False
         agent._interrupt_message = None

@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 def _tool_defs(*names):
@@ -68,7 +68,7 @@ def test_substantive_tool_only_turn_invalidates_older_housekeeping_fallback():
     with (
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=_tool_defs("todo", "web_search")),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(
             api_key="test-key",
@@ -157,7 +157,7 @@ def test_bare_tool_marker_is_not_reused_as_final_response():
     with (
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=_tool_defs("skill_manage")),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(
             api_key="test-key",

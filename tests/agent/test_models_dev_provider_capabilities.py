@@ -5,7 +5,7 @@ from copy import deepcopy
 
 import providers
 from providers.base import ProviderProfile
-from agent import models_dev
+from hermes_agent.agent import models_dev
 
 
 def _isolated_registry(monkeypatch, catalog=None):
@@ -30,7 +30,7 @@ def _isolated_registry(monkeypatch, catalog=None):
 
 
 def test_declared_capabilities_reach_every_consumer_and_user_override_wins(monkeypatch):
-    from agent.image_routing import decide_image_input_mode
+    from hermes_agent.agent.image_routing import decide_image_input_mode
     from hermes_cli.inventory import _apply_capabilities
 
     _isolated_registry(monkeypatch)
@@ -92,7 +92,7 @@ def test_provider_wide_vision_flag_gates_tool_results_not_attachments(monkeypatc
     """``ProviderProfile.supports_vision`` is a provider-wide tool-result wire capability; per-model attachment
     routing comes only from ``model_capabilities``. Relays (``router``) set the flag over mixed catalogs, so
     honouring it for attachments sent images to text-only models (reverted in 08feaa98b5b)."""
-    from agent.image_routing import decide_image_input_mode
+    from hermes_agent.agent.image_routing import decide_image_input_mode
     from hermes_agent.tools.vision_tools import _supports_media_in_tool_results
 
     _isolated_registry(monkeypatch)

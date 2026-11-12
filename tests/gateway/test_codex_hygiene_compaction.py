@@ -21,8 +21,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.conversation_compression import compress_context
-from agent.transports.codex_app_server_session import TurnResult
+from hermes_agent.agent.conversation_compression import compress_context
+from hermes_agent.agent.transports.codex_app_server_session import TurnResult
 from hermes_agent.gateway.run import run_codex_hygiene_compaction
 
 
@@ -47,7 +47,7 @@ class FakeCodexSession:
 class LiveCodexAgent:
     """Minimal live cached agent whose _compress_context is the REAL routing.
 
-    The forwarder mirrors run_agent.AIAgent._compress_context: it calls the
+    The forwarder mirrors hermes_agent.run_agent.AIAgent._compress_context: it calls the
     module-level compress_context(), so these tests exercise the genuine
     codex route (mode gate, cooldown, compact_thread RPC) rather than a stub
     of the code under test.

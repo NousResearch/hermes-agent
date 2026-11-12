@@ -13,7 +13,7 @@ callables that core consults BEFORE any built-in, name-keyed path:
   the pool has a credential row, not an argparse namespace, and needs tokens back, not a bool.
 
 Every function here late-imports ``hermes_cli.auth`` names: this module is imported by the auth facade
-right after ``PROVIDER_REGISTRY`` exists, and by ``agent.credential_pool``.
+right after ``PROVIDER_REGISTRY`` exists, and by ``hermes_agent.agent.credential_pool``.
 """
 from __future__ import annotations
 
@@ -339,7 +339,7 @@ def plugin_refresh_hook(provider: str) -> Optional[Callable[[Any], Any]]:
 
 def is_refreshable_oauth_provider(provider: str) -> bool:
     """Built-in refreshable set OR a plugin profile shipping ``refresh_credential``."""
-    from agent.credential_pool import REFRESHABLE_OAUTH_PROVIDERS
+    from hermes_agent.agent.credential_pool import REFRESHABLE_OAUTH_PROVIDERS
 
     return provider in REFRESHABLE_OAUTH_PROVIDERS or plugin_refresh_hook(provider) is not None
 
@@ -407,7 +407,7 @@ def get_plugin_oauth_auth_status(provider_id: str) -> dict[str, Any]:
     """
     if provider_id not in PLUGIN_MIRRORED_PROVIDERS:
         return {"logged_in": False}
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
 
     entries = [e for e in load_pool(provider_id).entries() if (e.access_token or e.agent_key or "").strip()]
     live = [e for e in entries if not _pool_entry_expired(e)]

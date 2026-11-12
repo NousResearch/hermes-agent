@@ -14,8 +14,8 @@ from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional, Tuple
 
-from agent.compaction_display import project_compaction_message_for_display
-from agent.i18n import t
+from hermes_agent.agent.compaction_display import project_compaction_message_for_display
+from hermes_agent.agent.i18n import t
 from hermes_agent.gateway.config import Platform
 from hermes_agent.gateway.platforms.base import _prefix_within_utf16_limit, utf16_len
 from hermes_agent.gateway.platforms.event import MessageEvent

@@ -1,5 +1,5 @@
 """Byte-parity + complexity proof for the memoized send-path tool-call
-argument canonicalization (agent/conversation_loop.py).
+argument canonicalization (hermes_agent/agent/conversation_loop.py).
 
 The pre-fix inline loop re-ran ``json.loads`` + ``json.dumps(sort_keys=True)``
 on EVERY historical tool call's arguments on EVERY API-call iteration —
@@ -25,8 +25,8 @@ import random
 
 import pytest
 
-import agent.conversation_loop as cl
-from agent.message_sanitization import _repair_tool_call_arguments
+import hermes_agent.agent.conversation_loop as cl
+from hermes_agent.agent.message_sanitization import _repair_tool_call_arguments
 
 random.seed(1234)
 

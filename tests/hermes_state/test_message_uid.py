@@ -262,7 +262,7 @@ class TestPersistedMergeWitness:
     survivor's row, so a consumer that restarts after the merge still knows the composite's constituents."""
 
     def test_flushed_survivor_persists_the_absorbed_uids_and_restore_returns_them(self, db):
-        from agent.agent_runtime_helpers import _merge_consecutive_users
+        from hermes_agent.agent.agent_runtime_helpers import _merge_consecutive_users
 
         db.create_session("s", "cli")
         dangling = {"role": "user", "content": "first, never answered"}
@@ -368,7 +368,7 @@ class TestPersistedMergeWitness:
             "SELECT tool_call_uid FROM messages WHERE content = 'stray'").fetchone()[0] is None
 
     def test_a_composite_rewind_reports_the_replacement_rows_uid(self, db):
-        from agent.context_compressor import HISTORICAL_TASK_HEADING, SUMMARY_PREFIX, _SUMMARY_END_MARKER
+        from hermes_agent.agent.context_compressor import HISTORICAL_TASK_HEADING, SUMMARY_PREFIX, _SUMMARY_END_MARKER
 
         sid = "s"
         db.create_session(sid, "cli", model="m")
@@ -389,7 +389,7 @@ class TestPersistedMergeWitness:
     def test_a_live_undo_of_a_composite_turn_installs_the_replacement_rows_identity(self, db):
         """The CLI/TUI/gateway undo path (``rewind_user_turn``) installs the hidden scaffold as the live head:
         it must carry the replacement row's uid, not wait for a restart to learn it."""
-        from agent.context_compressor import HISTORICAL_TASK_HEADING, SUMMARY_PREFIX, _SUMMARY_END_MARKER
+        from hermes_agent.agent.context_compressor import HISTORICAL_TASK_HEADING, SUMMARY_PREFIX, _SUMMARY_END_MARKER
 
         sid = "s"
         db.create_session(sid, "cli", model="m")
@@ -490,7 +490,7 @@ def _call(cid):
 def test_a_result_pairs_with_the_assistant_that_named_it_not_the_nearest_one(db):
     """Restore (results without a stored uid) and the flush walk both skip a nearer assistant that never
     named the result's call, and pair with the one that did."""
-    from agent.message_metadata import tool_call_uid_from_history
+    from hermes_agent.agent.message_metadata import tool_call_uid_from_history
 
     db.create_session("s", "cli")
     msgs = [{"role": "user", "content": "q"},
@@ -523,8 +523,8 @@ def test_one_response_repeating_a_provider_id_shares_one_uid_its_results_all_car
 def test_a_fold_after_a_shared_uid_row_keeps_each_call_aligned_with_its_uid():
     """The shared uid fills each of the row's own slots before the absorbed turn's occurrence is appended, so
     the absorbed call (third) keeps its own uid instead of sliding onto the second."""
-    from agent.agent_runtime_helpers import _merge_consecutive_assistants
-    from agent.message_metadata import index_tool_call_uids, resolve_tool_call_uid
+    from hermes_agent.agent.agent_runtime_helpers import _merge_consecutive_assistants
+    from hermes_agent.agent.message_metadata import index_tool_call_uids, resolve_tool_call_uid
 
     shared, own = "1" * 32, "2" * 32
     first = {"role": "assistant", "content": "", "tool_calls": [_call("call_x"), _call("call_x")],

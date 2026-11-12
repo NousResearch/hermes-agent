@@ -24,7 +24,7 @@ import time
 
 import pytest
 
-from agent.tool_executor import _ConcurrentToolAuthorizationGate
+from hermes_agent.agent.tool_executor import _ConcurrentToolAuthorizationGate
 from hermes_agent.tools import approval as approval_mod
 from hermes_agent.tools import approval_context
 from hermes_agent.tools import approval_human_wait

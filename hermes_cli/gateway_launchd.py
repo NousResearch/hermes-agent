@@ -19,7 +19,7 @@ from datetime import UTC
 
 from hermes_cli import gateway_service_owner
 
-from agent.deadline import poll_until
+from hermes_agent.agent.deadline import poll_until
 
 
 def _gw():

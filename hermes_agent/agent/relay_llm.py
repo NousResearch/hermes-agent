@@ -13,7 +13,7 @@ from functools import partial
 from types import SimpleNamespace
 from typing import Any
 
-from agent import relay_runtime
+from hermes_agent.agent import relay_runtime
 
 logger = logging.getLogger(__name__)
 
@@ -467,7 +467,7 @@ class ManagedLlmStream(Iterator[Any]):
             return
         error_class = None
         if error is not None and self._logical_model_name is not None:
-            from agent import auxiliary_call_outcome
+            from hermes_agent.agent import auxiliary_call_outcome
             if auxiliary_call_outcome.is_cancellation(error):
                 outcome = "cancelled"
             else:

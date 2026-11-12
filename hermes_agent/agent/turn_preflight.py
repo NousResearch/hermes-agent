@@ -4,7 +4,7 @@ Runs once per API call after the request pressure is measured: grow a managed ll
 window (last resort), or compress when over threshold (deferring on noisy estimates, in
 failure cooldown, or while the review fork's first request is pending), handle the
 provider-proven overflow re-check fail-closed, and emit the deduped blocked/uncompressed
-overflow warnings. Nothing here imports ``agent.conversation_loop`` at module level
+overflow warnings. Nothing here imports ``hermes_agent.agent.conversation_loop`` at module level
 (cycle); loop-internal helpers resolve lazily."""
 
 from __future__ import annotations
@@ -13,19 +13,19 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from agent.context_engine import automatic_compaction_status_message
-from agent.conversation_compression import (
+from hermes_agent.agent.context_engine import automatic_compaction_status_message
+from hermes_agent.agent.conversation_compression import (
     PRE_API_COMPRESSION_STATUS_TEMPLATE, _reset_read_dedup_caches, compression_blocked_transiently,
     compression_skipped_due_to_lock, context_compression_timed_out, conversation_history_after_compression,
 )
-from agent.conversation_compression_feasibility import ensure_compression_feasibility_checked
-from agent.turn_context import _review_fork_first_request_pending
-from agent.turn_context_compaction import (
+from hermes_agent.agent.conversation_compression_feasibility import ensure_compression_feasibility_checked
+from hermes_agent.agent.turn_context import _review_fork_first_request_pending
+from hermes_agent.agent.turn_context_compaction import (
     _apply_grown_window, _blocked_compress_reason, _clear_overflow_warn, _refund_api_call,
     _reanchor, _reset_retry_state_after_compaction,
 )
 
-logger = logging.getLogger("agent.conversation_loop")
+logger = logging.getLogger("hermes_agent.agent.conversation_loop")
 
 
 @dataclass
@@ -66,7 +66,7 @@ def run_preflight_compression(
     over-reports; a lock/transient skip refunds the attempt and leaves the progress
     blocker unarmed. A forced provider-overflow preflight that any gate blocks fails
     closed (llama.cpp may silently truncate)."""
-    from agent.conversation_loop import (
+    from hermes_agent.agent.conversation_loop import (
         _COMPRESSION_TIMEOUT_FINAL_RESPONSE, _HANDOFF_SKIP_FINAL_RESPONSE,
         _compression_deferred_result, _maybe_grow_local_window, _provider_overflow_exhausted_result,
         _should_skip_model_call_for_reference_handoff,
@@ -254,11 +254,11 @@ def compress_after_tool_results(
     overhead-inclusive estimate. Over threshold but blocked → deduped warning plus the
     deterministic tool-result-only prune, committed only when the engine returns a NEW
     list (never rebuild ``conversation_history`` for it)."""
-    from agent.conversation_loop import (
+    from hermes_agent.agent.conversation_loop import (
         _HANDOFF_SKIP_FINAL_RESPONSE, _midturn_request_pressure_tokens,
         _should_skip_model_call_for_reference_handoff,
     )
-    from agent.model_metadata import estimate_request_tokens_rough
+    from hermes_agent.agent.model_metadata import estimate_request_tokens_rough
 
     def _verdict(end_turn: bool) -> PostToolCompressionVerdict:
         return PostToolCompressionVerdict(
@@ -278,7 +278,7 @@ def compress_after_tool_results(
     # a compaction (-1 sentinel) there is no real count yet: never treat the schema-heavy rough
     # figure as pressure. The whole-request rough estimate is the last resort (usage-less
     # provider, post-disconnect, gateway restart), kept route-aware (#96995/#97602).
-    from agent.usage_anchor import anchored_context_tokens
+    from hermes_agent.agent.usage_anchor import anchored_context_tokens
 
     _anchored = anchored_context_tokens(messages, getattr(agent, "_usage_anchor", None))
     if _anchored is not None:
@@ -392,7 +392,7 @@ def _proactive_tool_result_prune(agent: Any, compressor: Any, messages: list, cu
     tool iteration); the material stays in context for the checkpointed threshold compaction.
     """
     if getattr(agent, "compression_checkpoint_required", False) is True:
-        from agent.conversation_compression_checkpoint import (
+        from hermes_agent.agent.conversation_compression_checkpoint import (
             _prune_would_have_run, _record_checkpoint_gate_suppression,
         )
 
@@ -412,7 +412,7 @@ def _proactive_tool_result_prune(agent: Any, compressor: Any, messages: list, cu
     # _DB_PERSISTED_MARKER, and on a stale in-place flag the helper could seed unpersisted rows.
     if not pruned_n or pruned_msgs is messages:
         return messages
-    from agent.compaction_events import publish_prune
+    from hermes_agent.agent.compaction_events import publish_prune
 
     publish_prune(agent, messages, pruned_msgs, pruned_n)
     return pruned_msgs

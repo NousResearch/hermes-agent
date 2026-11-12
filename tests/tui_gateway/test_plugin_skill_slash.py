@@ -11,7 +11,7 @@ def test_plugin_skills_reach_tui_slash_menu_and_stack_per_profile(tmp_path, monk
     """``ctx.register_skill`` skills are offered and dispatched as ``/plugin:skill`` in the
     TUI/Desktop slash menu, scoped to the session's profile, and a stacked
     ``/plugin:a /plugin:b`` loads both bodies. Native skill menus stay filesystem-only."""
-    from agent import skill_commands
+    from hermes_agent.agent import skill_commands
     from hermes_cli import plugins
 
     homes = {"alpha": tmp_path / "profile-a", "beta": tmp_path / "profile-b"}

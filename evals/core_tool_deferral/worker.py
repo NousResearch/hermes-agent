@@ -214,7 +214,7 @@ TOOLSETS = ["file", "terminal", "search", "web", "todo", "session_search",
             "clarify", "image_gen", "computer_use", "cronjob", "memory",
             "desktop_ui", "project", "code_execution"]
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 agent = AIAgent(
     base_url="https://openrouter.ai/api/v1",

@@ -1,4 +1,4 @@
-"""Tests for agent/context_compressor.py — compression logic, thresholds, and fallbacks."""
+"""Tests for hermes_agent/agent/context_compressor.py — compression logic, thresholds, and fallbacks."""
 
 import json
 import re
@@ -9,7 +9,7 @@ import httpx
 import openai
 from unittest.mock import patch, MagicMock
 
-from agent.context_compressor import (
+from hermes_agent.agent.context_compressor import (
     ContextCompressor,
     HISTORICAL_TASK_HEADING,
     SUMMARY_PREFIX,
@@ -19,9 +19,9 @@ from agent.context_compressor import (
     _sum_clarify,
     _is_summary_access_or_quota_error,
 )
-from agent.compression_marker import _COMPRESSION_MARKER_PREFIX
+from hermes_agent.agent.compression_marker import _COMPRESSION_MARKER_PREFIX
 from hermes_agent.hermes_state import SessionDB
-from agent.auxiliary_client import CODEX_STREAM_STALL_MARKER
+from hermes_agent.agent.auxiliary_client import CODEX_STREAM_STALL_MARKER
 import itertools
 
 _REQ = httpx.Request("POST", "http://x")
@@ -37,7 +37,7 @@ class StubProviderError(Exception):
 @pytest.fixture()
 def compressor():
     """Create a ContextCompressor with mocked dependencies."""
-    with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+    with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000):
         c = ContextCompressor(
             model="test/model",
             threshold_percent=0.85,
@@ -93,7 +93,7 @@ class TestLegacyClarifyResults:
            ["staging", "production"]) for notice in _HISTORICAL_HEADLESS_RESPONSES],
     ])
     def test_answers_reach_summary_after_repeated_pruning(self, monkeypatch, shape, question_size, answer, expected):
-        import agent.context_compressor as module
+        import hermes_agent.agent.context_compressor as module
 
         if shape == "current":
             expected = answer  # Explicit status wins even for notice-like answer text.
@@ -618,7 +618,7 @@ class TestCompress:
         context only — never re-presented as unfulfilled in-progress/pending
         work.
         """
-        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(model="test/model", quiet_mode=True)
 
         unique_ask = "PLEASE_COMPUTE_THE_ARITHMETIC_CHAIN_XYZ"
@@ -692,7 +692,7 @@ class TestCompress:
         # then `MagicMock <= 0`). int(MagicMock()) returns 1, so coercion
         # yields a harmless positive int rather than crashing — the threshold
         # is computed cleanly with a 1-token reservation.
-        with patch("agent.context_compressor.get_model_context_length", return_value=200000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=200000):
             c = ContextCompressor(model="m", quiet_mode=True, max_tokens=MagicMock())
         assert isinstance(c.max_tokens, int)
         assert isinstance(c.threshold_tokens, int)
@@ -706,7 +706,7 @@ class TestCompress:
             {"role": "user" if i % 2 == 0 else "assistant", "content": f"m{i}", "_db_persisted": True}
             for i in range(10)
         ]
-        with patch("agent.context_compressor.call_llm", side_effect=RuntimeError("no provider")):
+        with patch("hermes_agent.agent.context_compressor.call_llm", side_effect=RuntimeError("no provider")):
             result = compressor.compress(msgs)
         assert len(result) < len(msgs)
         assert all("_db_persisted" not in msg for msg in result)
@@ -718,7 +718,7 @@ class TestCompress:
         messages don't get re-copied verbatim into every child session and
         fossilize (grow immortal) across a long, repeatedly-compressed
         session. The system prompt is always protected separately."""
-        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=3)
 
         msgs = [{"role": "system", "content": "sys"}] + [
@@ -764,7 +764,7 @@ class TestTailBudgetCodexReplayFields:
     )
     def test_tail_cut_counts_each_hidden_replay_field(self, field_name, field_value):
         """Each provider replay/reasoning field should affect tail budgeting."""
-        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(
                 model="test/model",
                 protect_first_n=1,
@@ -799,7 +799,7 @@ class TestGenerateSummaryNoneContent:
         mock_response.choices = [MagicMock()]
         mock_response.choices[0].message.content = "[CONTEXT SUMMARY]: tool calls happened"
 
-        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(model="test", quiet_mode=True)
 
         messages = [
@@ -812,21 +812,21 @@ class TestGenerateSummaryNoneContent:
             {"role": "user", "content": "thanks"},
         ]
 
-        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+        with patch("hermes_agent.agent.context_compressor.call_llm", return_value=mock_response):
             summary = c._generate_summary(messages)
         assert isinstance(summary, str)
         assert summary.startswith(SUMMARY_PREFIX)
 
     def test_none_content_in_system_message_compress(self):
         """System message with content=None should not crash during compress."""
-        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
 
         msgs = [{"role": "system", "content": None}] + [
             {"role": "user" if i % 2 == 0 else "assistant", "content": f"msg {i}"}
             for i in range(10)
         ]
-        with patch("agent.context_compressor.call_llm", side_effect=RuntimeError("no provider")):
+        with patch("hermes_agent.agent.context_compressor.call_llm", side_effect=RuntimeError("no provider")):
             result = c.compress(msgs)
         assert len(result) < len(msgs)
 
@@ -846,7 +846,7 @@ class TestNonStringContent:
         mock_response.choices = [MagicMock()]
         mock_response.choices[0].message.content = None
 
-        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000):
             # summary_model == model here, so no fallback path: straight to cooldown.
             c = ContextCompressor(model="test", quiet_mode=True)
 
@@ -855,7 +855,7 @@ class TestNonStringContent:
             {"role": "assistant", "content": "ok"},
         ]
 
-        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+        with patch("hermes_agent.agent.context_compressor.call_llm", return_value=mock_response):
             summary = c._generate_summary(messages)
         # Empty content → failure → None (drop turns), NOT a prefix-only summary.
         assert summary is None
@@ -870,7 +870,7 @@ class TestNonStringContent:
         mock_response.choices = [MagicMock()]
         mock_response.choices[0].message = "plain summary text"
 
-        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000):
             # Pin legacy: this test asserts the raw coerced string terminates
             # the summary, which lean mode's verbatim-user-quote appendix
             # intentionally follows. Coercion is mode-independent.
@@ -881,7 +881,7 @@ class TestNonStringContent:
             {"role": "assistant", "content": "ok"},
         ]
 
-        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+        with patch("hermes_agent.agent.context_compressor.call_llm", return_value=mock_response):
             summary = c._generate_summary(messages)
 
         assert summary.startswith(f"{SUMMARY_PREFIX}\n{HISTORICAL_TASK_HEADING}\n")
@@ -899,7 +899,7 @@ class TestNonStringContent:
         those, the deterministic snapshot must look past it to the real ask
         (and return None when no real ask exists at all).
         """
-        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(model="test", quiet_mode=True)
 
         messages = [
@@ -931,7 +931,7 @@ class TestNonStringContent:
         """
         import re as _re
 
-        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(model="test", quiet_mode=True)
 
         summary = (
@@ -954,7 +954,7 @@ class TestNonStringContent:
 
 class TestSummaryFailureCooldown:
     def test_summary_failure_enters_cooldown_and_skips_retry(self):
-        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(model="test", quiet_mode=True)
 
         messages = [
@@ -962,7 +962,7 @@ class TestSummaryFailureCooldown:
             {"role": "assistant", "content": "ok"},
         ]
 
-        with patch("agent.context_compressor.call_llm", side_effect=Exception("boom")) as mock_call:
+        with patch("hermes_agent.agent.context_compressor.call_llm", side_effect=Exception("boom")) as mock_call:
             first = c._generate_summary(messages)
             second = c._generate_summary(messages)
 
@@ -1016,7 +1016,7 @@ class TestAuthFailureAborts:
         # worker thread without the profile scope. The summary model is
         # unreachable until the spawn site is fixed — abort and preserve the
         # session rather than truncating the middle window (#100849 bundle).
-        from agent.secret_scope import UnscopedSecretError
+        from hermes_agent.agent.secret_scope import UnscopedSecretError
 
         err = UnscopedSecretError(
             "get_secret('SURPLUS_API_KEY') called with no profile secret scope "
@@ -1033,7 +1033,7 @@ class TestAuthFailureAborts:
             "Error code: 400 - {'error': {'message': 'out of extra usage'}}",
             status_code=400,
         )
-        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(
                 model="test",
                 quiet_mode=True,
@@ -1042,7 +1042,7 @@ class TestAuthFailureAborts:
                 abort_on_summary_failure=False,
             )
         msgs = self._msgs(12)
-        with patch("agent.context_compressor.call_llm", side_effect=err):
+        with patch("hermes_agent.agent.context_compressor.call_llm", side_effect=err):
             result = c.compress(msgs, current_tokens=999999, force=True)
 
         assert result == msgs
@@ -1058,7 +1058,7 @@ class TestAuthFailureAborts:
             "to a different provider with hermes model."
         )
         with patch(
-            "agent.context_compressor.get_model_context_length", return_value=100000
+            "hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000
         ):
             c = ContextCompressor(
                 model="test",
@@ -1068,7 +1068,7 @@ class TestAuthFailureAborts:
                 abort_on_summary_failure=False,
             )
         msgs = self._msgs(12)
-        with patch("agent.context_compressor.call_llm", side_effect=err):
+        with patch("hermes_agent.agent.context_compressor.call_llm", side_effect=err):
             result = c.compress(msgs, current_tokens=999999, force=True)
 
         assert result == msgs
@@ -1084,7 +1084,7 @@ class TestAuthFailureAborts:
             "quota exceeded, please retry after the window resets",
             status_code=402,
         )
-        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(
                 model="test",
                 quiet_mode=True,
@@ -1093,7 +1093,7 @@ class TestAuthFailureAborts:
                 abort_on_summary_failure=False,
             )
         msgs = self._msgs(12)
-        with patch("agent.context_compressor.call_llm", side_effect=err):
+        with patch("hermes_agent.agent.context_compressor.call_llm", side_effect=err):
             result = c.compress(msgs, current_tokens=999999, force=True)
 
         assert result != msgs
@@ -1107,7 +1107,7 @@ class TestAuthFailureAborts:
             "Our servers are currently overloaded. Please try again later.",
             status_code=503,
         )
-        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(
                 model="test",
                 quiet_mode=True,
@@ -1117,7 +1117,7 @@ class TestAuthFailureAborts:
             )
         c.summary_model = "test/auxiliary"
         msgs = self._msgs(12)
-        with patch("agent.context_compressor.call_llm", side_effect=err) as mock_call:
+        with patch("hermes_agent.agent.context_compressor.call_llm", side_effect=err) as mock_call:
             result = c.compress(msgs, current_tokens=999999, force=True)
 
         assert mock_call.call_count == 2
@@ -1129,9 +1129,9 @@ class TestAuthFailureAborts:
 
 
     def test_403_also_flags_auth_failure(self):
-        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(model="test", quiet_mode=True)
-        with patch("agent.context_compressor.call_llm", side_effect=self._auth_err(403)):
+        with patch("hermes_agent.agent.context_compressor.call_llm", side_effect=self._auth_err(403)):
             c._generate_summary(self._msgs())
         assert c._last_summary_auth_failure is True
 
@@ -1140,10 +1140,10 @@ class TestAuthFailureAborts:
     def test_generate_summary_flags_network_failure(self):
         """A connection/network error on the summary call flags
         _last_summary_network_failure (#29559)."""
-        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(model="test", quiet_mode=True)
         with patch(
-            "agent.context_compressor.call_llm",
+            "hermes_agent.agent.context_compressor.call_llm",
             side_effect=ConnectionError("Connection error."),
         ):
             result = c._generate_summary(self._msgs())
@@ -1154,10 +1154,10 @@ class TestAuthFailureAborts:
     def test_generate_summary_flags_empty_content_failure(self):
         """An empty-content response on the summary call flags
         _last_summary_empty_content_failure (#94448)."""
-        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(model="test", quiet_mode=True)
         with patch(
-            "agent.context_compressor.call_llm",
+            "hermes_agent.agent.context_compressor.call_llm",
             return_value={"choices": [{"message": {"content": "   "}}]},
         ):
             result = c._generate_summary(self._msgs())
@@ -1169,7 +1169,7 @@ class TestAuthFailureAborts:
     def test_empty_content_summary_aborts_compression_and_preserves_messages(self):
         """Empty-content response from degraded provider aborts compression and
         preserves original messages without dropping context (#94448)."""
-        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(
                 model="test",
                 quiet_mode=True,
@@ -1179,7 +1179,7 @@ class TestAuthFailureAborts:
             )
         msgs = self._msgs(12)
         with patch(
-            "agent.context_compressor.call_llm",
+            "hermes_agent.agent.context_compressor.call_llm",
             return_value={"choices": [{"message": {"content": ""}}]},
         ):
             result = c.compress(msgs, current_tokens=999999, force=True)
@@ -1202,7 +1202,7 @@ class TestAuthFailureAborts:
         """Sibling shape (#94459, from #7264): the auxiliary boundary's own
         terminal "None response" error is the same degraded-provider class
         and must ABORT, not fall through to the destructive fallback."""
-        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(
                 model="test",
                 quiet_mode=True,
@@ -1212,7 +1212,7 @@ class TestAuthFailureAborts:
             )
         msgs = self._msgs(12)
         with patch(
-            "agent.context_compressor.call_llm",
+            "hermes_agent.agent.context_compressor.call_llm",
             side_effect=RuntimeError("Auxiliary compression: LLM returned None response"),
         ):
             result = c.compress(msgs, current_tokens=999999, force=True)
@@ -1223,7 +1223,7 @@ class TestAuthFailureAborts:
     def test_auxiliary_invalid_response_aborts_compression(self):
         """Sibling shape (#94459, from #7264): malformed/missing
         choices[0].message terminal error must ABORT the same way."""
-        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(
                 model="test",
                 quiet_mode=True,
@@ -1233,7 +1233,7 @@ class TestAuthFailureAborts:
             )
         msgs = self._msgs(12)
         with patch(
-            "agent.context_compressor.call_llm",
+            "hermes_agent.agent.context_compressor.call_llm",
             side_effect=RuntimeError(
                 "Auxiliary compression: LLM returned invalid response "
                 "(type=str): 'oops'. Expected object with .choices[0].message "
@@ -1269,7 +1269,7 @@ class TestSummaryFallbackToMainModel:
         err_404 = Exception("404 model_not_found: no such model")
         err_404.status_code = 404
 
-        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(
                 model="main-model",
                 summary_model_override="broken-aux-model",
@@ -1277,7 +1277,7 @@ class TestSummaryFallbackToMainModel:
             )
 
         with patch(
-            "agent.context_compressor.call_llm",
+            "hermes_agent.agent.context_compressor.call_llm",
             side_effect=[err_404, mock_ok],
         ) as mock_call:
             result = c._generate_summary(self._msgs())
@@ -1302,7 +1302,7 @@ class TestSummaryFallbackToMainModel:
         mock_ok.choices = [MagicMock()]
         mock_ok.choices[0].message.content = "summary via main model after empty aux"
 
-        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(
                 model="main-model",
                 summary_model_override="flaky-aux-model",
@@ -1310,7 +1310,7 @@ class TestSummaryFallbackToMainModel:
             )
 
         with patch(
-            "agent.context_compressor.call_llm",
+            "hermes_agent.agent.context_compressor.call_llm",
             side_effect=[
                 {"choices": [{"message": {"content": "   "}}]},
                 mock_ok,
@@ -1331,7 +1331,7 @@ class TestSummaryFallbackToMainModel:
         to — go straight to cooldown, don't loop retrying the same call."""
         err = Exception("500 internal error")
 
-        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(
                 model="main-model",
                 summary_model_override="main-model",  # same as main
@@ -1339,7 +1339,7 @@ class TestSummaryFallbackToMainModel:
             )
 
         with patch(
-            "agent.context_compressor.call_llm",
+            "hermes_agent.agent.context_compressor.call_llm",
             side_effect=err,
         ) as mock_call:
             result = c._generate_summary(self._msgs())
@@ -1368,7 +1368,7 @@ class TestSummaryFallbackToMainModel:
             "Expecting value", "<!DOCTYPE html><html>...</html>", 0
         )
 
-        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(
                 model="main-model",
                 summary_model_override="aux-via-broken-proxy",
@@ -1376,7 +1376,7 @@ class TestSummaryFallbackToMainModel:
             )
 
         with patch(
-            "agent.context_compressor.call_llm",
+            "hermes_agent.agent.context_compressor.call_llm",
             side_effect=[err_json, mock_ok],
         ) as mock_call:
             result = c._generate_summary(self._msgs())
@@ -1411,10 +1411,10 @@ class TestStreamingClosedFailure:
         ]
 
     def _fail_on_main(self, err):
-        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(model="main-model", quiet_mode=True)
-        with patch("agent.context_compressor.call_llm", side_effect=err), \
-             patch("agent.context_compressor.time.monotonic", return_value=1000.0):
+        with patch("hermes_agent.agent.context_compressor.call_llm", side_effect=err), \
+             patch("hermes_agent.agent.context_compressor.time.monotonic", return_value=1000.0):
             result = c._generate_summary(self._msgs())
         assert result is None
         return c
@@ -1434,7 +1434,7 @@ class TestStreamingClosedFailure:
 
     def test_codex_stall_is_ladder_timeout_not_terminal_network_failure(self):
         """#124077: a Codex stream-guard mid-stream stall is a retry-ladder timeout."""
-        from agent.auxiliary_client import _CodexStreamGuard
+        from hermes_agent.agent.auxiliary_client import _CodexStreamGuard
         guard = _CodexStreamGuard(None, 300.0)
         guard.saw_content.set()  # mid-stream: content arrived, then the stream went quiet
         c = self._fail_on_main(TimeoutError(guard.timeout_message()))
@@ -1481,7 +1481,7 @@ class TestAuxModelFallbackSurfacedToCallers:
         err_400 = Exception("400 provider rejected configured model")
         err_400.status_code = 400
 
-        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(
                 model="main-model",
                 summary_model_override="broken-aux-model",
@@ -1491,7 +1491,7 @@ class TestAuxModelFallbackSurfacedToCallers:
             )
 
         with patch(
-            "agent.context_compressor.call_llm",
+            "hermes_agent.agent.context_compressor.call_llm",
             side_effect=[err_400, mock_ok],
         ):
             result = c.compress(self._make_msgs())
@@ -1517,7 +1517,7 @@ class TestAuxModelFallbackSurfacedToCallers:
         err_400 = Exception("400 aux model busted")
         err_400.status_code = 400
 
-        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(
                 model="main-model",
                 summary_model_override="broken-aux-model",
@@ -1528,7 +1528,7 @@ class TestAuxModelFallbackSurfacedToCallers:
 
         # Call 1: aux fails, retry-on-main succeeds
         with patch(
-            "agent.context_compressor.call_llm",
+            "hermes_agent.agent.context_compressor.call_llm",
             side_effect=[err_400, mock_ok],
         ):
             c.compress(self._make_msgs())
@@ -1538,7 +1538,7 @@ class TestAuxModelFallbackSurfacedToCallers:
         # first fallback).  Aux-failure fields MUST reset at compress() start
         # so the old warning state doesn't leak into this call.
         with patch(
-            "agent.context_compressor.call_llm",
+            "hermes_agent.agent.context_compressor.call_llm",
             return_value=mock_ok,
         ):
             c.compress(self._make_msgs())
@@ -1553,7 +1553,7 @@ class TestSummaryFailureTrackingForGatewayWarning:
     can surface a visible warning."""
 
     def test_compress_records_fallback_and_dropped_count_on_summary_failure(self):
-        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
 
         msgs = [
@@ -1567,7 +1567,7 @@ class TestSummaryFailureTrackingForGatewayWarning:
             {"role": "user", "content": "msg 7"},
         ]
 
-        with patch("agent.context_compressor.call_llm", side_effect=Exception("404 model not found")):
+        with patch("hermes_agent.agent.context_compressor.call_llm", side_effect=Exception("404 model not found")):
             result = c.compress(msgs)
 
         assert c._last_summary_fallback_used is True
@@ -1578,7 +1578,7 @@ class TestSummaryFailureTrackingForGatewayWarning:
         assert any(m.get(COMPRESSED_SUMMARY_METADATA_KEY) for m in result)
 
     def test_summary_failure_fallback_preserves_tool_paths_and_redacts_secret_context(self):
-        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=1, protect_last_n=1)
 
         secret = "ghp_" + ("a" * 36)
@@ -1605,7 +1605,7 @@ class TestSummaryFailureTrackingForGatewayWarning:
             {"role": "user", "content": "current live request should stay in tail"},
         ]
 
-        with patch("agent.context_compressor.call_llm", side_effect=Exception("timeout")):
+        with patch("hermes_agent.agent.context_compressor.call_llm", side_effect=Exception("timeout")):
             result = c.compress(msgs)
 
         fallback = next(m["content"] for m in result if m.get(COMPRESSED_SUMMARY_METADATA_KEY))
@@ -1638,7 +1638,7 @@ class TestAbortOnSummaryFailure:
         ]
 
     def _make_compressor(self):
-        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000):
             return ContextCompressor(
                 model="test",
                 quiet_mode=True,
@@ -1650,7 +1650,7 @@ class TestAbortOnSummaryFailure:
     def test_compress_aborts_and_preserves_messages_on_summary_failure(self):
         c = self._make_compressor()
         msgs = self._make_msgs()
-        with patch("agent.context_compressor.call_llm", side_effect=Exception("404 model not found")):
+        with patch("hermes_agent.agent.context_compressor.call_llm", side_effect=Exception("404 model not found")):
             result = c.compress(msgs)
 
         assert c._last_compress_aborted is True
@@ -1693,7 +1693,7 @@ class TestAbortOnSummaryFailure:
         c._summary_failure_cooldown_until = 0.0
         msgs = self._make_msgs()
 
-        with patch("agent.context_compressor.call_llm", return_value=mock_response) as mock_llm:
+        with patch("hermes_agent.agent.context_compressor.call_llm", return_value=mock_response) as mock_llm:
             result = c.compress(msgs, current_tokens=999999)
 
         mock_llm.assert_called()
@@ -1753,7 +1753,7 @@ class TestCompressWithClient:
         mock_response.choices = [MagicMock()]
         mock_response.choices[0].message.content = "summary text"
 
-        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
 
         # head_last=assistant, tail_first=assistant (same shape as the
@@ -1768,13 +1768,13 @@ class TestCompressWithClient:
             {"role": "user", "content": "msg 6"},
             {"role": "assistant", "content": "msg 7"},
         ]
-        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+        with patch("hermes_agent.agent.context_compressor.call_llm", return_value=mock_response):
             result = c.compress(msgs)
 
         summary_msg = next(
             m for m in result if (m.get("content") or "").startswith(SUMMARY_PREFIX)
         )
-        from agent.context_compressor import _SUMMARY_END_MARKER
+        from hermes_agent.agent.context_compressor import _SUMMARY_END_MARKER
 
         assert summary_msg["role"] == "user"
         assert summary_msg["content"].rstrip().endswith(_SUMMARY_END_MARKER.strip())
@@ -1791,7 +1791,7 @@ class TestCompressWithClient:
         mock_response.choices[0].message.content = "[CONTEXT SUMMARY]: stuff happened"
         mock_client.chat.completions.create.return_value = mock_response
 
-        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
 
         # head_last=user → summary_role="assistant" (same setup as
@@ -1809,13 +1809,13 @@ class TestCompressWithClient:
             {"role": "assistant", "content": "msg 6"},
             {"role": "user", "content": "msg 7"},
         ]
-        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+        with patch("hermes_agent.agent.context_compressor.call_llm", return_value=mock_response):
             result = c.compress(msgs)
 
         summary_msg = next(
             m for m in result if (m.get("content") or "").startswith(SUMMARY_PREFIX)
         )
-        from agent.context_compressor import _SUMMARY_END_MARKER
+        from hermes_agent.agent.context_compressor import _SUMMARY_END_MARKER
 
         assert summary_msg["role"] == "assistant"
         assert summary_msg["content"].rstrip().endswith(_SUMMARY_END_MARKER.strip())
@@ -1835,7 +1835,7 @@ class TestCompressWithClient:
         mock_response.choices = [MagicMock()]
         mock_response.choices[0].message.content = "summary text"
 
-        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=3)
 
         # Head: [system, user, assistant]  →  last head = assistant
@@ -1854,7 +1854,7 @@ class TestCompressWithClient:
             {"role": "assistant", "content": "msg 7"},
             {"role": "user", "content": "msg 8"},
         ]
-        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+        with patch("hermes_agent.agent.context_compressor.call_llm", return_value=mock_response):
             result = c.compress(msgs)
 
         # Verify no consecutive user or assistant messages
@@ -1882,13 +1882,13 @@ class TestCompressWithClient:
         Mirrors test_double_collision_merges_summary_into_list_tail_content so
         the merged tail message genuinely carries preserved content ("msg 6").
         """
-        from agent.context_compressor import _SUMMARY_END_MARKER
+        from hermes_agent.agent.context_compressor import _SUMMARY_END_MARKER
 
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
         mock_response.choices[0].message.content = "SUMMARY_BODY"
 
-        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=3)
 
         msgs = [
@@ -1903,7 +1903,7 @@ class TestCompressWithClient:
             {"role": "user", "content": "msg 8"},
         ]
 
-        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+        with patch("hermes_agent.agent.context_compressor.call_llm", return_value=mock_response):
             result = c.compress(msgs)
 
         merged = next(m for m in result if m.get(COMPRESSED_SUMMARY_METADATA_KEY))
@@ -1934,7 +1934,7 @@ class TestCompressWithClient:
         anchor and carry-forward summary find) and the wrapper + stale tail
         content leaks into the next summarizer prompt.
         """
-        from agent.context_compressor import (
+        from hermes_agent.agent.context_compressor import (
             SUMMARY_PREFIX,
             _SUMMARY_END_MARKER,
             _MERGED_PRIOR_CONTEXT_HEADER,
@@ -1984,7 +1984,7 @@ class TestSummaryTargetRatio:
         This is the cleanest configuration for long-running rolling-compaction
         sessions — no user/assistant turn gets pinned verbatim forever just
         because it happened to be early in the session."""
-        with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100_000):
             c = ContextCompressor(
                 model="test",
                 quiet_mode=True,
@@ -1996,7 +1996,7 @@ class TestSummaryTargetRatio:
             + [{"role": "user" if i % 2 == 0 else "assistant", "content": f"msg {i}"}
                for i in range(8)]
         )
-        with patch("agent.context_compressor.call_llm", side_effect=RuntimeError("no provider")):
+        with patch("hermes_agent.agent.context_compressor.call_llm", side_effect=RuntimeError("no provider")):
             result = c.compress(msgs)
         # System prompt (msg[0]) survives as head
         assert result[0]["role"] == "system"
@@ -2022,7 +2022,7 @@ class TestSummaryTargetRatio:
         session forever — a user-reported complaint that a week-old
         resolved question kept getting reinserted into every compaction
         summary."""
-        with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100_000):
             c = ContextCompressor(
                 model="test",
                 quiet_mode=True,
@@ -2056,7 +2056,7 @@ class TestTokenBudgetTailProtection:
     @pytest.fixture()
     def budget_compressor(self):
         """Compressor with known token budget for tail protection tests."""
-        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=200_000):
             c = ContextCompressor(
                 model="test/model",
                 threshold_percent=0.50,  # 100K threshold
@@ -2199,7 +2199,7 @@ class TestUpdateModelBudgets:
     def test_tail_budget_recalculated(self):
         """tail_token_budget must change after switching to a different context length."""
         from unittest.mock import patch
-        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=200_000):
             comp = ContextCompressor(
                 "model-a", threshold_percent=0.50, quiet_mode=True, tail_mode="legacy",
             )
@@ -2221,9 +2221,9 @@ class TestUpdateModelBudgets:
         reverting a lean compressor to the legacy hoard on every mid-session
         model switch.
         """
-        with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=1_000_000):
             comp = ContextCompressor("model-a", threshold_percent=0.85, quiet_mode=True)
-        with patch("agent.context_compressor.get_model_context_length", return_value=400_000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=400_000):
             fresh = ContextCompressor("model-b", threshold_percent=0.85, quiet_mode=True)
             _ = fresh.context_length
         comp.update_model("model-b", context_length=400_000)
@@ -2234,7 +2234,7 @@ class TestUpdateModelBudgets:
         """tail_mode: legacy in config keeps the pre-flip behavior exactly."""
         from unittest.mock import patch
 
-        with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=1_000_000):
             comp = ContextCompressor(
                 "model-a", threshold_percent=0.85, quiet_mode=True, tail_mode="legacy",
             )
@@ -2251,7 +2251,7 @@ class TestUpdateModelResetsCalibration:
 
     def _comp(self):
         from unittest.mock import patch
-        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=200_000):
             return ContextCompressor("big-model", threshold_percent=0.50, quiet_mode=True)
 
     def test_real_usage_state_cleared(self):
@@ -2301,7 +2301,7 @@ class TestThresholdTokensCap:
 
     def test_no_cap_uses_ratio_only(self):
         """Without a cap, the ratio-based threshold is used."""
-        with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=1_000_000):
             comp = ContextCompressor(
                 "model-a", threshold_percent=0.50, quiet_mode=True,
             )
@@ -2317,7 +2317,7 @@ class TestThresholdTokensCap:
 
         default_pct = DEFAULT_CONFIG["compression"]["threshold"]
         default_cap = DEFAULT_CONFIG["compression"]["threshold_tokens"]
-        with patch("agent.context_compressor.get_model_context_length", return_value=context_length):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=context_length):
             ratio_only = ContextCompressor("model-a", threshold_percent=default_pct, quiet_mode=True)
             comp = ContextCompressor(
                 "model-a", threshold_percent=default_pct, threshold_tokens_cap=default_cap, quiet_mode=True,
@@ -2334,7 +2334,7 @@ class TestThresholdTokensCap:
 
     def test_invalid_cap_treated_as_none(self):
         """Non-numeric, zero, or negative cap values are treated as None."""
-        with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=1_000_000):
             comp0 = ContextCompressor(
                 "model-a", threshold_percent=0.50, quiet_mode=True,
                 threshold_tokens_cap=0,
@@ -2358,7 +2358,7 @@ class TestThresholdTokensCap:
         """Behavioral: with a cap below the ratio-based threshold,
         should_compress() fires once usage crosses the cap — even though
         the percentage threshold has not been reached (first-fires-wins)."""
-        with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=1_000_000):
             comp = ContextCompressor(
                 "model-a", threshold_percent=0.50, quiet_mode=True,
                 threshold_tokens_cap=200_000,
@@ -2371,7 +2371,7 @@ class TestThresholdTokensCap:
     def test_explicit_cap_survives_model_switch(self):
         """A user-set cap remains effective when the active model changes."""
         cap = 200_000
-        with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=1_000_000):
             comp = ContextCompressor("model-a", threshold_percent=0.50, threshold_tokens_cap=cap, quiet_mode=True)
             _ = comp.context_length
 
@@ -2439,7 +2439,7 @@ class TestLazyContextResolution:
         """
 
         with patch(
-            "agent.context_compressor.get_model_context_length",
+            "hermes_agent.agent.context_compressor.get_model_context_length",
             return_value=200_000,
         ) as mock_get:
             c = ContextCompressor(model="test/model", quiet_mode=False)
@@ -2848,7 +2848,7 @@ class TestSanitizerPreservesInFlightToolChain:
         the final synthesis built on it were both lost.  The fix preserves the
         trailing in-flight call, so the chain closes and the result survives.
         """
-        from agent.agent_runtime_helpers import repair_message_sequence
+        from hermes_agent.agent.agent_runtime_helpers import repair_message_sequence
 
         history = [
             {"role": "user", "content": "Do the work and use the tools."},
@@ -2946,7 +2946,7 @@ class TestCooldownReentryAbort:
         """ConnectionError → first compress aborts (PR #51881).  Second
         compress within the 30s cooldown must ALSO abort — not drop the
         middle window via the static-fallback path."""
-        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(
                 model="test",
                 quiet_mode=True,
@@ -2957,7 +2957,7 @@ class TestCooldownReentryAbort:
         msgs = self._msgs(12)
 
         with patch(
-            "agent.context_compressor.call_llm",
+            "hermes_agent.agent.context_compressor.call_llm",
             side_effect=ConnectionError("Connection error."),
         ):
             first = c.compress(msgs, current_tokens=999999, force=True)
@@ -2978,7 +2978,7 @@ class TestCooldownReentryAbort:
         returns None, second compress must still abort."""
         err = Exception("Error code: 401 - invalid api key")
         err.status_code = 401
-        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(
                 model="test",
                 quiet_mode=True,
@@ -2988,7 +2988,7 @@ class TestCooldownReentryAbort:
             )
         msgs = self._msgs(12)
 
-        with patch("agent.context_compressor.call_llm", side_effect=err):
+        with patch("hermes_agent.agent.context_compressor.call_llm", side_effect=err):
             first = c.compress(msgs, current_tokens=999999, force=True)
         assert first == msgs
         assert c._last_compress_aborted is True
@@ -3022,7 +3022,7 @@ class TestDoubleCompactionSummaryRole:
         mock_response.choices = [MagicMock()]
         mock_response.choices[0].message.content = "summary of earlier turns"
 
-        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(
                 model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2,
             )
@@ -3040,7 +3040,7 @@ class TestDoubleCompactionSummaryRole:
             {"role": "user", "content": "msg 5"},
             {"role": "assistant", "content": "msg 6"},
         ]
-        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+        with patch("hermes_agent.agent.context_compressor.call_llm", return_value=mock_response):
             result = c.compress(msgs)
 
         # The system message must still be at index 0.
@@ -3061,7 +3061,7 @@ class TestDoubleCompactionSummaryRole:
         mock_response.choices = [MagicMock()]
         mock_response.choices[0].message.content = "summary of resumed turns"
 
-        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(
                 model="test", quiet_mode=True, protect_first_n=3, protect_last_n=2,
             )
@@ -3076,7 +3076,7 @@ class TestDoubleCompactionSummaryRole:
             {"role": "user", "content": "tail request"},
             {"role": "assistant", "content": "tail answer"},
         ]
-        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+        with patch("hermes_agent.agent.context_compressor.call_llm", return_value=mock_response):
             result = c.compress(msgs)
 
         assert result[0]["role"] == "user"
@@ -3091,7 +3091,7 @@ class TestDoubleCompactionSummaryRole:
         mock_response.choices = [MagicMock()]
         mock_response.choices[0].message.content = "summary of earlier turns"
 
-        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(
                 model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2,
             )
@@ -3109,7 +3109,7 @@ class TestDoubleCompactionSummaryRole:
             {"role": "assistant", "content": "msg 6"},
             {"role": "user", "content": "msg 7"},
         ]
-        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+        with patch("hermes_agent.agent.context_compressor.call_llm", return_value=mock_response):
             result = c.compress(msgs)
 
         # No standalone summary message should exist (merged into tail).
@@ -3149,7 +3149,7 @@ class TestSummaryPromptBounding:
         resp.choices[0].message = MagicMock()
         resp.choices[0].message.content = "## Historical Task Snapshot\nDone."
         telemetry = compressor._begin_compression_telemetry(current_tokens=1_000_000)
-        with patch("agent.context_compressor.call_llm", return_value=resp) as mock_call:
+        with patch("hermes_agent.agent.context_compressor.call_llm", return_value=resp) as mock_call:
             assert compressor._generate_summary(messages) is not None
         assert mock_call.call_count == 1
         prompt = mock_call.call_args.kwargs["messages"][0]["content"]
@@ -3224,7 +3224,7 @@ class TestSummaryPromptBounding:
         mock_response.choices = [MagicMock()]
         mock_response.choices[0].message.content = "updated summary"
 
-        with patch("agent.context_compressor.get_model_context_length", return_value=272000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=272000):
             c = ContextCompressor(model="test", quiet_mode=True)
         cap = c._SUMMARY_INPUT_MAX_CHARS
         c._previous_summary = "PREV_HEAD " + ("p" * (cap * 2)) + " PREV_TAIL"
@@ -3234,7 +3234,7 @@ class TestSummaryPromptBounding:
             for i in range(80)
         ]
 
-        with patch("agent.context_compressor.call_llm", return_value=mock_response) as mock_call:
+        with patch("hermes_agent.agent.context_compressor.call_llm", return_value=mock_response) as mock_call:
             summary = c._generate_summary(messages)
 
         prompt = mock_call.call_args.kwargs["messages"][0]["content"]
@@ -3272,7 +3272,7 @@ class TestMinTailUserMessages:
         user message (a clean boundary).  The preceding tool group stays
         together — it is either entirely in the compressed region or
         entirely in the tail, never split across the boundary."""
-        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=200_000):
             c = ContextCompressor(
                 model="test/model",
                 threshold_percent=0.50,
@@ -3323,7 +3323,7 @@ class TestMinTailUserMessages:
         """A blank platform echo (empty user row) must not consume one of the
         N slots — otherwise the guarantee silently degrades to N-1 real turns
         (the #69291 bug class the single anchor already fixed)."""
-        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=200_000):
             c = ContextCompressor(
                 model="test/model",
                 threshold_percent=0.50,
@@ -3374,7 +3374,7 @@ class TestMinTailUserMessages:
         the summary, and the floor remains a lower bound, not a cap, on the
         anchored tail.
         """
-        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=200_000):
             c = ContextCompressor(
                 model="test/model",
                 threshold_percent=0.50,
@@ -3400,7 +3400,7 @@ class TestMinTailUserMessages:
         # The anchored tail legitimately exceeds the budget (and the 8-message
         # floor is a minimum, not a cap): the guarantee is the stronger
         # invariant by design.
-        from agent.context_compressor import _estimate_msg_budget_tokens
+        from hermes_agent.agent.context_compressor import _estimate_msg_budget_tokens
         accumulated = sum(_estimate_msg_budget_tokens(m) for m in tail)
         assert accumulated > c.tail_token_budget
 
@@ -3408,7 +3408,7 @@ class TestMinTailUserMessages:
 class TestTailTokenBudgetCeiling:
     def test_message_floor_does_not_unboundedly_override_soft_ceiling(self):
         """Oversized optional rows must not ride the count floor past 1.5x budget."""
-        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=200_000):
             c = ContextCompressor(
                 model="test/model",
                 protect_first_n=1,
@@ -3439,7 +3439,7 @@ class TestTailTokenBudgetCeiling:
         cut = c._find_tail_cut_by_tokens(messages, head_end=1)
         tail = messages[cut:]
 
-        from agent.context_compressor import _estimate_msg_budget_tokens
+        from hermes_agent.agent.context_compressor import _estimate_msg_budget_tokens
         tail_tokens = sum(_estimate_msg_budget_tokens(message) for message in tail)
         assert tail_tokens <= int(c.tail_token_budget * 1.5)
         assert any(message.get("content") == "latest request" for message in tail)
@@ -3471,7 +3471,7 @@ class TestContextLengthSetterCoherence:
     from the same window."""
 
     def test_same_value_reassignment_preserves_threshold_override(self):
-        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=200_000):
             c = ContextCompressor(model="test", quiet_mode=True)
             _ = c.context_length
         # Runtime correction (aux-context threshold sync pattern).
@@ -3483,10 +3483,10 @@ class TestContextLengthSetterCoherence:
         assert c.tail_token_budget == 8_400
 
     def test_new_value_assignment_refloors_and_invalidates(self):
-        with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=1_000_000):
             c = ContextCompressor(model="test", quiet_mode=True)
             _ = c.context_length
-        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=200_000):
             fresh = ContextCompressor(model="test", quiet_mode=True)
             _ = fresh.context_length
         # Switch to a small window via direct assignment (codex path).
@@ -3627,7 +3627,7 @@ class TestPreLlmFeasibilityCheck:
                 compressor.compress(list(msgs), force=False)
             mock_gen.assert_not_called()
             # Mirror the boundary wrapper's bookkeeping
-            # (agent/conversation_compression.py: record_completed_compaction
+            # (hermes_agent/agent/conversation_compression.py: record_completed_compaction
             # call after a made-progress boundary).
             assert compressor._last_compression_made_progress is True
             compressor.record_completed_compaction(
@@ -3679,7 +3679,7 @@ class TestSanitizeToolPairsWhitespace:
     """
 
     def _make(self):
-        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+        with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000):
             return ContextCompressor(model="test/model", quiet_mode=True,
                                      protect_first_n=2, protect_last_n=2)
 

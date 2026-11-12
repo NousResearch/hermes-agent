@@ -143,7 +143,7 @@ def test_console_cancel_stops_forked_agent_request_before_reporting(console_clie
     prompt reports cancelled/timeout. asyncio can only drop the waiter; the thread keeps decoding otherwise."""
     import threading
 
-    from agent import curator
+    from hermes_agent.agent import curator
     from hermes_cli.web_routers import chat_ws
     from hermes_constants import get_hermes_home
     from hermes_agent.tools import skill_usage
@@ -197,7 +197,7 @@ def test_console_cancel_stops_forked_agent_request_before_reporting(console_clie
 def test_interrupt_scope_cancels_agents_that_start_after_the_cancel():
     """A turn that begins after the host cancelled must be interrupted on entry, else a cancel racing
     agent construction leaves a live request behind."""
-    from agent.interrupt_scope import InterruptScope, bind_interrupt_scope, track_in_interrupt_scope
+    from hermes_agent.agent.interrupt_scope import InterruptScope, bind_interrupt_scope, track_in_interrupt_scope
 
     class Agent:
         def __init__(self):

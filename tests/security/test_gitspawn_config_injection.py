@@ -148,7 +148,7 @@ def test_baseline_unhardened_git_fires_sinks(malicious_repo):
 
 
 def test_coding_workspace_snapshot_is_safe(malicious_repo):
-    import agent.coding_context as cc
+    import hermes_agent.agent.coding_context as cc
     repo, marker = malicious_repo
     cc.build_coding_workspace_block(cwd=repo)
     assert _fired(marker) == []
@@ -178,7 +178,7 @@ def test_web_git_diff_is_safe(malicious_repo):
 
 
 def test_context_reference_diff_is_safe(malicious_repo):
-    from agent import context_references as cr
+    from hermes_agent.agent import context_references as cr
     repo, marker = malicious_repo
     ref = type("R", (), {"raw": "@diff"})()
     cr._expand_git_reference(ref, repo, ["diff", "HEAD"], "git diff")
@@ -332,7 +332,7 @@ def test_repo_named_filters_never_run_from_kanban_gc_or_hints(tmp_path, attrs, c
     assert worktree_gc._git(["status", "--porcelain"], cwd=str(repo)).returncode == 0
     assert git_state_hint(str(repo)) is not None
     # The automatic session-start snapshot (status) and a delegated subagent's worktree (checkout).
-    from agent.coding_context import build_coding_workspace_block
+    from hermes_agent.agent.coding_context import build_coding_workspace_block
     from hermes_agent.tools.subagent_worktree import create_subagent_worktree
     assert "- Status:" in build_coding_workspace_block(repo)
     sub = create_subagent_worktree(str(repo), "filters")

@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from agent.credential_pool_admin import CredentialPoolAdminMixin
-from agent.credential_pool_model_cooldowns import CredentialPoolModelCooldownMixin, model_cooldown_until
-from agent.credential_pool_timestamps import _parse_absolute_timestamp
+from hermes_agent.agent.credential_pool_admin import CredentialPoolAdminMixin
+from hermes_agent.agent.credential_pool_model_cooldowns import CredentialPoolModelCooldownMixin, model_cooldown_until
+from hermes_agent.agent.credential_pool_timestamps import _parse_absolute_timestamp
 
 import logging
 import os
@@ -20,11 +20,11 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 from hermes_constants import OPENROUTER_BASE_URL
 from hermes_cli.config import load_env
-from agent.secret_scope import get_secret as _get_secret, get_secret_str
-from agent.retry_utils import reset_delay_from_message
+from hermes_agent.agent.secret_scope import get_secret as _get_secret, get_secret_str
+from hermes_agent.agent.retry_utils import reset_delay_from_message
 from hermes_cli.auth_plugin_providers import plugin_refresh_hook
-from agent.credential_pool_plugin import apply_plugin_refresh_result, plugin_row_is_expiring, recover_failed_plugin_refresh
-from agent.credential_persistence import (
+from hermes_agent.agent.credential_pool_plugin import apply_plugin_refresh_result, plugin_row_is_expiring, recover_failed_plugin_refresh
+from hermes_agent.agent.credential_persistence import (
     fingerprint_secret_value,
     is_borrowed_credential_source,
     sanitize_borrowed_credential_payload,
@@ -172,7 +172,7 @@ _EXTRA_KEYS = frozenset({
     "agent_key_obtained_at", "tls", "secret_source", "secret_fingerprint",
     # Nous guest identity (``auth_method: anonymous``): the anon_ credential is the refresh material.
     "auth_method", "account_tier", "anon_token", "user_id", "org_id",
-    # Classified failure semantics for the last exhaustion (agent/error_classifier.py).
+    # Classified failure semantics for the last exhaustion (hermes_agent/agent/error_classifier.py).
     # Providers return 403 for both an edge throttle and a spending limit, so the
     # raw status cannot size a cooldown; persisted so a restart doesn't downgrade
     # a billing bench to a 60s transient cooldown.
@@ -522,7 +522,7 @@ def custom_provider_pool_key_candidates(
     """
     # A named pool holds credentials for its configured endpoint only: a launch-overridden base_url
     # must not inherit them (R2-M1), nor borrow a sibling's by URL.
-    from agent.custom_entry_pool import custom_entry_for_endpoint
+    from hermes_agent.agent.custom_entry_pool import custom_entry_for_endpoint
     match = custom_entry_for_endpoint(base_url, provider_name, config)
     return _pool_keys_for_custom_entry(*match) if match else []
 
@@ -783,7 +783,7 @@ def _singleton_target_for_entry(pool: CredentialPool, entry: PooledCredential) -
     if entry.source != "hermes_pkce" or entry.id not in getattr(pool, "_borrowed_root_ids", ()):
         return None
     try:
-        from agent.anthropic_credentials import _root_hermes_oauth_file
+        from hermes_agent.agent.anthropic_credentials import _root_hermes_oauth_file
         return _root_hermes_oauth_file()
     except Exception:
         return None
@@ -1228,7 +1228,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         if self.provider != "anthropic" or entry.source != "claude_code":
             return entry
         try:
-            from agent.anthropic_credentials import read_claude_code_credentials
+            from hermes_agent.agent.anthropic_credentials import read_claude_code_credentials
             creds = read_claude_code_credentials()
             if not creds:
                 return entry
@@ -1537,7 +1537,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         Unlike the per-profile ``_auth_store_lock()`` this serializes every
         profile and process that might refresh a ``claude_code`` entry.
         """
-        from agent.anthropic_credentials import claude_code_credentials_path
+        from hermes_agent.agent.anthropic_credentials import claude_code_credentials_path
 
         return _auth_store_lock(
             timeout_seconds=self._single_use_refresh_lock_timeout(),
@@ -1569,7 +1569,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             entry.source, store, exc,
         )
         try:
-            from agent.anthropic_credentials import (
+            from hermes_agent.agent.anthropic_credentials import (
                 mark_rotation_consumed_uncommitted,
                 spent_rotation_source_path,
             )
@@ -1620,7 +1620,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         else:
             return
         try:
-            from agent import anthropic_credentials as ac
+            from hermes_agent.agent import anthropic_credentials as ac
             args = (refreshed["access_token"], refreshed["refresh_token"], refreshed["expires_at_ms"])
             if entry.source == "claude_code":
                 ac._write_claude_code_credentials(*args, spent_refresh_token=entry.refresh_token or "")
@@ -1634,7 +1634,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
 
     def _refresh_anthropic(self, entry: PooledCredential) -> PooledCredential:
         """POST the Anthropic refresh, commit to the singleton, return the rotated (unpersisted) entry."""
-        from agent.anthropic_credentials import (
+        from hermes_agent.agent.anthropic_credentials import (
             is_rotation_consumed_uncommitted,
             refresh_anthropic_oauth_pure,
             spent_rotation_source_path,
@@ -1736,7 +1736,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                 if synced.refresh_token != entry.refresh_token:
                     logger.debug("Retrying refresh with synced token from credentials file")
                     try:
-                        from agent.anthropic_credentials import refresh_anthropic_oauth_pure
+                        from hermes_agent.agent.anthropic_credentials import refresh_anthropic_oauth_pure
                         refreshed = refresh_anthropic_oauth_pure(
                             synced.refresh_token, use_json=synced.source.endswith("hermes_pkce"),
                         )
@@ -1767,7 +1767,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                 if synced.refresh_token != entry.refresh_token:
                     logger.debug("Anthropic OAuth refresh failed but pool store has newer tokens — adopting")
                     return self._adopt(synced, **_MARK_OK)
-            from agent.anthropic_credentials import is_terminal_anthropic_refresh_error
+            from hermes_agent.agent.anthropic_credentials import is_terminal_anthropic_refresh_error
             if is_terminal_anthropic_refresh_error(exc):
                 # A dead grant is not "exhausted": benching it for a TTL replays the dead token every
                 # hour at DEBUG, so the lost login left no trace (#113023). Never touch the external
@@ -2572,11 +2572,11 @@ def _seed_anthropic_singletons(seed: _Seeder) -> None:
         seed.changed |= _retain_sources_not_in(seed.entries, {"hermes_pkce", "claude_code"})
         return
 
-    from agent.anthropic_credentials import (
+    from hermes_agent.agent.anthropic_credentials import (
         read_claude_code_credentials,
         read_hermes_oauth_credentials,
     )
-    from agent.credential_sources import adopt_external_logins_enabled
+    from hermes_agent.agent.credential_sources import adopt_external_logins_enabled
 
     sources = [("hermes_pkce", read_hermes_oauth_credentials())]
     if adopt_external_logins_enabled():

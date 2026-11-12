@@ -41,8 +41,8 @@ def register(ctx):
 
 @pytest.mark.platforms("posix")  # the host is a child process
 def test_hosted_delegation_provider_extends_schema_and_routes_from_the_host(tmp_path, monkeypatch):
-    from agent.delegation_provider import DelegationProvider
-    from agent.delegation_registry import get_active_provider
+    from hermes_agent.agent.delegation_provider import DelegationProvider
+    from hermes_agent.agent.delegation_registry import get_active_provider
     from hermes_agent.tools.delegate_tool_routes import resolve_task_routes, schema_extension
 
     home = tmp_path / ".hermes"
@@ -82,7 +82,7 @@ def test_hosted_delegation_provider_extends_schema_and_routes_from_the_host(tmp_
 
         # The /delegation seam acts on THIS process (ctx.delegation_backends is a host remote facade): its
         # config.yaml, and the --now rebuild THIS process's session runs at its next turn.
-        from agent import delegation_backends
+        from hermes_agent.agent import delegation_backends
         from hermes_cli.plugin_command_dispatch import invoke_plugin_command
         out = invoke_plugin_command(plugins_mod.get_plugin_command_handler("deleg-switch"), "default",
                                     session_key="chat-a")

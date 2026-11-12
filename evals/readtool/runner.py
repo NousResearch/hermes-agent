@@ -90,7 +90,7 @@ def run_task(task, model: str, provider: str, timeout_mult: float,
     t0 = time.monotonic()
     try:
         # Import inside the env so profile-aware paths bind to the temp home.
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             model=model,

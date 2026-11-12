@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 def _make_agent(
@@ -932,7 +932,7 @@ class TestLiteLLMOpenAIWire:
         # msg["cache_control"] is never relocated on this transport, so it is
         # both a lost breakpoint and (once a relay relocates it onto an empty
         # assistant turn) the HTTP 400 empty-text-block shape (#69512).
-        from agent.agent_runtime_helpers import plan_cache_sections_for_destination
+        from hermes_agent.agent.agent_runtime_helpers import plan_cache_sections_for_destination
 
         messages = [
             {"role": "system", "content": "SYSTEM " * 200},

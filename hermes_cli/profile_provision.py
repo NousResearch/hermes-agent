@@ -183,7 +183,7 @@ def write_profile_model(profile_dir: Path, provider: str, model: str, validate_i
     from hermes_cli.model_assignment import (
         apply_main_model_assignment, normalize_main_model_assignment, validated_main_model_selection,
     )
-    from agent.secret_scope import reset_multiplex_context, set_multiplex_context
+    from hermes_agent.agent.secret_scope import reset_multiplex_context, set_multiplex_context
     from hermes_cli.env_loader import hydrate_profile_secret_sources
     from hermes_constants import get_process_hermes_home
     from hermes_agent.tui_gateway.launch_profile_policy import profile_config_scope
@@ -264,7 +264,7 @@ def _mirror_secret(path: Path, launch_home: Path, name: str, wanted) -> bool:
 
 def _env_over_stub(src: Path, dst: Path) -> bool:
     """Mirror .env only over the seeded comment-only stub, never over a clone's own secrets."""
-    from agent.secret_scope import load_env_file
+    from hermes_agent.agent.secret_scope import load_env_file
     return bool(load_env_file(src)) and not load_env_file(dst)
 
 

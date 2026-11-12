@@ -19,13 +19,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.conversation_compression import (
+from hermes_agent.agent.conversation_compression import (
     CompressionCommitFence,
     _await_in_flight_commit,
     _await_worker_within_budget,
     _join_cancelled_worker,
 )
-from agent.tool_executor import _poll_sequential_future
+from hermes_agent.agent.tool_executor import _poll_sequential_future
 
 
 def _settled_dead_future(pool, exc):

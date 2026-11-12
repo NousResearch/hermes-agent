@@ -1,8 +1,8 @@
 """A muted wake keeps durable evidence while hiding only its new presentation rows."""
 from types import SimpleNamespace
 
-from agent.notification_presentation import notification_turn
-from agent.session_persistence import _db_flush_collect
+from hermes_agent.agent.notification_presentation import notification_turn
+from hermes_agent.agent.session_persistence import _db_flush_collect
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.tui_gateway.server import _history_to_messages
 

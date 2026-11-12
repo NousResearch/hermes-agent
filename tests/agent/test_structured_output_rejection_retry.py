@@ -1,5 +1,5 @@
 """Regression tests for the structured-output rejection retry in
-``agent.auxiliary_client``.
+``hermes_agent.agent.auxiliary_client``.
 
 Auxiliary callers (title generation, plugin structured completions) send an
 OpenAI ``response_format`` request field. Some providers reject the field, or
@@ -30,7 +30,7 @@ from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
 
-from agent.auxiliary_client import (
+from hermes_agent.agent.auxiliary_client import (
     call_llm,
     async_call_llm,
     _is_structured_output_rejection,
@@ -170,11 +170,11 @@ class TestCallLlmStructuredOutputRetry:
         client = self._setup(RuntimeError(error_message))
 
         with (
-            patch("agent.auxiliary_client._resolve_task_provider_model",
+            patch("hermes_agent.agent.auxiliary_client._resolve_task_provider_model",
                   return_value=("openai-codex", "gpt-5.5", None, None, None)),
-            patch("agent.auxiliary_client._get_cached_client",
+            patch("hermes_agent.agent.auxiliary_client._get_cached_client",
                   return_value=(client, "gpt-5.5")),
-            patch("agent.auxiliary_client._validate_llm_response",
+            patch("hermes_agent.agent.auxiliary_client._validate_llm_response",
                   side_effect=lambda resp, _task, **_kw: resp),
         ):
             result = call_llm(
@@ -204,13 +204,13 @@ class TestCallLlmStructuredOutputRetry:
         )
 
         with (
-            patch("agent.auxiliary_client._resolve_task_provider_model",
+            patch("hermes_agent.agent.auxiliary_client._resolve_task_provider_model",
                   return_value=("openai-codex", "gpt-5.5", None, None, None)),
-            patch("agent.auxiliary_client._get_cached_client",
+            patch("hermes_agent.agent.auxiliary_client._get_cached_client",
                   return_value=(client, "gpt-5.5")),
-            patch("agent.auxiliary_client._validate_llm_response",
+            patch("hermes_agent.agent.auxiliary_client._validate_llm_response",
                   side_effect=lambda resp, _task, **_kw: resp),
-            patch("agent.auxiliary_client._try_payment_fallback",
+            patch("hermes_agent.agent.auxiliary_client._try_payment_fallback",
                   return_value=None),
         ):
             with pytest.raises(RuntimeError, match="Invalid value"):
@@ -233,13 +233,13 @@ class TestCallLlmStructuredOutputRetry:
         )
 
         with (
-            patch("agent.auxiliary_client._resolve_task_provider_model",
+            patch("hermes_agent.agent.auxiliary_client._resolve_task_provider_model",
                   return_value=("openai-codex", "gpt-5.5", None, None, None)),
-            patch("agent.auxiliary_client._get_cached_client",
+            patch("hermes_agent.agent.auxiliary_client._get_cached_client",
                   return_value=(client, "gpt-5.5")),
-            patch("agent.auxiliary_client._validate_llm_response",
+            patch("hermes_agent.agent.auxiliary_client._validate_llm_response",
                   side_effect=lambda resp, _task, **_kw: resp),
-            patch("agent.auxiliary_client._try_payment_fallback",
+            patch("hermes_agent.agent.auxiliary_client._try_payment_fallback",
                   return_value=None),
         ):
             with pytest.raises(RuntimeError):
@@ -267,11 +267,11 @@ class TestAsyncCallLlmStructuredOutputRetry:
         ])
 
         with (
-            patch("agent.auxiliary_client._resolve_task_provider_model",
+            patch("hermes_agent.agent.auxiliary_client._resolve_task_provider_model",
                   return_value=("openai-codex", "gpt-5.5", None, None, None)),
-            patch("agent.auxiliary_client._get_cached_client",
+            patch("hermes_agent.agent.auxiliary_client._get_cached_client",
                   return_value=(client, "gpt-5.5")),
-            patch("agent.auxiliary_client._validate_llm_response",
+            patch("hermes_agent.agent.auxiliary_client._validate_llm_response",
                   side_effect=lambda resp, _task, **_kw: resp),
         ):
             result = await async_call_llm(
@@ -298,13 +298,13 @@ class TestAsyncCallLlmStructuredOutputRetry:
         )
 
         with (
-            patch("agent.auxiliary_client._resolve_task_provider_model",
+            patch("hermes_agent.agent.auxiliary_client._resolve_task_provider_model",
                   return_value=("openai-codex", "gpt-5.5", None, None, None)),
-            patch("agent.auxiliary_client._get_cached_client",
+            patch("hermes_agent.agent.auxiliary_client._get_cached_client",
                   return_value=(client, "gpt-5.5")),
-            patch("agent.auxiliary_client._validate_llm_response",
+            patch("hermes_agent.agent.auxiliary_client._validate_llm_response",
                   side_effect=lambda resp, _task, **_kw: resp),
-            patch("agent.auxiliary_client._try_payment_fallback",
+            patch("hermes_agent.agent.auxiliary_client._try_payment_fallback",
                   return_value=None),
         ):
             with pytest.raises(RuntimeError, match="Invalid value"):

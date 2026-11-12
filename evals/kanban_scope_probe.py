@@ -16,7 +16,7 @@ if len(sys.argv) == 2:
 sys.path.insert(0, str(repo))
 from hermes_cli import kanban_db as kb
 from hermes_cli.kanban_db_connect import connect
-from agent.transports.codex_app_server import CodexAppServerClient
+from hermes_agent.agent.transports.codex_app_server import CodexAppServerClient
 
 home = Path(os.environ["HOME"])
 hh = Path(os.environ["HERMES_HOME"])

@@ -19,9 +19,9 @@ from contextlib import suppress
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from agent.i18n import t
-from agent.interrupt_compat import _accepts_keyword
-from agent.replay_cleanup import canonicalize_replay_history
+from hermes_agent.agent.i18n import t
+from hermes_agent.agent.interrupt_compat import _accepts_keyword
+from hermes_agent.agent.replay_cleanup import canonicalize_replay_history
 from hermes_agent.gateway.config import Platform
 from hermes_agent.gateway.media_repair import repair_explicit_computer_use_media_paths
 from hermes_agent.gateway.platforms.base import BasePlatformAdapter
@@ -72,7 +72,7 @@ _LEDGER_PASSTHROUGH_KEYS = (
     "estimated_cost_usd", "cost_status", "cost_source", "cache_read_tokens", "cache_write_tokens",
     "reasoning_tokens", "total_tokens", "provider", "turn_exit_reason", "service_tier",
 )
-# Beside ``failure_reason`` and ``error``: what ``agent.error_surface.build_error_surface_from_result`` reads,
+# Beside ``failure_reason`` and ``error``: what ``hermes_agent.agent.error_surface.build_error_surface_from_result`` reads,
 # so the authority's ``message.complete`` carries the same error card the TUI path builds;
 # ``usage_window_message`` also marks a window-plan refusal for the chat rewording.
 _FAILURE_DESCRIPTOR_KEYS = ("free_tier", "failure_retryable", "failure_resets_at", "usage_window_message")
@@ -88,7 +88,7 @@ def _persisted_turn(agent, agent_history, result, compressions) -> dict | None:
     publish: clients bind the streamed reply to its stored row instead of comparing words. The
     agent copies ``conversation_history`` into its message list, so an untouched pre-turn prefix
     is the same dicts (transcript rows here carry no ``_row_id`` to compare)."""
-    from agent.persisted_turn_receipt import persisted_turn_receipt
+    from hermes_agent.agent.persisted_turn_receipt import persisted_turn_receipt
     if not isinstance(result, dict):
         return None
     status = ("interrupted" if result.get("interrupted")
@@ -138,7 +138,7 @@ def _settle_api_runtime_lock(agent, result, captured):
 
 def _resolution_failure_reply(exc: Exception, platform: Platform) -> tuple[str, str, bool]:
     """``(chat text, failure_reason, retryable)`` for a model/credential resolution failure before the turn."""
-    from agent.error_classifier import FailoverReason
+    from hermes_agent.agent.error_classifier import FailoverReason
     from hermes_cli.auth import AuthError, is_rate_limited_auth_error
     from hermes_cli.runtime_provider_custom import LocalRuntimeUnavailableError
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
@@ -150,7 +150,7 @@ def _resolution_failure_reply(exc: Exception, platform: Platform) -> tuple[str, 
     if isinstance(exc, RuntimeStoreError) and exc.reason == 'launch_credentials_unavailable':
         # The session's launch key is gone (a restart revoked a CLI --api-key, a route key changed):
         # the shared refusal copy names /new, never a resend.
-        from agent.turn_failure_copy import launch_credentials_copy
+        from hermes_agent.agent.turn_failure_copy import launch_credentials_copy
         return launch_credentials_copy(exc), 'launch_credentials_unavailable', False
     if isinstance(exc, RuntimeStoreError):
         # Session-policy refusals carry a stable reason code (e.g. a CLI launch key revoked by
@@ -382,7 +382,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 line = render_notice_line(notice)
                 if key.startswith("credits."):
                     # Window plans (e.g. a paused plan's line): a chat's /topup has no credits settings.
-                    from agent.plan_limits import portal_wording
+                    from hermes_agent.agent.plan_limits import portal_wording
                     line = portal_wording(line)
             except Exception:
                 logger.debug("render_notice_line failed", exc_info=True)
@@ -856,7 +856,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             if api.get('resume_unanswered') and isinstance(tail, dict) and tail.get('role') == 'user':
                 # The door's re-run continues the row its failed attempt persisted (#115325). Only a
                 # bare user tail: a tool suffix is completed work the re-run must still see.
-                from agent.session_persistence import adopt_unanswered_turn
+                from hermes_agent.agent.session_persistence import adopt_unanswered_turn
                 history = list(history)
                 adopt_unanswered_turn(history, api['content'], agent)
             return history, None, _collect_history_media_paths(history)
@@ -988,7 +988,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         if not native_imgs:
             return ctx.message
         try:
-            from agent.image_routing import build_native_content_parts
+            from hermes_agent.agent.image_routing import build_native_content_parts
             parts, skipped = build_native_content_parts(ctx.message, native_imgs)
             if skipped:
                 logger.warning("Native image attachment: skipped %d unreadable path(s): %s", len(skipped), skipped)
@@ -1049,7 +1049,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             # turn so a restart-interrupted turn is recorded WITH its id for drain-window dedup.
             if ctx.inbound_message_id is not None:
                 kwargs["persist_user_platform_id"] = str(ctx.inbound_message_id)
-            from agent.notification_presentation import notification_turn
+            from hermes_agent.agent.notification_presentation import notification_turn
             from hermes_agent.gateway.session_results import execution_result
             captured = execution_result.get()
             before = (getattr(agent, 'session_prompt_tokens', 0) or 0,
@@ -1343,7 +1343,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             # a FAILED turn: a one-shot client exits non-zero, transcript persistence closes the
             # turn, and an API receipt reports failure, never a completed turn with an apology.
             logger.warning("Model resolution failed for session %s: %s", ctx.session_key or "", exc, exc_info=True)
-            from agent.turn_failure_copy import stamp_failure
+            from hermes_agent.agent.turn_failure_copy import stamp_failure
             text, reason, retryable = _resolution_failure_reply(exc, ctx.source.platform)
             return stamp_failure({"final_response": text, "messages": [], "api_calls": 0, "tools": [],
                                   "failed": True, "completed": False, "error": str(exc)}, reason, retryable)
@@ -1440,7 +1440,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         common = {
             "messages": result.get("messages", []), "api_calls": result.get("api_calls", 0),
             "failed": result.get("failed", False), "failure_reason": result.get("failure_reason"),
-            # Usage-window limit (agent/plan_limits.py): the gateway offers the plan's model as a button.
+            # Usage-window limit (hermes_agent/agent/plan_limits.py): the gateway offers the plan's model as a button.
             "usage_limit": result.get("usage_limit"),
             "partial": result.get("partial", False), "completed": result.get("completed"),
             "interrupted": result.get("interrupted", False), "interrupt_message": result.get("interrupt_message"),
@@ -1485,7 +1485,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 }
             return {"final_response": final_response, **common}
         final_response = self._append_auto_media_tags(final_response, result, agent_history, history_media_paths)
-        # Auto-titling runs at TURN START (agent/turn_context.py) from the user's message alone, so a
+        # Auto-titling runs at TURN START (hermes_agent/agent/turn_context.py) from the user's message alone, so a
         # failed/interrupted turn is still titled.
         return {
             "final_response": final_response, "last_reasoning": result.get("last_reasoning"), **common, **viewer_meta,

@@ -4,7 +4,7 @@ import time
 from types import SimpleNamespace
 
 import pytest
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 from hermes_agent.tui_gateway import server
 from hermes_cli.cli_stream_mixin import CLIStreamMixin
 from tests.agent.test_credits_tracker import HEALTHY_HEADERS, DEPLETED_HEADERS

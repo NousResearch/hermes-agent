@@ -58,10 +58,10 @@ for line in sys.stdin:
 
 @pytest.mark.parametrize("mode", ["allow", "block", "scope", "schema", "interrupt"])
 def test_local_batch_runs_once_per_entry_through_agent_and_persists_pairs(mcp_server, mode):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     names, call_log = mcp_server
-    with patch("agent.process_bootstrap.OpenAI"), patch("agent.model_metadata.fetch_model_metadata", return_value={}):
+    with patch("hermes_agent.agent.process_bootstrap.OpenAI"), patch("hermes_agent.agent.model_metadata.fetch_model_metadata", return_value={}):
         agent = AIAgent(
             model="test/model", api_key="test-key", base_url="http://127.0.0.1:1/v1",
             enabled_toolsets=["mcp-batchfixture"], quiet_mode=True,
@@ -124,7 +124,7 @@ def test_local_batch_runs_once_per_entry_through_agent_and_persists_pairs(mcp_se
 
 
 def test_expansion_preserves_connector_batches_and_rejects_bad_envelopes():
-    from agent.tool_call_batches import expand_local_tool_batches
+    from hermes_agent.agent.tool_call_batches import expand_local_tool_batches
     from hermes_agent.tools.connectors.gateway.config import MAX_CALLS_PER_DISPATCH
 
     local = {"name": "mcp__fixture__read", "arguments": {"path": "alpha"}}

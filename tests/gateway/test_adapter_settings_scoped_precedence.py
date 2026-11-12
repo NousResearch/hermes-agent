@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from agent.secret_scope import set_multiplex_active
+from hermes_agent.agent.secret_scope import set_multiplex_active
 from hermes_agent.gateway.config import Platform, load_gateway_config
 from hermes_cli.plugins import discover_plugins
 

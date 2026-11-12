@@ -109,7 +109,7 @@ def _normalize_exact_revision(ref: str) -> str:
 
 def _safe_git_error(result: subprocess.CompletedProcess, source_url: str = "") -> str:
     """Diagnosable Git output without echoing embedded credentials."""
-    from agent.redact import redact_sensitive_text
+    from hermes_agent.agent.redact import redact_sensitive_text
     error = (result.stderr or result.stdout or "").strip()
     if source_url:
         error = error.replace(source_url, _scrub_git_url(source_url))

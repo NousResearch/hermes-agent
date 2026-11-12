@@ -8,8 +8,8 @@ replaying the identical request until ``max_retries``.
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from agent.error_classifier import FailoverReason, classify_api_error
-from agent.turn_retry_state import TurnRetryState
+from hermes_agent.agent.error_classifier import FailoverReason, classify_api_error
+from hermes_agent.agent.turn_retry_state import TurnRetryState
 
 _REVERSED_400 = "reasoning_effort 'none' unsupported; use minimal|low|medium|high|xhigh"
 
@@ -54,8 +54,8 @@ class _Agent:
 
 
 def _settle(disable_drop_attempted, spent_on=None):
-    from agent.route_verdicts import route_visit
-    from agent.turn_api_error import settle_unrecovered_error
+    from hermes_agent.agent.route_verdicts import route_visit
+    from hermes_agent.agent.turn_api_error import settle_unrecovered_error
 
     agent = _Agent()
     err = _FakeApiError(400, _REVERSED_400)
@@ -67,10 +67,10 @@ def _settle(disable_drop_attempted, spent_on=None):
         provider_stale_refresh_attempted=False, primary_recovery_attempted=False,
         restart_with_redirected_messages=False,
     )
-    with patch("agent.conversation_loop._credential_refresh_profile", lambda a: None), patch(
-        "agent.conversation_loop._arm_fallback_restart", lambda agent, msgs, prompt, retry: prompt
-    ), patch("agent.turn_api_error.compute_error_backoff", lambda *a, **k: 0), patch(
-        "agent.turn_api_error.interruptible_backoff_sleep", lambda *a, **k: None
+    with patch("hermes_agent.agent.conversation_loop._credential_refresh_profile", lambda a: None), patch(
+        "hermes_agent.agent.conversation_loop._arm_fallback_restart", lambda agent, msgs, prompt, retry: prompt
+    ), patch("hermes_agent.agent.turn_api_error.compute_error_backoff", lambda *a, **k: 0), patch(
+        "hermes_agent.agent.turn_api_error.interruptible_backoff_sleep", lambda *a, **k: None
     ):
         verdict = settle_unrecovered_error(
             agent, api_error=err, classified=classified, _retry=retry, status_code=400, error_msg=str(err),
@@ -130,17 +130,17 @@ class _WireAgent(_Agent):
 
 def _wire_reasoning_config(agent):
     """What the main-loop request builder hands the transport as ``reasoning_config``."""
-    from agent.chat_completion_helpers import _build_api_kwargs_for_mode
+    from hermes_agent.agent.chat_completion_helpers import _build_api_kwargs_for_mode
 
     def _capture(agent, api_messages, tools_for_api, reasoning_config, request_overrides, cache_scope_id):
         return {"reasoning_config": reasoning_config}
 
-    with patch("agent.chat_completion_helpers._build_chat_completions_kwargs", _capture):
+    with patch("hermes_agent.agent.chat_completion_helpers._build_chat_completions_kwargs", _capture):
         return _build_api_kwargs_for_mode(agent, [], [])["reasoning_config"]
 
 
 def _recover(agent, message):
-    from agent.turn_recovery import recover_after_classification
+    from hermes_agent.agent.turn_recovery import recover_after_classification
 
     err = _FakeApiError(400, message)
     classified = classify_api_error(err, provider="custom", model=agent.model)

@@ -13,8 +13,8 @@ import uuid
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, Iterator, List, NamedTuple, Optional, TypeGuard
 
-from agent.message_sanitization import coerce_tool_name, deterministic_call_id
-from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
+from hermes_agent.agent.message_sanitization import coerce_tool_name, deterministic_call_id
+from hermes_agent.agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 from hermes_cli.route_identity import normalize_route_base_url
 
 logger = logging.getLogger(__name__)
@@ -87,7 +87,7 @@ _CROSS_ISSUER_WARN_EMITTED = False
 def _wire_model_identity(model: Any) -> Optional[str]:
     """Canonical Responses wire model stamped on encrypted reasoning: blobs are sealed to the issuing
     model too, so a same-endpoint model switch must not replay them (HTTP 400)."""
-    from agent.model_metadata import strip_codex_context_variant_suffix
+    from hermes_agent.agent.model_metadata import strip_codex_context_variant_suffix
 
     return str(strip_codex_context_variant_suffix(model or "")).strip() or None
 
@@ -761,7 +761,7 @@ def _chat_messages_to_responses_input(
     # produced (#90976).
     if not native_compaction_eligible:
         return items
-    from agent.native_compaction import prune_pre_checkpoint_items
+    from hermes_agent.agent.native_compaction import prune_pre_checkpoint_items
     return prune_pre_checkpoint_items(items, item_sources=item_sources)
 
 
@@ -802,8 +802,8 @@ def _native_responses_replay_items(
     if getattr(agent, "api_mode", None) != "codex_responses" or not isinstance(messages, list):
         return None
     route = classify_responses_route(agent)._asdict()
-    from agent.native_compaction import native_compaction_context_management
-    from agent.fast_mode import effective_request_overrides
+    from hermes_agent.agent.native_compaction import native_compaction_context_management
+    from hermes_agent.agent.fast_mode import effective_request_overrides
     if not native_compaction_context_management(agent, **route):
         return None
     # The wire model may be rewritten per request (fast mode); provenance must match what the transport stamps.
@@ -833,7 +833,7 @@ def has_replayable_native_compaction_checkpoint(
     items = _native_responses_replay_items(agent, messages)
     if items is None:
         return False
-    from agent.native_compaction import has_compaction_checkpoint
+    from hermes_agent.agent.native_compaction import has_compaction_checkpoint
     return has_compaction_checkpoint(items)
 
 
@@ -850,7 +850,7 @@ def estimate_native_responses_preflight_tokens(
     items = _native_responses_replay_items(agent, messages)
     if items is None:
         return None
-    from agent.model_metadata import estimate_request_tokens_rough
+    from hermes_agent.agent.model_metadata import estimate_request_tokens_rough
     return estimate_request_tokens_rough(items, system_prompt=system_prompt or "", tools=tools)
 
 
@@ -1033,7 +1033,7 @@ _PREFLIGHT_OPTIONAL_FIELDS: tuple[tuple[str, Callable[[Any], bool], Optional[Cal
         (key, lambda v: v is not None, None)
         for key in ("tool_choice", "parallel_tool_calls", "prompt_cache_key", "prompt_cache_retention")
     ),
-    # Native compaction directive; eligibility is resolved in agent/native_compaction.py.
+    # Native compaction directive; eligibility is resolved in hermes_agent/agent/native_compaction.py.
     ("context_management", lambda v: isinstance(v, list) and bool(v), None),
 )
 

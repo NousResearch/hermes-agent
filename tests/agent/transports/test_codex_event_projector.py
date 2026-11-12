@@ -9,7 +9,7 @@ import json
 
 import pytest
 
-from agent.transports.codex_event_projector import (
+from hermes_agent.agent.transports.codex_event_projector import (
     CodexEventProjector,
     _deterministic_call_id,
     _format_tool_args,
@@ -106,9 +106,9 @@ def test_successful_marker_ending_output_survives_persisted_replay(tmp_path):
     executor interrupt marker replays as data instead of an UNKNOWN-effect recovery notice."""
     from types import SimpleNamespace
 
-    from agent.codex_runtime import _persist_projected_messages
-    from agent.replay_cleanup import canonicalize_replay_history
-    from agent.session_persistence import SessionPersistenceMixin
+    from hermes_agent.agent.codex_runtime import _persist_projected_messages
+    from hermes_agent.agent.replay_cleanup import canonicalize_replay_history
+    from hermes_agent.agent.session_persistence import SessionPersistenceMixin
     from hermes_agent.hermes_state import SessionDB
 
     output = "Documentation example:\n[Command interrupted]\n"
@@ -136,7 +136,7 @@ def test_successful_marker_ending_output_survives_persisted_replay(tmp_path):
 @pytest.mark.parametrize("exit_fields", [{"exitCode": 130}, {}])
 def test_interrupted_or_unknown_exit_stays_conservative(exit_fields):
     """A real interrupt (non-zero exit) or a missing exit status is still recovered as UNKNOWN."""
-    from agent.replay_cleanup import canonicalize_replay_history
+    from hermes_agent.agent.replay_cleanup import canonicalize_replay_history
 
     item = {"type": "commandExecution", "id": "interrupted", "command": "sleep 100", "cwd": "/tmp",
             "status": "failed", "aggregatedOutput": "[Command interrupted]\n", **exit_fields}
@@ -249,7 +249,7 @@ class TestWebSearchProjection:
     def test_web_search_is_recorded_under_the_live_card_id(self) -> None:
         # The live bubble and the stored history must share name + call id, or a
         # refreshed transcript drops the card and shows a raw JSON note instead.
-        from agent.codex_runtime import _codex_item_to_args, _codex_item_to_tool_name, _stable_call_id
+        from hermes_agent.agent.codex_runtime import _codex_item_to_args, _codex_item_to_tool_name, _stable_call_id
 
         item = {"type": "webSearch", "id": "ws-1", "query": "Hermes Agent docs"}
         result = CodexEventProjector().project({"method": "item/completed", "params": {"item": item}})

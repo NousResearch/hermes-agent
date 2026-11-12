@@ -31,26 +31,26 @@ def exercise_surfaces(agent, captures, url, home, config):
     config["auxiliary"] = {"compression": {"provider": "fixture-local", "model": "fixture", "reasoning_effort": "none", "max_output_tokens": 47}}
     config["_setup_done"] = True
     (home / "config.yaml").write_text(json.dumps(config))
-    from agent.moa_loop import MoAClient
+    from hermes_agent.agent.moa_loop import MoAClient
     start = len(captures)
     response = MoAClient("fixture").chat.completions.create(model="fixture", messages=[{"role": "user", "content": "Return fixture"}])
     assert response.choices[0].message.content == "LOCAL_CAPTURE_ONLY"
     results["full-moa"] = captures[start:]
     assert len(results["full-moa"]) == 3, results["full-moa"]
 
-    from agent.auxiliary_client import call_llm
+    from hermes_agent.agent.auxiliary_client import call_llm
     start = len(captures)
     response = call_llm(task="compression", messages=[{"role": "user", "content": "Return fixture"}])
     assert response.choices[0].message.content == "LOCAL_CAPTURE_ONLY"
     results["full-compression-call"] = captures[start:]
 
-    from agent.curator import _run_llm_review
+    from hermes_agent.agent.curator import _run_llm_review
     start = len(captures)
     response = _run_llm_review("Return the fixture response without tools.")
     assert response["final"] == "LOCAL_CAPTURE_ONLY", response
     results["full-curator-fork"] = captures[start:]
 
-    from agent.background_review import build_cache_parity_fork
+    from hermes_agent.agent.background_review import build_cache_parity_fork
     start = len(captures)
     review, _, _ = build_cache_parity_fork(agent, {}, max_iterations=2)
     try:
@@ -73,7 +73,7 @@ def exercise_surfaces(agent, captures, url, home, config):
     assert results["internal-review-budget"][0]["body"]["max_tokens"] == 43
 
     import boto3
-    from agent.transports.bedrock import BedrockTransport
+    from hermes_agent.agent.transports.bedrock import BedrockTransport
     native = boto3.client("bedrock-runtime", region_name="us-east-1", endpoint_url=url,
                           aws_access_key_id="fixture", aws_secret_access_key="fixture")
     kwargs = BedrockTransport().build_kwargs("amazon.nova-pro-v1:0", [{"role": "user", "content": "fixture"}])

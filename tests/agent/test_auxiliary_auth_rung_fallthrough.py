@@ -1,6 +1,6 @@
 """The auxiliary recovery ladder must not let a failed auth-refresh retry escape.
 
-Both auth-refresh rungs in ``agent/auxiliary_client.py`` perform their retry with a
+Both auth-refresh rungs in ``hermes_agent/agent/auxiliary_client.py`` perform their retry with a
 bare ``yield`` inside a ``return`` statement:
 
     if aux_errors.auth_refresh(failure.verdict) and client_is_nous:
@@ -38,7 +38,7 @@ from typing import Optional
 import pytest
 import hermes_yaml as yaml
 
-import agent.auxiliary_client as aux
+import hermes_agent.agent.auxiliary_client as aux
 
 AUX_MODEL = "z-ai/glm-5.3-flash"
 FALLBACK_MODEL = "fallback-model"

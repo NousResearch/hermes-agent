@@ -16,7 +16,7 @@ _KEY = "k" * 32
 
 @pytest.fixture(autouse=True)
 def _plain_process(monkeypatch):
-    from agent import secret_scope
+    from hermes_agent.agent import secret_scope
     from hermes_cli import managed_scope
 
     monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", False)

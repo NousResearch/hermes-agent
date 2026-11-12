@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent import secret_scope as ss
+from hermes_agent.agent import secret_scope as ss
 from hermes_agent.gateway.config import PlatformConfig
 from hermes_agent.gateway.platforms.api_server import APIServerAdapter
 

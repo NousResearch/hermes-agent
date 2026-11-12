@@ -17,27 +17,27 @@ from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
-from agent.conversation_compression import recover_rotated_compression_session
-from agent.iteration_budget import IterationBudget
-from agent.memory_context import build_memory_context_block, sanitize_context
-from agent.memory_provider import is_trivial_prompt
-from agent.message_content import flatten_message_text
-from agent.lsp.deferred import forward_to_agent as forward_lsp_verdicts
-from agent.plugin_live_notes import pop_plugin_notices
-from agent.skills_index_delta import stage_skills_index_note
-from agent.prompt_refresh import refresh_warm_prompt
-from agent.message_metadata import (
+from hermes_agent.agent.conversation_compression import recover_rotated_compression_session
+from hermes_agent.agent.iteration_budget import IterationBudget
+from hermes_agent.agent.memory_context import build_memory_context_block, sanitize_context
+from hermes_agent.agent.memory_provider import is_trivial_prompt
+from hermes_agent.agent.message_content import flatten_message_text
+from hermes_agent.agent.lsp.deferred import forward_to_agent as forward_lsp_verdicts
+from hermes_agent.agent.plugin_live_notes import pop_plugin_notices
+from hermes_agent.agent.skills_index_delta import stage_skills_index_note
+from hermes_agent.agent.prompt_refresh import refresh_warm_prompt
+from hermes_agent.agent.message_metadata import (
     PERSISTENCE_ONLY_MESSAGE_FIELDS, PRE_LLM_BLOCK_WITHHELD_PROMPT, append_message, stamp_message_timestamp,
     TYPED_ASK, stamp_typed_ask, typed_ask_fields, typed_ask_text, REQUEST_REASONING_TOKENS, stamped_reasoning_tokens,
 )
-from agent.model_metadata import (
+from hermes_agent.agent.model_metadata import (
     estimate_messages_tokens_rough,
     estimate_native_anthropic_request_tokens_rough,
     estimate_request_tokens_rough,
 )
-from agent.image_token_cost import bind_image_token_cost
-from agent.usage_anchor import anchored_context_tokens, restore_usage_anchor
-from agent.turn_author import parse_turn_author
+from hermes_agent.agent.image_token_cost import bind_image_token_cost
+from hermes_agent.agent.usage_anchor import anchored_context_tokens, restore_usage_anchor
+from hermes_agent.agent.turn_author import parse_turn_author
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +58,7 @@ def _preflight_request_tokens(
         return anchored
     tools = getattr(agent, "tools", None) or None
     try:
-        from agent.codex_responses_adapter import estimate_native_responses_preflight_tokens
+        from hermes_agent.agent.codex_responses_adapter import estimate_native_responses_preflight_tokens
 
         native = estimate_native_responses_preflight_tokens(
             agent, messages, system_prompt=system_prompt or "", tools=tools
@@ -74,12 +74,12 @@ def _preflight_request_tokens(
     charge_stale_thinking = _agent_stale_thinking_on_wire(agent)
     estimate_messages = messages
     if charge_stale_thinking and getattr(agent, "api_mode", "") == "anthropic_messages":
-        from agent.anthropic_thinking_policy import native_anthropic_preserves_prior_thinking
+        from hermes_agent.agent.anthropic_thinking_policy import native_anthropic_preserves_prior_thinking
 
         if native_anthropic_preserves_prior_thinking(
             getattr(agent, "base_url", ""), getattr(agent, "model", "")
         ):
-            from agent.anthropic_thinking_replay import apply_rejected_thinking_suppression
+            from hermes_agent.agent.anthropic_thinking_replay import apply_rejected_thinking_suppression
 
             # Preflight runs on canonical history, while the eventual request is a
             # filtered copy. Mirror suppression onto shallow message copies before
@@ -102,7 +102,7 @@ def _agent_stale_thinking_on_wire(agent: Any) -> bool:
     """Whether the active route replays stale thinking text; ``True`` (conservative full
     charge) when route facts are unavailable."""
     try:
-        from agent.message_sanitization import stale_thinking_reaches_wire
+        from hermes_agent.agent.message_sanitization import stale_thinking_reaches_wire
 
         return stale_thinking_reaches_wire(
             *(_str_attr(agent, k) for k in ("api_mode", "provider", "model", "base_url"))
@@ -188,9 +188,9 @@ def _stamp_typed_ask_once(agent: Any, turn_user_msg: dict) -> None:
     persisted row flattens parts into one string, so ``previous_message`` reads the ask from here.
     Taken from the human-authored view of what the row will persist (a list persist override drops
     API-only parts; turn-start compaction may have wrapped the row or folded a todo snapshot onto it)."""
-    from agent.context_compressor import user_originated_turn_view
-    from agent.conversation_compression import _strip_stale_todo_snapshot
-    from agent.session_persistence import durable_user_row_content
+    from hermes_agent.agent.context_compressor import user_originated_turn_view
+    from hermes_agent.agent.conversation_compression import _strip_stale_todo_snapshot
+    from hermes_agent.agent.session_persistence import durable_user_row_content
 
     content = turn_user_msg.get("content")
     if typed_ask_text(turn_user_msg) is not None or not isinstance(content, list):
@@ -227,12 +227,12 @@ def _maybe_title_session_at_turn_start(
     platform = str(getattr(agent, "platform", "") or "").lower()
     if platform in _UNTITLED_PLATFORMS:
         return
-    from agent.oneshot_footprint import agent_is_oneshot
+    from hermes_agent.agent.oneshot_footprint import agent_is_oneshot
     if agent_is_oneshot(agent):  # nothing shows a one-shot's title, and the call is a second paid request
         return
     try:
-        from agent.message_content import flatten_message_text
-        from agent.title_generator import apply_subagent_title, maybe_auto_title
+        from hermes_agent.agent.message_content import flatten_message_text
+        from hermes_agent.agent.title_generator import apply_subagent_title, maybe_auto_title
 
         # Turn's user message as text; image-only turns yield "" and are skipped.
         user_text = ""
@@ -299,7 +299,7 @@ def start_deferred_title_upgrade(agent: Any) -> None:
     if upgrade is None:
         return
     agent._deferred_title_upgrade = None
-    from agent.title_generator import start_title_upgrade
+    from hermes_agent.agent.title_generator import start_title_upgrade
     start_title_upgrade(upgrade)
 
 
@@ -319,7 +319,7 @@ def reanchor_current_turn_user_idx(messages: list[Any], user_message: Any) -> in
     Compaction handoffs must never become the fallback anchor (#80622) — they are reference-only
     scaffolding, not the active ask.
     """
-    from agent.context_compressor import user_originated_turn_view
+    from hermes_agent.agent.context_compressor import user_originated_turn_view
 
     fallback = -1
     for i in range(len(messages) - 1, -1, -1):
@@ -368,7 +368,7 @@ def refused_turn_boundary_row_id(messages: Any, current_turn_user_idx: Any) -> O
     is the wrong target when a mid-turn steer appended a newer user row, or the refused input was a
     hidden/internal row (#149708 review). Reads the committed row id of this turn's user message.
     """
-    from agent.persisted_turn_receipt import committed_row_id
+    from hermes_agent.agent.persisted_turn_receipt import committed_row_id
     if (isinstance(messages, list) and isinstance(current_turn_user_idx, int)
             and 0 <= current_turn_user_idx < len(messages)):
         return committed_row_id(messages[current_turn_user_idx])
@@ -401,7 +401,7 @@ def export_current_turn_boundary(agent: Any, result: Any, user_message: Any) -> 
     row = messages[idx]
     if not (isinstance(row, dict) and row.get("role") == "user"):
         return result
-    from agent.context_compressor import user_originated_turn_view
+    from hermes_agent.agent.context_compressor import user_originated_turn_view
 
     live_view = user_originated_turn_view(row)
     if row.get("content") != user_message and not (
@@ -441,7 +441,7 @@ def _fail_closed_after_preflight_timeout(agent, request_tokens: int) -> None:
     request that merely sits above the compression threshold is sent unchanged, exactly as the
     cooldown-blocked path sends it every turn — otherwise a slow summariser turns a session that still
     fits its window into a turn that can never run (#113646, #114594)."""
-    from agent.conversation_compression import context_compression_timed_out, request_exceeds_model_window
+    from hermes_agent.agent.conversation_compression import context_compression_timed_out, request_exceeds_model_window
 
     if not context_compression_timed_out(agent):
         return
@@ -471,7 +471,7 @@ def _fail_closed_on_insufficient_progress(agent, request_tokens: int) -> None:
     fitting request keeps the send-as-is behaviour — and a pass skipped by the summary-failure
     cooldown is a defer, not proof of incompressibility, so it keeps its typed cooldown result.
     """
-    from agent.conversation_compression import compression_blocked_transiently, request_exceeds_model_window
+    from hermes_agent.agent.conversation_compression import compression_blocked_transiently, request_exceeds_model_window
 
     if request_exceeds_model_window(agent, request_tokens) is not True:
         return
@@ -587,8 +587,8 @@ def _publish_runtime_main(agent: Any) -> None:
     """Tell auxiliary_client the live main provider/model for this turn (after primary
     restoration settled the runtime). Never raises: failure loses only the scope."""
     with suppress(Exception):
-        from agent.auxiliary_client import set_runtime_main
-        from agent.prompt_cache_scope import resolve_prompt_cache_scope_safe
+        from hermes_agent.agent.auxiliary_client import set_runtime_main
+        from hermes_agent.agent.prompt_cache_scope import resolve_prompt_cache_scope_safe
         # Rotation-stable prompt-cache scope (lineage root), memoized per segment; a new
         # session uses the physical id until build_api_kwargs re-resolves.
         # Memoized per segment on the agent, so this is a DB walk at most once per segment — except a
@@ -651,7 +651,7 @@ def _bind_turn_identity(
     agent._current_api_request_id = ""
     # Tripwire: warn when this turn starts before the previous turn-end persist
     # (concurrent turns interleave transcript writes). Cleared in _persist_session.
-    from agent.agent_runtime_helpers import note_turn_start
+    from hermes_agent.agent.agent_runtime_helpers import note_turn_start
     note_turn_start(agent, turn_id)
     return effective_task_id, turn_id
 
@@ -704,13 +704,13 @@ def _reset_per_turn_agent_state(agent: Any) -> None:
                 )
     # A stale streak against a local server that has since recovered must not fail this turn on arrival.
     with suppress(Exception):
-        from agent.chat_completion_local import retry_recovered_local_server
+        from hermes_agent.agent.chat_completion_local import retry_recovered_local_server
         retry_recovered_local_server(agent)
     # Replay compression warning through status_callback for gateway platforms.
     if agent._compression_warning:
         agent._replay_compression_warning()
         agent._compression_warning = None  # send once
-    from agent.status_output import deliver_kept_startup_notices
+    from hermes_agent.agent.status_output import deliver_kept_startup_notices
     deliver_kept_startup_notices(agent)
     if getattr(agent, "_pending_startup_notices", None) or getattr(agent, "_pending_startup_prints", None):
         # gateway: init ran before this turn's callbacks / viewer print sink
@@ -783,7 +783,7 @@ def _hydrate_from_history(agent: Any, conversation_history: Optional[list[Any]])
     # optional hook.
     if agent._user_turn_count == 0:
         # A fresh process has no in-memory anchor; the persisted one is honored only while the
-        # restored transcript still carries the priced prefix (see agent/usage_anchor.py).
+        # restored transcript still carries the priced prefix (see hermes_agent/agent/usage_anchor.py).
         restore_usage_anchor(agent, conversation_history)
         note_checkpoint = getattr(
             getattr(agent, "context_compressor", None),
@@ -792,7 +792,7 @@ def _hydrate_from_history(agent: Any, conversation_history: Optional[list[Any]])
         )
         if callable(note_checkpoint):
             try:
-                from agent.codex_responses_adapter import (
+                from hermes_agent.agent.codex_responses_adapter import (
                     has_replayable_native_compaction_checkpoint,
                 )
 
@@ -802,7 +802,7 @@ def _hydrate_from_history(agent: Any, conversation_history: Optional[list[Any]])
                     note_checkpoint()
                     # Restored usage can describe the input that produced this
                     # checkpoint rather than its compacted replay.
-                    from agent.usage_anchor import set_usage_anchor
+                    from hermes_agent.agent.usage_anchor import set_usage_anchor
 
                     set_usage_anchor(agent, None)
             except Exception:
@@ -837,8 +837,8 @@ def _emit_reaction(agent: Any, original_user_message: Any, display_kind: Optiona
     if reaction_callback is None or display_kind == "hidden":
         return
     with suppress(Exception):
-        from agent.reactions import detect_reaction
-        from agent.skill_commands import describe_skill_invocation
+        from hermes_agent.agent.reactions import detect_reaction
+        from hermes_agent.agent.skill_commands import describe_skill_invocation
 
         if describe_skill_invocation(original_user_message) is not None:
             return
@@ -871,9 +871,9 @@ def _withhold_blocked_prompt(agent: Any, turn_user_msg: dict[str, Any], typed: A
     (the TUI/Desktop submit-time row) is rewritten in place under the persist lock. A row merged with
     an earlier compaction handoff keeps the handoff and an unanswered earlier message merged into the
     row keeps its text; only this turn's ask becomes the placeholder."""
-    from agent.context_compressor import COMPRESSED_SUMMARY_METADATA_KEY, _handoff_only_content
-    from agent.message_metadata import WITHHELD_PROMPT
-    from agent.session_persistence import _content_with_turn_override, _durable_content, _persist_lock
+    from hermes_agent.agent.context_compressor import COMPRESSED_SUMMARY_METADATA_KEY, _handoff_only_content
+    from hermes_agent.agent.message_metadata import WITHHELD_PROMPT
+    from hermes_agent.agent.session_persistence import _content_with_turn_override, _durable_content, _persist_lock
 
     content = turn_user_msg.get("content")
     if turn_user_msg.get(COMPRESSED_SUMMARY_METADATA_KEY):
@@ -1033,9 +1033,9 @@ def _previous_user_message_text(conversation_history: Optional[list[Any]]) -> st
     its marker (replay drops its type). A compaction carrier yields the ask it wraps; an image-only turn ends
     the search with ``""``. A multimodal turn's injected context sits in its parts, so its ask is read from
     the ``TYPED_ASK`` stamp; an older row without one has only the memory fence stripped."""
-    from agent.context_compressor import user_originated_turn_view
-    from agent.conversation_compression_scaffolding import has_scaffolding_flag, is_user_role_scaffolding
-    from agent.prompt_builder import STEER_MARKER_OPEN
+    from hermes_agent.agent.context_compressor import user_originated_turn_view
+    from hermes_agent.agent.conversation_compression_scaffolding import has_scaffolding_flag, is_user_role_scaffolding
+    from hermes_agent.agent.prompt_builder import STEER_MARKER_OPEN
     from hermes_agent.gateway.message_timestamps import strip_leading_message_timestamps
 
     for message in reversed(conversation_history or []):
@@ -1098,7 +1098,7 @@ def _stamp_api_content_sidecar(
     API copy, so stamp the exact sent bytes on the live dict for replay."""
     _turn_user_msg = messages[current_turn_user_idx]
     live_content = _turn_user_msg.get("content")
-    from agent.session_persistence import _persist_lock, durable_user_row_content
+    from hermes_agent.agent.session_persistence import _persist_lock, durable_user_row_content
     # Match the row the flush wrote (persist override = clean transcript), not the live bytes.
     durable_content, _api_content = durable_user_row_content(
         agent, _turn_user_msg, live_content,
@@ -1158,7 +1158,7 @@ def _append_multimodal_context(
     appended = append_notes_to_multimodal_content(turn_user_msg.get("content"), _mm_ctx)
     if not appended and typed_ask_text(turn_user_msg) is None:
         return
-    from agent.session_persistence import _durable_content, _persist_lock
+    from hermes_agent.agent.session_persistence import _durable_content, _persist_lock
 
     with _persist_lock(agent):
         _row_id = turn_user_msg.get("_row_id")
@@ -1203,11 +1203,11 @@ def build_turn_context(
 ) -> TurnContext:
     """Run the once-per-turn setup and return the loop's input context.
 
-    Helpers are passed in to avoid an import cycle with ``agent.conversation_loop``.
+    Helpers are passed in to avoid an import cycle with ``hermes_agent.agent.conversation_loop``.
     Order matters: the DB session row is created only AFTER the system prompt is built
     (else it persists system_prompt=NULL and costs a cache miss) and BEFORE preflight
     compression."""
-    from agent.turn_context_compaction import CompactionOutcome, run_turn_start_compaction
+    from hermes_agent.agent.turn_context_compaction import CompactionOutcome, run_turn_start_compaction
 
     # Guard stdio against OSError from broken pipes (systemd/headless/daemon).
     install_safe_stdio()
@@ -1222,7 +1222,7 @@ def build_turn_context(
     if recovered_history is not None:
         conversation_history = recovered_history
     # After recovery, so the bot-to-bot chain is keyed by the session id this turn's sends use.
-    from agent.bot_chain import on_turn_start as _bot_chain_turn_start
+    from hermes_agent.agent.bot_chain import on_turn_start as _bot_chain_turn_start
     _bot_chain_turn_start(agent, turn_author, persist_user_display_kind, persist_user_message or user_message)
 
     # Tag log records on this thread with the session ID for ``hermes logs``; bind the
@@ -1308,7 +1308,7 @@ def build_turn_context(
         restore_or_build_system_prompt(agent, system_message, conversation_history)
     active_system_prompt = agent._cached_system_prompt
     # `/delegation <backend> --now`: after the pin restore, so a fresh agent rebuilds too.
-    from agent.delegation_backends import apply_requested_tool_rebuild
+    from hermes_agent.agent.delegation_backends import apply_requested_tool_rebuild
     apply_requested_tool_rebuild(agent)
 
     # Bot Mode DM tool — injected ONLY into a bot's canonical "Bot Chat" session (same
@@ -1325,7 +1325,7 @@ def build_turn_context(
     # A turn interrupted before admission could not write its accepted input because
     # it did not own the session lease. Persist that carried-forward row now, before
     # compaction can rewrite or drop it.
-    from agent.session_persistence import _PERSIST_AFTER_ADMISSION_INTERRUPT
+    from hermes_agent.agent.session_persistence import _PERSIST_AFTER_ADMISSION_INTERRUPT
 
     if conversation_history and any(
         isinstance(msg, dict) and msg.get(_PERSIST_AFTER_ADMISSION_INTERRUPT)
@@ -1433,9 +1433,9 @@ def build_api_messages(
     ``ephemeral_system_prompt``) is added at API time only — ``messages`` stays untouched
     beyond the sidecar stamp, and the system prompt is built ONCE per session and
     replayed verbatim."""
-    from agent.agent_runtime_helpers import fill_empty_non_final_wire_payload
-    from agent.conversation_loop import _clone_message_for_send
-    from agent.replay_cleanup import canonicalize_replay_history
+    from hermes_agent.agent.agent_runtime_helpers import fill_empty_non_final_wire_payload
+    from hermes_agent.agent.conversation_loop import _clone_message_for_send
+    from hermes_agent.agent.replay_cleanup import canonicalize_replay_history
 
     has_current = isinstance(current_turn_user_idx, int) and 0 <= current_turn_user_idx < len(messages)
     current_turn_message = messages[current_turn_user_idx] if has_current else None
@@ -1519,12 +1519,12 @@ def build_api_messages(
 
     # Rows rebuilt from the session DB carry ``[screenshot]`` lines: re-attach the newest retained
     # images on this wire copy (vision.replay_recent_images; native image input only).
-    from agent.image_replay import replay_for_agent
+    from hermes_agent.agent.image_replay import replay_for_agent
     replay_for_agent(agent, api_messages)
 
     # A provider-rejected Anthropic signature is suppressed outside canonical history and
     # survives fresh request construction / process resume via session model_config.
-    from agent.anthropic_thinking_replay import apply_rejected_thinking_suppression
+    from hermes_agent.agent.anthropic_thinking_replay import apply_rejected_thinking_suppression
     apply_rejected_thinking_suppression(agent, api_messages)
 
     # Final system message = cached prompt + ephemeral additions (API-time only).

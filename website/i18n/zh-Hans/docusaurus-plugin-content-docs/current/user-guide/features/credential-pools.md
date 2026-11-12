@@ -204,10 +204,10 @@ Hermes 在启动时自动从多个来源发现凭证并初始化池：
 
 凭证池集成于提供商解析层：
 
-1. **`agent/credential_pool.py`** — 池管理器：存储、选择、轮换、冷却时间；**`agent/credential_pool_model_cooldowns.py`** 负责 Anthropic 按模型的 429 冷却
+1. **`hermes_agent/agent/credential_pool.py`** — 池管理器：存储、选择、轮换、冷却时间；**`hermes_agent/agent/credential_pool_model_cooldowns.py`** 负责 Anthropic 按模型的 429 冷却
 2. **`hermes_cli/auth_commands.py`** — CLI 命令和交互式向导
 3. **`hermes_cli/runtime_provider.py`** — 感知池的凭证解析
-4. **`run_agent.py`** — 错误恢复：429/402/401 → 池轮换 → 备用
+4. **`hermes_agent/run_agent.py`** — 错误恢复：429/402/401 → 池轮换 → 备用
 
 ## 存储
 

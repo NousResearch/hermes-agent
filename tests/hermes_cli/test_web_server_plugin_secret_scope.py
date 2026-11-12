@@ -59,7 +59,7 @@ class TestPluginAPISecretScopeProductionMount:
         monkeypatch.setenv(self._PROBE_KEY, "sk-launch-a")
 
         import hermes_agent.tui_gateway.launch_profile_policy as lpp
-        from agent.secret_scope import is_multiplex_active, set_multiplex_active
+        from hermes_agent.agent.secret_scope import is_multiplex_active, set_multiplex_active
 
         monkeypatch.setattr(lpp, "_snapshot", None)  # freeze the launch env fresh
         self._previous_multiplex = is_multiplex_active()

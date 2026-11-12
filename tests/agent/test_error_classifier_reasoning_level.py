@@ -7,7 +7,7 @@ max") is dropped for the session so the route default applies.
 """
 import pytest
 
-from agent.error_classifier import FailoverReason, classify_api_error
+from hermes_agent.agent.error_classifier import FailoverReason, classify_api_error
 from tests.agent.test_reasoning_disable_recovery import _recover, _WireAgent, _wire_reasoning_config
 
 # Alibaba token-plan / DashScope: the set starts at ``minimal``, so ``none`` is refused.

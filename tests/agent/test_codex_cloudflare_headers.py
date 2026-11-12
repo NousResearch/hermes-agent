@@ -4,8 +4,8 @@ The official Codex endpoint must receive Hermes' own harness identity, rather
 than the historical first-party compatibility identity. Live endpoint
 acceptance is a separate smoke test; these tests verify request construction.
 
-``_codex_cloudflare_headers`` in ``agent.auxiliary_client`` centralizes the
-header set so the primary chat client (``run_agent.AIAgent.__init__`` +
+``_codex_cloudflare_headers`` in ``hermes_agent.agent.auxiliary_client`` centralizes the
+header set so the primary chat client (``hermes_agent.run_agent.AIAgent.__init__`` +
 ``_apply_client_headers_for_base_url``) and the auxiliary client paths
 (``_build_codex_client`` and the ``raw_codex`` branch of ``resolve_provider_client``)
 all emit the same headers.
@@ -17,8 +17,8 @@ These tests pin:
   from codex-rs ``auth.rs``)
 - graceful handling of malformed tokens (drop the account-ID header, don't
   raise)
-- primary-client wiring at both entry points in ``run_agent.py``
-- aux-client wiring at both entry points in ``agent/auxiliary_client.py``
+- primary-client wiring at both entry points in ``hermes_agent/run_agent.py``
+- aux-client wiring at both entry points in ``hermes_agent/agent/auxiliary_client.py``
 """
 from __future__ import annotations
 
@@ -67,7 +67,7 @@ def _make_codex_jwt(
 class TestCodexCloudflareHeaders:
 
     def test_user_agent_advertises_hermes_version(self):
-        from agent.auxiliary_client import _codex_cloudflare_headers
+        from hermes_agent.agent.auxiliary_client import _codex_cloudflare_headers
         headers = _codex_cloudflare_headers(_make_codex_jwt())
         assert headers["User-Agent"] == f"HermesAgent/{get_version_info().base_version}"
         assert headers["originator"] == "hermes-agent"
@@ -78,7 +78,7 @@ class TestCodexCloudflareHeaders:
 
     def test_jwt_without_chatgpt_account_id_claim(self):
         """A valid JWT that lacks the account_id claim should still return headers."""
-        from agent.auxiliary_client import _codex_cloudflare_headers
+        from hermes_agent.agent.auxiliary_client import _codex_cloudflare_headers
         import base64 as _b64, json as _json
 
         def b64url(data: bytes) -> str:
@@ -96,8 +96,8 @@ class TestCodexCloudflareHeaders:
         wire — not just the shared helper."""
         import sys
 
-        from agent import model_metadata
-        from agent.auxiliary_client import _codex_cloudflare_headers
+        from hermes_agent.agent import model_metadata
+        from hermes_agent.agent.auxiliary_client import _codex_cloudflare_headers
         from hermes_cli import codex_models
 
         both = _make_codex_jwt(data_residency="us", compute_residency="eu")
@@ -123,7 +123,7 @@ class TestCodexCloudflareHeaders:
         monkeypatch.setitem(sys.modules, "httpx", _FakeHttp)
         codex_models._fetch_models_from_api(access_token=compute_only)
         # The context-length probe goes through the shared model_metadata_http seam.
-        from agent import model_metadata_http
+        from hermes_agent.agent import model_metadata_http
         monkeypatch.setattr(model_metadata_http, "get", _FakeHttp.get)
         monkeypatch.setattr(model_metadata, "_codex_oauth_context_cache", {})
         model_metadata._fetch_codex_oauth_context_lengths_with_source(compute_only)
@@ -135,7 +135,7 @@ class TestCodexCloudflareHeaders:
 
     def test_no_residency_claim_omits_header(self):
         """Control: tokens without the claim, and malformed tokens, never carry the header."""
-        from agent.auxiliary_client import _codex_cloudflare_headers
+        from hermes_agent.agent.auxiliary_client import _codex_cloudflare_headers
         for token in [_make_codex_jwt(), "not-a-jwt", "", "only.one", "  ", "...."]:
             headers = _codex_cloudflare_headers(token)
             assert "x-openai-internal-codex-residency" not in headers
@@ -143,16 +143,16 @@ class TestCodexCloudflareHeaders:
 
 
 # ---------------------------------------------------------------------------
-# Primary chat client wiring (run_agent.AIAgent)
+# Primary chat client wiring (hermes_agent.run_agent.AIAgent)
 # ---------------------------------------------------------------------------
 
 class TestPrimaryClientWiring:
 
     def test_apply_client_headers_on_base_url_change(self):
         """Credential-rotation / base-url change path must also emit codex headers."""
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         token = _make_codex_jwt("acct-rotation")
-        with patch("agent.process_bootstrap.OpenAI") as mock_openai:
+        with patch("hermes_agent.agent.process_bootstrap.OpenAI") as mock_openai:
             mock_openai.return_value = MagicMock()
             agent = AIAgent(
                 api_key="placeholder-openrouter-key",
@@ -175,9 +175,9 @@ class TestPrimaryClientWiring:
 
     def test_apply_client_headers_clears_codex_headers_off_chatgpt(self):
         """Switching AWAY from chatgpt.com must drop the codex headers."""
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         token = _make_codex_jwt()
-        with patch("agent.process_bootstrap.OpenAI") as mock_openai:
+        with patch("hermes_agent.agent.process_bootstrap.OpenAI") as mock_openai:
             mock_openai.return_value = MagicMock()
             agent = AIAgent(
                 api_key=token,
@@ -199,7 +199,7 @@ class TestPrimaryClientWiring:
 
 
 # ---------------------------------------------------------------------------
-# Auxiliary client wiring (agent.auxiliary_client)
+# Auxiliary client wiring (hermes_agent.agent.auxiliary_client)
 # ---------------------------------------------------------------------------
 
 class TestAuxiliaryClientWiring:
@@ -207,7 +207,7 @@ class TestAuxiliaryClientWiring:
         """_build_codex_client builds the OpenAI client used for compression /
         vision / title generation when routed through Codex. Must emit codex
         headers."""
-        from agent import auxiliary_client
+        from hermes_agent.agent import auxiliary_client
         token = _make_codex_jwt("acct-aux-try-codex")
 
         # Force _select_pool_entry to return "no pool" so we fall through to
@@ -220,7 +220,7 @@ class TestAuxiliaryClientWiring:
             auxiliary_client, "_read_codex_singleton_token",
             lambda: token,
         )
-        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+        with patch("hermes_agent.agent.auxiliary_client.OpenAI") as mock_openai:
             mock_openai.return_value = MagicMock()
             client, _model = auxiliary_client._build_codex_client("gpt-5.4")
             assert client is not None
@@ -232,7 +232,7 @@ class TestAuxiliaryClientWiring:
     def test_resolve_provider_client_raw_codex_passes_codex_headers(self, monkeypatch):
         """The ``raw_codex=True`` branch (used by the main agent loop for direct
         responses.stream() access) must also emit codex headers."""
-        from agent import auxiliary_client
+        from hermes_agent.agent import auxiliary_client
         token = _make_codex_jwt("acct-aux-raw-codex")
         monkeypatch.setattr(
             auxiliary_client, "_select_pool_entry",
@@ -242,7 +242,7 @@ class TestAuxiliaryClientWiring:
             auxiliary_client, "_read_codex_singleton_token",
             lambda: token,
         )
-        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+        with patch("hermes_agent.agent.auxiliary_client.OpenAI") as mock_openai:
             mock_openai.return_value = MagicMock()
             client, _model = auxiliary_client.resolve_provider_client(
                 "openai-codex", model="gpt-5.4", raw_codex=True,

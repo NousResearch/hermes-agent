@@ -12,7 +12,7 @@ import hermes_logging
 @pytest.fixture
 def make_agent(monkeypatch):
     from hermes_constants import get_hermes_home
-    import run_agent
+    from hermes_agent import run_agent
 
     home = get_hermes_home()
     (home / "config.yaml").write_text("", encoding="utf-8")
@@ -39,8 +39,8 @@ def make_agent(monkeypatch):
         return agent
 
     with (
-        patch("agent.process_bootstrap.OpenAI"),
-        patch("agent.model_metadata_http.get") as metadata_get,
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.model_metadata_http.get") as metadata_get,
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
         patch("hermes_agent.tools.env_probe.warm_environment_probe_async"),
     ):
@@ -118,14 +118,14 @@ def test_config_failure_warns_without_exposing_values_and_preserves_defaults(
 
         # The failing object is the first construction, so an early diagnostic
         # must reach the real file handler, not one initialized by a reference.
-        with caplog.at_level(logging.WARNING, logger="run_agent"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.run_agent"):
             fallback = make_agent()
 
     assert intercepted == targets
     assert config_path.read_text(encoding="utf-8-sig") == configured
     warnings = [
         record for record in caplog.records
-        if record.name == "run_agent" and record.levelno >= logging.WARNING
+        if record.name == "hermes_agent.run_agent" and record.levelno >= logging.WARNING
         and "config" in record.getMessage().lower()
         and "default" in record.getMessage().lower()
     ]
@@ -177,7 +177,7 @@ def test_config_failure_warns_without_exposing_values_and_preserves_defaults(
     assert fallback._memory_store.memory_entries == healthy._memory_store.memory_entries
     assert fallback._memory_store.memory_entries == defaults._memory_store.memory_entries
     assert not any(
-        record.name == "run_agent" and record.levelno >= logging.WARNING
+        record.name == "hermes_agent.run_agent" and record.levelno >= logging.WARNING
         and "config" in record.getMessage().lower()
         and "default" in record.getMessage().lower()
         for record in caplog.records
@@ -187,7 +187,7 @@ def test_config_failure_warns_without_exposing_values_and_preserves_defaults(
 def test_empty_config_initializes_memory_without_a_load_warning(make_agent, caplog):
     from hermes_constants import get_hermes_home
 
-    with caplog.at_level(logging.WARNING, logger="run_agent"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.run_agent"):
         agent = make_agent()
 
     assert agent._memory_manager is None
@@ -195,7 +195,7 @@ def test_empty_config_initializes_memory_without_a_load_warning(make_agent, capl
     assert agent._memory_store.memory_entries == ["The notebook is blue."]
     assert (get_hermes_home() / "config.yaml").read_bytes() == b""
     assert not any(
-        record.name == "run_agent" and record.levelno >= logging.WARNING
+        record.name == "hermes_agent.run_agent" and record.levelno >= logging.WARNING
         and "config" in record.getMessage().lower()
         and "default" in record.getMessage().lower()
         for record in caplog.records

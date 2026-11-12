@@ -7,7 +7,7 @@ from types import SimpleNamespace
 def test_turn_on_a_chat_whose_route_key_changed_names_new_chat_not_retry(tmp_path, monkeypatch):
     """The refusal at turn entry used to escape as an exception: every surface showed "Something went
     wrong ... Use /retry", which can never succeed, plus a false "some actions may have run" notice."""
-    from agent.error_surface import build_error_surface_from_result
+    from hermes_agent.agent.error_surface import build_error_surface_from_result
     from hermes_agent.gateway import session_authorities as authorities, session_policy
     from hermes_agent.gateway.run_turn_runner import TurnRunner
     from hermes_agent.gateway.session_results import execution_result

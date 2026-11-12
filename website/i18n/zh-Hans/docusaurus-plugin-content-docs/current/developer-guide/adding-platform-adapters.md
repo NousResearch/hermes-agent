@@ -570,7 +570,7 @@ await self.handle_message(event)
 
 ### 9. 可选：平台提示
 
-**`ctx.register_platform` 的 `platform_hint=`** — 如果你的平台有特定渲染限制（不支持 markdown、消息长度限制等），在其注册表条目上声明提示（文本可放在 `adapter_hint.py` 这类轻量同级模块中）。它会被注入系统 prompt；`agent/prompt_builder.py::PLATFORM_HINTS` 只保留核心界面：
+**`ctx.register_platform` 的 `platform_hint=`** — 如果你的平台有特定渲染限制（不支持 markdown、消息长度限制等），在其注册表条目上声明提示（文本可放在 `adapter_hint.py` 这类轻量同级模块中）。它会被注入系统 prompt；`hermes_agent/agent/prompt_builder.py::PLATFORM_HINTS` 只保留核心界面：
 
 ```python
 PLATFORM_HINT = (

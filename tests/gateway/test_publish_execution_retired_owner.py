@@ -12,7 +12,7 @@ callback outliving its claim is dropped, so the entry has to be read without ind
 from types import SimpleNamespace
 from typing import cast
 
-from agent.status_output import StatusOutputMixin
+from hermes_agent.agent.status_output import StatusOutputMixin
 from hermes_agent.gateway import local_viewer_events
 from tests.gateway.test_session_authority_cancel_settlement import _authority
 

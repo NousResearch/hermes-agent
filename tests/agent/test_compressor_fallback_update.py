@@ -2,8 +2,8 @@
 
 from unittest.mock import MagicMock, patch
 
-from run_agent import AIAgent
-from agent.context_compressor import ContextCompressor
+from hermes_agent.run_agent import AIAgent
+from hermes_agent.agent.context_compressor import ContextCompressor
 
 
 def _make_agent_with_compressor() -> AIAgent:
@@ -42,8 +42,8 @@ def _make_agent_with_compressor() -> AIAgent:
     return agent
 
 
-@patch("agent.auxiliary_client.resolve_provider_client")
-@patch("agent.model_metadata.get_model_context_length", return_value=128_000)
+@patch("hermes_agent.agent.auxiliary_client.resolve_provider_client")
+@patch("hermes_agent.agent.model_metadata.get_model_context_length", return_value=128_000)
 def test_compressor_updated_on_fallback(mock_ctx_len, mock_resolve):
     """After fallback activation, the compressor must reflect the fallback model."""
     agent = _make_agent_with_compressor()

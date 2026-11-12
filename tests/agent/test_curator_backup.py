@@ -1,4 +1,4 @@
-"""Tests for agent/curator_backup.py — snapshot + rollback of the skills tree."""
+"""Tests for hermes_agent/agent/curator_backup.py — snapshot + rollback of the skills tree."""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ def backup_env(monkeypatch, tmp_path):
     # Reload so get_hermes_home picks up the env var fresh.
     import hermes_constants
     importlib.reload(hermes_constants)
-    from agent import curator_backup
+    from hermes_agent.agent import curator_backup
     importlib.reload(curator_backup)
     return {"home": home, "skills": home / "skills", "cb": curator_backup}
 
@@ -200,7 +200,7 @@ def test_real_run_takes_pre_snapshot(backup_env, monkeypatch):
     _write_skill(skills, "alpha")
 
     # Reload curator module against the freshly-env'd hermes_constants
-    from agent import curator
+    from hermes_agent.agent import curator
     importlib.reload(curator)
 
     # Stub out LLM review and auto transitions — we only care about the

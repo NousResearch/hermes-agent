@@ -11,9 +11,9 @@ import threading
 
 import pytest
 
-from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
-from agent.prompt_builder import STEER_MARKER_OPEN, format_steer_marker
-from run_agent import AIAgent
+from hermes_agent.agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
+from hermes_agent.agent.prompt_builder import STEER_MARKER_OPEN, format_steer_marker
+from hermes_agent.run_agent import AIAgent
 from hermes_agent.tools.registry import registry
 
 # Registry handler for the end-to-end steer-survival test below (module level,
@@ -102,7 +102,7 @@ class TestSteerDrain:
         assert agent._pending_steer is None
 
     def test_a_drained_steer_put_back_undelivered_keeps_its_ticket(self):
-        from agent.agent_runtime_helpers import _requeue_pending_steer
+        from hermes_agent.agent.agent_runtime_helpers import _requeue_pending_steer
         agent = _bare_agent()
         agent.steer("note")
         agent.steer("queued prompt", ticket="t")
@@ -259,8 +259,8 @@ class TestActiveTurnRedirectCheckpoint:
         """A looped partial must not seed the correction's next API request (#112764): neither
         the replayed correction nor the alternation placeholder carries the bytes; the model
         is told the reply degenerated instead."""
-        from agent.conversation_loop import _apply_active_turn_redirect
-        from agent.repetition_guard import REPETITION_LOOP_INTERRUPTED
+        from hermes_agent.agent.conversation_loop import _apply_active_turn_redirect
+        from hermes_agent.agent.repetition_guard import REPETITION_LOOP_INTERRUPTED
 
         repeated = ("The same degenerate partial response keeps repeating without progress.\n" * 10)
         agent = _bare_agent()
@@ -281,7 +281,7 @@ class TestActiveTurnRedirectCheckpoint:
 
     def test_ordinary_partial_remains_replayable(self):
         """Useful interrupted text remains available to the corrected request."""
-        from agent.conversation_loop import _apply_active_turn_redirect
+        from hermes_agent.agent.conversation_loop import _apply_active_turn_redirect
 
         visible = "I found the migration entry point and was about to inspect it."
         agent = _bare_agent()
@@ -293,7 +293,7 @@ class TestActiveTurnRedirectCheckpoint:
         assert visible in messages[-1]["api_content"]
 
     def test_assistant_tail_puts_correction_last(self):
-        from agent.conversation_loop import _apply_active_turn_redirect
+        from hermes_agent.agent.conversation_loop import _apply_active_turn_redirect
 
         agent = _bare_agent()
         agent._current_streamed_assistant_text = "Visible draft."
@@ -324,7 +324,7 @@ class TestActiveTurnRedirectCheckpoint:
         ride only in the *user correction's* ``api_content``; assistant
         placeholders stay clean (or ``display_kind="hidden"`` when empty).
         """
-        from agent.conversation_loop import _apply_active_turn_redirect
+        from hermes_agent.agent.conversation_loop import _apply_active_turn_redirect
 
         scaffolding = (
             "[This response was interrupted by a user correction.]",
@@ -390,7 +390,7 @@ class TestActiveTurnRedirectCheckpoint:
         empty-response storms (July 2026). Reasoning must never appear in
         replayable content — in either the assistant-checkpoint or the
         merged-user-correction shape."""
-        from agent.conversation_loop import _apply_active_turn_redirect
+        from hermes_agent.agent.conversation_loop import _apply_active_turn_redirect
 
         for tail_role in ("user", "assistant"):
             agent = _bare_agent()
@@ -425,7 +425,7 @@ class TestEmptyHiddenAssistantRehealRegression:
     touching the row — while the durable transcript stays hidden and empty."""
 
     def test_active_turn_redirect_hidden_placeholder_has_provider_replay_payload(self):
-        from agent.conversation_loop import _apply_active_turn_redirect
+        from hermes_agent.agent.conversation_loop import _apply_active_turn_redirect
 
         agent = _bare_agent()
         agent._current_streamed_assistant_text = ""
@@ -459,7 +459,7 @@ class TestEmptyHiddenAssistantRehealRegression:
     def test_empty_non_final_sanitizer_still_repairs_unmarked_empty_assistant(self):
         """Control: a genuinely empty non-final assistant with no provider-replay
         sidecar is still healed — the fix must not disable the generic net."""
-        from agent.agent_runtime_helpers import repair_empty_non_final_messages
+        from hermes_agent.agent.agent_runtime_helpers import repair_empty_non_final_messages
 
         rows = [
             {"role": "user", "content": "start"},
@@ -500,7 +500,7 @@ class TestSteerInjection:
         """The appended user dict carries no _DB_PERSISTED_MARKER yet, so the
         next _flush_messages_to_session_db writes it to state.db — the steer
         text lands in the durable transcript (messages.content, role=user)."""
-        from agent.context_compressor import _DB_PERSISTED_MARKER
+        from hermes_agent.agent.context_compressor import _DB_PERSISTED_MARKER
 
         agent = _bare_agent()
         agent.steer("remember this decision")
@@ -527,8 +527,8 @@ class TestSteerInjection:
         """A run that ends right after a steered batch leaves user(steer) as the persisted tail.
         The next real prompt makes two consecutive user rows; the alternation repair must leave
         the steer row byte-identical (append-only persistence cannot follow an in-place merge)."""
-        from agent.agent_runtime_helpers import _merge_consecutive_users
-        from agent.prompt_builder import steer_user_row
+        from hermes_agent.agent.agent_runtime_helpers import _merge_consecutive_users
+        from hermes_agent.agent.prompt_builder import steer_user_row
 
         steer = steer_user_row("focus on error handling")
         before = dict(steer)
@@ -640,7 +640,7 @@ class TestSteerSurvivesRedirectRebuild:
     def _loop_agent(self):
         from unittest.mock import MagicMock, patch
 
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         tool_schema = {
             "type": "function",
@@ -653,7 +653,7 @@ class TestSteerSurvivesRedirectRebuild:
         with (
             patch("hermes_agent.model_tools.get_tool_definitions", return_value=[tool_schema]),
             patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-            patch("agent.process_bootstrap.OpenAI"),
+            patch("hermes_agent.agent.process_bootstrap.OpenAI"),
         ):
             agent = AIAgent(
                 api_key="test-key-1234567890",
@@ -735,7 +735,7 @@ class TestPreApiCallSteerDrain:
         """A steer pending when the loop builds api_messages lands THIS iteration as a
         standalone user row after the newest tool result; the (already persisted, append-only)
         tool row is byte-identical afterwards so replay cannot diverge from the live request."""
-        from agent.turn_iteration_prep import _inject_steer_after_newest_tool_result
+        from hermes_agent.agent.turn_iteration_prep import _inject_steer_after_newest_tool_result
 
         agent = _bare_agent()
         tool_row = {"role": "tool", "content": "output here", "tool_call_id": "tc1"}
@@ -764,7 +764,7 @@ class TestSteerMarkerContract:
         """The system-prompt note tells the model which marker to trust; it
         must reference the exact open/close the injector emits, or the model
         trusts a marker that never appears (and vice-versa)."""
-        from agent.prompt_builder import STEER_CHANNEL_NOTE, STEER_MARKER_CLOSE
+        from hermes_agent.agent.prompt_builder import STEER_CHANNEL_NOTE, STEER_MARKER_CLOSE
 
         emitted = format_steer_marker("hi")
         assert STEER_MARKER_OPEN in emitted and STEER_MARKER_CLOSE in emitted
@@ -779,9 +779,9 @@ class TestSteerRowIsHumanInput:
         """The steer row is typed (renderer label, alternation-repair guard) but it carries full user
         authority: every "is this human input" predicate — in memory and the DB pick /undo uses — must
         agree with the anchor-restoration predicate that already accepts it."""
-        from agent.context_compressor import ContextCompressor, is_user_originated_turn
-        from agent.conversation_compression import _is_real_user_message
-        from agent.prompt_builder import steer_user_row
+        from hermes_agent.agent.context_compressor import ContextCompressor, is_user_originated_turn
+        from hermes_agent.agent.conversation_compression import _is_real_user_message
+        from hermes_agent.agent.prompt_builder import steer_user_row
         from hermes_agent.hermes_state import SessionDB
 
         row = steer_user_row("focus on the error handling")
@@ -829,12 +829,12 @@ class TestLegacyHiddenPlaceholderWireSubstitution:
     def _loop_agent(self):
         from unittest.mock import MagicMock, patch
 
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         with (
             patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
             patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-            patch("agent.process_bootstrap.OpenAI"),
+            patch("hermes_agent.agent.process_bootstrap.OpenAI"),
         ):
             agent = AIAgent(
                 api_key="test-key-1234567890",
@@ -856,7 +856,7 @@ class TestLegacyHiddenPlaceholderWireSubstitution:
         NOTHING left to heal (its per-turn warning spam IS the bug)."""
         from unittest.mock import patch
 
-        import agent.agent_runtime_helpers as _arh
+        import hermes_agent.agent.agent_runtime_helpers as _arh
 
         from tests.agent.test_run_agent import _mock_response
 
@@ -921,7 +921,7 @@ class TestLegacyHiddenPlaceholderWireSubstitution:
         assert "api_content" not in history[1]
 
     def test_hidden_row_with_tool_calls_or_text_is_not_touched(self):
-        from agent.conversation_loop import _clone_message_for_send
+        from hermes_agent.agent.conversation_loop import _clone_message_for_send
         from unittest.mock import patch
 
         from tests.agent.test_run_agent import _mock_response

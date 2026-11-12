@@ -8,11 +8,11 @@ import re
 from contextlib import suppress
 from typing import Any, Dict, Optional
 
-from agent.i18n import t
-from agent.tool_dispatch_helpers import (
+from hermes_agent.agent.i18n import t
+from hermes_agent.agent.tool_dispatch_helpers import (
     _extract_error_preview, _extract_file_mutation_targets, _extract_landed_file_mutation_paths
 )
-from agent.tool_result_classification import (
+from hermes_agent.agent.tool_result_classification import (
     FILE_MUTATING_TOOL_NAMES as _FILE_MUTATING_TOOLS, file_mutation_result_landed
 )
 

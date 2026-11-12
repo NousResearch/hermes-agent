@@ -26,33 +26,33 @@ from typing import Any, Dict, Optional
 
 from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
-from agent.error_classifier import (
+from hermes_agent.agent.error_classifier import (
     FailoverReason, PROVIDER_STREAM_EMPTY_FRAME_ERROR_CODE, PROVIDER_STREAM_NON_JSON_ERROR_CODE,
     _extract_status_code)
-from agent.sdk_transform_bypass import bypass_chat_sdk_request_transform
-from agent.errors import EmptyStreamError
-from agent.chat_completion_local import _streams_llamacpp, stale_giveup
-from agent.chat_completion_headers import _chat_completion_capturing_headers
-from agent.chat_completion_stream_monitor import StreamingWaitMonitor, StreamLifetimeExceeded
-from agent.transports.chat_completions import is_router_timeout_shim, router_timeout_shim_may_follow
-from agent.fast_mode import effective_request_overrides
-from agent.turn_context import substitute_api_content
-from agent.gemini_native_adapter import is_native_gemini_base_url
+from hermes_agent.agent.sdk_transform_bypass import bypass_chat_sdk_request_transform
+from hermes_agent.agent.errors import EmptyStreamError
+from hermes_agent.agent.chat_completion_local import _streams_llamacpp, stale_giveup
+from hermes_agent.agent.chat_completion_headers import _chat_completion_capturing_headers
+from hermes_agent.agent.chat_completion_stream_monitor import StreamingWaitMonitor, StreamLifetimeExceeded
+from hermes_agent.agent.transports.chat_completions import is_router_timeout_shim, router_timeout_shim_may_follow
+from hermes_agent.agent.fast_mode import effective_request_overrides
+from hermes_agent.agent.turn_context import substitute_api_content
+from hermes_agent.agent.gemini_native_adapter import is_native_gemini_base_url
 # Remote endpoints must never be fingerprinted: the probe waterfall is only valid for local/LM-Studio/Ollama
 # boxes. Non-Ollama remotes (sglang, vLLM, OpenAI-compat) expose Ollama-compat endpoints that can
 # misidentify and, without an api_key, return 401 on every leg (issue #89863).
-from agent.model_metadata import is_local_endpoint
-from agent.message_content import flatten_message_text
-from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS, append_message, data_use_requirement, stamp_message_timestamp
-from agent.message_sanitization import (
+from hermes_agent.agent.model_metadata import is_local_endpoint
+from hermes_agent.agent.message_content import flatten_message_text
+from hermes_agent.agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS, append_message, data_use_requirement, stamp_message_timestamp
+from hermes_agent.agent.message_sanitization import (
     _sanitize_messages_surrogates, _sanitize_surrogates, _repair_tool_call_arguments,
     normalize_finish_reason as _normalize_finish_reason, sanitize_outbound_kwargs, strip_images_for_rejecting_model,
 )
-from agent.reasoning_summaries import (
+from hermes_agent.agent.reasoning_summaries import (
     append_streamed_reasoning_detail, separate_glued_reasoning_blocks, streamed_reasoning_detail_text)
-from agent.local_prompt_progress import prompt_progress, with_prompt_progress
-from agent.repetition_guard import RunawayStreamWatch, is_repetition_dominated
-from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
+from hermes_agent.agent.local_prompt_progress import prompt_progress, with_prompt_progress
+from hermes_agent.agent.repetition_guard import RunawayStreamWatch, is_repetition_dominated
+from hermes_agent.agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 from hermes_agent.tools.terminal_tool_lifecycle import is_persistent_env
 from utils import base_url_host_matches, base_url_hostname, env_float, env_int
 
@@ -89,7 +89,7 @@ def _join_worker_for_relay_teardown(worker, *, label: str) -> None:
     execution is live — otherwise the join would just delay interrupt detection.
     """
     try:
-        from agent import relay_runtime
+        from hermes_agent.agent import relay_runtime
         runtime = relay_runtime.get_runtime(create=False)
         if runtime is None or not runtime.managed_execution_enabled():
             return
@@ -102,8 +102,8 @@ def _join_worker_for_relay_teardown(worker, *, label: str) -> None:
 
 
 def _ra():
-    """Lazy ``run_agent`` reference so ``patch("run_agent.cleanup_vm")`` etc. intercept."""
-    import run_agent
+    """Lazy ``run_agent`` reference so ``patch("hermes_agent.run_agent.cleanup_vm")`` etc. intercept."""
+    from hermes_agent import run_agent
     return run_agent
 
 
@@ -246,7 +246,7 @@ def _provider_stream_error_from_json_decode_error(error: json.JSONDecodeError, *
     answers EVERY streaming request with such frames, so this is not the provider's
     malformed payload and must not be reported as one: it gets its own code and
     the stream helper recovers by retrying without streaming."""
-    from agent.redact import redact_sensitive_text
+    from hermes_agent.agent.redact import redact_sensitive_text
     raw_text = str(getattr(error, "doc", "") or "").strip()
     headers = getattr(response, "headers", None) if response is not None else None
     if not raw_text:
@@ -401,7 +401,7 @@ def estimate_request_context_tokens(api_payload: Any) -> int:
     dict with ``messages`` (+``tools``); dict with ``input`` (Responses API,
     +``instructions``/``tools``); any other dict -> sum of its values. Image parts
     cost the learned per-image price, not their base64 length."""
-    from agent.image_token_cost import current_image_token_cost
+    from hermes_agent.agent.image_token_cost import current_image_token_cost
 
     image_cost = current_image_token_cost()
 
@@ -424,7 +424,7 @@ def estimate_request_context_tokens(api_payload: Any) -> int:
 
 
 def _is_openai_codex_backend(agent) -> bool:
-    from agent.codex_responses_adapter import classify_responses_route
+    from hermes_agent.agent.codex_responses_adapter import classify_responses_route
     return classify_responses_route(agent).is_codex_backend
 
 
@@ -491,7 +491,7 @@ def _prompt_cache_scope_for_agent(agent) -> str | None:
     """Rotation-stable logical cache scope for *agent*, or None (transports then
     fall back to the physical session_id, so a failure never blocks the build)."""
     try:
-        from agent.prompt_cache_scope import resolve_prompt_cache_scope_safe
+        from hermes_agent.agent.prompt_cache_scope import resolve_prompt_cache_scope_safe
         return resolve_prompt_cache_scope_safe(agent)
     except Exception:
         logger.debug("prompt-cache scope resolution failed", exc_info=True)
@@ -661,7 +661,7 @@ def _cloud_stale_timeout(base: float, api_kwargs: dict) -> float:
     known reasoning models. ``model`` (OpenAI/Anthropic) wins over ``modelId`` (Bedrock);
     Bedrock's dotted, region-prefixed profile id can't match the floor's slug regex
     directly, so it is normalized as a fallback."""
-    from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
+    from hermes_agent.agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
     timeout = _scale_stale_timeout_for_context(base, estimate_request_context_tokens(api_kwargs))
     floor = get_reasoning_stale_timeout_floor(api_kwargs.get("model") or api_kwargs.get("modelId") or "")
     if floor is None and api_kwargs.get("modelId"):
@@ -710,7 +710,7 @@ def _bedrock_reasoning_stale_floor(model_id: object) -> float | None:
     tried with digit-dash-digit <-> digit-dot-digit swapped (version separators
     only). First non-None wins; None for unknown models.
     """
-    from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
+    from hermes_agent.agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
     if not model_id or not isinstance(model_id, str):
         return None
     name = model_id.strip().lower()
@@ -734,7 +734,7 @@ def _bedrock_converse_call(api_kwargs: dict, *, stream: bool, on_stream_denied=N
     reasoning rejection resends once without the offending blocks inside the same attempt; a streaming IAM
     denial hands off to ``on_stream_denied(client, kwargs, exc)``; a stale connection evicts the cached
     client so the outer retry builds a fresh pool. Streaming returns the event stream; else a SimpleNamespace."""
-    from agent.bedrock_adapter import (_get_bedrock_runtime_client, invalidate_runtime_client,
+    from hermes_agent.agent.bedrock_adapter import (_get_bedrock_runtime_client, invalidate_runtime_client,
         is_stale_connection_error, is_streaming_access_denied_error, normalize_converse_response,
         recover_from_cache_point_rejection, recover_from_redacted_reasoning_rejection)
     region = api_kwargs.pop("__bedrock_region__", "us-east-1")
@@ -821,7 +821,7 @@ def should_use_direct_api_call(agent) -> bool:
     # Delegated child — via the execution ContextVar set by _run_single_child,
     # with the agent's platform stamp as a fallback for callers that bypass it.
     with contextlib.suppress(Exception):
-        from agent.delegation_context import is_delegated_child_context
+        from hermes_agent.agent.delegation_context import is_delegated_child_context
         if is_delegated_child_context():
             return True
     return getattr(agent, "platform", None) == "subagent"
@@ -1135,7 +1135,7 @@ CODEX_FIRST_PROGRESS_TIMEOUT_SECONDS = 300.0
 def _high_effort_silence_floor(agent) -> float:
     """``HIGH_EFFORT_SILENCE_FLOOR_SECONDS`` when the wire reasoning config is enabled at ``high`` or any
     stronger :data:`~agent.reasoning_effort.EFFORT_LADDER` level (xhigh/max/ultra), else 0."""
-    from agent.reasoning_effort import EFFORT_LADDER
+    from hermes_agent.agent.reasoning_effort import EFFORT_LADDER
 
     cfg = getattr(agent, "reasoning_config", None)
     if not isinstance(cfg, dict) or cfg.get("enabled") is False:
@@ -1268,7 +1268,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
     if should_use_direct_api_call(agent):
         return direct_api_call(agent, api_kwargs)
     _check_stale_giveup(agent)  # cross-turn stale breaker (#58962), non-streaming sibling
-    from agent.chat_completion_nonstream import _NonStreamRequest
+    from hermes_agent.agent.chat_completion_nonstream import _NonStreamRequest
 
     return _NonStreamRequest(agent, api_kwargs).run()
 
@@ -1310,7 +1310,7 @@ def _reasoning_config_for_wire(agent):
     if cfg is None:
         # Unset effort: the profile's default (custom/OpenAI-compatible: medium) rather than the
         # route's own, recorded below as what went out so a rejection of it lands in the branch above.
-        from agent.reasoning_params import unset_reasoning_default
+        from hermes_agent.agent.reasoning_params import unset_reasoning_default
         cfg = unset_reasoning_default(agent)
     if getattr(agent, "_reasoning_disable_rejected", False):
         # The route rejects disables. Resend exactly what the session has
@@ -1325,7 +1325,7 @@ def _reasoning_config_for_wire(agent):
             cfg.get("enabled") is False or cfg.get("effort") == "none"
         ):
             if getattr(agent, "_reasoning_floor_required", False):
-                from agent.auxiliary_reasoning_floor import REASONING_FLOOR_EFFORT
+                from hermes_agent.agent.auxiliary_reasoning_floor import REASONING_FLOOR_EFFORT
                 floored = {**cfg, "enabled": True, "effort": REASONING_FLOOR_EFFORT}
                 agent._wire_reasoning_config = floored
                 return floored
@@ -1353,7 +1353,7 @@ def _alias_tool_search_bridge_for_xai(agent, transport, tools_for_api):
         return tools_for_api
     try:
         import copy as _copy_xai
-        from agent.transports.chat_completions import _rename_tool_search_bridge_for_xai
+        from hermes_agent.agent.transports.chat_completions import _rename_tool_search_bridge_for_xai
         has_bridge = any(
             (t.get("function") or {}).get("name") == "tool_search" for t in tools_for_api if isinstance(t, dict)
         )
@@ -1400,8 +1400,8 @@ def _build_bedrock_kwargs(agent, api_messages, tools_for_api, reasoning_config):
 
 
 def _build_codex_kwargs(agent, api_messages, tools_for_api, reasoning_config, request_overrides, cache_scope_id):
-    from agent.codex_responses_adapter import classify_responses_route
-    from agent.native_compaction import native_compaction_context_management
+    from hermes_agent.agent.codex_responses_adapter import classify_responses_route
+    from hermes_agent.agent.native_compaction import native_compaction_context_management
     is_codex_backend, is_xai_responses, endpoint = classify_responses_route(agent)
     # Native server-side compaction (gpt-5.6 on direct OpenAI / ChatGPT Codex routes
     # only) — None on every other route/model, leaving the request unchanged.
@@ -1453,7 +1453,7 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
         _profile = get_provider_profile(agent.provider)
 
     _ephemeral_out = _consume_ephemeral_max_output(agent)
-    from agent.reasoning_carriers import shape_wire_carriers
+    from hermes_agent.agent.reasoning_carriers import shape_wire_carriers
     api_messages = shape_wire_carriers(api_messages, model=agent.model, base_url=agent.base_url, scope=agent)
     # Strip image parts for non-vision models on BOTH paths (registered
     # providers with profiles used to bypass it).
@@ -1491,7 +1491,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
     every request regardless of transport (chat_completions / codex_responses /
     anthropic_messages). No-op for every other provider.
     """
-    from agent.opencode_affinity import merge_session_affinity_headers
+    from hermes_agent.agent.opencode_affinity import merge_session_affinity_headers
 
     kwargs = _build_api_kwargs_for_mode(agent, api_messages, tools_for_api)
     return merge_session_affinity_headers(
@@ -1564,7 +1564,7 @@ def _assistant_content_for_storage(agent, assistant_message):
     if isinstance(content, str) and content:
         content = agent._strip_think_blocks(content).strip()
         if content:
-            from agent.redact import redact_sensitive_text
+            from hermes_agent.agent.redact import redact_sensitive_text
             content = redact_sensitive_text(content)
     return content
 
@@ -1611,7 +1611,7 @@ def _assistant_tool_call_dict(agent, tool_call, index: int) -> dict:
     if extra is not None:
         tc_dict["extra_content"] = _dump_if_model(extra)
     # Some gateways sign Gemini 3 calls inside ``function`` (replayed only where the endpoint profile asks).
-    from agent.reasoning_carriers import field
+    from hermes_agent.agent.reasoning_carriers import field
     fn_sig = field(tool_call, "thought_signature") or getattr(tool_call.function, "thought_signature", None)
     if isinstance(fn_sig, str) and fn_sig:
         tc_dict["function"]["thought_signature"] = fn_sig
@@ -1688,7 +1688,7 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
         if value:
             msg[attr] = value
             if attr == "codex_reasoning_items":
-                from agent.codex_responses_adapter import (
+                from hermes_agent.agent.codex_responses_adapter import (
                     has_replayable_native_compaction_checkpoint,
                 )
 
@@ -1700,18 +1700,18 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
                         note_checkpoint()
                         # The response priced the pre-checkpoint input, not the next
                         # compacted request. A matching durable prefix is now stale.
-                        from agent.usage_anchor import set_usage_anchor
+                        from hermes_agent.agent.usage_anchor import set_usage_anchor
 
                         set_usage_anchor(agent, None)
                     # The next request drops every item before this checkpoint, so a repeat
                     # read must serve content again, not an "unchanged" stub (#32106).
                     # Without a task id the reset would clear every task's caches.
                     if task_id := getattr(agent, "_current_task_id", None):
-                        from agent.conversation_compression import _reset_read_dedup_caches
+                        from hermes_agent.agent.conversation_compression import _reset_read_dedup_caches
 
                         _reset_read_dedup_caches(task_id, session_id=getattr(agent, "session_id", None) or "")
 
-    from agent.reasoning_carriers import carrier_record
+    from hermes_agent.agent.reasoning_carriers import carrier_record
     if record := carrier_record(assistant_message):
         # Gemini text-turn signature / profile-declared reasoning carriers: top-level for the live
         # history, a private reasoning_details record for persistence (reasoning_carriers.py).
@@ -1868,7 +1868,7 @@ def _rebind_fallback_credential_pool(agent, fb_provider: str, fb_model: str) -> 
             agent._credential_pool = agent._credential_pool_entry_id = None
     if getattr(agent, "_credential_pool", None) is None:
         try:
-            from agent.credential_pool import load_pool
+            from hermes_agent.agent.credential_pool import load_pool
             fallback_pool = load_pool(fb_provider)
             if fallback_pool and fallback_pool.has_credentials():
                 agent._credential_pool = fallback_pool
@@ -1898,7 +1898,7 @@ def _fallback_chain_exhausted(agent, reason: FailoverReason | None) -> bool:
     """Chain exhausted (always False). A non-empty chain walked on a non-rate-limit failure arms a
     short cooldown so next turn's restore_primary_runtime stays gated instead of replaying the whole
     context across every provider again."""
-    from agent.fallback_cooldown import _RATE_LIMIT_FAILOVER_REASONS
+    from hermes_agent.agent.fallback_cooldown import _RATE_LIMIT_FAILOVER_REASONS
     if agent._fallback_chain and reason not in _RATE_LIMIT_FAILOVER_REASONS:
         agent._rate_limited_until = max(
             getattr(agent, "_rate_limited_until", 0) or 0, time.monotonic() + _FALLBACK_EXHAUSTED_COOLDOWN_S)
@@ -1912,7 +1912,7 @@ def _candidate_pool_exhausted(agent, fb_provider: str, fb_model: str) -> bool:
     pool = getattr(agent, "_credential_pool", None)
     if pool is None or (getattr(pool, "provider", "") or "").strip().lower() != fb_provider:
         try:
-            from agent.credential_pool import load_pool
+            from hermes_agent.agent.credential_pool import load_pool
             pool = load_pool(fb_provider)
         except Exception:
             return False
@@ -1930,7 +1930,7 @@ def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider:
         return True
     if not fb_provider or not fb_model:
         return True
-    from agent.fallback_cooldown import _is_entitlement_rejected
+    from hermes_agent.agent.fallback_cooldown import _is_entitlement_rejected
     if _is_entitlement_rejected(agent, fb_provider, fb_model):
         logger.info("Fallback skip: %s/%s was rejected as unentitled for this account", fb_provider, fb_model)
         return True
@@ -1943,10 +1943,10 @@ def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider:
         logger.warning("Fallback skip: %s/%s is not locally usable (%s); suppressing for this session", fb_provider, fb_model, local_skip_reason)
         return True
     # Identity semantics (axes, shim aliases, credential surfaces, multi-endpoint pools)
-    # are owned by agent.backend_identity — do not re-implement comparisons here.
+    # are owned by hermes_agent.agent.backend_identity — do not re-implement comparisons here.
     # Skip entries that resolve to the same backend that just failed — falling back to it loops the failure.
     # See #22548, #62984, #70893.
-    from agent.backend_identity import BackendIdentity, should_skip_candidate
+    from hermes_agent.agent.backend_identity import BackendIdentity, should_skip_candidate
     current_ident = BackendIdentity.build(provider=getattr(agent, "provider", ""),
         model=getattr(agent, "model", ""), base_url=str(getattr(agent, "base_url", "") or ""))
     fb_ident = BackendIdentity.build(provider=fb_provider, model=fb_model, base_url=(fb.get("base_url") or ""))
@@ -1964,7 +1964,7 @@ def _update_fallback_context_compressor(agent) -> None:
     compressor = getattr(agent, "context_compressor", None)
     if not compressor:
         return
-    from agent.model_metadata import get_model_context_length
+    from hermes_agent.agent.model_metadata import get_model_context_length
     fb_context_length = get_model_context_length(
         agent.model, base_url=agent.base_url,
         api_key=agent.api_key if isinstance(agent.api_key, str) else "",  # callable (Entra ID) → probes need str
@@ -1980,7 +1980,7 @@ def _update_fallback_context_compressor(agent) -> None:
     # update_model()), but a session that never probed keeps its lazy compaction-time probe rather than
     # resolving an auxiliary client while the primary route is failing (#114707).
     if getattr(agent, "_compression_feasibility_checked", False) is True:
-        from agent.conversation_compression_feasibility import revalidate_compression_feasibility
+        from hermes_agent.agent.conversation_compression_feasibility import revalidate_compression_feasibility
         revalidate_compression_feasibility(agent)
 
 
@@ -2004,7 +2004,7 @@ def _rescope_fallback_extra_body(agent, old_model: str, old_provider: str, old_b
     config injected — a caller override of the same key won at init and differs, so it survives;
     keys the new provider redefines are re-added by the merge."""
     try:
-        from agent.agent_init import _custom_provider_extra_body_for_agent, _merge_custom_provider_extra_body
+        from hermes_agent.agent.agent_init import _custom_provider_extra_body_for_agent, _merge_custom_provider_extra_body
         custom_providers = getattr(agent, "_custom_providers", None) or []
         old_provider_eb = _custom_provider_extra_body_for_agent(provider=old_provider, model=old_model, base_url=old_base_url, custom_providers=custom_providers) or {}
         overrides = dict(getattr(agent, "request_overrides", {}) or {})
@@ -2037,7 +2037,7 @@ def try_activate_fallback(agent, reason: FailoverReason | None = None, reset_at=
     """Switch to the next fallback model/provider in the chain; False when exhausted. Swaps client,
     model slug and provider in place so the retry loop continues on the new backend; client
     construction goes through resolve_provider_client (no duplicated provider→key mappings)."""
-    from agent.fallback_cooldown import _arm_rate_limit_cooldown, switch_deferred_by_reset
+    from hermes_agent.agent.fallback_cooldown import _arm_rate_limit_cooldown, switch_deferred_by_reset
     if switch_deferred_by_reset(agent, reason, reset_at):
         return False
     cooldown_seconds = _arm_rate_limit_cooldown(agent, reason, reset_at=reset_at)
@@ -2056,7 +2056,7 @@ def try_activate_fallback(agent, reason: FailoverReason | None = None, reset_at=
             continue
 
         try:
-            from agent.route_binding import bind_route_entry
+            from hermes_agent.agent.route_binding import bind_route_entry
             bound = bind_route_entry(agent, fb, fb_provider, fb_model)
             if bound is None:
                 logger.warning("Fallback to %s failed: provider not configured", fb_provider)
@@ -2083,7 +2083,7 @@ def try_activate_fallback(agent, reason: FailoverReason | None = None, reset_at=
             # The stale-call streak measured the OLD provider; carrying it over would
             # short-circuit the fresh fallback before its first stream attempt.
             _reset_stale_streak(agent)
-            from agent.native_compaction import resolve_native_compaction_capabilities
+            from hermes_agent.agent.native_compaction import resolve_native_compaction_capabilities
             agent.runtime_capabilities = resolve_native_compaction_capabilities(
                 model=agent.model, base_url=agent.base_url, provider=fb_provider, is_codex_backend=fb_provider == "openai-codex")
             return True
@@ -2151,7 +2151,7 @@ def _iteration_summary_api_messages(agent, messages: list) -> list:
     # Compression/resume can orphan a tool result whose parent tool_call was summarized away.
     api_messages = agent._sanitize_api_messages(api_messages)
     # Same send-path vision eviction as the main loop (#89296).
-    from agent.context_compressor import evict_stale_outbound_tool_images, outbound_retired_image_ids
+    from hermes_agent.agent.context_compressor import evict_stale_outbound_tool_images, outbound_retired_image_ids
     evict_stale_outbound_tool_images(api_messages, outbound_retired_image_ids(agent))
     # Same per-model image strip as turn_api_request.build_api_request: this path builds
     # api_messages by hand and calls _build_api_kwargs directly, so a model recorded in
@@ -2171,7 +2171,7 @@ def _iteration_summary_api_messages(agent, messages: list) -> list:
     for api_msg in api_messages:
         if isinstance(api_msg.get("content"), str):
             api_msg["content"] = api_msg["content"].strip()
-    from agent.conversation_loop import _canonicalize_api_tool_calls, _clone_message_for_send
+    from hermes_agent.agent.conversation_loop import _canonicalize_api_tool_calls, _clone_message_for_send
     _canonicalize_api_tool_calls(api_messages)
     # Third closing pass of the main path: lone surrogates -> U+FFFD (else the SDK's utf-8
     # wire encode raises and burns the summary retries). The sanitizer is in-place and these
@@ -2182,7 +2182,7 @@ def _iteration_summary_api_messages(agent, messages: list) -> list:
 
 
 def _managed_summary_call(agent, api_request_id: str, request, callback, *, retry_count: int):
-    from agent import relay_llm
+    from hermes_agent.agent import relay_llm
     return relay_llm.execute_current(
         request, callback,
         name=str(getattr(agent, "provider", "") or "provider"), model_name=str(getattr(agent, "model", "") or ""),
@@ -2242,7 +2242,7 @@ def _chat_summary_attempt(agent, api_messages: list, api_request_id: str):
     # The summary now carries ``tools``; on cache-planned routes the main loop scrubbed a deep
     # copy, so ``agent.tools`` may still hold bytes the provider 400s on.
     sanitize_outbound_kwargs(agent, summary_kwargs)
-    from agent.conversation_loop import _moa_client_consumes_prepared_request
+    from hermes_agent.agent.conversation_loop import _moa_client_consumes_prepared_request
     if agent.provider == "moa" and _moa_client_consumes_prepared_request(agent.client):  # transport strips data_use
         summary_kwargs["_moa_prepared_request"] = agent.client.chat.completions.prepare(api_messages)
 
@@ -2274,7 +2274,7 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
 
     # Shared constant so compaction recognizers can identify this runtime nudge by its stable
     # content after SessionDB projection strips metadata flags.
-    from agent.context_compressor import MAX_ITERATIONS_SUMMARY_REQUEST
+    from hermes_agent.agent.context_compressor import MAX_ITERATIONS_SUMMARY_REQUEST
     nudge = append_message(messages, {"role": "user", "content": MAX_ITERATIONS_SUMMARY_REQUEST})
 
     try:
@@ -2305,10 +2305,10 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
         raise
     except Exception as e:
         logger.warning("Failed to get summary response: %s", e)
-        from agent.turn_failure_copy import site_copy
+        from hermes_agent.agent.turn_failure_copy import site_copy
         final_response = site_copy("max_iterations_no_summary", limit=agent.max_iterations)
     finally:
-        from agent import relay_llm
+        from hermes_agent.agent import relay_llm
         relay_llm.complete_logical_call(summary_api_request_id, outcome=summary_call_outcome)
 
     return final_response
@@ -2503,7 +2503,7 @@ def _stream_codex_passthrough(agent, api_kwargs: dict, on_first_delta):
 def _finalize_bedrock_relay_events(events):
     """Relay finalizer for Bedrock: a stream without messageStop has no complete
     response to record, so return None and let the live consumer raise (#109988)."""
-    from agent.bedrock_adapter import stream_converse_with_callbacks
+    from hermes_agent.agent.bedrock_adapter import stream_converse_with_callbacks
     try:
         return stream_converse_with_callbacks({"stream": list(events)})
     except EmptyStreamError:
@@ -2555,7 +2555,7 @@ class _BedrockStream:
     def _fall_back_to_converse(self, client, final_kwargs: dict, exc: Exception):
         # InvokeModel-only IAM policies cannot stream; fall back inside the same Relay
         # attempt (one lifecycle boundary).
-        from agent.bedrock_adapter import normalize_converse_response
+        from hermes_agent.agent.bedrock_adapter import normalize_converse_response
         self.agent._disable_streaming = True
         self.agent._safe_print("\n⚠  AWS IAM denied bedrock:InvokeModelWithResponseStream — "
             "falling back to non-streaming InvokeModel.\n"
@@ -2568,8 +2568,8 @@ class _BedrockStream:
         agent = self.agent
         stream = None
         try:
-            from agent import relay_llm
-            from agent.bedrock_adapter import stream_converse_with_callbacks
+            from hermes_agent.agent import relay_llm
+            from hermes_agent.agent.bedrock_adapter import stream_converse_with_callbacks
             intercepted_events = []
             writer_token = {"value": None}
 
@@ -2584,7 +2584,7 @@ class _BedrockStream:
                 self.last_event = time.time()
 
             try:
-                from agent.plugin_stream_hooks import has_reasoning_stream_observer_hooks
+                from hermes_agent.agent.plugin_stream_hooks import has_reasoning_stream_observer_hooks
                 plugin_reasoning_observer = has_reasoning_stream_observer_hooks()
             except Exception:
                 logger.debug("plugin reasoning stream observer check failed", exc_info=True)
@@ -2640,7 +2640,7 @@ class _BedrockStream:
         # cancellation exists); the daemon worker keeps reading until its
         # socket errors, so THIS call ends via the TimeoutError below.
         try:
-            from agent.bedrock_adapter import invalidate_runtime_client
+            from hermes_agent.agent.bedrock_adapter import invalidate_runtime_client
             invalidate_runtime_client(self.region)
         except Exception as _inval_exc:
             logger.debug("bedrock: stale client eviction failed: %s", _inval_exc)
@@ -3016,17 +3016,17 @@ class _StreamingCall(StreamingWaitMonitor):
         refusal_parts: list[str] = []
         reasoning_details: list = []  # OpenRouter replay data (signatures, encrypted blocks)
         pending_text_parts: list[str] = []
-        from agent.chat_completion_helpers_tool_calls import _ToolCallAccumulator
+        from hermes_agent.agent.chat_completion_helpers_tool_calls import _ToolCallAccumulator
         tool_calls = _ToolCallAccumulator()
         tool_calls_acc = tool_calls.acc
-        from agent.reasoning_carriers import StreamCarriers
+        from hermes_agent.agent.reasoning_carriers import StreamCarriers
         carriers = StreamCarriers()
         finish_reason = model_name = usage_obj = None
         response_id = upstream_provider = None  # the provider's own id / serving upstream, from the chunks
         role = "assistant"
         _diag = self._new_diag()
         self._writer_token = self._attempt_request_client = self._attempt_stream_response = None
-        from agent.chat_completion_helpers_relay import RelayChatAccumulator
+        from hermes_agent.agent.chat_completion_helpers_relay import RelayChatAccumulator
         relay_response = RelayChatAccumulator()
         # The raw channels, not the callback-delivered text: cron, subagents and callback-less
         # gateway turns register no stream callback, so nothing else sees a loop mid-stream.
@@ -3050,7 +3050,7 @@ class _StreamingCall(StreamingWaitMonitor):
             for text in pending_parts:
                 (self._route_suppressed_text if tool_calls_acc else self._emit_text)(text)
 
-        from agent import relay_llm
+        from hermes_agent.agent import relay_llm
         stream = self._set_managed_stream(relay_llm.stream(self.api_kwargs, _open_stream,
             **_relay_stream_identity(self.agent, "provider"), finalizer=relay_response.finalize,
             on_stream_created=self._chat_stream_created, on_chunk=relay_response.observe,
@@ -3285,7 +3285,7 @@ class _StreamingCall(StreamingWaitMonitor):
         if not full_reasoning and full_content:
             # Inline-reasoning providers (MiniMax-M3 streams <think>…</think> in content) send no
             # reasoning delta; fill the structured field from the raw content (#89647).
-            from agent.agent_runtime_helpers import extract_reasoning
+            from hermes_agent.agent.agent_runtime_helpers import extract_reasoning
 
             full_reasoning = extract_reasoning(self.agent, SimpleNamespace(content=full_content))
         mock_tool_calls, has_truncated_tool_args = self._assemble_tool_calls(tool_calls_acc, finish_reason)
@@ -3375,8 +3375,8 @@ class _StreamingCall(StreamingWaitMonitor):
         text_watch, thinking_watch = RunawayStreamWatch(), RunawayStreamWatch()
         runaway = None
 
-        from agent import relay_llm
-        from agent.anthropic_adapter import normalize_stream_usage, sanitize_anthropic_kwargs
+        from hermes_agent.agent import relay_llm
+        from hermes_agent.agent.anthropic_adapter import normalize_stream_usage, sanitize_anthropic_kwargs
         accumulator = relay_llm.AnthropicStreamAccumulator()
 
         def _open_anthropic_stream(next_api_kwargs: dict[str, Any]):
@@ -3481,13 +3481,13 @@ class _StreamingCall(StreamingWaitMonitor):
         self.agent._emit_stream_drop(
             error=e, attempt=attempt + 1, max_attempts=max_retries + 1, mid_tool_call=mid_tool_call, diag=self.clients.diag)
         if self.agent._is_provider_stream_parse_error(e):
-            from agent.anthropic_adapter import buffer_anthropic_tool_input
+            from hermes_agent.agent.anthropic_adapter import buffer_anthropic_tool_input
             buffer_anthropic_tool_input(self.api_kwargs, getattr(self.agent, "_anthropic_base_url", None))
         self._cancel_current_stream_attempt(reason)
         self.clients.close_once(reason)
         # Exponential backoff between stream-level reconnects (back-to-back retries
         # hammer a provider that just dropped us). Interruptible: /stop exits at once.
-        from agent.retry_utils import jittered_backoff
+        from hermes_agent.agent.retry_utils import jittered_backoff
         _wait_stream_retry_backoff(
             self.agent, jittered_backoff(attempt + 1, base_delay=1.0, max_delay=4.0, jitter_ratio=0.0))
         # The backoff is not the dead attempt's silence: restart the stale clock so the
@@ -3517,7 +3517,7 @@ class _StreamingCall(StreamingWaitMonitor):
                 "⚠️ Provider stream returned an empty keepalive frame — retrying this turn "
                 "without streaming (streaming stays off on this route).")
             return
-        from agent.anthropic_adapter import _is_stream_unavailable_error
+        from hermes_agent.agent.anthropic_adapter import _is_stream_unavailable_error
         if not _is_stream_unavailable_error(e):
             return
         _err_lower = str(e).lower()
@@ -3611,7 +3611,7 @@ class _StreamingCall(StreamingWaitMonitor):
                 self.agent._buffer_diagnostic_status(
                     f"❌ {_what} {max_retries + 1} attempts. The provider may be experiencing issues — try again in a moment.")
             else:
-                from agent.stream_diag import buffer_connect_exhausted_notice
+                from hermes_agent.agent.stream_diag import buffer_connect_exhausted_notice
                 buffer_connect_exhausted_notice(self.agent, e, attempts=max_retries + 1, base_url=self.agent.base_url)
         else:
             self._maybe_disable_streaming(e)
@@ -3761,7 +3761,7 @@ class _StreamingCall(StreamingWaitMonitor):
         if response is None or response is not self._attempt_stream_response:
             return
         try:
-            from agent.agent_runtime_helpers import _shutdown_socket, _socket_from_response
+            from hermes_agent.agent.agent_runtime_helpers import _shutdown_socket, _socket_from_response
             sock = _socket_from_response(response)
             if sock is not None:
                 _shutdown_socket(sock)
@@ -3880,7 +3880,7 @@ class _StreamingCall(StreamingWaitMonitor):
         # content-filter tag and falls back; a context overflow must not be continued at all.
         _cls = None
         with contextlib.suppress(Exception):
-            from agent.error_classifier import classify_api_error
+            from hermes_agent.agent.error_classifier import classify_api_error
             _cls = classify_api_error(
                 error, provider=str(getattr(self.agent, "provider", "") or ""), model=str(getattr(self.agent, "model", "") or ""))
         _reset_stale_streak(self.agent)  # deltas fired => provider responsive: clear the breaker

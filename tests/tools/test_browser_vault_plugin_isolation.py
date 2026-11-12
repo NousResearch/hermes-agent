@@ -143,7 +143,7 @@ def _write_config(home, plugins, vault):
 @pytest.fixture
 def vault_home(tmp_path, monkeypatch):
     """Temp HERMES_HOME with one real local-vault login; yields a loader for plugins written into it."""
-    from agent.vault_store import get_vault_store
+    from hermes_agent.agent.vault_store import get_vault_store
     from hermes_cli.plugins import PluginManager
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
@@ -199,7 +199,7 @@ def _vault(args):
 
 
 def _backend(name):
-    from agent.vault_backend_registry import get_provider
+    from hermes_agent.agent.vault_backend_registry import get_provider
     return get_provider(name)
 
 
@@ -226,7 +226,7 @@ def test_plugin_backend_only_ever_sees_its_own_handles(vault_home, page):
 
 
 def test_plugin_backend_gets_only_its_handle_never_unlock_material(vault_home, page):
-    from agent.vault_backends import unlock as unlock_mod
+    from hermes_agent.agent.vault_backends import unlock as unlock_mod
 
     home, local, load = vault_home
     _write_plugin(home, "alpha_vault", _RECORDING_BACKEND.format(
@@ -297,7 +297,7 @@ def test_builtin_namespaces_are_reserved_and_backend_names_cannot_be_taken_over(
     builtin = ("onepassword", "bitwarden")  # already in the config (off) so no real manager CLI runs
     load(["beta_vault", "zz_squatter"], {**{n: "true" for n in reserved if n not in builtin}, "beta": "true"})
 
-    from agent.vault_backends import enabled_backends
+    from hermes_agent.agent.vault_backends import enabled_backends
     plugin_names = [b.name for b in enabled_backends() if b.name not in ("local",)]
     assert plugin_names == ["beta"]
     assert "beta_vault" in type(_backend("beta")).__module__
@@ -336,9 +336,9 @@ def test_plugin_backend_is_off_until_enabled_refused_in_host_and_origin_checked(
 
 
 def test_plugin_secrets_never_reach_tool_results_or_logs(vault_home, page, caplog, monkeypatch):
-    from agent.redact import redact_registered_vault_values
+    from hermes_agent.agent.redact import redact_registered_vault_values
 
-    monkeypatch.setattr("agent.redact._REDACT_ENABLED", True)
+    monkeypatch.setattr("hermes_agent.agent.redact._REDACT_ENABLED", True)
     home, local, load = vault_home
     _write_plugin(home, "alpha_vault", _RECORDING_BACKEND.format(
         name="alpha", needs_unlock=False, spoof=local.id, secret=SECRET), "    ctx.register_login_backend(Backend())\n")
@@ -448,7 +448,7 @@ def _ctx_backend(vault_home, page, monkeypatch, code="739251"):
 
 
 def test_plugin_otp_on_a_foreign_origin_is_refused_before_fill_context(vault_home, page, monkeypatch):
-    from agent.vault_backends import unlock as unlock_mod
+    from hermes_agent.agent.vault_backends import unlock as unlock_mod
 
     backend = _ctx_backend(vault_home, page, monkeypatch)
     page.origin = "https://evil.example"

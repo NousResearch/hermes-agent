@@ -162,12 +162,12 @@ class GatewaySessionStore:
         """``session.create`` with the launch policy (and ``title``: the owner's resolve -> create ->
         title step); adopts and returns the new session id. ``record_cwd=False`` (``/new``,
         ``--create-if-missing``) leaves the row's cwd empty, as main's explicit creates did."""
-        from agent.session_source import CLI_FAMILY_SOURCES, create_surface, session_source_for
+        from hermes_agent.agent.session_source import CLI_FAMILY_SOURCES, create_surface, session_source_for
         params = _creation_policy(launch or {})
         params["cwd"] = _launch_cwd()
         # Main's row label: ``cli``, ``oneshot`` for a finite -q/-Q run, or an explicit --source.
         params["source"] = create_surface(session_source_for("cli"))
-        # Main's row stamp (run_agent._launch_cwd_for_session): this process's cwd (``-w`` never
+        # Main's row stamp (hermes_agent.run_agent._launch_cwd_for_session): this process's cwd (``-w`` never
         # chdirs, so the repo root), only for a CLI-family label on a local terminal backend.
         local = (os.getenv("TERMINAL_ENV") or "local").strip().lower() in ("", "local")
         params["row_cwd"] = os.getcwd() if record_cwd and local and params["source"] in CLI_FAMILY_SOURCES else ""
@@ -230,9 +230,9 @@ class GatewaySessionStore:
         """Main's ``SessionDB.rewind_user_turn`` (``/undo N``, ``/retry``) as ``session.mutate rewind``.
         The user turn is located on the gateway's snapshot transcript (its rows carry ``row_id``),
         checked against the CLI's warm view exactly as main checks it, then rewound by that row id."""
-        from agent.context_compressor import history_before_user_originated_turn, retryable_user_text
-        from agent.message_content import flatten_message_text
-        from agent.session_persistence import _is_ephemeral_scaffolding
+        from hermes_agent.agent.context_compressor import history_before_user_originated_turn, retryable_user_text
+        from hermes_agent.agent.message_content import flatten_message_text
+        from hermes_agent.agent.session_persistence import _is_ephemeral_scaffolding
         from hermes_agent.hermes_state_rewind import (
             _HISTORY_CHANGED, RewindOutcome, RewindTargetUnavailableError, _comparison_content, _user_indices)
         snapshot = self.call("session.resume", session_id=session_id)

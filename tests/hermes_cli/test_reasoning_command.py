@@ -275,7 +275,7 @@ class TestExtractReasoningFormats(unittest.TestCase):
     """Test _extract_reasoning with real provider response formats."""
 
     def _get_extractor(self):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         return AIAgent._extract_reasoning
 
     def test_openrouter_reasoning_details(self):
@@ -330,7 +330,7 @@ class TestInlineThinkBlockExtraction(unittest.TestCase):
 
     def _make_agent(self):
         """Create a minimal agent with _build_assistant_message."""
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         agent = MagicMock(spec=AIAgent)
         agent._build_assistant_message = AIAgent._build_assistant_message.__get__(agent)
         agent._extract_reasoning = AIAgent._extract_reasoning.__get__(agent)
@@ -395,7 +395,7 @@ class TestReasoningDeltasFiredFlag(unittest.TestCase):
     reasoning was already streamed via _fire_reasoning_delta."""
 
     def _make_agent(self):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         agent = AIAgent.__new__(AIAgent)
         agent.reasoning_callback = None
         agent.stream_delta_callback = None

@@ -75,7 +75,7 @@ class TestFleetCapabilityCoverage(unittest.TestCase):
         self.assertGreaterEqual(checked, 4)
 
     def test_abc_default_fails_closed(self):
-        from agent.video_gen_provider import VideoGenProvider
+        from hermes_agent.agent.video_gen_provider import VideoGenProvider
 
         class _P(VideoGenProvider):
             name = "t"

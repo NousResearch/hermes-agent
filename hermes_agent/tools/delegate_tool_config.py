@@ -268,13 +268,13 @@ def _inherit_parent_endpoint(parent_agent, surface_base_url: Optional[str], surf
 
 def _loaded_pool(key: Any):
     """``load_pool(key)`` when it holds credentials, else None."""
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
     pool = load_pool(key)
     return pool if pool is not None and pool.has_credentials() else None
 
 def _pool_serves_endpoint(pool: Any, provider: Optional[str], base_url: Optional[str]) -> bool:
     """Provider identity AND at least one entry for the child's endpoint; pools without entry metadata pass."""
-    from agent.credential_pool import (
+    from hermes_agent.agent.credential_pool import (
         credential_pool_entry_serves_endpoint as _entry_serves_endpoint, credential_pool_matches_provider,
     )
     if not credential_pool_matches_provider(pool, provider, base_url=base_url):
@@ -311,7 +311,7 @@ def _resolve_child_credential_pool(
     parent_provider = getattr(parent_agent, "provider", None) or ""
     try:
         if effective_provider == "custom":
-            from agent.credential_pool import get_custom_provider_pool_key
+            from hermes_agent.agent.credential_pool import get_custom_provider_pool_key
             child_key = get_custom_provider_pool_key(effective_base_url, provider_name=effective_requested_provider)
             if child_key is None:
                 return None
@@ -322,7 +322,7 @@ def _resolve_child_credential_pool(
                 return parent_pool
             # The entry's slug may also be a same-named built-in's pool: lease only the rows the entry
             # owns, or a fixed entry credential becomes the built-in's account on a shared endpoint.
-            from agent.custom_entry_pool import custom_entry_for_endpoint, entry_scoped_pool
+            from hermes_agent.agent.custom_entry_pool import custom_entry_for_endpoint, entry_scoped_pool
             owner = custom_entry_for_endpoint(effective_base_url, effective_requested_provider)
             return entry_scoped_pool(_loaded_pool(child_key), child_key, owner[1] if owner else None)
         if effective_provider == parent_provider:
@@ -404,7 +404,7 @@ def _direct_endpoint_credentials(v: dict, explicit_request_overrides) -> dict:
         provider, api_mode = "anthropic", "anthropic_messages"
     # Explicit delegation.api_mode always wins over the URL heuristic; a provider plugin's
     # registered dialect counts as explicit.
-    from agent.transports import registered_api_modes
+    from hermes_agent.agent.transports import registered_api_modes
     if v["api_mode"] in _EXPLICIT_API_MODES or (v["api_mode"] and v["api_mode"] in registered_api_modes()):
         api_mode = v["api_mode"]
 

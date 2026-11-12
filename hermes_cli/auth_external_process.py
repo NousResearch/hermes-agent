@@ -34,7 +34,7 @@ def resolve_external_process_command(command: str) -> Optional[str]:
         # Known dirs are written with "/" (%USERPROFILE%/.local/bin); normalize so a Windows hit
         # reads as one native path in status and in the spawned argv.
         return os.path.normpath(found[0])
-    from agent.anthropic_adapter import find_claude_code_cli
+    from hermes_agent.agent.anthropic_adapter import find_claude_code_cli
 
     return find_claude_code_cli(command)
 

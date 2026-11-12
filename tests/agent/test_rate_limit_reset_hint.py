@@ -12,8 +12,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from agent.agent_runtime_helpers import extract_api_error_context
-from agent.turn_recovery import compute_error_backoff, reset_hint
+from hermes_agent.agent.agent_runtime_helpers import extract_api_error_context
+from hermes_agent.agent.turn_recovery import compute_error_backoff, reset_hint
 from datetime import UTC
 
 
@@ -35,7 +35,7 @@ def test_relative_resets_in_seconds_becomes_reset_at_when_no_epoch_is_given():
 
 def test_rate_limit_retry_status_names_the_reset_window():
     agent = MagicMock()
-    from agent.status_output import StatusOutputMixin
+    from hermes_agent.agent.status_output import StatusOutputMixin
     for name in ("_emit_diagnostic_wait", "_buffer_diagnostic_status"):
         setattr(agent, name, getattr(StatusOutputMixin, name).__get__(agent))
     agent._client_log_context.return_value = ""
@@ -54,7 +54,7 @@ def test_live_wait_line_names_the_reset_window_too():
     """The buffered line replays only if every retry fails; the line rendered during the wait is
     ``_emit_diagnostic_wait`` → ``_emit_wait_notice``, and it must carry the same hint."""
     agent = MagicMock()
-    from agent.status_output import StatusOutputMixin
+    from hermes_agent.agent.status_output import StatusOutputMixin
     for name in ("_emit_diagnostic_wait", "_buffer_diagnostic_status"):
         setattr(agent, name, getattr(StatusOutputMixin, name).__get__(agent))
     agent._client_log_context.return_value = ""

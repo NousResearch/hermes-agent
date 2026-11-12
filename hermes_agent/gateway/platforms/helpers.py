@@ -400,8 +400,8 @@ def is_table_row(line: str) -> bool:
 
 
 def split_markdown_table_row(line: str) -> list[str]:
-    """Split a GFM table row into stripped cells (delegates to agent.markdown_tables)."""
-    from agent.markdown_tables import split_table_row
+    """Split a GFM table row into stripped cells (delegates to hermes_agent.agent.markdown_tables)."""
+    from hermes_agent.agent.markdown_tables import split_table_row
     return split_table_row(line)
 
 

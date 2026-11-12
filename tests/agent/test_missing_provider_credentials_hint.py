@@ -7,7 +7,7 @@ reads ``DASHSCOPE_API_KEY``. Both the auxiliary ladder and main-agent init share
 import pytest
 import hermes_yaml as yaml
 
-from agent.auxiliary_unavailable import missing_provider_credentials_message
+from hermes_agent.agent.auxiliary_unavailable import missing_provider_credentials_message
 from hermes_cli.auth import PROVIDER_REGISTRY
 
 
@@ -24,8 +24,8 @@ def test_aux_ladder_names_registry_remedy_for_explicit_provider(tmp_path, monkey
         "model": {"provider": provider, "default": "test-model"},
         "auxiliary": {"compression": {"provider": provider, "model": "test-model"}},
     }), encoding="utf-8")
-    from agent.auxiliary_client import call_llm
-    from agent.auxiliary_unavailable import AuxiliaryClientUnavailable
+    from hermes_agent.agent.auxiliary_client import call_llm
+    from hermes_agent.agent.auxiliary_unavailable import AuxiliaryClientUnavailable
 
     with pytest.raises(AuxiliaryClientUnavailable) as excinfo:
         call_llm(task="compression", messages=[{"role": "user", "content": "hi"}], max_tokens=5)
@@ -37,7 +37,7 @@ def test_main_init_shares_helper_and_no_registry_provider_gets_an_invented_env_v
     """agent_init raises the same text as the helper; no registry id yields a made-up ``<ID>_API_KEY``."""
     from types import SimpleNamespace
 
-    from agent.agent_init import _routed_client_kwargs
+    from hermes_agent.agent.agent_init import _routed_client_kwargs
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     agent = SimpleNamespace(provider="minimax-oauth", model="m", base_url=None, api_key=None,
@@ -59,7 +59,7 @@ def _write_exhausted_codex_pool(home, *, count: int, reset_at: float):
     import json
     import time
 
-    from agent.credential_pool import PooledCredential
+    from hermes_agent.agent.credential_pool import PooledCredential
 
     entries = [PooledCredential(
         provider="openai-codex", id=f"codex-{i}", label=f"acct{i}", auth_type="oauth", priority=i,
@@ -78,7 +78,7 @@ def test_exhausted_oauth_pool_reports_cooldown_not_missing_credentials(tmp_path,
     import time
     from types import SimpleNamespace
 
-    from agent.agent_init import _routed_client_kwargs
+    from hermes_agent.agent.agent_init import _routed_client_kwargs
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("HOME", str(tmp_path))  # never adopt the host's Codex CLI tokens
@@ -100,8 +100,8 @@ def test_exhausted_oauth_pool_reports_cooldown_not_missing_credentials(tmp_path,
     assert expected_time in message
     assert "no credentials were found" not in message
 
-    from agent.auxiliary_client import call_llm
-    from agent.auxiliary_unavailable import AuxiliaryClientUnavailable
+    from hermes_agent.agent.auxiliary_client import call_llm
+    from hermes_agent.agent.auxiliary_unavailable import AuxiliaryClientUnavailable
 
     with pytest.raises(AuxiliaryClientUnavailable) as aux_exc:
         call_llm(task="compression", messages=[{"role": "user", "content": "hi"}], max_tokens=5)

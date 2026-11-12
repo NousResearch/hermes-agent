@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 import hermes_yaml as yaml
 
 import hermes_cli.plugins as plugins_mod
-from agent import secret_scope
+from hermes_agent.agent import secret_scope
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
 

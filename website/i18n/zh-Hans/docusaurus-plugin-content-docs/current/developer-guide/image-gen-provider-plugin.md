@@ -20,7 +20,7 @@ Hermes 在三个位置扫描图像生成后端：
 2. **用户** — `~/.hermes/plugins/image_gen/<name>/`（通过 `plugins.enabled` 选择启用）
 3. **Pip** — 声明了 `hermes_agent.plugins` 入口点的包
 
-每个插件的 `register(ctx)` 函数调用 `ctx.register_image_gen_provider(...)` — 将其注册到 `agent/image_gen_registry.py` 中的注册表。活跃 provider 由 `config.yaml` 中的 `image_gen.provider` 指定；`hermes tools` 会引导用户完成选择。
+每个插件的 `register(ctx)` 函数调用 `ctx.register_image_gen_provider(...)` — 将其注册到 `hermes_agent/agent/image_gen_registry.py` 中的注册表。活跃 provider 由 `config.yaml` 中的 `image_gen.provider` 指定；`hermes tools` 会引导用户完成选择。
 
 `image_generate` 工具包装器向注册表请求活跃 provider 并分发调用。若未注册任何 provider，工具会显示一条有用的错误信息，指引用户使用 `hermes tools`。
 
@@ -36,14 +36,14 @@ plugins/image_gen/my-backend/
 
 ## ImageGenProvider ABC
 
-继承 `agent.image_gen_provider.ImageGenProvider`。唯一必须实现的成员是 `name` 属性和 `generate()` 方法——其他所有成员均有合理的默认值：
+继承 `hermes_agent.agent.image_gen_provider.ImageGenProvider`。唯一必须实现的成员是 `name` 属性和 `generate()` 方法——其他所有成员均有合理的默认值：
 
 ```python
 # plugins/image_gen/my-backend/__init__.py
 from typing import Any, Dict, List, Optional
 import os
 
-from agent.image_gen_provider import (
+from hermes_agent.agent.image_gen_provider import (
     DEFAULT_ASPECT_RATIO,
     ImageGenProvider,
     error_response,
@@ -195,7 +195,7 @@ requires_env:
 
 ## ABC 参考
 
-完整契约位于 `agent/image_gen_provider.py`。通常需要覆盖的方法：
+完整契约位于 `hermes_agent/agent/image_gen_provider.py`。通常需要覆盖的方法：
 
 | 成员 | 必须 | 默认值 | 用途 |
 |---|---|---|---|
@@ -209,7 +209,7 @@ requires_env:
 
 ## 响应格式
 
-`generate()` 必须返回通过 `success_response()` 或 `error_response()` 构建的字典。两者均位于 `agent/image_gen_provider.py`。
+`generate()` 必须返回通过 `success_response()` 或 `error_response()` 构建的字典。两者均位于 `hermes_agent/agent/image_gen_provider.py`。
 
 **成功：**
 ```python

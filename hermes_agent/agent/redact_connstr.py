@@ -1,7 +1,7 @@
-"""Keyword/value connection-string password masking for agent.redact.
+"""Keyword/value connection-string password masking for hermes_agent.agent.redact.
 
 ADO.NET / ODBC / JDBC ``Host=db;Password=…`` and libpq ``host=db password=…`` conninfo; the
-URL form (``scheme://user:pass@host``) stays in agent/redact.py.
+URL form (``scheme://user:pass@host``) stays in hermes_agent/agent/redact.py.
 """
 
 import re

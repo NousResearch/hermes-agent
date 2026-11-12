@@ -55,7 +55,7 @@ def prefer_dotenv_proxy_env(environ: MutableMapping[str, str] | None = None) -> 
     undone. A ``.env`` NO_PROXY alone replaces the user's own entries in every injected NO_PROXY
     variant, keeping the entries the Desktop added; a ``*`` in it bypasses every proxy.
     """
-    from agent.proxy_bypass import no_proxy_entries
+    from hermes_agent.agent.proxy_bypass import no_proxy_entries
     from hermes_cli.env_loader import dotenv_published_values
 
     env = os.environ if environ is None else environ

@@ -20,13 +20,13 @@ This is one of the most important design choices in the project because it affec
 
 Primary files:
 
-- `run_agent.py`
-- `agent/prompt_builder.py`
+- `hermes_agent/run_agent.py`
+- `hermes_agent/agent/prompt_builder.py`
 - `hermes_agent/tools/memory_tool.py`
 
 ## Cached system prompt layers
 
-The cached system prompt is assembled as three ordered tiers (see `agent/system_prompt.py`):
+The cached system prompt is assembled as three ordered tiers (see `hermes_agent/agent/system_prompt.py`):
 
 1. **stable** — identity (`SOUL.md` or fallback), tool/model guidance, coding operating brief
 2. **context** — caller-supplied `system_message`, project context files (`.hermes.md` / `AGENTS.md` / `CLAUDE.md` / `.cursorrules`), then the worktree-dependent git workspace snapshot, operator instructions and platform hints
@@ -45,16 +45,16 @@ context block, instead of stopping at the first cwd-dependent line — that pref
 provider cache reuses. A session with no workspace snapshot keeps its trailing guidance in the stable
 tier; the runtime environment block always ends the volatile tier.
 
-Consequence for stored prompts: `_stored_prompt_matches_runtime()` (`agent/conversation_loop.py`) reads
+Consequence for stored prompts: `_stored_prompt_matches_runtime()` (`hermes_agent/agent/conversation_loop.py`) reads
 the first host-info paragraph after the rendered `# Hermes runtime environment` boundary, with a
 closing marker at the absolute end distinguishing this layout from legacy prose quoting the heading.
 The runtime boundary follows all project, operator, memory and plugin text, so examples in those
 blocks do not masquerade as the runtime cwd. Model/provider are read before the runtime boundary,
 excluding embedder descriptions. `Platform:` is deliberately not an identity field: a surface switch
 (desktop ↔ TUI) keeps the stored bytes and delivers the current surface's guidance as a one-shot note on
-the per-turn user-message channel (`agent/surface_switch.py`), so the cached prefix survives (#104414). The
+the per-turn user-message channel (`hermes_agent/agent/surface_switch.py`), so the cached prefix survives (#104414). The
 `<available_skills>` index is kept the same way: every turn compares it with the index the session would
-build now (`agent/skills_index_delta.py`, called from `build_turn_context` so long-lived CLI/TUI/Desktop
+build now (`hermes_agent/agent/skills_index_delta.py`, called from `build_turn_context` so long-lived CLI/TUI/Desktop
 agents are covered, not only prompt restores), and a difference (new index rows, removed names) rides
 the same one-shot note channel, sent only when the difference changes. The in-process index cache is
 keyed on the skill files' signatures, so a change written by another process is seen too. The index
@@ -143,7 +143,7 @@ renderable inside a terminal.
 The platform hint (Layer 10 above) is the per-surface guidance Hermes
 injects for Telegram, WhatsApp, Slack, CLI, and other platforms — for
 example "you are on a terminal, avoid Markdown." The built-in defaults
-live in `PLATFORM_HINTS` (`agent/system_prompt.py`); plugin-provided
+live in `PLATFORM_HINTS` (`hermes_agent/agent/system_prompt.py`); plugin-provided
 platforms supply theirs through the platform registry.
 
 An administrator can append to or replace a single platform's hint from
@@ -188,7 +188,7 @@ not a live mid-session mutation of a frozen prompt.
 `SOUL.md` lives at `~/.hermes/SOUL.md` and serves as the agent's identity — the very first section of the system prompt. The loading logic in `prompt_builder.py` works as follows:
 
 ```python
-# From agent/prompt_builder.py (simplified)
+# From hermes_agent/agent/prompt_builder.py (simplified)
 def load_soul_md() -> Optional[str]:
     soul_path = get_hermes_home() / "SOUL.md"
     if not soul_path.exists():
@@ -221,7 +221,7 @@ stakes demand it, not by default.
 `build_context_files_prompt()` uses a **priority system** — only one project context type is loaded (first match wins):
 
 ```python
-# From agent/prompt_builder.py (simplified)
+# From hermes_agent/agent/prompt_builder.py (simplified)
 def build_context_files_prompt(cwd=None, skip_soul=False):
     cwd_path = Path(cwd).resolve()
 
@@ -287,10 +287,10 @@ Local memory and user profile data are captured in the system prompt's **volatil
 
 ## Context files
 
-`agent/prompt_builder.py` scans and sanitizes project context files using a **priority system** — only one type is loaded (first match wins):
+`hermes_agent/agent/prompt_builder.py` scans and sanitizes project context files using a **priority system** — only one type is loaded (first match wins):
 
 1. `.hermes.md` / `HERMES.md` (walks to git root)
-2. `AGENTS.md` (CWD at startup; subdirectories discovered progressively during the session via `agent/subdirectory_hints.py`)
+2. `AGENTS.md` (CWD at startup; subdirectories discovered progressively during the session via `hermes_agent/agent/subdirectory_hints.py`)
 3. `CLAUDE.md` (CWD only)
 4. `.cursorrules` / `.cursor/rules/*.mdc` (CWD only)
 
@@ -304,7 +304,7 @@ The skills system contributes a compact skills index to the prompt when skills t
 
 ## Supported prompt customization surfaces
 
-Most users should treat `agent/prompt_builder.py` as implementation code, not a configuration surface. The supported customization path is to change the prompt inputs Hermes already loads, rather than editing Python templates in place.
+Most users should treat `hermes_agent/agent/prompt_builder.py` as implementation code, not a configuration surface. The supported customization path is to change the prompt inputs Hermes already loads, rather than editing Python templates in place.
 
 ### Use these surfaces first
 
@@ -317,7 +317,7 @@ Most users should treat `agent/prompt_builder.py` as implementation code, not a 
 
 ### When to edit code instead
 
-Edit `agent/prompt_builder.py` only if you are intentionally maintaining a fork or contributing upstream behavior changes. That file assembles the prompt plumbing, cache boundaries, and injection order for every session. Direct edits there are global product changes, not per-user prompt customization.
+Edit `hermes_agent/agent/prompt_builder.py` only if you are intentionally maintaining a fork or contributing upstream behavior changes. That file assembles the prompt plumbing, cache boundaries, and injection order for every session. Direct edits there are global product changes, not per-user prompt customization.
 
 In other words:
 

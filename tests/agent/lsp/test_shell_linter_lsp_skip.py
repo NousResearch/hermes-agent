@@ -81,7 +81,7 @@ def test_lsp_will_handle_swallows_enabled_for_exception(tmp_path):
     fake_svc.enabled_for.side_effect = RuntimeError("server crashed")
 
     with patch.object(fops, "_lsp_local_only", return_value=True), \
-         patch("agent.lsp.get_service", return_value=fake_svc):
+         patch("hermes_agent.agent.lsp.get_service", return_value=fake_svc):
         assert fops._lsp_will_handle(str(src)) is False
 
 

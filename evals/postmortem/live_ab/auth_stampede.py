@@ -57,7 +57,7 @@ auth_mod.resolve_nous_runtime_credentials = lambda **kw: {"api_key": FRESH, "bas
 import hermes_cli.nous_auth_keepalive as ka
 ka.start_nous_auth_keepalive = lambda **kw: None  # thread itself is out of scope here; we test adoption
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 agents = []
 for i in range(n):

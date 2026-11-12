@@ -37,7 +37,7 @@ def test_aggregator_call_never_receives_reference_max_tokens(hermes_home, monkey
     """reference_max_tokens must cap only the reference fan-out — the
     aggregator's own call_llm invocation must not receive max_tokens at all
     (call_llm omits it entirely when None; see its own docstring)."""
-    from agent.moa_loop import aggregate_moa_context
+    from hermes_agent.agent.moa_loop import aggregate_moa_context
 
     calls: list[dict] = []
 
@@ -45,7 +45,7 @@ def test_aggregator_call_never_receives_reference_max_tokens(hermes_home, monkey
         calls.append(kwargs)
         return _response("advice" if kwargs.get("task") == "moa_reference" else "synthesis")
 
-    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+    monkeypatch.setattr("hermes_agent.agent.moa_loop.call_llm", fake_call_llm)
 
     aggregate_moa_context(
         user_prompt="clean the db",

@@ -240,7 +240,7 @@ class TestSmartModeFiresHooks:
             return f"redacted:{text}"
 
         with (
-            patch("agent.redact.redact_sensitive_text", side_effect=redact),
+            patch("hermes_agent.agent.redact.redact_sensitive_text", side_effect=redact),
             patch("hermes_cli.plugins.invoke_hook"),
         ):
             result = guard(value, "local")
@@ -281,7 +281,7 @@ class TestSmartModeFiresHooks:
             return text
 
         with (
-            patch("agent.redact.redact_sensitive_text", side_effect=fail_observer_redaction),
+            patch("hermes_agent.agent.redact.redact_sensitive_text", side_effect=fail_observer_redaction),
             patch(
                 "hermes_cli.plugins.invoke_hook",
                 side_effect=lambda name, **kwargs: captured.append((name, kwargs)),

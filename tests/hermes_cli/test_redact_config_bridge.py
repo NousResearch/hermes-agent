@@ -1,9 +1,9 @@
 """Regression test for config.yaml `security.redact_secrets: false` toggle.
 
-Bug: `agent/redact.py` snapshots `_REDACT_ENABLED` from the env var
+Bug: `hermes_agent/agent/redact.py` snapshots `_REDACT_ENABLED` from the env var
 `HERMES_REDACT_SECRETS` at module-import time. `hermes_cli/main.py` at
 line ~174 calls `setup_logging(mode="cli")` which transitively imports
-`agent.redact` — BEFORE any config bridge ran. So if a user set
+`hermes_agent.agent.redact` — BEFORE any config bridge ran. So if a user set
 `security.redact_secrets: false` in config.yaml (instead of as an env var
 in .env), the toggle was silently ignored in both `hermes chat` and
 `hermes gateway run`.

@@ -527,7 +527,7 @@ class ContextCategory(Result):
 
 
 class ContextFileSource(Result):
-    """One row of ``agent.context_file_sources.list_context_file_sources``."""
+    """One row of ``hermes_agent.agent.context_file_sources.list_context_file_sources``."""
 
     label: str
     path: str
@@ -538,7 +538,7 @@ class ContextFileSource(Result):
 
 
 class SessionContextBreakdownResult(Result):
-    """``agent.context_breakdown.compute_session_context_breakdown`` (empty categories before the agent builds)
+    """``hermes_agent.agent.context_breakdown.compute_session_context_breakdown`` (empty categories before the agent builds)
     plus the per-file context manifest (empty until the agent exists)."""
 
     categories: list[ContextCategory]
@@ -560,7 +560,7 @@ method("session.context_breakdown", params=SessionContextBreakdownParams, result
 
 
 class CompressionSummary(OpenModel):
-    """``agent.manual_compression_feedback.summarize_manual_compression``."""
+    """``hermes_agent.agent.manual_compression_feedback.summarize_manual_compression``."""
 
     noop: bool = False
     aborted: bool = False

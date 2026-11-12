@@ -14,7 +14,7 @@ Covered:
     clients inherit Entra auth.
   * ``_truncate_token`` (dashboard preview) renders ``"<entra-id-bearer>"``
     instead of ``"<function ...>"`` and never invokes the callable.
-  * ``run_agent.py`` masked-banner path renders the Entra placeholder
+  * ``hermes_agent/run_agent.py`` masked-banner path renders the Entra placeholder
     and never tries to slice/len the callable.
   * Serialization scrub: dumping a runtime dict via ``json.dumps`` with
     a callable api_key raises (default behaviour) — guards against
@@ -46,11 +46,11 @@ class TestCreateOpenAIClientCallable:
             return MagicMock(api_key=kwargs.get("api_key"))
 
         # Patch the module-level OpenAI proxy used by ``_create_openai_client``.
-        monkeypatch.setattr("agent.process_bootstrap.OpenAI", fake_openai)
+        monkeypatch.setattr("hermes_agent.agent.process_bootstrap.OpenAI", fake_openai)
 
         # Build a minimal stand-in for AIAgent so we can call the bound
         # method directly without paying the full __init__ cost.
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent.__new__(AIAgent)
         # Attributes consulted by _create_openai_client / _client_log_context.
@@ -87,7 +87,7 @@ class TestNormalizeMainRuntimePreservesCallable:
     inherit Entra ID auth from the main agent."""
 
     def test_callable_api_key_survives_normalization(self):
-        from agent.auxiliary_client import _normalize_main_runtime
+        from hermes_agent.agent.auxiliary_client import _normalize_main_runtime
 
         def provider():
             return "jwt"
@@ -104,7 +104,7 @@ class TestNormalizeMainRuntimePreservesCallable:
         assert normalized["auth_mode"] == "entra_id"
 
     def test_string_api_key_still_works(self):
-        from agent.auxiliary_client import _normalize_main_runtime
+        from hermes_agent.agent.auxiliary_client import _normalize_main_runtime
         normalized = _normalize_main_runtime({
             "provider": "azure-foundry",
             "api_key": "sk-static",

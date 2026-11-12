@@ -104,7 +104,7 @@ def _per_url(urls: list[str], fetch: Callable[[str], dict[str, Any]], vendor: st
 def keyless_enabled() -> bool:
     """Delegates to the registry so the ``web.keyless_fallback`` (default on) chokepoint lives with backend resolution."""
     try:
-        from agent.web_search_registry import _keyless_tier_enabled
+        from hermes_agent.agent.web_search_registry import _keyless_tier_enabled
         return _keyless_tier_enabled()
     except Exception as exc:
         logger.debug("keyless_enabled(): registry helper unavailable: %s", exc)

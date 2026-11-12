@@ -77,8 +77,8 @@ def test_micro_compaction_live_dicts_persist_through_the_worker_like_direct(work
     closed handoff fields; otherwise the owner refuses the receipt and the sticky journal refuses every
     later persist of the session (helix4u #4)."""
     import types
-    from agent.context_compressor import COMPRESSED_SUMMARY_METADATA_KEY, MICRO_COMPACT_MARKER_KEY
-    from agent.micro_compaction import MicroCompactionMixin
+    from hermes_agent.agent.context_compressor import COMPRESSED_SUMMARY_METADATA_KEY, MICRO_COMPACT_MARKER_KEY
+    from hermes_agent.agent.micro_compaction import MicroCompactionMixin
     db, store = worker
     db.create_session('direct', 'cli')
     durable = {}

@@ -36,7 +36,7 @@ def _rewrite(event_text: str, tmp_path, monkeypatch, plugin_home):
 
     monkeypatch.setenv("HERMES_HOME", str(plugin_home))
     plugins_mod._reset_plugin_managers_for_tests()
-    import agent.skill_commands as sc
+    import hermes_agent.agent.skill_commands as sc
     try:
         monkeypatch.setattr(sc, "_skill_commands_by_key", {})
         with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path / "skills"):

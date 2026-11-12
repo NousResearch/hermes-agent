@@ -5,8 +5,8 @@ The Portal "replay budget" behind #118182 does not reproduce; it is back on the 
 
 from openai import OpenAI
 
-from agent.auxiliary_wire import prepare_chat_messages
-from agent.transports import get_transport
+from hermes_agent.agent.auxiliary_wire import prepare_chat_messages
+from hermes_agent.agent.transports import get_transport
 
 _HISTORY = [
     {"role": "user", "content": "hi"},

@@ -32,7 +32,7 @@ class TestMergeHelper:
         """Native DeepSeek is curated-only: models.dev still indexes the retired ``deepseek-v4-flash*``
         ids, so the registry union must not re-add them or reorder the picker (#117516)."""
         with patch(
-            "agent.models_dev.list_agentic_models",
+            "hermes_agent.agent.models_dev.list_agentic_models",
             return_value=["deepseek-v4-flash-vision-exp", "deepseek-v4-flash", "deepseek-flash", "deepseek-v4-pro"],
         ), patch("hermes_cli.models._PROVIDER_CATALOG_FETCHERS", {}), \
                 patch("hermes_cli.models._profile_live_catalog", return_value=None):
@@ -43,7 +43,7 @@ class TestMergeHelper:
 
     def test_merge_empty_mdev_returns_curated(self):
         """When models.dev returns nothing, curated list is preserved verbatim."""
-        with patch("agent.models_dev.list_agentic_models", return_value=[]):
+        with patch("hermes_agent.agent.models_dev.list_agentic_models", return_value=[]):
             out = _merge_with_models_dev("opencode-go", ["mimo-v2-pro", "kimi-k2.6"])
         assert out == ["mimo-v2-pro", "kimi-k2.6"]
 
@@ -51,7 +51,7 @@ class TestMergeHelper:
         """Dedup is case-insensitive but preserves the first occurrence's casing."""
         mdev = ["MiniMax-M2.7"]
         curated = ["minimax-m2.7", "minimax-m2.5"]
-        with patch("agent.models_dev.list_agentic_models", return_value=mdev):
+        with patch("hermes_agent.agent.models_dev.list_agentic_models", return_value=mdev):
             out = _merge_with_models_dev("minimax", curated)
         # models.dev casing wins since it came first
         assert out == ["MiniMax-M2.7", "minimax-m2.5"]
@@ -143,6 +143,6 @@ class TestProviderModelIdsPreferred:
 
 def test_setup_menu_merge_leads_with_curated_in_full():
     from hermes_cli.model_setup_flows_common import _models_dev_merged
-    with patch("agent.models_dev.list_agentic_models", return_value=["a/x", "b/Y", "c/z"]):
+    with patch("hermes_agent.agent.models_dev.list_agentic_models", return_value=["a/x", "b/Y", "c/z"]):
         assert _models_dev_merged("nvidia", ["B/y", "d/w"]) == ["b/Y", "d/w", "a/x", "c/z"]
         assert _models_dev_merged("opencode-zen", ["B/y", "d/w"]) == ["a/x", "b/Y", "c/z", "d/w"]

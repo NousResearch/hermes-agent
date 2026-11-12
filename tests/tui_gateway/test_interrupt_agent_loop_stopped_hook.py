@@ -74,7 +74,7 @@ def test_interrupt_hook_observer_sees_the_sessions_profile_a_b_a(tmp_path, monke
     """Off-turn dispatch (RPC / reaper) binds the SESSION's profile around ``agent_loop_stopped``, so an
     observer's ``get_hermes_home()`` names that profile — launch → secondary → launch under multiplexing
     (#125063), and no binding leaks past the dispatch."""
-    from agent.secret_scope import set_multiplex_active
+    from hermes_agent.agent.secret_scope import set_multiplex_active
     from hermes_constants import get_hermes_home, get_hermes_home_override
     from hermes_agent.tui_gateway import launch_profile_policy as lpp, server
 

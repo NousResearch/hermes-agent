@@ -64,7 +64,7 @@ class _BenignProbeMethodFilter(logging.Filter):
 
 def _setup_logging() -> None:
     """Route all logging to stderr so stdout stays clean for ACP stdio."""
-    from agent.redact import RedactingFormatter
+    from hermes_agent.agent.redact import RedactingFormatter
 
     handler = logging.StreamHandler(sys.stderr)
     handler.setFormatter(RedactingFormatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -182,15 +182,15 @@ def main(argv: list[str] | None = None) -> None:
     logger = logging.getLogger(__name__)
     logger.info("Starting hermes-agent ACP adapter")
 
-    # Ensure the project root is on sys.path so ``from run_agent import AIAgent`` works
+    # Ensure the project root is on sys.path so ``from hermes_agent.run_agent import AIAgent`` works
     project_root = project_root_str()
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
 
     # One TLS authority: trust the OS store before any outbound call (bare
-    # requests/urllib included) resolves a CA bundle — see agent/ssl_verify.py.
+    # requests/urllib included) resolves a CA bundle — see hermes_agent/agent/ssl_verify.py.
     # This console script bypasses hermes_cli.main, which does the same.
-    from agent.ssl_verify import install_truststore
+    from hermes_agent.agent.ssl_verify import install_truststore
 
     install_truststore()
 

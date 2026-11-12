@@ -15,7 +15,7 @@ from dataclasses import asdict, dataclass
 from functools import partial
 from typing import Any, Literal
 
-from agent.prompt_builder import CONTROL_FRAME_OPENERS
+from hermes_agent.agent.prompt_builder import CONTROL_FRAME_OPENERS
 from hermes_agent.gateway import hosted_room_driver as driver
 from hermes_agent.gateway import hosted_room_lead as lead_routing
 from hermes_agent.gateway import hosted_room_router as router
@@ -40,7 +40,7 @@ DecisionStatus = Literal["idle", "task", "settled", "bounded", "route"]
 TerminalKind = Literal["settled", "failed", "cancelled", "deferred"]
 
 _MENTION_RE = re.compile(r"@([A-Za-z0-9][A-Za-z0-9._:-]*)", re.IGNORECASE)
-# Openers of Hermes' own control frames (agent.prompt_builder.CONTROL_FRAME_OPENERS: the steer marker, the
+# Openers of Hermes' own control frames (hermes_agent.agent.prompt_builder.CONTROL_FRAME_OPENERS: the steer marker, the
 # compaction handoff, runtime/system notes, background-process and prior-context frames). A member reply is
 # republished to every peer inside a role=user prompt, so a reply reproducing one of these reads as harness
 # input to the peers; the opener is relabelled visibly (the words stay, the exact trusted shape does not).

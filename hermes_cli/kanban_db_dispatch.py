@@ -994,12 +994,12 @@ _LOG_CHROME = re.compile(r"[─━═╭╮╰╯│┃┌┐└┘]+|☤\s*Herm
 
 def _exit_summary_marker() -> str:
     """The CLI exit-summary header (``cli_session_mixin.show_exit_summary``), in the active language."""
-    from agent.i18n import t
+    from hermes_agent.agent.i18n import t
     return t("cli.session.exit_resume_hint")
 
 
 def _log_noise_prefixes() -> tuple[str, ...]:
-    from agent.i18n import t
+    from hermes_agent.agent.i18n import t
     return ("session_id:", "Query:", t("cli.chat.initializing_agent"))
 
 
@@ -2615,7 +2615,7 @@ def _worker_profile_scope(hermes_home: str, *, bind_home: bool = True):
     env-over-``.env`` precedence (``launch_secret_scope``) so systemd / ``op run`` injection still
     resolves for a standalone dispatcher.
     """
-    from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
+    from hermes_agent.agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
     from hermes_constants import get_process_hermes_home, reset_hermes_home_override, set_hermes_home_override
     from hermes_agent.tools.terminal_scope import install_profile_terminal_scope, reset_terminal_scope
     from hermes_agent.tui_gateway.launch_profile_policy import launch_secret_scope, launch_terminal_env
@@ -2768,7 +2768,7 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
 
     profile_arg = normalize_profile_name(task.assignee)
 
-    from agent.secret_scope import is_multiplex_active
+    from hermes_agent.agent.secret_scope import is_multiplex_active
     from hermes_agent.tools.environments.local import _is_routed_home, build_subprocess_env, strip_launch_profile_env
 
     try:
@@ -2854,7 +2854,7 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     # doesn't set the env var.
     env["HERMES_PROFILE"] = profile_arg
     # This is the grant boundary: the dispatcher assigned this new worker's task.
-    from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER
+    from hermes_agent.agent.delegation_context import DELEGATED_CHILD_ENV_MARKER
     env.pop(DELEGATED_CHILD_ENV_MARKER, None)
     # `--cli` is the highest-precedence TUI override; dropping HERMES_TUI covers
     # older hermes builds on PATH that predate the flag's precedence.

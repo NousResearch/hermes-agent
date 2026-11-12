@@ -4,7 +4,7 @@ These cover the platform-neutral part of #29265: once the gateway has resolved
 ``TERMINAL_CWD``, the user-visible tool surfaces should agree on that workspace.
 
 Unlike the system-prompt readers fixed in the gateway-cwd-resolver cluster
-(agent/runtime_cwd.py), these tool sites already read ``TERMINAL_CWD``-first and
+(hermes_agent/agent/runtime_cwd.py), these tool sites already read ``TERMINAL_CWD``-first and
 were deliberately left out of scope. This file is a *characterization* guard: it
 pins the already-correct behavior so the supersession of PR #29365 is airtight
 and a future refactor of these sites can't silently regress the contract.

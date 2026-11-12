@@ -35,8 +35,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent import auxiliary_client as aux
-from agent.conversation_compression import (
+from hermes_agent.agent import auxiliary_client as aux
+from hermes_agent.agent.conversation_compression import (
     CompressionCommitFence,
 )
 
@@ -90,7 +90,7 @@ class _AsyncStream(_Stream):
 
 def test_commit_fence_publishes_its_shared_deadline(monkeypatch):
     now = [10.0]
-    monkeypatch.setattr("agent.conversation_compression.time.monotonic", lambda: now[0])
+    monkeypatch.setattr("hermes_agent.agent.conversation_compression.time.monotonic", lambda: now[0])
     fence = CompressionCommitFence()
     assert fence.deadline_monotonic is None
 

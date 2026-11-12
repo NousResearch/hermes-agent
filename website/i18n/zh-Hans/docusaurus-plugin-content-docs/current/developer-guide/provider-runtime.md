@@ -19,7 +19,7 @@ Hermes 拥有一个共享的 provider 运行时解析器，用于以下场景：
 - `hermes_cli/runtime_provider.py` — 凭据解析，`_resolve_custom_runtime()`
 - `hermes_cli/auth.py` — provider 注册表，`resolve_provider()`
 - `hermes_cli/model_switch.py` — 共享 `/model` 切换流水线（CLI + gateway）
-- `agent/auxiliary_client.py` — 辅助模型路由
+- `hermes_agent/agent/auxiliary_client.py` — 辅助模型路由
 - `providers/` — ABC + 注册表入口点（`ProviderProfile`、`register_provider`、`get_provider_profile`、`list_providers`）
 - `plugins/model-providers/<name>/` — 每个 provider 的插件（内置），声明 `api_mode`、`base_url`、`env_vars`、`fallback_models` 并在首次访问时将自身注册到注册表。用户插件位于 `$HERMES_HOME/plugins/model-providers/<name>/`，会覆盖同名的内置插件。
 
@@ -126,7 +126,7 @@ Anthropic 不再仅限于"通过 OpenRouter"访问。
 
 - `api_mode = anthropic_messages`
 - 原生 Anthropic Messages API
-- `agent/anthropic_adapter.py` 进行转换
+- `hermes_agent/agent/anthropic_adapter.py` 进行转换
 
 原生 Anthropic 的凭据解析现在在两者同时存在时，优先使用可刷新的 Claude Code 凭据，而非复制的环境变量 token。实际效果为：
 
@@ -167,7 +167,7 @@ Hermes 支持配置回退 provider 链——一个按顺序尝试的 `(provider,
 
 1. **存储**：`AIAgent.__init__` 存储 `fallback_model` 字典并将 `_fallback_activated` 设为 `False`。
 
-2. **触发点**：`_try_activate_fallback()` 在 `run_agent.py` 主重试循环的三处被调用：
+2. **触发点**：`_try_activate_fallback()` 在 `hermes_agent/run_agent.py` 主重试循环的三处被调用：
    - 在无效 API 响应（None choices、缺少 content）达到最大重试次数后
    - 在不可重试的客户端错误（HTTP 401、403、404）时
    - 在瞬时错误（HTTP 429、500、502、503）达到最大重试次数后

@@ -15,7 +15,7 @@ the HTTP boundary faked (a client that 400s once, then succeeds):
   walked at collection time, so adding a new injected param automatically
   extends coverage. The retry contract mirrors conversation_loop: retryable
   → resend identical request; non-retryable → abort.
-* Auxiliary path: ``agent.auxiliary_client.call_llm``'s reactive strip-and-
+* Auxiliary path: ``hermes_agent.agent.auxiliary_client.call_llm``'s reactive strip-and-
   retry rungs for every parameter that path knows how to strip.
 
 Guard: a 400 naming a param NOT in the registry must still fail — we never
@@ -29,12 +29,12 @@ from unittest.mock import patch
 
 import pytest
 
-from agent.error_classifier import (
+from hermes_agent.agent.error_classifier import (
     FailoverReason,
     _SERVER_INJECTED_PARAM_SENDERS,
     classify_api_error,
 )
-from agent.auxiliary_client import call_llm
+from hermes_agent.agent.auxiliary_client import call_llm
 
 
 class MockAPIError(Exception):
@@ -195,11 +195,11 @@ def _aux_patches(client):
     # gpt-4.1: a model the aux path still SENDS temperature to. gpt-5.x omits it up front
     # (#51083), which would leave the reactive strip rung nothing to strip.
     return (
-        patch("agent.auxiliary_client._resolve_task_provider_model",
+        patch("hermes_agent.agent.auxiliary_client._resolve_task_provider_model",
               return_value=("openai-codex", "gpt-4.1", None, None, None)),
-        patch("agent.auxiliary_client._get_cached_client",
+        patch("hermes_agent.agent.auxiliary_client._get_cached_client",
               return_value=(client, "gpt-4.1")),
-        patch("agent.auxiliary_client._validate_llm_response",
+        patch("hermes_agent.agent.auxiliary_client._validate_llm_response",
               side_effect=lambda resp, _task, **_kw: resp),
     )
 

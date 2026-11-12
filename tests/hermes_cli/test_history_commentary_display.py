@@ -2,7 +2,7 @@
 
 from hermes_cli.web_routers.sessions import _project_for_display
 from hermes_agent.tui_gateway.server import _history_to_messages
-from agent.history_commentary import visible_commentary
+from hermes_agent.agent.history_commentary import visible_commentary
 from hermes_constants import get_hermes_home_override
 
 import asyncio
@@ -62,7 +62,7 @@ def test_gateway_history_uses_same_display_projection():
 
 
 def test_rest_history_shows_a_steer_as_the_users_own_words():
-    from agent.prompt_builder import steer_user_row
+    from hermes_agent.agent.prompt_builder import steer_user_row
 
     row = steer_user_row("fix the header too")
     projected = _project_for_display([row])[0]
@@ -76,7 +76,7 @@ def test_rest_history_shows_a_steer_as_the_users_own_words():
 def test_history_applies_live_stripping_and_redaction_without_changing_raw_items(
     monkeypatch,
 ):
-    monkeypatch.setattr("agent.redact._redact_enabled", lambda: True)
+    monkeypatch.setattr("hermes_agent.agent.redact._redact_enabled", lambda: True)
     raw = (
         "Start. <think>private scratchpad</think> Key=" + "sk-" + "demo0123456789abcdef"
     )
@@ -278,7 +278,7 @@ def test_cold_resume_uses_the_resumed_session_home(monkeypatch, tmp_path):
 
 
 def test_joined_canonical_commentary_uses_sanitized_display_copy(monkeypatch):
-    monkeypatch.setattr("agent.redact._redact_enabled", lambda: True)
+    monkeypatch.setattr("hermes_agent.agent.redact._redact_enabled", lambda: True)
     raw = "Checking. Key=" + "sk-" + "demo0123456789abcdef"
     row = _row(raw)
     row["content"] = raw
@@ -288,7 +288,7 @@ def test_joined_canonical_commentary_uses_sanitized_display_copy(monkeypatch):
     assert visible["content"] == raw
     assert visible["display_reasoning"] == "Private summary."
 
-    from agent.history_commentary import project_history_commentary
+    from hermes_agent.agent.history_commentary import project_history_commentary
     from hermes_cli import config as config_mod
 
     monkeypatch.setattr(
@@ -323,7 +323,7 @@ def test_mixed_canonical_content_is_sanitized_without_truncating_possible_final(
     raw = "Checking. <think>hidden</think> key=" + "sk-" + "demo0123456789abcdef"
     row = _row(raw)
     row["content"] = raw + "\n\nFinal result."
-    monkeypatch.setattr("agent.redact._redact_enabled", lambda: True)
+    monkeypatch.setattr("hermes_agent.agent.redact._redact_enabled", lambda: True)
 
     for projected in (_project_for_display([row])[0], _history_to_messages([row])[0]):
         assert projected["display_commentary"] == []
@@ -346,7 +346,7 @@ def test_stream_recovered_final_without_final_sidecar_is_authoritative(
     monkeypatch, final
 ):
     from types import SimpleNamespace
-    from agent.turn_finalizer import _close_transcript_tail
+    from hermes_agent.agent.turn_finalizer import _close_transcript_tail
     from hermes_cli import config as config_mod
 
     row = _row("Checking.")

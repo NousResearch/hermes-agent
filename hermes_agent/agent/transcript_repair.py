@@ -8,8 +8,8 @@ import hashlib
 import sqlite3
 from typing import Any, Callable, Dict, List, Mapping
 
-from agent.context_compressor import _DB_PERSISTED_MARKER
-from agent.message_metadata import (
+from hermes_agent.agent.context_compressor import _DB_PERSISTED_MARKER
+from hermes_agent.agent.message_metadata import (
     ABSORBED_MESSAGE_UIDS, CANONICAL_ROW, DB_ROW_SNAPSHOT, MESSAGE_UID, RESTORED_FROM_STORE, TOOL_CALL_UIDS, TYPED_ASK,
     copy_identity_fields, message_uid_or_none)
 from hermes_agent.hermes_state_common import _id_chunks, _placeholders
@@ -203,8 +203,8 @@ def resolve_and_repair_transcript_batch(
     same payload is that message re-handed to the flush — stamped durable and skipped, never re-INSERTed. Returns
     only rows that need fresh inserts.
     """
-    # Late import: agent.session_persistence imports this module at load time.
-    from agent.session_persistence import _PERSIST_AFTER_ADMISSION_INTERRUPT
+    # Late import: hermes_agent.agent.session_persistence imports this module at load time.
+    from hermes_agent.agent.session_persistence import _PERSIST_AFTER_ADMISSION_INTERRUPT
 
     inserted_rows: list[dict[str, Any]] = []
     durable_uids = _active_uid_dedupe(conn, session_id, messages)

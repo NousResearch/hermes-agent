@@ -21,7 +21,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from agent.turn_failure_copy import FAILED_TURN_NOTICE, PARTIAL_FAILED_TURN_NOTICE
+from hermes_agent.agent.turn_failure_copy import FAILED_TURN_NOTICE, PARTIAL_FAILED_TURN_NOTICE
 import hermes_agent.gateway.run as gateway_run
 from hermes_agent.gateway.config import GatewayConfig, Platform
 from hermes_agent.gateway.platforms.event import MessageEvent
@@ -77,7 +77,7 @@ def _bootstrap(monkeypatch, tmp_path):
         gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"}
     )
     monkeypatch.setattr(
-        "agent.model_metadata.get_model_context_length",
+        "hermes_agent.agent.model_metadata.get_model_context_length",
         lambda *_args, **_kwargs: 100_000,
     )
     return runner
@@ -165,7 +165,7 @@ async def test_agent_failed_early_skip_db_when_agent_has_session_db(
 
     # The next unrelated input remains its own turn instead of alternation repair
     # merging the failed mutating request into it.
-    from agent.agent_runtime_helpers import repair_message_sequence
+    from hermes_agent.agent.agent_runtime_helpers import repair_message_sequence
 
     replay = [*transcript_rows, {"role": "user", "content": "unrelated question"}]
     assert repair_message_sequence(None, replay) == 0

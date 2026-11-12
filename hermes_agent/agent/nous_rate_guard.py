@@ -15,8 +15,8 @@ import os
 import time
 from typing import Any, Mapping, Optional
 from utils import atomic_write_text
-from agent.retry_utils import parse_retry_after_seconds
-from agent.rate_limit_tracker import (
+from hermes_agent.agent.retry_utils import parse_retry_after_seconds
+from hermes_agent.agent.rate_limit_tracker import (
     _BUCKET_TAGS, _fmt_seconds, _safe_float, _safe_int, has_rate_limit_headers, lower_headers,
 )
 

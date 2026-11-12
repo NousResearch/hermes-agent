@@ -43,7 +43,7 @@ def _capture(server, monkeypatch):
 
 
 def test_compaction_lifecycle_is_retagged(server, monkeypatch):
-    from agent.conversation_compression import COMPACTION_STATUS
+    from hermes_agent.agent.conversation_compression import COMPACTION_STATUS
 
     events = _capture(server, monkeypatch)
     server._status_update("sid", "lifecycle", COMPACTION_STATUS)
@@ -52,7 +52,7 @@ def test_compaction_lifecycle_is_retagged(server, monkeypatch):
 
 
 def test_idle_compaction_lifecycle_is_retagged(server, monkeypatch):
-    from agent.conversation_compression import IDLE_COMPACTION_STATUS_TEMPLATE
+    from hermes_agent.agent.conversation_compression import IDLE_COMPACTION_STATUS_TEMPLATE
 
     events = _capture(server, monkeypatch)
     text = IDLE_COMPACTION_STATUS_TEMPLATE.format(idle_seconds=747, tokens=44_579)
@@ -62,7 +62,7 @@ def test_idle_compaction_lifecycle_is_retagged(server, monkeypatch):
 
 
 def test_preflight_compaction_lifecycle_is_retagged(server, monkeypatch):
-    from agent.conversation_compression import PREFLIGHT_COMPRESSION_STATUS_TEMPLATE
+    from hermes_agent.agent.conversation_compression import PREFLIGHT_COMPRESSION_STATUS_TEMPLATE
 
     events = _capture(server, monkeypatch)
     text = PREFLIGHT_COMPRESSION_STATUS_TEMPLATE.format(
@@ -74,7 +74,7 @@ def test_preflight_compaction_lifecycle_is_retagged(server, monkeypatch):
 
 
 def test_compaction_done_is_not_retagged_as_compacting(server, monkeypatch):
-    from agent.conversation_compression import COMPACTION_DONE_STATUS
+    from hermes_agent.agent.conversation_compression import COMPACTION_DONE_STATUS
 
     events = _capture(server, monkeypatch)
     server._status_update("sid", "lifecycle", COMPACTION_DONE_STATUS)
@@ -93,7 +93,7 @@ def test_other_lifecycle_status_stays_lifecycle(server, monkeypatch):
 
 
 def test_overflow_blocked_warning_stays_lifecycle(server, monkeypatch):
-    from agent.conversation_compression import CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE
+    from hermes_agent.agent.conversation_compression import CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE
 
     events = _capture(server, monkeypatch)
     text = CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE.format(
@@ -112,7 +112,7 @@ def test_manual_compressing_kind_is_preserved(server, monkeypatch):
 
 
 def test_is_compaction_progress_status_covers_routine_in_progress_lines():
-    from agent.conversation_compression import (
+    from hermes_agent.agent.conversation_compression import (
         COMPACTION_DONE_STATUS,
         CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE,
         ROUTINE_COMPRESSION_STATUS_SAMPLES,

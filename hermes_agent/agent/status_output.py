@@ -2,16 +2,16 @@
 
 Safe printing, quiet-mode gating, deduped context-overflow warnings, and the buffered retry
 chatter that is shown only when every retry/fallback is exhausted.
-Extracted from ``run_agent.py``; every method resolves through ``AIAgent``'s MRO unchanged.
+Extracted from ``hermes_agent/run_agent.py``; every method resolves through ``AIAgent``'s MRO unchanged.
 """
 import logging
 import sys
 
-from agent.i18n import t
-from agent.session_activity import ActivityProvenance
+from hermes_agent.agent.i18n import t
+from hermes_agent.agent.session_activity import ActivityProvenance
 
 # Same logger name as the origin module so log records / caplog filters are unchanged.
-logger = logging.getLogger("run_agent")
+logger = logging.getLogger("hermes_agent.run_agent")
 
 
 def deliver_kept_startup_notices(agent) -> None:
@@ -19,7 +19,7 @@ def deliver_kept_startup_notices(agent) -> None:
     agent's own start, in any process) when someone sees them: the CLI's print sink or a driver's
     ``notice_callback``. A cron run, subagent, curator, kanban worker or background fork leaves them in the
     home for the next such turn: claiming them there would drop them."""
-    from agent.side_question_lease import is_unattended_turn
+    from hermes_agent.agent.side_question_lease import is_unattended_turn
     if getattr(agent, "suppress_status_output", False) or is_unattended_turn(agent):
         return
     if (getattr(agent, "platform", None) or "cli") != "cli" and not getattr(agent, "notice_callback", None):
@@ -137,7 +137,7 @@ class StatusOutputMixin:
             return
         import zlib
 
-        from agent.credits_tracker import AgentNotice
+        from hermes_agent.agent.credits_tracker import AgentNotice
 
         key = f"startup-warning.{zlib.crc32(message.encode()):08x}"
         level = "success" if message.startswith("✓") else "warn"  # a recovered provider is good news
@@ -167,7 +167,7 @@ class StatusOutputMixin:
         if getattr(self, "_last_ctx_overflow_warn", None) == _warn_key:
             return
         self._last_ctx_overflow_warn = _warn_key
-        from agent.conversation_compression import CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE
+        from hermes_agent.agent.conversation_compression import CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE
 
         # cooldown + anti-thrash (ineffective) are both "compression blocked".
         if _warn_kind in ("cooldown", "ineffective"):

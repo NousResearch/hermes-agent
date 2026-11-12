@@ -6,7 +6,7 @@ or retries — those stay on AIAgent."""
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 
-from agent.transports.types import NormalizedResponse
+from hermes_agent.agent.transports.types import NormalizedResponse
 
 
 class ProviderTransport(ABC):

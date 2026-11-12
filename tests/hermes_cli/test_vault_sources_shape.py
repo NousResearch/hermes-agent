@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import hermes_yaml as yaml
 
-from agent.vault_store import VaultStore
+from hermes_agent.agent.vault_store import VaultStore
 from hermes_cli.vault import _cmd_sources, vault_command
 
 

@@ -7,9 +7,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from hermes_cli.models_local import LMStudioLoadResult
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 from hermes_cli.route_identity import normalize_route_base_url
-from agent.context_compressor import ContextCompressor
+from hermes_agent.agent.context_compressor import ContextCompressor
 
 
 class _StubStartupCompressor:
@@ -52,8 +52,8 @@ def _make_direct_start_agent(
         patch("hermes_cli.config.load_config", return_value=cfg), patch("hermes_cli.config.load_config_readonly", return_value=cfg),
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
-        patch("agent.agent_init.ContextCompressor", new=_StubStartupCompressor),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.agent_init.ContextCompressor", new=_StubStartupCompressor),
     ):
         return AIAgent(
             model=model,
@@ -100,7 +100,7 @@ def _make_agent_with_compressor(config_context_length=None) -> AIAgent:
     return agent
 
 
-@patch("agent.model_metadata.get_model_context_length", return_value=131_072)
+@patch("hermes_agent.agent.model_metadata.get_model_context_length", return_value=131_072)
 def test_switch_model_clears_previous_config_context_length(mock_ctx_len):
     """Switching models must not reuse the previous model.context_length override."""
     agent = _make_agent_with_compressor(config_context_length=32_768)
@@ -147,11 +147,11 @@ def test_switch_model_reapplies_checked_auxiliary_compression_limit():
     aux_client = MagicMock(base_url="https://aux.example/v1", api_key="aux-key")
     with (
         patch(
-            "agent.model_metadata.get_model_context_length",
+            "hermes_agent.agent.model_metadata.get_model_context_length",
             side_effect=[400_000, 80_000],
         ),
         patch(
-            "agent.auxiliary_client.get_text_auxiliary_client",
+            "hermes_agent.agent.auxiliary_client.get_text_auxiliary_client",
             return_value=(aux_client, "auxiliary-model"),
         ),
     ):
@@ -173,8 +173,8 @@ def test_switch_model_reapplies_checked_auxiliary_compression_limit():
     assert agent.context_compressor.threshold_tokens == 80_000
     # Switching to a runtime whose aux fits restores the main-model trigger (no one-way ratchet).
     with (
-        patch("agent.model_metadata.get_model_context_length", side_effect=[400_000, 400_000]),
-        patch("agent.auxiliary_client.get_text_auxiliary_client", return_value=(aux_client, "auxiliary-model")),
+        patch("hermes_agent.agent.model_metadata.get_model_context_length", side_effect=[400_000, 400_000]),
+        patch("hermes_agent.agent.auxiliary_client.get_text_auxiliary_client", return_value=(aux_client, "auxiliary-model")),
     ):
         agent.switch_model(
             "other-main-model", "openrouter", api_key="sk-new", base_url="https://openrouter.ai/api/v1",
@@ -191,7 +191,7 @@ def test_switch_model_omitted_base_url_preserves_direct_openai_capability():
     agent.runtime_capabilities = {"native_compaction": True}
     agent._create_openai_client = lambda *_args, **_kwargs: MagicMock()
 
-    with patch("agent.model_metadata.get_model_context_length", return_value=128_000):
+    with patch("hermes_agent.agent.model_metadata.get_model_context_length", return_value=128_000):
         agent.switch_model("gpt-5.6", "openai", api_key="sk-new")
 
     assert agent.base_url == "https://api.openai.com/v1"
@@ -206,7 +206,7 @@ def test_cross_provider_switch_to_default_openai_preserves_native_capability():
     agent.runtime_capabilities = {"native_compaction": False}
     agent._create_openai_client = lambda *_args, **_kwargs: MagicMock()
 
-    with patch("agent.model_metadata.get_model_context_length", return_value=128_000):
+    with patch("hermes_agent.agent.model_metadata.get_model_context_length", return_value=128_000):
         agent.switch_model("gpt-5.6", "openai", api_key="sk-new")
 
     assert agent.base_url == "https://api.openai.com/v1"
@@ -351,7 +351,7 @@ def test_lmstudio_switch_uses_destination_context_and_verified_runtime(monkeypat
     monkeypatch.setattr("hermes_cli.config.get_custom_provider_context_length", fake_provider_context)
     monkeypatch.setattr(AIAgent, "_ensure_lmstudio_runtime_loaded", fake_lmstudio_load)
 
-    with patch("agent.model_metadata.get_model_context_length", return_value=100_000) as mock_ctx_len:
+    with patch("hermes_agent.agent.model_metadata.get_model_context_length", return_value=100_000) as mock_ctx_len:
         agent.switch_model(
             "lmstudio/new-model",
             "lmstudio",
@@ -393,11 +393,11 @@ def test_later_lmstudio_failure_restores_runtime_capabilities(monkeypatch):
     assert agent.runtime_capabilities == {"native_compaction": True}
 
 
-@patch("agent.model_metadata.get_model_context_length", return_value=131_072)
+@patch("hermes_agent.agent.model_metadata.get_model_context_length", return_value=131_072)
 def test_switch_model_starts_the_new_route_without_the_old_routes_rejections(_ctx):
     """``/model``: a reasoning-effort, reasoning-disable or stream_options rejection learned on the
     old route must not keep stripping those fields from the new route's requests."""
-    from agent.route_verdicts import ROUTE_REJECTION_FIELDS
+    from hermes_agent.agent.route_verdicts import ROUTE_REJECTION_FIELDS
 
     agent = _make_agent_with_compressor()
     for name in ROUTE_REJECTION_FIELDS:
@@ -406,10 +406,10 @@ def test_switch_model_starts_the_new_route_without_the_old_routes_rejections(_ct
     assert {name: getattr(agent, name) for name in ROUTE_REJECTION_FIELDS} == dict.fromkeys(ROUTE_REJECTION_FIELDS, False)
 
 
-@patch("agent.model_metadata.get_model_context_length", return_value=131_072)
+@patch("hermes_agent.agent.model_metadata.get_model_context_length", return_value=131_072)
 def test_failed_switch_model_keeps_the_old_routes_rejections(_ctx):
     """A switch whose client rebuild fails rolls back onto the old route, verdicts included."""
-    from agent.route_verdicts import ROUTE_VERDICT_FIELDS
+    from hermes_agent.agent.route_verdicts import ROUTE_VERDICT_FIELDS
 
     agent = _make_agent_with_compressor()
     for name in ROUTE_VERDICT_FIELDS:

@@ -9,7 +9,7 @@ encrypted entries stay discrete.
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from agent.reasoning_summaries import append_streamed_reasoning_detail
+from hermes_agent.agent.reasoning_summaries import append_streamed_reasoning_detail
 
 
 def _make_chunk(content=None, finish_reason=None, model=None, reasoning_details=None, usage=None):
@@ -35,7 +35,7 @@ def test_fragments_merge_per_block_and_backfill_signature():
 
 
 def _agent():
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     agent = AIAgent(api_key="test-key", base_url="https://openrouter.ai/api/v1", model="test/model",
                     quiet_mode=True, skip_context_files=True, skip_memory=True)
     agent.api_mode = "chat_completions"
@@ -43,8 +43,8 @@ def _agent():
     return agent
 
 
-@patch("run_agent.AIAgent._create_request_openai_client")
-@patch("run_agent.AIAgent._close_request_openai_client")
+@patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+@patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
 def test_streamed_details_land_on_final_message_and_persist(_mock_close, mock_create):
     chunks = [
         _make_chunk(reasoning_details=[{"type": "reasoning.text", "text": "I should "}]),
@@ -78,8 +78,8 @@ def test_streamed_details_land_on_final_message_and_persist(_mock_close, mock_cr
     assert persisted["reasoning_details"] == msg.reasoning_details
 
 
-@patch("run_agent.AIAgent._create_request_openai_client")
-@patch("run_agent.AIAgent._close_request_openai_client")
+@patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+@patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
 def test_live_details_deglue_summary_part_boundaries(_mock_close, mock_create):
     """The live display gets the same boundary repair as the persisted reasoning.
 
@@ -124,8 +124,8 @@ def test_live_details_deglue_summary_part_boundaries(_mock_close, mock_create):
     assert "".join(delivered) == "**One**\n\n**Two**"
 
 
-@patch("run_agent.AIAgent._create_request_openai_client")
-@patch("run_agent.AIAgent._close_request_openai_client")
+@patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+@patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
 def test_no_details_leaves_attribute_absent(_mock_close, mock_create):
     mock_client = MagicMock()
     mock_client.chat.completions.create.return_value = iter([
@@ -135,8 +135,8 @@ def test_no_details_leaves_attribute_absent(_mock_close, mock_create):
     assert not hasattr(response.choices[0].message, "reasoning_details")
 
 
-@patch("run_agent.AIAgent._create_request_openai_client")
-@patch("run_agent.AIAgent._close_request_openai_client")
+@patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+@patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
 def test_live_details_keep_plain_fallback_and_opaque_replay(_mock_close, mock_create):
     agent = _agent()
     client = MagicMock()

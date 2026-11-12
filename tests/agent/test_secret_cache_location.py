@@ -15,9 +15,9 @@ from pathlib import Path
 
 import pytest
 
-from agent.secret_sources import bitwarden as bw
-from agent.secret_sources import onepassword as op
-from agent.secret_sources._cache import CachedFetch, DiskCache
+from hermes_agent.agent.secret_sources import bitwarden as bw
+from hermes_agent.agent.secret_sources import onepassword as op
+from hermes_agent.agent.secret_sources._cache import CachedFetch, DiskCache
 
 
 @pytest.fixture(autouse=True)

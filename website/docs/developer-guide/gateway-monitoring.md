@@ -217,14 +217,14 @@ ages, durations, monotonic counts, and one-way hashes are safe. **Never** add an
 attribute that can hold a job name, prompt, output, schedule, destination, raw
 exception text, file path, profile name, account id, or free-form string. When
 you must key a record to a job/entity, hash it (`sha256(...)[:24]`, see
-`_job_key` in `agent/monitoring/cron_health.py`) — never emit the raw id. All
+`_job_key` in `hermes_agent/agent/monitoring/cron_health.py`) — never emit the raw id. All
 string attributes that could touch user input must pass through
 `redaction.redact_for_export` and be truncated (see `_span_attrs` in
-`agent/monitoring/otlp_exporter.py`).
+`hermes_agent/agent/monitoring/otlp_exporter.py`).
 
 ### Adding a new gauge/metric
 
-1. Emit it in the snapshot builder (`agent/monitoring/gateway_health.py`
+1. Emit it in the snapshot builder (`hermes_agent/agent/monitoring/gateway_health.py`
    `build_gateway_health_snapshot`, `cron_health.py` `build_cron_health_snapshot`,
    or a sibling reader wired into `_read_runtime_snapshot` in
    `gateway_health_export.py`). Best-effort: never let a reader raise into the
@@ -257,11 +257,11 @@ scenario below for the subsystem's failure mode.
 These are the closed enums that keep the plane bounded. Extend the SET, then the
 classifier, never one without the other:
 
-- **Cron** (`agent/monitoring/cron_health.py`): `_KNOWN_STATUSES`,
+- **Cron** (`hermes_agent/agent/monitoring/cron_health.py`): `_KNOWN_STATUSES`,
   `_KNOWN_SOURCES`, `_KNOWN_DELIVERY_OUTCOMES`, and the `classify_cron_error`
   keyword buckets. Anything not in the set is coerced to `unknown` on the way
   out, so a new value that is not added to the set is invisible.
-- **Gateway/platform** (`agent/monitoring/gateway_health.py`):
+- **Gateway/platform** (`hermes_agent/agent/monitoring/gateway_health.py`):
   `_KNOWN_GATEWAY_STATES`, `_KNOWN_PLATFORM_STATES`, and `classify_gateway_error`.
 
 Rules: keep the vocabulary SMALL and operationally meaningful (an error class
@@ -273,7 +273,7 @@ test so the contract is asserted, not frozen as a count.
 ### Adding a content-free attribute to an existing event/span
 
 Add the key to the emitter's per-kind `keep_by_kind` allowlist in
-`agent/monitoring/otlp_exporter.py::_span_attrs` (unlisted keys are dropped), run
+`hermes_agent/agent/monitoring/otlp_exporter.py::_span_attrs` (unlisted keys are dropped), run
 it through redaction if it is ever string-shaped, and — as with metrics — if the
 deployment's collector has a span-attribute `keep_keys(...)` allowlist, add the
 attribute there too or it is stripped in transit.

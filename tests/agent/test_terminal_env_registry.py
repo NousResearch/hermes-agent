@@ -11,8 +11,8 @@ Mirrors tests/agent/test_image_gen_registry.py in structure. Covers:
 
 import pytest
 
-from agent.terminal_env_provider import TerminalEnvironmentProvider
-from agent import terminal_env_registry as reg
+from hermes_agent.agent.terminal_env_provider import TerminalEnvironmentProvider
+from hermes_agent.agent import terminal_env_registry as reg
 
 
 class _Env:

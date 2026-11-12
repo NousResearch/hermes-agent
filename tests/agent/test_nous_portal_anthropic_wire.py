@@ -182,7 +182,7 @@ class TestClientShape:
     def test_lookalike_host_does_not_get_portal_treatment(self):
         """Substring matching would hand a spoofed host the Portal JWT as a
         Bearer token. Hostname matching must reject it."""
-        from agent.anthropic_endpoints import _is_nous_portal_endpoint, _requires_bearer_auth
+        from hermes_agent.agent.anthropic_endpoints import _is_nous_portal_endpoint, _requires_bearer_auth
 
         spoofed = "https://inference-api.nousresearch.com.attacker.test/v1"
         assert not _is_nous_portal_endpoint(spoofed)
@@ -193,7 +193,7 @@ class TestClientShape:
         """Portal validates the OAuth invoke JWT as a Bearer credential, the
         same way its /chat/completions route does. Sending it as x-api-key
         (the adapter's third-party default) 401s."""
-        from agent.anthropic_adapter import build_anthropic_client
+        from hermes_agent.agent.anthropic_adapter import build_anthropic_client
 
         client = build_anthropic_client("portal-invoke-jwt", PORTAL_URL)
 
@@ -207,7 +207,7 @@ class TestClientShape:
         constructor omits it. Hermes loads that env from ~/.hermes/.env, so
         without an explicit clear every Portal request would dual-auth as
         X-Api-Key: sk-ant-… + Authorization: Bearer portal.jwt."""
-        from agent.anthropic_adapter import build_anthropic_client
+        from hermes_agent.agent.anthropic_adapter import build_anthropic_client
 
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-should-not-leak")
         client = build_anthropic_client("portal-invoke-jwt", PORTAL_URL)
@@ -229,7 +229,7 @@ class TestClientShape:
 
 class TestModelIdPassthrough:
     def _kwargs(self, model, base_url):
-        from agent.anthropic_adapter import build_anthropic_kwargs
+        from hermes_agent.agent.anthropic_adapter import build_anthropic_kwargs
 
         return build_anthropic_kwargs(
             model=model,
@@ -274,8 +274,8 @@ class TestPortalBodyFields:
     """
 
     def _build(self, provider="nous", session_id="sess-abc123"):
-        from agent.chat_completion_helpers import build_api_kwargs
-        from agent.transports.anthropic import AnthropicTransport
+        from hermes_agent.agent.chat_completion_helpers import build_api_kwargs
+        from hermes_agent.agent.transports.anthropic import AnthropicTransport
 
         transport = AnthropicTransport()
         agent = SimpleNamespace(
@@ -299,7 +299,7 @@ class TestPortalBodyFields:
         return build_api_kwargs(agent, [{"role": "user", "content": "hi"}])
 
     def test_portal_tags_reach_the_messages_request(self):
-        from agent.portal_tags import hermes_client_tag
+        from hermes_agent.agent.portal_tags import hermes_client_tag
 
         tags = self._build()["extra_body"]["tags"]
 
@@ -320,7 +320,7 @@ class TestPortalBodyFields:
 
 
     def test_helper_merge_is_a_no_op_for_non_nous(self):
-        from agent.chat_completion_helpers import (
+        from hermes_agent.agent.chat_completion_helpers import (
             _merge_nous_portal_messages_extra_body,
         )
 
@@ -379,7 +379,7 @@ class TestPortalThinkingReplay:
         ]
 
     def _assert_thinking_kept(self, base_url):
-        from agent.anthropic_message_convert import convert_messages_to_anthropic
+        from hermes_agent.agent.anthropic_message_convert import convert_messages_to_anthropic
 
         _system, converted = convert_messages_to_anthropic(
             self._messages(),
@@ -412,7 +412,7 @@ class TestPortalThinkingReplay:
 
     def test_other_third_party_gateways_still_strip_thinking(self):
         """The Portal carve-out must not leak into unknown Anthropic-compatible relays."""
-        from agent.anthropic_message_convert import convert_messages_to_anthropic
+        from hermes_agent.agent.anthropic_message_convert import convert_messages_to_anthropic
 
         _system, converted = convert_messages_to_anthropic(
             self._messages(),
@@ -437,7 +437,7 @@ class TestAuxiliaryDualWire:
 
 
     def test_non_anthropic_catalog_model_stays_on_chat_completions(self):
-        from agent.auxiliary_client import (
+        from hermes_agent.agent.auxiliary_client import (
             AnthropicAuxiliaryClient,
             resolve_provider_client,
         )
@@ -448,11 +448,11 @@ class TestAuxiliaryDualWire:
 
         with (
             patch(
-                "agent.auxiliary_client._try_nous",
+                "hermes_agent.agent.auxiliary_client._try_nous",
                 return_value=(plain, "hermes-4-405b"),
             ),
             patch(
-                "agent.anthropic_adapter.build_anthropic_client",
+                "hermes_agent.agent.anthropic_adapter.build_anthropic_client",
                 side_effect=AssertionError("must not build Anthropic client"),
             ),
         ):
@@ -466,8 +466,8 @@ class TestAuxiliaryDualWire:
 
     def test_build_call_kwargs_includes_sticky_session_id(self):
         """Aux Messages calls must pin session_id, not just tags."""
-        from agent.auxiliary_client import _build_call_kwargs
-        from agent.portal_tags import (
+        from hermes_agent.agent.auxiliary_client import _build_call_kwargs
+        from hermes_agent.agent.portal_tags import (
             reset_conversation_context,
             set_conversation_context,
         )
@@ -502,7 +502,7 @@ class TestAuxiliaryDualWire:
         ``anthropic/claude-opus-4.8`` is normalized to ``claude-opus-4-8``,
         which Portal's Messages route cannot resolve.
         """
-        from agent.auxiliary_client import AnthropicAuxiliaryClient
+        from hermes_agent.agent.auxiliary_client import AnthropicAuxiliaryClient
 
         captured = {}
 
@@ -523,7 +523,7 @@ class TestAuxiliaryDualWire:
             PORTAL_URL,
         )
         with patch(
-            "agent.anthropic_adapter.create_anthropic_message",
+            "hermes_agent.agent.anthropic_adapter.create_anthropic_message",
             side_effect=_fake_create,
         ):
             client.chat.completions.create(

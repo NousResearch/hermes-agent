@@ -8,7 +8,7 @@ change-detector.
 
 from __future__ import annotations
 
-from agent import learning_graph
+from hermes_agent.agent import learning_graph
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
 
@@ -83,7 +83,7 @@ def test_full_payload_shape_and_edge_integrity(tmp_path):
 
 def test_build_skill_nodes_skips_profile_install_swap_leftover(tmp_path):
     """A locked old tree a force install left in ``.hermes-dist`` is not a second copy."""
-    from agent.skill_utils import DIST_SWAP_DIR
+    from hermes_agent.agent.skill_utils import DIST_SWAP_DIR
 
     skills = tmp_path / "skills"
     for skill_dir, body in ((skills / "demo", "new"), (skills / DIST_SWAP_DIR / "demo.old-1", "old")):

@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from agent import onboarding_record
-from agent.onboarding_flow import PENDING, Answered, Facts, Shown
+from hermes_agent.agent import onboarding_record
+from hermes_agent.agent.onboarding_flow import PENDING, Answered, Facts, Shown
 from hermes_cli.config import read_user_config_raw
 from hermes_agent.tui_gateway import server
 
@@ -24,7 +24,7 @@ def root(tmp_path, monkeypatch) -> Path:
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(server, "_hermes_home", str(home))
     monkeypatch.setattr(server, "_db", None)
-    monkeypatch.setattr("agent.onboarding_facts.read_facts", lambda **kw: FACTS)
+    monkeypatch.setattr("hermes_agent.agent.onboarding_facts.read_facts", lambda **kw: FACTS)
     (home / ".env").write_text("OPENROUTER_API_KEY=sk-or-test\n", encoding="utf-8")  # a model to run on
     return home
 

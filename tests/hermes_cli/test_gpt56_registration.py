@@ -13,7 +13,7 @@ policy). These pin the two behaviors that would silently regress:
 
 from decimal import Decimal
 
-from agent.usage_pricing import (
+from hermes_agent.agent.usage_pricing import (
     _OFFICIAL_DOCS_PRICING,
     _lookup_official_docs_pricing,
     resolve_billing_route,
@@ -71,7 +71,7 @@ class TestGpt56CodexCompaction:
     openai-codex route and NOT on the direct-API/OpenRouter routes."""
 
     def test_autoraise_applies_to_all_56_on_codex(self):
-        from agent.auxiliary_client import _compression_threshold_for_model
+        from hermes_agent.agent.auxiliary_client import _compression_threshold_for_model
 
         for slug in (
             "gpt-5.6-sol",
@@ -87,7 +87,7 @@ class TestGpt56CodexCompaction:
             ), slug
 
     def test_no_autoraise_on_direct_api_route(self):
-        from agent.auxiliary_client import _compression_threshold_for_model
+        from hermes_agent.agent.auxiliary_client import _compression_threshold_for_model
 
         # Direct OpenAI API / OpenRouter expose the full 1.05M window, so the
         # 272K-cap override must NOT apply there.
@@ -104,7 +104,7 @@ class TestGpt56CodexCompaction:
 
     def test_astra_autoraise_on_codex_unless_900k(self):
         """Astra is 272K-capped on Codex OAuth like 5.6; the -900k opt-in variants are not."""
-        from agent.auxiliary_client import _compression_threshold_for_model
+        from hermes_agent.agent.auxiliary_client import _compression_threshold_for_model
 
         for slug in ("gpt-6-astra", "openai/gpt-6-astra-pro", "gpt-6-astra-2026-09-01"):
             assert _compression_threshold_for_model(slug, provider="openai-codex") == 0.85, slug

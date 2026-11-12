@@ -1,6 +1,6 @@
 """Default SOUL.md template seeded into HERMES_HOME on first run."""
 
-# Kept identical to agent/prompt_builder.py's DEFAULT_AGENT_IDENTITY: _ensure_default_soul_md()
+# Kept identical to hermes_agent/agent/prompt_builder.py's DEFAULT_AGENT_IDENTITY: _ensure_default_soul_md()
 # seeds this into SOUL.md on first run, so it is the text virtually every real user gets. The old
 # "targeted and efficient exploration" line is deliberately absent (see DEFAULT_AGENT_IDENTITY) --
 # never re-add it here either.

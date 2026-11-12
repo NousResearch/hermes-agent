@@ -26,7 +26,7 @@ from hermes_agent.tools.skill_manager_tool import (
     _skill_lock_path,
     skill_manage,
 )
-from agent.skill_utils import (
+from hermes_agent.agent.skill_utils import (
     extract_skill_description,
     parse_frontmatter,
 )
@@ -37,7 +37,7 @@ def _skill_dir(tmp_path):
     """Patch both SKILLS_DIR and get_all_skills_dirs so _find_skill searches
     only the temp directory — not the real ~/.hermes/skills/."""
     with patch("hermes_agent.tools.skill_manager_tool.SKILLS_DIR", tmp_path), \
-         patch("agent.skill_utils.get_all_skills_dirs", return_value=[tmp_path]):
+         patch("hermes_agent.agent.skill_utils.get_all_skills_dirs", return_value=[tmp_path]):
         yield
 
 
@@ -193,7 +193,7 @@ class TestCreateSkill:
         skills_dir.mkdir()
 
         with patch("hermes_agent.tools.skill_manager_tool.SKILLS_DIR", skills_dir), \
-             patch("agent.skill_utils.get_all_skills_dirs", return_value=[skills_dir]):
+             patch("hermes_agent.agent.skill_utils.get_all_skills_dirs", return_value=[skills_dir]):
             result = _create_skill("my-skill", VALID_SKILL_CONTENT, category="../escape")
 
         assert result["success"] is False
@@ -910,7 +910,7 @@ def _two_roots(local_dir: Path, external_dir: Path):
     """Patch the skill manager so local SKILLS_DIR = local_dir and
     get_all_skills_dirs() returns [local_dir, external_dir] in order."""
     with patch("hermes_agent.tools.skill_manager_tool.SKILLS_DIR", local_dir), \
-         patch("agent.skill_utils.get_all_skills_dirs",
+         patch("hermes_agent.agent.skill_utils.get_all_skills_dirs",
                return_value=[local_dir, external_dir]):
         yield
 
@@ -1169,7 +1169,7 @@ class TestDeleteSkillRmtreeGuard:
         evil.symlink_to(victim, target_is_directory=True)
         try:
             with patch("hermes_agent.tools.skill_manager_tool.SKILLS_DIR", skills), \
-                 patch("agent.skill_utils.get_all_skills_dirs", return_value=[skills]), \
+                 patch("hermes_agent.agent.skill_utils.get_all_skills_dirs", return_value=[skills]), \
                  patch("hermes_agent.tools.skill_manager_tool._find_skill",
                        return_value={"path": evil}):
                 result = _delete_skill("evil-skill", absorbed_into="")
@@ -1189,7 +1189,7 @@ class TestDeleteSkillRmtreeGuard:
         outside.mkdir()
         (outside / "SKILL.md").write_text("x")
         with patch("hermes_agent.tools.skill_manager_tool.SKILLS_DIR", skills), \
-             patch("agent.skill_utils.get_all_skills_dirs", return_value=[skills]), \
+             patch("hermes_agent.agent.skill_utils.get_all_skills_dirs", return_value=[skills]), \
              patch("hermes_agent.tools.skill_manager_tool._find_skill",
                    return_value={"path": outside}):
             result = _delete_skill("outside", absorbed_into="")
@@ -1227,7 +1227,7 @@ def _curator_pass(tmp_path, *, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     with patch("hermes_agent.tools.skill_manager_tool.SKILLS_DIR", skills_root), \
          patch("hermes_agent.tools.skills_tool.SKILLS_DIR", skills_root), \
-         patch("agent.skill_utils.get_all_skills_dirs", return_value=[skills_root]), \
+         patch("hermes_agent.agent.skill_utils.get_all_skills_dirs", return_value=[skills_root]), \
          patch("hermes_agent.tools.skill_usage._is_curator_managed_record", return_value=True), \
          patch("hermes_agent.tools.skill_provenance.is_background_review", return_value=True):
         yield skills_root

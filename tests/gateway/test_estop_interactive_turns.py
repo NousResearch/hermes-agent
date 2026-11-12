@@ -2,7 +2,7 @@
 
 Since #106742 every local turn is a gateway turn, so the emergency stop holding CLI, TUI and Desktop
 turns is the stop working as designed. What every surface must get is the same named refusal
-(``agent.estop.paused_reply``: the reason and "run `hermes resume`"), and a turn already running
+(``hermes_agent.agent.estop.paused_reply``: the reason and "run `hermes resume`"), and a turn already running
 when the pause lands must finish. Real GatewayRunner + authority + WS API, loopback model.
 """
 import json

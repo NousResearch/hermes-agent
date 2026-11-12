@@ -7,7 +7,7 @@ TUI events. Grafted from PR #65412 (@HaiderSultanArc).
 
 from types import SimpleNamespace
 
-from agent.codex_runtime import make_codex_app_server_event_bridge
+from hermes_agent.agent.codex_runtime import make_codex_app_server_event_bridge
 from hermes_agent.tui_gateway import server
 
 

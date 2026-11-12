@@ -20,7 +20,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.context_engine import ContextEngine
+from hermes_agent.agent.context_engine import ContextEngine
 from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
 from hermes_agent.gateway.platforms.event import MessageEvent
 from hermes_agent.gateway.session import SessionEntry, SessionSource, build_session_key
@@ -132,8 +132,8 @@ async def test_compress_works_with_plugin_context_engine():
     with (
         patch("hermes_agent.gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "***"}),
         patch("hermes_agent.gateway.run._resolve_gateway_model", return_value="test-model"),
-        patch("run_agent.AIAgent", return_value=agent_instance),
-        patch("agent.model_metadata.estimate_messages_tokens_rough", return_value=100),
+        patch("hermes_agent.run_agent.AIAgent", return_value=agent_instance),
+        patch("hermes_agent.agent.model_metadata.estimate_messages_tokens_rough", return_value=100),
     ):
         result = await runner._handle_compress_command(_make_event("/compress"))
 

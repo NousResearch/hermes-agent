@@ -19,11 +19,11 @@ from typing import Callable, Dict, Iterator, List, Optional, Tuple
 from hermes_cli.config import cfg_get
 from hermes_constants import get_hermes_dir, get_hermes_home
 
-from agent.provider_media import GENERATED_SUBDIR, MEDIA_CACHE_MAX_AGE_HOURS
-from agent.skill_utils import EXCLUDED_SKILL_DIRS
+from hermes_agent.agent.provider_media import GENERATED_SUBDIR, MEDIA_CACHE_MAX_AGE_HOURS
+from hermes_agent.agent.skill_utils import EXCLUDED_SKILL_DIRS
 
 try:  # pragma: no cover - exercised via the fail-closed test below
-    from agent.file_safety import get_read_block_error
+    from hermes_agent.agent.file_safety import get_read_block_error
 except ImportError:
     get_read_block_error = None  # type: ignore[assignment]
 
@@ -175,7 +175,7 @@ def _skill_dir_roots(container_base: str) -> Iterator[tuple[Path, str]]:
     if skills_dir.is_dir():
         yield skills_dir, f"{base}/skills"
     try:
-        from agent.skill_utils import get_external_skills_dirs, get_project_skills_dirs
+        from hermes_agent.agent.skill_utils import get_external_skills_dirs, get_project_skills_dirs
     except ImportError:
         return
     for label, dirs in (("external_skills", get_external_skills_dirs()), ("project_skills", get_project_skills_dirs())):
@@ -267,7 +267,7 @@ _CACHE_DIRS: list[tuple[str, str]] = [
     ("attachments", "attachments"),
     # Desktop stages a large plain-text paste as a `.txt` under this Hermes-managed dir
     # (apps/desktop/electron/composer-paste.ts; `COMPOSER_PASTES_DIRNAME` in
-    # agent/context_references.py) and attaches it as `@file:`. Without a mount/sync
+    # hermes_agent/agent/context_references.py) and attaches it as `@file:`. Without a mount/sync
     # entry, remote execution backends (ssh/daytona/vercel_sandbox) never received the
     # bytes and `to_agent_visible_cache_path` left the gateway-host path dangling on
     # the remote host (#110174). No legacy alias, so both tuple slots match.
@@ -374,7 +374,7 @@ def to_agent_visible_cache_path(host_path: str, container_base: str = "/root/.he
         container_base = "~/.hermes"
     elif backend not in ("docker", "modal"):
         try:
-            from agent.terminal_env_registry import provider_flag
+            from hermes_agent.agent.terminal_env_registry import provider_flag
             plugin_base = provider_flag(backend, "cache_path_base", None)
         except Exception:
             plugin_base = None

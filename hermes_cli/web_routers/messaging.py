@@ -681,7 +681,7 @@ def _reserve_whatsapp_session(record: _WhatsAppOnboardingSession) -> None:
 
 
 def _launch_whatsapp_pairing(pairing_id: str, record: _WhatsAppOnboardingSession, session_path: Path) -> None:
-    from agent.memory_provider import spawn_context_thread
+    from hermes_agent.agent.memory_provider import spawn_context_thread
 
     record.expiry_timer = threading.Timer(_WHATSAPP_ONBOARDING_TTL_SECONDS, _expire_whatsapp_pairing, args=(record,))
     record.expiry_timer.daemon = True

@@ -275,7 +275,7 @@ class TestHygieneCompactionRecovered:
         guard could be deleted and the test would still pass.
         """
         # Sanity: these counts do read as progress on their own.
-        from agent.turn_context import compression_made_progress
+        from hermes_agent.agent.turn_context import compression_made_progress
 
         assert compression_made_progress(220, 100, 50_000, 30_000) is True
         # ...but with nothing rewritten it must still not count as recovery.

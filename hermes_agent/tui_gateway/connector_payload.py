@@ -3,7 +3,7 @@
 Preserve authorization links while redacting credentials.
 """
 
-from agent.redact import _key_has_secret_keyword, redact_sensitive_text
+from hermes_agent.agent.redact import _key_has_secret_keyword, redact_sensitive_text
 
 
 def connector_ui_payload(value):

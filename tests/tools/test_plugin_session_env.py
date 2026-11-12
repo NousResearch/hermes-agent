@@ -72,7 +72,7 @@ def test_each_command_runs_with_its_sessions_current_values(plugin, tmp_path):
 
 
 def test_a_plugin_cannot_set_core_or_credential_names(plugin, monkeypatch):
-    from agent import terminal_env_registry
+    from hermes_agent.agent import terminal_env_registry
     from hermes_agent.tools.environments.local import build_subprocess_env
 
     # A terminal backend owns this credential: the scrub removes it, so the session env may not add it back.

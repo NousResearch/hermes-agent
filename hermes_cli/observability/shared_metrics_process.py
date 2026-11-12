@@ -89,7 +89,7 @@ def flush_before_hard_exit(timeout_s: float = EXIT_FLUSH_TIMEOUT_S) -> bool:
             stores.drain_deferring_stores(deadline - _DRAIN_MARGIN_S)  # done before the join gives up
 
     try:
-        from agent.memory_provider import spawn_context_thread
+        from hermes_agent.agent.memory_provider import spawn_context_thread
 
         worker = spawn_context_thread(_flush, name="hermes-shared-metrics-exit-flush")
         worker.start()

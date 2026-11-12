@@ -207,7 +207,7 @@ cat "$latch"
 class TestVaultEgressRedaction:
     def test_exec_redacts_registered_vault_secret_from_stdout_and_stderr(self, tmp_path, monkeypatch):
         """A browser_exec page read must not return a vault-filled value to model history."""
-        from agent import redact
+        from hermes_agent.agent import redact
 
         secret = "vault-filled-password-112693"
         cli = _fake_cli(tmp_path, f'cat > /dev/null\necho "stdout={secret}"\necho "stderr={secret}" >&2\n')
@@ -690,26 +690,26 @@ class TestStepLabels:
     _CODE = "# Searching Amazon for paper towels\nnew_tab('https://amazon.com')\nwait_for_load()"
 
     def test_leading_comment_becomes_step_label(self):
-        from agent.display import _browser_exec_step_label
+        from hermes_agent.agent.display import _browser_exec_step_label
 
         assert _browser_exec_step_label({"code": self._CODE}) == "Searching Amazon for paper towels"
 
     def test_no_comment_returns_none(self):
-        from agent.display import _browser_exec_step_label
+        from hermes_agent.agent.display import _browser_exec_step_label
 
         assert _browser_exec_step_label({"code": "new_tab('x')"}) is None
         assert _browser_exec_step_label({"code": ""}) is None
         assert _browser_exec_step_label({"code": "#   "}) is None
 
     def test_label_hard_capped_regardless_of_global_setting(self):
-        from agent.display import _browser_exec_step_label
+        from hermes_agent.agent.display import _browser_exec_step_label
 
         long = "# " + "x" * 200
         label = _browser_exec_step_label({"code": long})
         assert len(label) <= 80 and label.endswith("…")
 
     def test_preview_prefers_comment_over_code(self):
-        from agent.display import build_tool_preview
+        from hermes_agent.agent.display import build_tool_preview
 
         assert build_tool_preview("browser_exec", {"code": self._CODE}) == (
             "Searching Amazon for paper towels"
@@ -717,7 +717,7 @@ class TestStepLabels:
         assert "new_tab" in build_tool_preview("browser_exec", {"code": "new_tab('x')"})
 
     def test_progress_line_shows_label(self):
-        from agent.display import get_cute_tool_message
+        from hermes_agent.agent.display import get_cute_tool_message
 
         line = get_cute_tool_message("browser_exec", {"code": self._CODE}, 1.2)
         assert "Searching Amazon for paper towels" in line

@@ -11,15 +11,15 @@ outcomes, not plugin internals.
 
 import json
 
-from agent.browser_provider import BrowserProvider
-from agent.delegation_provider import DelegationProvider
-from agent.image_gen_provider import ImageGenProvider
-from agent.secret_sources.base import SecretSource
-from agent.terminal_env_provider import TerminalEnvironmentProvider
-from agent.transcription_provider import TranscriptionProvider
-from agent.tts_provider import TTSProvider
-from agent.video_gen_provider import VideoGenProvider
-from agent.web_search_provider import WebSearchProvider
+from hermes_agent.agent.browser_provider import BrowserProvider
+from hermes_agent.agent.delegation_provider import DelegationProvider
+from hermes_agent.agent.image_gen_provider import ImageGenProvider
+from hermes_agent.agent.secret_sources.base import SecretSource
+from hermes_agent.agent.terminal_env_provider import TerminalEnvironmentProvider
+from hermes_agent.agent.transcription_provider import TranscriptionProvider
+from hermes_agent.agent.tts_provider import TTSProvider
+from hermes_agent.agent.video_gen_provider import VideoGenProvider
+from hermes_agent.agent.web_search_provider import WebSearchProvider
 from hermes_constants import get_hermes_home
 
 PROVIDER_NAME = "conformance"

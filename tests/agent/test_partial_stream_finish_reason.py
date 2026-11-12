@@ -21,7 +21,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
-from agent.conversation_loop import _join_truncated_parts
+from hermes_agent.agent.conversation_loop import _join_truncated_parts
 
 
 # ── Helpers (mirrors test_streaming.py) ────────────────────────────────────
@@ -41,7 +41,7 @@ def _make_tool_call_delta(index=0, tc_id=None, name=None, arguments=None):
 
 
 def _make_agent():
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     agent = AIAgent(
         api_key="test-key",
         base_url="https://example.com/v1",
@@ -61,8 +61,8 @@ class TestPartialStreamStubFinishReason:
     """The stub returned by interruptible_streaming_api_call when the
     upstream connection dies mid-flight."""
 
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
     def test_text_only_partial_returns_length(self, _mock_close, mock_create, monkeypatch):
         """#30963: text-only partials must classify as length so the loop
         keeps continuing instead of exiting with budget remaining."""
@@ -104,8 +104,8 @@ class TestTerminalChunkFenceException:
     mid-stream drop even though the provider completed the stream.
     """
 
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
     def test_superseded_writer_accepts_finish_reason_chunk(
         self, _mock_close, mock_create, monkeypatch,
     ):
@@ -133,8 +133,8 @@ class TestTerminalChunkFenceException:
         assert response.choices[0].finish_reason == "stop"
         assert response.choices[0].message.content == "Long prose that is complete."
 
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
     def test_superseded_writer_still_fences_further_content(
         self, _mock_close, mock_create, monkeypatch,
     ):
@@ -166,8 +166,8 @@ class TestTerminalChunkFenceException:
         assert "kept" in content
         assert response.id == PARTIAL_STREAM_STUB_ID
 
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
     def test_genuine_truncation_without_finish_still_drops(
         self, _mock_close, mock_create, monkeypatch,
     ):
@@ -207,8 +207,8 @@ class TestCleanStreamEndMidToolCall:
     an honest mid-tool-call drop and asks the model to chunk its output.
     """
 
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
     def test_no_finish_reason_partial_tool_args_routes_to_stub(
         self, _mock_close, mock_create, monkeypatch,
     ):
@@ -271,8 +271,8 @@ class TestCleanStreamEndBeforeAnyToolArgs:
     retry (#80498, e.g. ``write_file`` running with no arguments).
     """
 
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
     def test_empty_tool_args_routes_to_stub_not_silent_empty_object(
         self, _mock_close, mock_create, monkeypatch,
     ):
@@ -326,8 +326,8 @@ class TestMixedToolCallsOneDroppedOneComplete:
     towards per-tool-call granularity doesn't silently regress either case.
     """
 
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
     def test_valid_sibling_tool_call_is_discarded_with_dropped_one(
         self, _mock_close, mock_create, monkeypatch,
     ):
@@ -402,11 +402,11 @@ class TestLengthContinuationAssembly:
 def loop_agent():
     """AIAgent with a mocked OpenAI client (mirrors test_run_agent's fixture)
     so we can stage a stub + continuation pair on .chat.completions.create."""
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     with (
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
     ):
         a = AIAgent(
             api_key="test-key-1234567890",
@@ -534,8 +534,8 @@ class TestContentFilterStallActivatesFallback:
          burning any continuation retries.
     """
 
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
     def test_streaming_call_tags_content_filter_stub(
         self, _mock_close, mock_create, monkeypatch,
     ):
@@ -711,11 +711,11 @@ class TestBuildAssistantMessageEmptyContentPad:
     These tests pin the builder's store-as-is contract."""
 
     def _agent_for_builder(self):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         with (
             patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
             patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-            patch("agent.process_bootstrap.OpenAI"),
+            patch("hermes_agent.agent.process_bootstrap.OpenAI"),
         ):
             a = AIAgent(
                 api_key="test-key-1234567890",
@@ -727,7 +727,7 @@ class TestBuildAssistantMessageEmptyContentPad:
         return a
 
     def test_empty_content_stored_as_is(self):
-        from agent.chat_completion_helpers import build_assistant_message
+        from hermes_agent.agent.chat_completion_helpers import build_assistant_message
         from tests.agent.test_run_agent import _mock_assistant_msg
 
         agent = self._agent_for_builder()
@@ -740,7 +740,7 @@ class TestBuildAssistantMessageEmptyContentPad:
 
 
     def test_tool_call_turn_content_left_empty(self):
-        from agent.chat_completion_helpers import build_assistant_message
+        from hermes_agent.agent.chat_completion_helpers import build_assistant_message
         from tests.agent.test_run_agent import _mock_assistant_msg, _mock_tool_call
 
         agent = self._agent_for_builder()
@@ -807,7 +807,7 @@ class TestSendTimeEmptyAssistantPad:
              and not m.get("tool_calls")),
             None,
         )
-        from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
+        from hermes_agent.agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
         assert stub is not None and stub["content"] == _INTERRUPTED_PLACEHOLDER
 
     def test_tool_call_turn_not_padded_on_send(self, loop_agent):
@@ -896,8 +896,8 @@ class TestSendTimePadMultimodalSafety:
         """Unit-shape check against the REAL owner: multimodal list content
         (the exact AttributeError shape) passes through untouched; a textless
         str turn is repaired; tool-call turns are exempt."""
-        from agent.agent_runtime_helpers import repair_empty_non_final_messages
-        from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
+        from hermes_agent.agent.agent_runtime_helpers import repair_empty_non_final_messages
+        from hermes_agent.agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
         api_messages = [
             {"role": "assistant", "content": [{"type": "text", "text": "hi"}]},
             {"role": "assistant", "content": ""},
@@ -916,8 +916,8 @@ class TestPortalLastOneWithoutDone:
     """#90848: complete Portal streams can end with lastOne=true and no
     finish_reason / [DONE]. That is a clean terminal, not a drop."""
 
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
     def test_last_one_usage_frame_is_a_clean_stop(self, _mock_close, mock_create):
         def _portal_stream():
             yield _make_stream_chunk(content="LONGCAT_OK")
@@ -952,8 +952,8 @@ class TestStreamIncludeUsageFinalChunk:
     cleanly and must NOT misclassify it as a mid-stream network drop (#91373).
     """
 
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
     def test_text_stream_with_final_usage_chunk_completes_as_stop(
         self, _mock_close, mock_create, monkeypatch,
     ):
@@ -982,8 +982,8 @@ class TestStreamIncludeUsageFinalChunk:
         assert response.usage.prompt_tokens == 100
         assert response.usage.completion_tokens == 10
 
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
     def test_text_stream_abrupt_drop_without_usage_still_returns_stub(
         self, _mock_close, mock_create, monkeypatch,
     ):
@@ -1007,8 +1007,8 @@ class TestStreamIncludeUsageFinalChunk:
         assert response.choices[0].finish_reason == FINISH_REASON_LENGTH
         assert response.choices[0].message.content == "Partial text before drop"
 
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
     def test_reasoning_only_abrupt_drop_without_usage_still_returns_stub(
         self, _mock_close, mock_create, monkeypatch,
     ):
@@ -1049,8 +1049,8 @@ class TestMergedFinishChunkSurvivesSSEGuard:
     is misclassified as a mid-stream drop. Terminal fields must be
     extracted before any content-shape continue."""
 
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
     def test_merged_finish_chunk_after_sse_lookalike_prefix_completes(
         self, _mock_close, mock_create, monkeypatch,
     ):
@@ -1075,8 +1075,8 @@ class TestMergedFinishChunkSurvivesSSEGuard:
         assert response.choices[0].finish_reason == "stop"
         assert response.choices[0].message.content == ": uniform."
 
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
     def test_merged_finish_chunk_without_sse_trigger_still_completes(
         self, _mock_close, mock_create, monkeypatch,
     ):

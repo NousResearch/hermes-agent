@@ -6,7 +6,7 @@ On the first turn after a cold Desktop resume, the stored rows are handed to
 as plain dicts that have NOT yet been stamped with ``_DB_PERSISTED_MARKER`` —
 the normal turn flush (which stamps them) runs *after* preflight compression.
 
-The legacy rotation branch in ``agent/conversation_compression.py`` flushes the
+The legacy rotation branch in ``hermes_agent/agent/conversation_compression.py`` flushes the
 current turn to the OLD session before ending it (#47202). It used to call
 ``agent._flush_messages_to_session_db(messages)`` with no history boundary, so
 ``_flush_messages_to_session_db`` saw an empty ``history_ids`` set and treated
@@ -39,7 +39,7 @@ def _build_agent_with_db(db: SessionDB, session_id: str):
     regardless of the global default.
     """
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key",

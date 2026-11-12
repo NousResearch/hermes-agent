@@ -20,8 +20,8 @@ from unittest.mock import patch
 
 
 
-import agent.context_compressor as cc_mod
-from agent.gemini_native_adapter import GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
+import hermes_agent.agent.context_compressor as cc_mod
+from hermes_agent.agent.gemini_native_adapter import GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
 
 
 CFG = {"agent": {}}
@@ -31,15 +31,15 @@ def _build_agent(model, base_url, provider="", max_tokens=None, window=131072):
     with (
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
         patch("hermes_cli.config.load_config", return_value=CFG),
         patch("hermes_cli.config.load_config_readonly", return_value=CFG),
         patch(
-            "agent.model_metadata.get_model_context_length", return_value=window,
+            "hermes_agent.agent.model_metadata.get_model_context_length", return_value=window,
         ),
         patch.object(cc_mod, "get_model_context_length", return_value=window),
     ):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         return AIAgent(
             model=model,

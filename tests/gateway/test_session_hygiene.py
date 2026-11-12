@@ -104,9 +104,9 @@ async def test_session_hygiene_preserves_transcript_when_no_rotation(monkeypatch
             # is a failure-to-rotate, not an in-place success.
             return ([{"role": "assistant", "content": "summary only"}], None)
 
-    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent = types.ModuleType("hermes_agent.run_agent")
     fake_run_agent.AIAgent = NonRotatingCompressAgent
-    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    monkeypatch.setitem(sys.modules, "hermes_agent.run_agent", fake_run_agent)
 
     gateway_run = importlib.import_module("hermes_agent.gateway.run")
     GatewayRunner = gateway_run.GatewayRunner
@@ -150,7 +150,7 @@ async def test_session_hygiene_preserves_transcript_when_no_rotation(monkeypatch
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
     monkeypatch.setattr(
-        "agent.model_metadata.get_model_context_length",
+        "hermes_agent.agent.model_metadata.get_model_context_length",
         lambda *_args, **_kwargs: 100,
     )
     monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "795544298")
@@ -230,9 +230,9 @@ async def test_session_hygiene_preserves_transcript_when_in_place_configured_but
         def _compress_context(self, messages, *_args, **_kwargs):
             return ([{"role": "assistant", "content": "summary only"}], None)
 
-    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent = types.ModuleType("hermes_agent.run_agent")
     fake_run_agent.AIAgent = InPlaceConfiguredAgent
-    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    monkeypatch.setitem(sys.modules, "hermes_agent.run_agent", fake_run_agent)
 
     gateway_run = importlib.import_module("hermes_agent.gateway.run")
     GatewayRunner = gateway_run.GatewayRunner
@@ -276,7 +276,7 @@ async def test_session_hygiene_preserves_transcript_when_in_place_configured_but
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
     monkeypatch.setattr(
-        "agent.model_metadata.get_model_context_length",
+        "hermes_agent.agent.model_metadata.get_model_context_length",
         lambda *_args, **_kwargs: 100,
     )
     monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "795544298")
@@ -360,9 +360,9 @@ async def test_session_hygiene_timeout_continues_to_agent_and_sets_cooldown(monk
                 if commit_fence is not None:
                     commit_fence.finish_commit()
 
-    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent = types.ModuleType("hermes_agent.run_agent")
     fake_run_agent.AIAgent = SlowCompressAgent
-    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    monkeypatch.setitem(sys.modules, "hermes_agent.run_agent", fake_run_agent)
 
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text(
@@ -415,7 +415,7 @@ async def test_session_hygiene_timeout_continues_to_agent_and_sets_cooldown(monk
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
     monkeypatch.setattr(
-        "agent.model_metadata.get_model_context_length",
+        "hermes_agent.agent.model_metadata.get_model_context_length",
         lambda *_args, **_kwargs: 100,
     )
 
@@ -531,9 +531,9 @@ async def test_session_hygiene_forces_in_place_compaction_with_bound_session_db(
             self._last_compaction_in_place = True
             return ([{"role": "assistant", "content": "compressed in place"}], None)
 
-    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent = types.ModuleType("hermes_agent.run_agent")
     fake_run_agent.AIAgent = FakeInPlaceCompressAgent
-    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    monkeypatch.setitem(sys.modules, "hermes_agent.run_agent", fake_run_agent)
 
     gateway_run = importlib.import_module("hermes_agent.gateway.run")
     GatewayRunner = gateway_run.GatewayRunner
@@ -579,7 +579,7 @@ async def test_session_hygiene_forces_in_place_compaction_with_bound_session_db(
         gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"}
     )
     monkeypatch.setattr(
-        "agent.model_metadata.get_model_context_length",
+        "hermes_agent.agent.model_metadata.get_model_context_length",
         lambda *_args, **_kwargs: 100,
     )
 
@@ -656,9 +656,9 @@ async def test_session_hygiene_honors_configurable_hard_message_limit(
             self.session_id = f"{self.session_id}_compressed"
             return ([{"role": "assistant", "content": "compressed"}], None)
 
-    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent = types.ModuleType("hermes_agent.run_agent")
     fake_run_agent.AIAgent = FakeCompressAgent
-    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    monkeypatch.setitem(sys.modules, "hermes_agent.run_agent", fake_run_agent)
 
     # Write config.yaml with lowered hard-limit
     cfg_path = tmp_path / "config.yaml"
@@ -717,7 +717,7 @@ async def test_session_hygiene_honors_configurable_hard_message_limit(
     # won't trigger for 12 short messages — hard-limit must be the ONLY
     # thing firing compression.
     monkeypatch.setattr(
-        "agent.model_metadata.get_model_context_length",
+        "hermes_agent.agent.model_metadata.get_model_context_length",
         lambda *_args, **_kwargs: 1_000_000,
     )
 
@@ -757,9 +757,9 @@ def _make_cooldown_runner(monkeypatch, tmp_path, agent_cls, session_db, session_
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
     monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
 
-    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent = types.ModuleType("hermes_agent.run_agent")
     fake_run_agent.AIAgent = agent_cls
-    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    monkeypatch.setitem(sys.modules, "hermes_agent.run_agent", fake_run_agent)
 
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text(
@@ -814,7 +814,7 @@ def _make_cooldown_runner(monkeypatch, tmp_path, agent_cls, session_db, session_
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
     monkeypatch.setattr(
-        "agent.model_metadata.get_model_context_length",
+        "hermes_agent.agent.model_metadata.get_model_context_length",
         lambda *_args, **_kwargs: 100,
     )
 

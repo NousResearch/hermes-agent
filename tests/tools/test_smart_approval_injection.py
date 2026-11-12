@@ -82,7 +82,7 @@ class TestSmartApprovePromptHardening(unittest.TestCase):
     """Verify that _smart_approve uses hardened prompt structure.
 
     _smart_approve calls ``call_llm(task="approval", messages=[...])`` from
-    ``agent.auxiliary_client`` (imported lazily inside the function), so the
+    ``hermes_agent.agent.auxiliary_client`` (imported lazily inside the function), so the
     tests patch ``call_llm`` at its source module and inspect the ``messages``
     kwarg that the guard builds.
     """
@@ -99,7 +99,7 @@ class TestSmartApprovePromptHardening(unittest.TestCase):
         call_args = mock_call_llm.call_args
         return call_args.kwargs.get("messages") or call_args[1].get("messages", [])
 
-    @patch("agent.auxiliary_client.call_llm")
+    @patch("hermes_agent.agent.auxiliary_client.call_llm")
     def test_uses_system_message_with_anti_injection(self, mock_call_llm):
         """The guard LLM call must use a system message with anti-injection warning."""
         mock_call_llm.return_value = self._make_response("ESCALATE")
@@ -118,7 +118,7 @@ class TestSmartApprovePromptHardening(unittest.TestCase):
         assert "UNTRUSTED" in sys_content
         assert "ignore" in sys_content.lower()
 
-    @patch("agent.auxiliary_client.call_llm")
+    @patch("hermes_agent.agent.auxiliary_client.call_llm")
     def test_command_is_xml_fenced(self, mock_call_llm):
         """The command must be wrapped in <command> XML tags."""
         mock_call_llm.return_value = self._make_response("DENY")
@@ -129,7 +129,7 @@ class TestSmartApprovePromptHardening(unittest.TestCase):
         assert "<command>" in user_content
         assert "</command>" in user_content
 
-    @patch("agent.auxiliary_client.call_llm")
+    @patch("hermes_agent.agent.auxiliary_client.call_llm")
     def test_injection_payload_stripped_before_llm(self, mock_call_llm):
         """Shell comment injection payloads must be stripped before reaching the LLM."""
         mock_call_llm.return_value = self._make_response("ESCALATE")
@@ -150,23 +150,23 @@ class TestSmartApprovePromptHardening(unittest.TestCase):
         assert "rm -rf /critical/data" in user_content
 
 
-    @patch("agent.auxiliary_client.call_llm")
+    @patch("hermes_agent.agent.auxiliary_client.call_llm")
     def test_approve_response(self, mock_call_llm):
         mock_call_llm.return_value = self._make_response("APPROVE")
         assert _smart_approve("python -c 'print(1)'", "script execution") == "approve"
 
-    @patch("agent.auxiliary_client.call_llm")
+    @patch("hermes_agent.agent.auxiliary_client.call_llm")
     def test_deny_response(self, mock_call_llm):
         mock_call_llm.return_value = self._make_response("DENY")
         assert _smart_approve("rm -rf /", "recursive delete") == "deny"
 
-    @patch("agent.auxiliary_client.call_llm")
+    @patch("hermes_agent.agent.auxiliary_client.call_llm")
     def test_ambiguous_response_escalates(self, mock_call_llm):
         """Unrecognizable LLM output must default to escalate (fail safe)."""
         mock_call_llm.return_value = self._make_response("I think this is probably fine")
         assert _smart_approve("rm -rf /", "recursive delete") == "escalate"
 
-    @patch("agent.auxiliary_client.call_llm")
+    @patch("hermes_agent.agent.auxiliary_client.call_llm")
     def test_empty_answer_escalates_with_warning(self, mock_call_llm):
         """The #117428 failure mode: a 200 response with empty content (finish_reason==
         "length" after a reasoning model spent the whole max_tokens budget on hidden
@@ -180,7 +180,7 @@ class TestSmartApprovePromptHardening(unittest.TestCase):
         assert any("empty answer" in message and "length" in message
                    for message in logs.output), logs.output
 
-    @patch("agent.auxiliary_client.call_llm")
+    @patch("hermes_agent.agent.auxiliary_client.call_llm")
     def test_empty_answer_without_finish_reason_still_warns(self, mock_call_llm):
         """A missing finish_reason must not hide the empty-answer WARNING: the field is
         populated unevenly across OpenAI-compatible providers."""
@@ -191,7 +191,7 @@ class TestSmartApprovePromptHardening(unittest.TestCase):
             assert _smart_approve("rm -rf /", "recursive delete") == "escalate"
         assert any("finish_reason=None" in message for message in logs.output), logs.output
 
-    @patch("agent.auxiliary_client.call_llm")
+    @patch("hermes_agent.agent.auxiliary_client.call_llm")
     def test_recognized_verdict_does_not_warn(self, mock_call_llm):
         """The WARNING is specific to empty answers — firing on healthy calls too would
         train operators to skim past it, the exact failure #117428 describes."""

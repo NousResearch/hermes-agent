@@ -27,7 +27,7 @@ def _refusing_proxy():
 
 def test_worker_rpc_reaches_loopback_owner_with_proxy_env(monkeypatch, tmp_path):
     from websockets.sync.server import serve
-    from agent import runtime_session_store as store
+    from hermes_agent.agent import runtime_session_store as store
     from hermes_cli import gateway_client
     from hermes_cli import gateway_runtime
     import hermes_cli.gateway_runtime_discovery as discovery

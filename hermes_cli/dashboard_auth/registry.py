@@ -3,7 +3,7 @@ via the plugin context hook at startup; the auth gate iterates ``list_providers(
 ``get_provider`` to dispatch on the session's ``provider`` field.
 
 Storage, the per-profile overlays and the plugin snapshot/restore pair are the shared
-:class:`agent.provider_registry.ProviderRegistry`. Registration, lookup and listing keep their own
+:class:`hermes_agent.agent.provider_registry.ProviderRegistry`. Registration, lookup and listing keep their own
 contract below: names are exact (no normalization), a duplicate raises, and lists keep
 registration order."""
 from __future__ import annotations
@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 from typing import List, Optional
 
-from agent.provider_registry import ProviderRegistry, exact_key
+from hermes_agent.agent.provider_registry import ProviderRegistry, exact_key
 from hermes_constants import hermes_home_key, normalize_scope
 from hermes_cli.dashboard_auth.base import DashboardAuthProvider, assert_protocol_compliance
 

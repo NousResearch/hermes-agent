@@ -4,7 +4,7 @@ ACP has no OpenAI ``tools``/``tool_calls`` channel, so ``memory``,
 ``skill_manage``, ``todo`` and friends only work if the schemas travel into the
 prompt as text and the calls are parsed back out of the response text. These
 tests pin both halves plus the streaming shape, and check that the in-tree
-consumer (``agent/copilot_acp_client.py``) still produces the same prompt it did
+consumer (``hermes_agent/agent/copilot_acp_client.py``) still produces the same prompt it did
 when it owned a private copy of this code.
 """
 
@@ -19,7 +19,7 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__f
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from agent.acp_openai_bridge import (
+from hermes_agent.agent.acp_openai_bridge import (
     StreamChunks,
     completion_to_stream_chunks,
     extract_tool_calls_from_text,
@@ -192,7 +192,7 @@ def test_a_text_only_completion_streams_without_tool_call_deltas():
 def test_copilot_prompt_still_carries_the_contract_and_the_tools():
     """copilot-acp lost its private copy of the bridge; its prompt must not
     change shape."""
-    from agent.acp_client import _format_messages_as_prompt
+    from hermes_agent.agent.acp_client import _format_messages_as_prompt
 
     prompt = _format_messages_as_prompt(
         [{"role": "user", "content": "hi"}], model="gpt-5", tools=_TOOLS,

@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from agent.message_metadata import append_message
+from hermes_agent.agent.message_metadata import append_message
 
 logger = logging.getLogger(__name__)
 

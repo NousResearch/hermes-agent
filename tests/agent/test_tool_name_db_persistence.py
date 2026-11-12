@@ -5,15 +5,15 @@ time. This test verifies that the value survives the flush path into the session
 """
 from unittest.mock import MagicMock, patch
 
-from run_agent import AIAgent
-from agent.tool_dispatch_helpers import make_tool_result_message
+from hermes_agent.run_agent import AIAgent
+from hermes_agent.agent.tool_dispatch_helpers import make_tool_result_message
 
 
 def _make_agent(session_db):
     with (
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
     ):
         return AIAgent(
             api_key="test-key",

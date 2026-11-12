@@ -248,7 +248,7 @@ def smooth_whitespace_for_tts(text: str) -> str:
 _THINK_BLOCK_RE = re.compile(r"<think[\s>].*?</think>", flags=re.DOTALL | re.IGNORECASE)
 _THINK_BLOCK_OPEN_RE = re.compile(r"<think[\s>].*\Z", flags=re.DOTALL | re.IGNORECASE)
 
-# run_agent.py's turn-end file-mutation verifier footer (a ``⚠️ File-mutation verifier:``
+# hermes_agent/run_agent.py's turn-end file-mutation verifier footer (a ``⚠️ File-mutation verifier:``
 # header line plus indented ``•`` bullets) is a UI affordance, not speech.
 _VERIFIER_FOOTER_RE = re.compile(r"^\s*⚠️?\s*File-mutation verifier:.*(?:\n[ \t]+•.*)*", flags=re.MULTILINE)
 

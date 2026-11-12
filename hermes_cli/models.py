@@ -27,7 +27,7 @@ from typing import Any, Optional, TYPE_CHECKING
 if TYPE_CHECKING:
     from typing import TypeGuard
 
-from agent.proxy_bypass import is_loopback_host
+from hermes_agent.agent.proxy_bypass import is_loopback_host
 from hermes_cli.route_identity import normalize_route_base_url
 from hermes_cli.urllib_security import open_credentialed_url
 from hermes_cli.version_info import hermes_user_agent
@@ -120,7 +120,7 @@ def _merge_unique(primary: list[str], secondary: list[str], key=lambda m: str(m)
 
 def _custom_provider_ssl_context(base_url: str):
     """Use the same trust decision for urllib catalogs and HTTPX metadata/chat."""
-    from agent.model_metadata_http import resolve_verify
+    from hermes_agent.agent.model_metadata_http import resolve_verify
 
     verify = resolve_verify(base_url)
     if verify is True:
@@ -623,7 +623,7 @@ _nous_caps_disk_checked = False
 _nous_caps_warm_started = False
 
 
-from agent.reasoning_effort import CODEX_ASTRA_EFFORTS, clamp_effort as _clamp_effort, is_astra_model
+from hermes_agent.agent.reasoning_effort import CODEX_ASTRA_EFFORTS, clamp_effort as _clamp_effort, is_astra_model
 
 
 def clamp_reasoning_effort_to_supported(
@@ -1229,7 +1229,7 @@ def _strip_vendor_prefix(model_id: str) -> str:
 
 def model_supports_fast_mode(model_id: Optional[str]) -> bool:
     """Return whether Hermes should expose the /fast toggle for this model."""
-    from agent.model_metadata import is_grok_46_family
+    from hermes_agent.agent.model_metadata import is_grok_46_family
 
     return (
         _is_anthropic_fast_model(model_id)
@@ -1239,8 +1239,8 @@ def model_supports_fast_mode(model_id: Optional[str]) -> bool:
 
 def _is_anthropic_fast_model(model_id: Optional[str]) -> bool:
     """Accepts the Anthropic Fast Mode ``speed`` param (Opus 4.8 / Opus 5 / Opus 5.5 only) —
-    deliberately NOT a general "fast model" check. The list lives in ``agent.model_metadata``."""
-    from agent.model_metadata import is_anthropic_fast_mode_model
+    deliberately NOT a general "fast model" check. The list lives in ``hermes_agent.agent.model_metadata``."""
+    from hermes_agent.agent.model_metadata import is_anthropic_fast_mode_model
 
     return is_anthropic_fast_mode_model(model_id)
 
@@ -1250,7 +1250,7 @@ def _fast_mode_route_supported(
     """Only the first-party endpoint that bills for fast mode may receive its params."""
     from urllib.parse import urlparse
 
-    from agent.model_metadata import is_grok_46_family
+    from hermes_agent.agent.model_metadata import is_grok_46_family
 
     if _is_anthropic_fast_model(model_id):
         allowed = {"anthropic": "api.anthropic.com"}
@@ -1270,7 +1270,7 @@ def _fast_mode_route_supported(
 
 def model_supports_ultrafast(model_id: Optional[str]) -> bool:
     """OpenAI Ultrafast (``service_tier: "ultrafast"``) is published per model, not per family."""
-    from agent.model_metadata import strip_codex_context_variant_suffix
+    from hermes_agent.agent.model_metadata import strip_codex_context_variant_suffix
 
     base = _strip_vendor_prefix(strip_codex_context_variant_suffix(str(model_id or ""))).split(":")[0]
     return base in _OPENAI_ULTRAFAST_MODELS
@@ -1285,7 +1285,7 @@ def resolve_fast_mode_overrides(
     ``tier="ultrafast"`` asks for OpenAI Ultrafast instead: ``{"service_tier": "ultrafast"}`` on an
     Ultrafast model, None elsewhere (never a silent downgrade to a different paid tier).
     With ``provider``/``base_url`` the route is gated too (``_fast_mode_route_supported``) so proxies
-    never see the params. Single fast-mode gate for ``/fast`` and ``agent.fast_mode`` windows."""
+    never see the params. Single fast-mode gate for ``/fast`` and ``hermes_agent.agent.fast_mode`` windows."""
     if not model_supports_fast_mode(model_id):
         return None
     if (provider or base_url) and not _fast_mode_route_supported(model_id, provider, base_url):
@@ -1310,7 +1310,7 @@ def _merge_with_models_dev(provider: str, curated: list[str]) -> list[str]:
     """models.dev entries first (their order), then curated-only extras, case-insensitively deduped
     while preserving curated casing. Curated unchanged when models.dev is unreachable/empty."""
     try:
-        from agent.models_dev import list_agentic_models
+        from hermes_agent.agent.models_dev import list_agentic_models
         mdev = list_agentic_models(provider)
     except Exception:
         mdev = []
@@ -1486,7 +1486,7 @@ def _custom_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]
 def _bedrock_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]:
     # Live discovery keyed by the resolved AWS region so EU/AP users see eu.*/ap.* ids.
     try:
-        from agent.bedrock_adapter import bedrock_model_ids_or_none
+        from hermes_agent.agent.bedrock_adapter import bedrock_model_ids_or_none
 
         return bedrock_model_ids_or_none()
     except Exception:
@@ -2103,7 +2103,7 @@ def _resolve_anthropic_pool_catalog_credentials() -> tuple[str, str]:
     """Read-only API-key pool credential for model discovery (``resolve_anthropic_token()`` ignores
     ``api_key`` pool entries — its runtime contract is OAuth-oriented)."""
     try:
-        from agent.credential_pool import AUTH_TYPE_API_KEY
+        from hermes_agent.agent.credential_pool import AUTH_TYPE_API_KEY
         from hermes_cli.auth import read_credential_pool
 
         for entry in read_credential_pool("anthropic"):
@@ -2124,7 +2124,7 @@ def _fetch_anthropic_models(
     ``api_key``, else ``resolve_anthropic_token()`` (env / OAuth / Claude Code), else a read-only
     API-key credential_pool entry."""
     try:
-        from agent.anthropic_credentials import resolve_anthropic_token, _is_oauth_token
+        from hermes_agent.agent.anthropic_credentials import resolve_anthropic_token, _is_oauth_token
     except ImportError:
         return None
 
@@ -2141,7 +2141,7 @@ def _fetch_anthropic_models(
     is_oauth = _is_oauth_token(token)
     if is_oauth:
         headers["Authorization"] = f"Bearer {token}"
-        from agent.anthropic_adapter import _COMMON_BETAS, _OAUTH_ONLY_BETAS, _CONTEXT_1M_BETA
+        from hermes_agent.agent.anthropic_adapter import _COMMON_BETAS, _OAUTH_ONLY_BETAS, _CONTEXT_1M_BETA
         headers["anthropic-beta"] = ",".join(_COMMON_BETAS + _OAUTH_ONLY_BETAS)
     else:
         headers["x-api-key"] = token
@@ -2423,7 +2423,7 @@ def _deepinfra_catalog_url() -> tuple[str, str]:
     api-key fingerprint: the catalog is user-scoped (private fine-tunes), so two profiles with
     different keys must not share an entry."""
     base = (_deepinfra_env("DEEPINFRA_BASE_URL") or _DEEPINFRA_DEFAULT_BASE_URL).rstrip("/")
-    from agent.credential_persistence import fingerprint_secret_value
+    from hermes_agent.agent.credential_persistence import fingerprint_secret_value
     fp = fingerprint_secret_value(_deepinfra_env("DEEPINFRA_API_KEY")) or "anon"
     return f"{base}#{fp}", f"{base}/models?{_DEEPINFRA_MODELS_QUERY}"
 
@@ -2542,7 +2542,7 @@ def _custom_endpoint_fingerprint(
     each bust the cache entry. blake2b for the same CodeQL rationale as ``_credential_fingerprint``."""
     import hashlib
 
-    from agent.command_token_source import CommandTokenSource
+    from hermes_agent.agent.command_token_source import CommandTokenSource
     identity = api_key.cache_identity if isinstance(api_key, CommandTokenSource) else api_key
     blob = "|".join((identity or "", api_mode or "", json.dumps(headers or {}, sort_keys=True)))
     return hashlib.blake2b(blob.encode("utf-8", errors="replace"), digest_size=8).hexdigest()
@@ -2605,7 +2605,7 @@ def cached_fetch_api_models(
     def _live():
         if fetch_models is not None:
             return fetch_models()
-        from agent.command_token_source import materialize_probe_api_key
+        from hermes_agent.agent.command_token_source import materialize_probe_api_key
         return fetch_api_models(materialize_probe_api_key(api_key), base_url, timeout=timeout, api_mode=api_mode, headers=headers)
 
     normalized_url = str(base_url or "").strip().rstrip("/").lower()

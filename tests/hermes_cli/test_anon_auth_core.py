@@ -82,7 +82,7 @@ class TestIdentityLifecycle:
     def test_opt_out_bool_disables_everything(self, portal, monkeypatch):
         _write_config(monkeypatch, guest=False)
         # A developer machine's ~/.aws would answer the Bedrock rung and hide the AuthError.
-        monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda *_a, **_kw: False)
+        monkeypatch.setattr("hermes_agent.agent.bedrock_adapter.has_aws_credentials", lambda *_a, **_kw: False)
         assert anon_auth.ensure_portal_identity(explicit=True) is None
         assert portal.calls == []
         with pytest.raises(anon_auth.AuthError):
@@ -246,7 +246,7 @@ class TestModelPin:
 
     def test_agent_init_pins_only_on_welcome_route(self, portal):
         anon_auth.ensure_portal_identity(explicit=True)
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         welcome = AIAgent(provider="nous", base_url=WELCOME, api_key="k", model="openai/gpt-5",
                           quiet_mode=True, skip_context_files=True, skip_memory=True)
         paid = AIAgent(provider="nous", base_url="https://inference-api.nousresearch.com/v1", api_key="k",
@@ -300,7 +300,7 @@ class TestRotationNeverRewritesTheConversationModel:
 
     def test_paid_conversation_refuses_a_welcome_route_on_every_wire_mode(self, portal):
         from types import SimpleNamespace
-        from agent.client_lifecycle import ClientLifecycleMixin
+        from hermes_agent.agent.client_lifecycle import ClientLifecycleMixin
         for mode, model in (("chat_completions", "nous/paid-model"), ("anthropic_messages", "anthropic/claude-sonnet")):
             agent = self._agent(mode, model)
             ok = ClientLifecycleMixin._swap_credential(agent, SimpleNamespace(id="g", runtime_api_key="jwt", runtime_base_url=WELCOME))
@@ -309,7 +309,7 @@ class TestRotationNeverRewritesTheConversationModel:
 
     def test_welcome_conversation_may_move_to_the_portal_host(self, portal):
         from types import SimpleNamespace
-        from agent.client_lifecycle import ClientLifecycleMixin
+        from hermes_agent.agent.client_lifecycle import ClientLifecycleMixin
         agent = self._agent(model=anon_auth.GUEST_MODEL); agent.base_url = WELCOME
         ok = ClientLifecycleMixin._swap_credential(agent, SimpleNamespace(id="p2", runtime_api_key="key", runtime_base_url="https://inference-api.nousresearch.com/v1"))
         assert ok is True and agent.model == anon_auth.GUEST_MODEL
@@ -325,7 +325,7 @@ class TestBootstrapNeverCreates:
         return fb
 
     def test_bootstrap_on_a_fresh_machine_mints_nothing(self, portal, monkeypatch):
-        monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda *_a, **_kw: False)
+        monkeypatch.setattr("hermes_agent.agent.bedrock_adapter.has_aws_credentials", lambda *_a, **_kw: False)
         from tests.hermes_cli.anon_portal import as_local_desktop_backend
         as_local_desktop_backend(monkeypatch)              # the trial is claimable here; boot still never claims it
         record = self._fresh().run_bootstrap(announce=False)
@@ -355,7 +355,7 @@ class TestBootstrapNeverCreates:
     def test_reads_never_mint(self, portal, monkeypatch):
         """status, provider resolution and the connector bearer are reads: with no identity they
         answer 'nothing' and touch no network."""
-        monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda *_a, **_kw: False)
+        monkeypatch.setattr("hermes_agent.agent.bedrock_adapter.has_aws_credentials", lambda *_a, **_kw: False)
         from hermes_agent.tools.managed_tool_gateway import read_nous_access_token
         assert read_nous_access_token() is None
         with pytest.raises(anon_auth.AuthError):

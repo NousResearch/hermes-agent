@@ -188,7 +188,7 @@ hermes-agent/
 
 ### Agent 循环
 
-同步编排引擎（`run_agent.py` 中的 `AIAgent`）。负责 provider 选择、prompt 构建、工具执行、重试、回退、回调、压缩和持久化。支持三种 API 模式以适配不同 provider 后端。
+同步编排引擎（`hermes_agent/run_agent.py` 中的 `AIAgent`）。负责 provider 选择、prompt 构建、工具执行、重试、回退、回调、压缩和持久化。支持三种 API 模式以适配不同 provider 后端。
 
 → [Agent 循环内部机制](./agent-loop.md)
 
@@ -270,7 +270,7 @@ hermes_agent/tools/*.py  （每个文件在导入时调用 registry.register()�
        ↑
 hermes_agent/model_tools.py  （导入 hermes_agent/tools/registry 并触发工具发现）
        ↑
-run_agent.py, cli.py, hermes_agent/batch_runner.py, environments/
+hermes_agent/run_agent.py, cli.py, hermes_agent/batch_runner.py, environments/
 ```
 
 这条依赖链意味着工具注册发生在导入时，早于任何 agent 实例的创建。任何在顶层调用 `registry.register()` 的 `hermes_agent/tools/*.py` 文件都会被自动发现——无需手动维护导入列表。

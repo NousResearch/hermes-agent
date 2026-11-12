@@ -1,6 +1,6 @@
 """User-initiated edit/delete for journey nodes (learned skills + memories).
 
-Node ids (from ``agent.learning_graph``): skills → the skill name; memories →
+Node ids (from ``hermes_agent.agent.learning_graph``): skills → the skill name; memories →
 ``memory:<source>:<index>:<fingerprint>`` (``source`` = ``memory`` for MEMORY.md /
 ``profile`` for USER.md; ``index`` = position in the combined card list, MEMORY.md
 first; ``fingerprint`` = digest of the card's text, so the entry the user clicked is
@@ -45,7 +45,7 @@ def _resolve_fingerprint(chunks: list[str], fingerprint: str) -> int | None:
     clicked. Identical entries are one entry to the memory store (it collapses byte-identical
     copies on every mutation), so the first match is the entry.
     """
-    from agent.learning_graph import memory_fingerprint
+    from hermes_agent.agent.learning_graph import memory_fingerprint
 
     return next((i for i, chunk in enumerate(chunks) if memory_fingerprint(chunk) == fingerprint), None)
 
@@ -69,7 +69,7 @@ def _locate_memory(node_id: str) -> tuple[Path, list[str], int]:
         if local is None:
             raise ValueError("memory node id is stale — refresh the graph")
         return path, chunks, local
-    from agent.learning_graph import _memory_cards
+    from hermes_agent.agent.learning_graph import _memory_cards
 
     cards = _memory_cards()
     if not 0 <= gidx < len(cards):
@@ -121,7 +121,7 @@ def _mutate_memory(node_id: str, replacement: str | None) -> dict[str, Any]:
 
 def _clear_skill_cache() -> None:
     try:
-        from agent.prompt_builder import clear_skills_system_prompt_cache
+        from hermes_agent.agent.prompt_builder import clear_skills_system_prompt_cache
         clear_skills_system_prompt_cache(clear_snapshot=True)
     except Exception:
         pass

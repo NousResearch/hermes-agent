@@ -241,7 +241,7 @@ def _slack_tools_loaded() -> bool:
     # profile's token. Only the unscoped default-profile path (UnscopedSecretError)
     # reads the env; any other scoped-read failure fails closed rather than borrowing.
     try:
-        from agent.secret_scope import UnscopedSecretError, get_secret
+        from hermes_agent.agent.secret_scope import UnscopedSecretError, get_secret
 
         try:
             token = get_secret("SLACK_BOT_TOKEN") or ""
@@ -266,7 +266,7 @@ def _discord_tools_loaded() -> bool:
     """True iff the agent will actually have Discord tools this session: `discord`/`discord_admin`
     toolset enabled AND `DISCORD_BOT_TOKEN` set (the tool's `check_fn` gates on it)."""
     try:
-        from agent.secret_scope import get_secret
+        from hermes_agent.agent.secret_scope import get_secret
         # Read-only loader: this runs per turn via _ephemeral_change_key, and _get_platform_tools
         # only reads the config. load_config()'s defensive deepcopy is ~half this probe's cost.
         from hermes_cli.config import load_config_readonly

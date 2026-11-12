@@ -50,7 +50,7 @@ def _shutdown():
 @pytest.mark.platforms("any")  # the host is a child process: its env/home resolution is per-OS
 def test_hosted_profile_seeds_the_pool_from_a_shell_exported_ambient_token(tmp_path, monkeypatch):
     import providers
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
 
     _install(tmp_path, monkeypatch)
     try:
@@ -65,7 +65,7 @@ def test_hosted_profile_seeds_the_pool_from_a_shell_exported_ambient_token(tmp_p
 
 @pytest.mark.platforms("any")
 def test_hosted_profile_skips_a_suppressed_source(tmp_path, monkeypatch):
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
     from hermes_cli.auth import suppress_credential_source
 
     _install(tmp_path, monkeypatch)

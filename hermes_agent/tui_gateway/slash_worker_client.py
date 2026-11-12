@@ -66,7 +66,7 @@ class _SlashWorker:
         # worker must resolve config/skills/state against the session's profile home, not the gateway's
         # launch HERMES_HOME (#40677).
         from hermes_agent.tools.environments.local import served_profile_child_env
-        from agent.secret_scope import is_multiplex_active
+        from hermes_agent.agent.secret_scope import is_multiplex_active
 
         # The worker runs the agent → needs provider credentials; tier-1 secrets (gateway/GitHub/
         # infra) are still stripped. A served profile's worker gets THAT profile's home + secrets and

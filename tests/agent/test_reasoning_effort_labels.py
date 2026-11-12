@@ -1,6 +1,6 @@
 """#61634: ``ultra`` is Hermes-internal and every wire clamps it; the display label used by the
 effort pickers and ``/reasoning`` status must say what the route really sends."""
-from agent.reasoning_effort import effort_display_label
+from hermes_agent.agent.reasoning_effort import effort_display_label
 
 
 

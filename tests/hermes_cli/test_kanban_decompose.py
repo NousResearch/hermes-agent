@@ -46,7 +46,7 @@ def _patch_aux_client(content: str, *, model: str = "test-model"):
     # the source module so task config, extra_body, and retries stay out of
     # unit-test scope.
     return patch(
-        "agent.auxiliary_client.call_llm",
+        "hermes_agent.agent.auxiliary_client.call_llm",
         return_value=_fake_aux_response(content),
     )
 

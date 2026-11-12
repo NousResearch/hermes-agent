@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List
 
-from agent.ssl_verify import requests_verify
+from hermes_agent.agent.ssl_verify import requests_verify
 
 from plugins.web._common import (
     SEARCH_LIMIT_CAP, BaseWebSearchProvider, document, http_status_detail, keenable_origin_error, keyless_extract, keyless_search,

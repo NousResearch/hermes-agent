@@ -9,8 +9,8 @@ from unittest.mock import patch
 
 import pytest
 
-from agent import shell_hooks
-from agent.turn_context import PRE_LLM_BLOCK_EXIT_REASON, PRE_LLM_BLOCK_WITHHELD_PROMPT
+from hermes_agent.agent import shell_hooks
+from hermes_agent.agent.turn_context import PRE_LLM_BLOCK_EXIT_REASON, PRE_LLM_BLOCK_WITHHELD_PROMPT
 from hermes_agent.hermes_state import SessionDB
 
 BLOCK_MSG = "Blocked by policy: prompt contains a customer ID."
@@ -57,7 +57,7 @@ def provider_url():
 
 
 def _agent(provider_url, db):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     return AIAgent(
         api_key="test-key", base_url=provider_url, provider="openai-compat", model="test-model",
@@ -80,7 +80,7 @@ def test_blocked_turn_never_reaches_the_provider_and_stores_only_the_placeholder
     other content reader sees); the typed text is display-only metadata the transcript renders.
     Turn 2 (a fresh agent reloading the session) replays the placeholder, never the prompt."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
-    from agent.message_metadata import withheld_prompt_text
+    from hermes_agent.agent.message_metadata import withheld_prompt_text
     from hermes_agent.tools.session_search_tool import session_search
 
     db = SessionDB(db_path=tmp_path / "state.db")
@@ -115,7 +115,7 @@ def test_compaction_of_a_blocked_turn_never_sends_the_prompt(provider_url, tmp_p
     (home / "config.yaml").write_text(
         f"auxiliary:\n  compression: {{provider: custom, base_url: '{provider_url}', api_key: k, model: m}}\n")
     monkeypatch.setenv("HERMES_HOME", str(home))
-    from agent.conversation_compression import compress_context
+    from hermes_agent.agent.conversation_compression import compress_context
 
     db = SessionDB(db_path=tmp_path / "state.db")
     try:

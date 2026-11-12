@@ -23,7 +23,7 @@ from typing import Optional
 
 import pytest
 
-from agent.proxy_sources import iron_proxy as ip
+from hermes_agent.agent.proxy_sources import iron_proxy as ip
 
 
 pytestmark = pytest.mark.skipif(

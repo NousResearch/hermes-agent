@@ -19,7 +19,7 @@ from unittest.mock import patch
 
 import pytest
 
-from agent.auxiliary_client import _CodexCompletionsAdapter
+from hermes_agent.agent.auxiliary_client import _CodexCompletionsAdapter
 
 
 def _adapter_with_recording_client(stream):
@@ -92,9 +92,9 @@ class TestCodexAuxiliaryTimeoutFdOwnership:
             return SimpleNamespace(output=[], usage=None)
 
         with (
-            patch("agent.auxiliary_client._AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS", 0.3),
-            patch("agent.auxiliary_client._evict_cached_client_instance"),
-            patch("agent.codex_runtime._consume_codex_event_stream", _consume),
+            patch("hermes_agent.agent.auxiliary_client._AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS", 0.3),
+            patch("hermes_agent.agent.auxiliary_client._evict_cached_client_instance"),
+            patch("hermes_agent.agent.codex_runtime._consume_codex_event_stream", _consume),
             pytest.raises(TimeoutError),
         ):
             adapter.create(
@@ -167,9 +167,9 @@ class TestCodexAuxiliaryTimeoutFdOwnership:
             return SimpleNamespace(output=[], usage=None)
 
         with (
-            patch("agent.auxiliary_client._AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS", 0.3),
-            patch("agent.auxiliary_client._evict_cached_client_instance"),
-            patch("agent.codex_runtime._consume_codex_event_stream", _consume),
+            patch("hermes_agent.agent.auxiliary_client._AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS", 0.3),
+            patch("hermes_agent.agent.auxiliary_client._evict_cached_client_instance"),
+            patch("hermes_agent.agent.codex_runtime._consume_codex_event_stream", _consume),
             pytest.raises(TimeoutError),
         ):
             adapter.create(
@@ -214,10 +214,10 @@ class TestCodexAuxiliaryTimeoutFdOwnership:
                 pass
 
         with (
-            patch("agent.auxiliary_client._AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS", 0.3),
-            patch("agent.auxiliary_client._evict_cached_client_instance"),
-            patch("agent.auxiliary_client.threading.Timer", _NeverTimer),
-            patch("agent.codex_runtime._consume_codex_event_stream", _consume),
+            patch("hermes_agent.agent.auxiliary_client._AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS", 0.3),
+            patch("hermes_agent.agent.auxiliary_client._evict_cached_client_instance"),
+            patch("hermes_agent.agent.auxiliary_client.threading.Timer", _NeverTimer),
+            patch("hermes_agent.agent.codex_runtime._consume_codex_event_stream", _consume),
             pytest.raises(TimeoutError),
         ):
             adapter.create(

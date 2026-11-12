@@ -114,7 +114,7 @@ def _tick_admitted(
     try:
         # `hermes pause` ESTOP: skip dispatch, never touch in-flight runs; check_paused logs once.
         with contextlib.suppress(ImportError):
-            from agent.estop import check_paused as _estop_check_paused
+            from hermes_agent.agent.estop import check_paused as _estop_check_paused
             if _estop_check_paused("cron", _sched.logger):
                 return 0
 

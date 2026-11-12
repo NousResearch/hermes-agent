@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
-from agent.image_gen_provider import DEFAULT_ASPECT_RATIO, resolve_aspect_ratio, success_response
+from hermes_agent.agent.image_gen_provider import DEFAULT_ASPECT_RATIO, resolve_aspect_ratio, success_response
 from plugins.image_gen._common import (
     StaticImageGenProvider, catalog_rows, collect_source_images, error_factory,
     load_image_gen_config, materialize_image, post_json)
@@ -101,7 +101,7 @@ def _live_models() -> dict[str, dict[str, Any]]:
         _LIVE_CACHE = (_fetch_live_models_or_empty(None), time.monotonic())
         return _LIVE_CACHE[0]
 
-    from agent.credential_persistence import fingerprint_secret_value
+    from hermes_agent.agent.credential_persistence import fingerprint_secret_value
 
     try:
         creds = resolve_xai_http_credentials()
@@ -177,7 +177,7 @@ def _xai_image_field(source: str) -> dict[str, str]:
         return {"url": source, "type": "image_url"}
     import base64
 
-    from agent.file_safety import raise_if_read_blocked  # credential-read guard before local bytes
+    from hermes_agent.agent.file_safety import raise_if_read_blocked  # credential-read guard before local bytes
 
     raise_if_read_blocked(source)
     with open(os.path.expanduser(source), "rb") as fh:  # windows-footgun: ok

@@ -31,12 +31,12 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from agent.secret_sources.command import (
+from hermes_agent.agent.secret_sources.command import (
     CommandSource,
     _run_helper,
     unquote_dotenv_value,
 )
-from agent.secret_sources.base import (
+from hermes_agent.agent.secret_sources.base import (
     reset_source_environment,
     set_source_environment,
 )
@@ -153,7 +153,7 @@ def test_fetch_parses_dotenv_blob(tmp_path):
 
 @pytest.fixture(autouse=True)
 def _clean_registry():
-    from agent.secret_sources import registry
+    from hermes_agent.agent.secret_sources import registry
     registry._reset_registry_for_tests()
     yield
     registry._reset_registry_for_tests()

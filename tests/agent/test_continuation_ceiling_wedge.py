@@ -18,11 +18,11 @@ from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 
 @pytest.fixture()
 def loop_agent():
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     with (
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
     ):
         a = AIAgent(
             api_key="test-key-1234567890",
@@ -214,18 +214,18 @@ class TestTruncatedPartJoining:
     """#78577 — parts joined with no separator glued text together."""
 
     def test_glued_parts_get_a_newline(self):
-        from agent.conversation_loop import _join_truncated_parts
+        from hermes_agent.agent.conversation_loop import _join_truncated_parts
         assert _join_truncated_parts(
             [("Edited index.html", False), ("Review the 5 changes", False)]
         ) == "Edited index.html\nReview the 5 changes"
 
     def test_existing_whitespace_is_not_doubled(self):
-        from agent.conversation_loop import _join_truncated_parts
+        from hermes_agent.agent.conversation_loop import _join_truncated_parts
         assert _join_truncated_parts([("line one\n", False), ("line two", False)]) == "line one\nline two"
         assert _join_truncated_parts([("word", False), (" next", False)]) == "word next"
 
     def test_degenerate_inputs(self):
-        from agent.conversation_loop import _join_truncated_parts
+        from hermes_agent.agent.conversation_loop import _join_truncated_parts
         assert _join_truncated_parts([]) == ""
         assert _join_truncated_parts([("only", False)]) == "only"
         assert _join_truncated_parts([("a", False), ("", False), ("b", False)]) == "a\nb"

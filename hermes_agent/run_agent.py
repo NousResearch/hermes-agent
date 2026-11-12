@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """AIAgent: the tool-calling agent runner (conversation loop, tool execution, session lifecycle).
 
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     agent = AIAgent(base_url="http://localhost:30000/v1", model="claude-opus-4-20250514")
     response = agent.run_conversation("Tell me about the latest Python updates")
 """
@@ -36,7 +36,7 @@ from typing import List, Dict, Any, Optional, Callable
 from datetime import datetime
 from pathlib import Path
 
-from agent.session_source import CLI_FAMILY_SOURCES, session_source_for
+from hermes_agent.agent.session_source import CLI_FAMILY_SOURCES, session_source_for
 from hermes_constants import get_hermes_home
 from hermes_cli._startup_fast import project_root_str
 
@@ -89,7 +89,7 @@ def _gateway_origin_json(agent: "AIAgent") -> Optional[str]:
         return None
 
 
-from agent.iteration_budget import IterationBudget
+from hermes_agent.agent.iteration_budget import IterationBudget
 from hermes_cli.env_loader import load_hermes_dotenv
 from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
 
@@ -107,35 +107,35 @@ from hermes_agent.tools.interrupt import set_interrupt as _set_interrupt
 from hermes_agent.tools.browser_session_lifecycle import cleanup_browser
 from hermes_agent.tools.connectors.turn import agent_connection_surface, scoped_connection_surface
 
-from agent.memory_provider import is_trivial_prompt
-from agent.client_lifecycle import ClientLifecycleMixin
-from agent.stream_delivery import StreamDeliveryMixin
-from agent.status_output import StatusOutputMixin
-from agent.api_request_hooks import ApiRequestHooksMixin
-from agent.api_error_summary import ApiErrorSummaryMixin, is_provider_stream_parse_error
-from agent.interrupt_control import InterruptControlMixin
-from agent.turn_explainers import TurnExplainersMixin
-from agent.activity_tracking import ActivityTrackingMixin
-from agent.rate_limit_credits import RateLimitCreditsMixin
-from agent.session_persistence import SessionPersistenceMixin
-from agent.compression_facade import CompressionFacadeMixin
-from agent.turn_facade import TurnFacadeMixin
-from agent.vision_message_prep import VisionMessagePrepMixin
-from agent.reasoning_params import ReasoningParamsMixin
-from agent.lazy_forward import forward as _forward, forward_static as _forward_static
-from agent.session_activity import ActivityProvenance
-from agent.model_metadata import is_local_endpoint
-from agent.message_sanitization import (
+from hermes_agent.agent.memory_provider import is_trivial_prompt
+from hermes_agent.agent.client_lifecycle import ClientLifecycleMixin
+from hermes_agent.agent.stream_delivery import StreamDeliveryMixin
+from hermes_agent.agent.status_output import StatusOutputMixin
+from hermes_agent.agent.api_request_hooks import ApiRequestHooksMixin
+from hermes_agent.agent.api_error_summary import ApiErrorSummaryMixin, is_provider_stream_parse_error
+from hermes_agent.agent.interrupt_control import InterruptControlMixin
+from hermes_agent.agent.turn_explainers import TurnExplainersMixin
+from hermes_agent.agent.activity_tracking import ActivityTrackingMixin
+from hermes_agent.agent.rate_limit_credits import RateLimitCreditsMixin
+from hermes_agent.agent.session_persistence import SessionPersistenceMixin
+from hermes_agent.agent.compression_facade import CompressionFacadeMixin
+from hermes_agent.agent.turn_facade import TurnFacadeMixin
+from hermes_agent.agent.vision_message_prep import VisionMessagePrepMixin
+from hermes_agent.agent.reasoning_params import ReasoningParamsMixin
+from hermes_agent.agent.lazy_forward import forward as _forward, forward_static as _forward_static
+from hermes_agent.agent.session_activity import ActivityProvenance
+from hermes_agent.agent.model_metadata import is_local_endpoint
+from hermes_agent.agent.message_sanitization import (
     coalesce_tool_call_id as _sanitize_coalesce_tool_call_id,
     deterministic_call_id as _codex_deterministic_call_id,
     uniquify_tool_call_ids as _sanitize_uniquify_tool_call_ids,
 )
-from agent.codex_responses_adapter import (
+from hermes_agent.agent.codex_responses_adapter import (
     _derive_responses_function_call_id as _codex_derive_responses_function_call_id,
     _split_responses_tool_id as _codex_split_responses_tool_id,
     _summarize_user_message_for_log,
 )
-from agent.tool_guardrails import ToolGuardrailDecision, append_toolguard_guidance, toolguard_synthetic_result
+from hermes_agent.agent.tool_guardrails import ToolGuardrailDecision, append_toolguard_guidance, toolguard_synthetic_result
 from hermes_cli.observability.shared_metrics_harness import record_guardrail_decision, record_guardrail_warnings
 from utils import base_url_host_matches, base_url_hostname, env_float, model_forces_max_completion_tokens
 
@@ -172,7 +172,7 @@ def _positive_int(value: Any) -> Optional[int]:
 
 def _review_should_defer(agent: Any, task_cfg: Optional[dict[str, Any]]) -> bool:
     """True when an automatic background review targets the managed local runtime under ``defer: auto``."""
-    from agent.review_idle_queue import defer_mode, review_targets_managed_local
+    from hermes_agent.agent.review_idle_queue import defer_mode, review_targets_managed_local
     return defer_mode(task_cfg) == "auto" and review_targets_managed_local(agent, task_cfg)
 
 
@@ -280,12 +280,12 @@ class AIAgent(
         side_agent: bool = False, memory_manager=None, memory_agent_context: str | None = None,
         tool_result_metadata_callback: Optional[Callable[..., dict]] = None,
     ):
-        """Forwarder — see ``agent.agent_init.init_agent`` (same keyword parameters, minus ``tool_delay``)."""
+        """Forwarder — see ``hermes_agent.agent.agent_init.init_agent`` (same keyword parameters, minus ``tool_delay``)."""
         init_kwargs = {k: v for k, v in locals().items() if k not in ("self", "tool_delay")}
         if tool_delay is not None:
             warnings.warn("tool_delay is deprecated and ignored; sequential tool calls "
                           "no longer sleep between executions.", DeprecationWarning, stacklevel=2)
-        from agent.agent_init import init_agent
+        from hermes_agent.agent.agent_init import init_agent
         init_agent(self, **init_kwargs)
 
     def _get_session_db_for_recall(self):
@@ -404,7 +404,7 @@ class AIAgent(
         # Session boundary: the usage anchor describes the OLD transcript; fall back to full estimation.
         self._usage_anchor = None
         self._turn_base_usage_anchor = None
-        # The workspace snapshot is pinned per session (agent/system_prompt.py::_coding_parts); a
+        # The workspace snapshot is pinned per session (hermes_agent/agent/system_prompt.py::_coding_parts); a
         # /new, /resume or /branch on the same agent must re-snapshot at its own session start.
         self._frozen_workspace_snapshot = None
 
@@ -414,7 +414,7 @@ class AIAgent(
         self._compaction_prompt_drift_logged = False
         # Who wrote the current turn. build_turn_context() sets it at the start of every turn.
         self._turn_author = None
-        # Provider hooks that failed in the old session (agent.provider_route_hooks) are asked again.
+        # Provider hooks that failed in the old session (hermes_agent.agent.provider_route_hooks) are asked again.
         self._provider_hook_failures = set()
         # True for the first API call of a user turn, False for tool-loop follow-ups (provider request_headers).
         self._is_user_initiated_turn = False
@@ -470,7 +470,7 @@ class AIAgent(
             self.model, self.base_url, getattr(self, "api_key", ""), config_context_length, return_load_result=True,
         )
 
-    switch_model = _forward("agent.agent_runtime_helpers", "switch_model")
+    switch_model = _forward("hermes_agent.agent.agent_runtime_helpers", "switch_model")
 
     def _disable_codex_reasoning_replay(
         self, messages: Optional[list[dict[str, Any]]] = None, *, keep_replay: bool = False,
@@ -490,17 +490,17 @@ class AIAgent(
             self._codex_reasoning_replay_enabled = False
         return {"messages": stripped_messages, "items": stripped_items}
 
-    _stream_diag_init = _forward_static("agent.stream_diag", "stream_diag_init")
-    _stream_diag_capture_response = _forward("agent.stream_diag", "stream_diag_capture_response")
-    _flatten_exception_chain = _forward_static("agent.stream_diag", "flatten_exception_chain")
+    _stream_diag_init = _forward_static("hermes_agent.agent.stream_diag", "stream_diag_init")
+    _stream_diag_capture_response = _forward("hermes_agent.agent.stream_diag", "stream_diag_capture_response")
+    _flatten_exception_chain = _forward_static("hermes_agent.agent.stream_diag", "flatten_exception_chain")
 
     def _is_provider_stream_parse_error(self, error: BaseException) -> bool:
         """True for a malformed Anthropic event-stream frame (surfaced by the SDK as a plain ``ValueError``);
         that is wire trouble, not local validation, so it follows the truncated-JSON retry path."""
         return getattr(self, "api_mode", None) == "anthropic_messages" and is_provider_stream_parse_error(error)
 
-    _log_stream_retry = _forward("agent.stream_diag", "log_stream_retry")
-    _emit_stream_drop = _forward("agent.stream_diag", "emit_stream_drop")
+    _log_stream_retry = _forward("hermes_agent.agent.stream_diag", "log_stream_retry")
+    _emit_stream_drop = _forward("hermes_agent.agent.stream_diag", "emit_stream_drop")
 
     def _emit_auxiliary_failure(self, task: str, exc: BaseException) -> None:
         """Surface a compact warning for failed auxiliary work."""
@@ -520,8 +520,8 @@ class AIAgent(
             for key in ("model", "provider", "base_url", "api_key", "api_mode", "auth_mode", "session_id")
         }
 
-    _check_compression_model_feasibility = _forward("agent.conversation_compression", "check_compression_model_feasibility")
-    _replay_compression_warning = _forward("agent.conversation_compression", "replay_compression_warning")
+    _check_compression_model_feasibility = _forward("hermes_agent.agent.conversation_compression", "check_compression_model_feasibility")
+    _replay_compression_warning = _forward("hermes_agent.agent.conversation_compression", "replay_compression_warning")
 
     def _hostname_for(self, base_url: Optional[str]) -> str:
         """Hostname of ``base_url``, or of the agent's own base URL when None."""
@@ -559,7 +559,7 @@ class AIAgent(
             return float(env_timeout), False
         # Reasoning-model floor (cloud gateways idle-kill mid-think); not "implicit" so the local-endpoint
         # short-circuit does not disable stale detection here.
-        from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
+        from hermes_agent.agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
         reasoning_floor = get_reasoning_stale_timeout_floor(self.model)
         if reasoning_floor is not None:
             return reasoning_floor, False
@@ -573,8 +573,8 @@ class AIAgent(
         if uses_implicit_default and base_url and is_local_endpoint(base_url):
             return float("inf")
 
-        from agent.chat_completion_helpers import _high_effort_silence_floor, cap_to_run_budget, estimate_request_context_tokens
-        from agent.gemini_long_decode import long_decode_stale_multiplier
+        from hermes_agent.agent.chat_completion_helpers import _high_effort_silence_floor, cap_to_run_budget, estimate_request_context_tokens
+        from hermes_agent.agent.gemini_long_decode import long_decode_stale_multiplier
         est_tokens = estimate_request_context_tokens(api_payload)
         timeout = max(stale_base, 240.0) if est_tokens > 100_000 else max(stale_base, 150.0) if est_tokens > 50_000 else stale_base
         explicit = self._stale_timeout_is_explicit()
@@ -601,7 +601,7 @@ class AIAgent(
         family: connection accepted, no events, no error), else None. Makes the stale timeout actionable."""
         if self.api_mode != "codex_responses":
             return None
-        from agent.codex_responses_adapter import classify_responses_route
+        from hermes_agent.agent.codex_responses_adapter import classify_responses_route
 
         if not classify_responses_route(self).is_codex_backend:
             return None
@@ -630,8 +630,8 @@ class AIAgent(
                 and getattr(self, "_base_url_hostname", "") == "chatgpt.com"
                 and "/backend-api/codex" in (getattr(self, "_base_url_lower", "") or ""))
 
-    _anthropic_prompt_cache_policy = _forward("agent.agent_runtime_helpers", "anthropic_prompt_cache_policy")
-    _direct_native_anthropic_tool_cache_capability = _forward("agent.agent_runtime_helpers", "_direct_native_anthropic_tool_cache_capability")
+    _anthropic_prompt_cache_policy = _forward("hermes_agent.agent.agent_runtime_helpers", "anthropic_prompt_cache_policy")
+    _direct_native_anthropic_tool_cache_capability = _forward("hermes_agent.agent.agent_runtime_helpers", "_direct_native_anthropic_tool_cache_capability")
 
     @staticmethod
     def _model_requires_responses_api(model: str) -> bool:
@@ -658,7 +658,7 @@ class AIAgent(
         # A provider serving several wires behind one endpoint decides per model (pure, no I/O).
         from providers import get_provider_profile
         profile = get_provider_profile(normalized_provider) if normalized_provider else None
-        from agent.provider_route_hooks import model_api_mode
+        from hermes_agent.agent.provider_route_hooks import model_api_mode
         derived = model_api_mode(profile, model) if profile is not None else None
         if derived is not None:
             return derived == "codex_responses"
@@ -669,7 +669,7 @@ class AIAgent(
         else ``max_tokens``. URL-first, then model-name fallback for third-party endpoints fronting those models."""
         if self._is_direct_openai_url() or self._is_azure_openai_url():
             return {"max_completion_tokens": value}
-        from agent.provider_route_hooks import route_answer
+        from hermes_agent.agent.provider_route_hooks import route_answer
         declared = route_answer("max_tokens_param", provider=getattr(self, "provider", "") or "", scope=self,
                                 base_url=getattr(self, "base_url", "") or "", model=self.model or "")
         if declared:
@@ -696,7 +696,7 @@ class AIAgent(
         """True when text remains after stripping reasoning blocks (reasoning-only output is retried)."""
         return bool(content) and bool(self._strip_think_blocks(content).strip())
 
-    _strip_think_blocks = _forward("agent.agent_runtime_helpers", "strip_think_blocks")
+    _strip_think_blocks = _forward("hermes_agent.agent.agent_runtime_helpers", "strip_think_blocks")
 
     @staticmethod
     def _has_natural_response_ending(content: str) -> bool:
@@ -749,13 +749,13 @@ class AIAgent(
             return False
         return not self._has_natural_response_ending(visible_text)
 
-    _looks_like_codex_intermediate_ack = _forward("agent.agent_runtime_helpers", "looks_like_codex_intermediate_ack")
-    _extract_reasoning = _forward("agent.agent_runtime_helpers", "extract_reasoning")
-    _cleanup_task_resources = _forward("agent.chat_completion_helpers", "cleanup_task_resources")
+    _looks_like_codex_intermediate_ack = _forward("hermes_agent.agent.agent_runtime_helpers", "looks_like_codex_intermediate_ack")
+    _extract_reasoning = _forward("hermes_agent.agent.agent_runtime_helpers", "extract_reasoning")
+    _cleanup_task_resources = _forward("hermes_agent.agent.chat_completion_helpers", "cleanup_task_resources")
 
-    # Background memory/skill review — prompts live in agent.background_review.
-    from agent.background_review import _MEMORY_REVIEW_PROMPT, _SKILL_REVIEW_PROMPT, _COMBINED_REVIEW_PROMPT
-    _summarize_background_review_actions = _forward_static("agent.background_review", "summarize_background_review_actions")
+    # Background memory/skill review — prompts live in hermes_agent.agent.background_review.
+    from hermes_agent.agent.background_review import _MEMORY_REVIEW_PROMPT, _SKILL_REVIEW_PROMPT, _COMBINED_REVIEW_PROMPT
+    _summarize_background_review_actions = _forward_static("hermes_agent.agent.background_review", "summarize_background_review_actions")
 
     def _spawn_background_review(self, messages_snapshot: list[dict], review_memory: bool = False,
                                  review_skills: bool = False, focus: Optional[str] = None, explicit: bool = False) -> None:
@@ -771,7 +771,7 @@ class AIAgent(
             return
         task_cfg = None
         if not explicit and focus is None:
-            from agent.background_review import load_background_review_settings
+            from hermes_agent.agent.background_review import load_background_review_settings
             enabled, task_cfg = load_background_review_settings()
             if not enabled:
                 return
@@ -780,12 +780,12 @@ class AIAgent(
         # alias the live history's nested tool_calls/content.
         # Structural clone at the single chokepoint every review path (automatic, /refine, idle-queue
         # deferral) goes through. See #100795.
-        from agent.turn_finalizer import _clone_background_review_messages
+        from hermes_agent.agent.turn_finalizer import _clone_background_review_messages
         kwargs = dict(messages_snapshot=_clone_background_review_messages(messages_snapshot),
                       review_memory=review_memory, review_skills=review_skills, focus=focus, task_cfg=task_cfg,
                       explicit=explicit)
         if focus is None and not explicit and _review_should_defer(self, task_cfg):
-            from agent.review_idle_queue import QUEUE
+            from hermes_agent.agent.review_idle_queue import QUEUE
             QUEUE.enqueue(self, _review_queue_key(self), kwargs)
             return
         self._spawn_background_review_now(**kwargs)
@@ -796,13 +796,13 @@ class AIAgent(
                                      explicit: bool = False) -> None:
         """Spawn the background memory/skill review thread.
 
-        ``threading.Thread`` is constructed here so tests patching ``run_agent.threading.Thread`` keep working.
+        ``threading.Thread`` is constructed here so tests patching ``hermes_agent.run_agent.threading.Thread`` keep working.
         ``focus`` is /refine steering text; ``task_cfg`` is the pre-loaded config block (None on direct calls).
         ``explicit`` (/refine) forks under the ``refine_review`` write origin, keeping the full
         memory operation set. A deferred review preempted by a live turn is requeued (bounded)
         rather than lost.
         """
-        from agent.background_review import (
+        from hermes_agent.agent.background_review import (
             finish_background_review_run, prepare_background_review_run, spawn_background_review_thread,
         )
         from hermes_agent.tools.thread_context import propagate_context_to_thread
@@ -847,18 +847,18 @@ class AIAgent(
                 return
             if not _review_should_defer(self, kwargs.get("task_cfg")):
                 return
-            from agent.review_idle_queue import QUEUE
+            from hermes_agent.agent.review_idle_queue import QUEUE
             # kwargs carries the incremented _requeue_attempts through the queue so the cap survives.
             QUEUE.enqueue(self, _review_queue_key(self), dict(kwargs))
         except Exception:
             logger.debug("Preempted-review requeue failed", exc_info=True)
 
-    _build_memory_write_metadata = _forward("agent.background_review", "build_memory_write_metadata")
-    _apply_pending_steer_to_tool_results = _forward("agent.agent_runtime_helpers", "apply_pending_steer_to_tool_results")
+    _build_memory_write_metadata = _forward("hermes_agent.agent.background_review", "build_memory_write_metadata")
+    _apply_pending_steer_to_tool_results = _forward("hermes_agent.agent.agent_runtime_helpers", "apply_pending_steer_to_tool_results")
 
     def get_activity_summary(self) -> dict:
         """Diagnostic snapshot: ``last_activity_*`` plus the short aliases gateway and delegate readers use."""
-        from agent.session_activity import build_activity_snapshot
+        from hermes_agent.agent.session_activity import build_activity_snapshot
 
         provenance = getattr(self, "_last_activity_provenance", None)
         return build_activity_snapshot(
@@ -940,7 +940,7 @@ class AIAgent(
         _quietly(self._close_codex_session)
         if getattr(self, "_memory_manager", None) is not None:
             _quietly(self._memory_manager.release_soft)
-        from agent.prepared_compaction import release_for_agent
+        from hermes_agent.agent.prepared_compaction import release_for_agent
         _quietly(release_for_agent, self)
 
     def close(self) -> None:
@@ -950,7 +950,7 @@ class AIAgent(
         _quietly(self.shutdown_memory_provider, session_messages if isinstance(session_messages, list) else None)
         self._close_task_resources(getattr(self, "session_id", None) or "")
         self._close_active_children(soft=False)
-        from agent.prepared_compaction import release_for_agent
+        from hermes_agent.agent.prepared_compaction import release_for_agent
         _quietly(release_for_agent, self)
         _quietly(self._drop_shared_client, lambda c: self._close_openai_client(c, reason="agent_close", shared=True))
         self._close_request_clients("agent_close")
@@ -966,7 +966,7 @@ class AIAgent(
             # system prompt reaches the memo only through api_messages, never through the history, and a
             # prompt-caching request splits it into the static prefix + a per-request suffix slice: the
             # prefix's pin evicts that split entry.
-            from agent.model_metadata_token_memo import forget_message_token_memo
+            from hermes_agent.agent.model_metadata_token_memo import forget_message_token_memo
             _quietly(forget_message_token_memo, (session_messages, getattr(self, "_cached_system_prompt", None),
                                                  getattr(self, "_cached_system_prompt_static", None)))
         _quietly(self._trim_process_memory)
@@ -1112,7 +1112,7 @@ class AIAgent(
         """Check if an interrupt has been requested."""
         return self._interrupt_requested
 
-    _build_system_prompt = _forward("agent.system_prompt", "build_system_prompt")
+    _build_system_prompt = _forward("hermes_agent.agent.system_prompt", "build_system_prompt")
 
     # Call ID of a tool_call entry (dict or object); policy owner: ``message_sanitization.coalesce_tool_call_id``.
     _get_tool_call_id_static = staticmethod(_sanitize_coalesce_tool_call_id)
@@ -1126,7 +1126,7 @@ class AIAgent(
         return getattr(getattr(tc, "function", None), "name", "") or ""
 
     _VALID_API_ROLES = frozenset({"system", "user", "assistant", "tool", "function", "developer"})
-    _sanitize_api_messages = _forward_static("agent.agent_runtime_helpers", "sanitize_api_messages")
+    _sanitize_api_messages = _forward_static("hermes_agent.agent.agent_runtime_helpers", "sanitize_api_messages")
 
     @staticmethod
     def _is_thinking_only_assistant(msg: dict[str, Any], *, drop_codex_reasoning_items: bool = True) -> bool:
@@ -1149,7 +1149,7 @@ class AIAgent(
         # place; the codex_responses adapter also surfaces commentary text via msg["reasoning"], so the
         # string branch below would otherwise drop a carrier before the sidecar is ever inspected. See
         # #82108.
-        from agent.native_compaction import has_compaction_checkpoint
+        from hermes_agent.agent.native_compaction import has_compaction_checkpoint
 
         if has_compaction_checkpoint(msg.get("codex_reasoning_items")):
             return False
@@ -1185,7 +1185,7 @@ class AIAgent(
             return False
         return content is not None and content != ""
 
-    _drop_thinking_only_and_merge_users = _forward_static("agent.agent_runtime_helpers", "drop_thinking_only_and_merge_users")
+    _drop_thinking_only_and_merge_users = _forward_static("hermes_agent.agent.agent_runtime_helpers", "drop_thinking_only_and_merge_users")
 
     @staticmethod
     def _cap_delegate_task_calls(tool_calls: list) -> list:
@@ -1230,18 +1230,18 @@ class AIAgent(
     # deterministic ``<id>_d<n>`` suffix — never uuid4, for prompt-cache prefix stability.
     _uniquify_tool_call_ids = staticmethod(_sanitize_uniquify_tool_call_ids)
 
-    _repair_tool_call = _forward("agent.agent_runtime_helpers", "repair_tool_call")
-    _invalidate_system_prompt = _forward("agent.system_prompt", "invalidate_system_prompt")
+    _repair_tool_call = _forward("hermes_agent.agent.agent_runtime_helpers", "repair_tool_call")
+    _invalidate_system_prompt = _forward("hermes_agent.agent.system_prompt", "invalidate_system_prompt")
 
-    # Codex Responses id policy (agent.codex_responses_adapter): deterministic call ids when the API omits one
+    # Codex Responses id policy (hermes_agent.agent.codex_responses_adapter): deterministic call ids when the API omits one
     # (random UUIDs would break the provider prompt cache), split stored ids, derive valid ``fc_`` ids.
     _deterministic_call_id = staticmethod(_codex_deterministic_call_id)
     _split_responses_tool_id = staticmethod(_codex_split_responses_tool_id)
     _derive_responses_function_call_id = staticmethod(_codex_derive_responses_function_call_id)
 
-    _interruptible_api_call = _forward("agent.chat_completion_helpers", "interruptible_api_call")
-    _interruptible_streaming_api_call = _forward("agent.chat_completion_helpers", "interruptible_streaming_api_call")
-    _try_activate_fallback = _forward("agent.chat_completion_helpers", "try_activate_fallback")
+    _interruptible_api_call = _forward("hermes_agent.agent.chat_completion_helpers", "interruptible_api_call")
+    _interruptible_streaming_api_call = _forward("hermes_agent.agent.chat_completion_helpers", "interruptible_streaming_api_call")
+    _try_activate_fallback = _forward("hermes_agent.agent.chat_completion_helpers", "try_activate_fallback")
 
     def _has_pending_fallback(self) -> bool:
         """Whether a fallback provider remains (mirrors ``try_activate_fallback``'s guard) — gates the
@@ -1251,9 +1251,9 @@ class AIAgent(
         """
         return getattr(self, "_fallback_index", 0) < len(getattr(self, "_fallback_chain", None) or [])
 
-    _restore_primary_runtime = _forward("agent.agent_runtime_helpers", "restore_primary_runtime")
-    _try_recover_primary_transport = _forward("agent.agent_runtime_helpers", "try_recover_primary_transport")
-    _build_api_kwargs = _forward("agent.chat_completion_helpers", "build_api_kwargs")
+    _restore_primary_runtime = _forward("hermes_agent.agent.agent_runtime_helpers", "restore_primary_runtime")
+    _try_recover_primary_transport = _forward("hermes_agent.agent.agent_runtime_helpers", "try_recover_primary_transport")
+    _build_api_kwargs = _forward("hermes_agent.agent.chat_completion_helpers", "build_api_kwargs")
 
     def _set_tool_guardrail_halt(self, decision: ToolGuardrailDecision) -> None:
         """Record the first guardrail decision that should stop this turn."""
@@ -1327,7 +1327,7 @@ class AIAgent(
                 if len(tool_calls) <= 1:
                     self._execute_tool_calls_sequential(*args)
                 else:
-                    from agent.tool_dispatch_helpers import _plan_tool_batch_segments
+                    from hermes_agent.agent.tool_dispatch_helpers import _plan_tool_batch_segments
                     active_env = get_active_env(effective_task_id)
                     exec_cwd = Path(active_env.cwd) if active_env is not None and active_env.cwd else None
                     segments = _plan_tool_batch_segments(tool_calls, execution_cwd=exec_cwd)
@@ -1335,7 +1335,7 @@ class AIAgent(
                         run = self._execute_tool_calls_concurrent if segments[0][0] == "parallel" else self._execute_tool_calls_sequential
                         run(*args)
                     else:
-                        from agent.tool_executor import execute_tool_calls_segmented
+                        from hermes_agent.agent.tool_executor import execute_tool_calls_segmented
                         execute_tool_calls_segmented(self, *args, segments=segments)
         finally:
             self._executing_tools = False
@@ -1344,7 +1344,7 @@ class AIAgent(
             # Only on normal completion: every executor frame that held a >=1 MB raw result has
             # unwound and just the spilled preview lives in ``messages``. An in-flight exception
             # would pin those frames via its traceback, so that path leaves the flag for the
-            # next completed batch (agent/tool_executor.py, #70684).
+            # next completed batch (hermes_agent/agent/tool_executor.py, #70684).
             self._trim_after_tool_batch = False
             from hermes_cli.mem_trim import trim_memory
             trim_memory(reason="large tool result")
@@ -1365,7 +1365,7 @@ class AIAgent(
             subagent_id=function_args.get("subagent_id"), message=function_args.get("message"), parent_agent=self,
         )
 
-    _invoke_tool = _forward("agent.agent_runtime_helpers", "invoke_tool")
+    _invoke_tool = _forward("hermes_agent.agent.agent_runtime_helpers", "invoke_tool")
 
     @staticmethod
     def _wrap_verbose(label: str, text: str, indent: str = "     ") -> str:
@@ -1381,9 +1381,9 @@ class AIAgent(
                 out_lines.extend(textwrap.wrap(raw_line, width=wrap_width, break_long_words=True, break_on_hyphens=False) or [raw_line])
         return f"{indent}{label}" + ("\n" + indent).join(out_lines)
 
-    _execute_tool_calls_concurrent = _forward("agent.tool_executor", "execute_tool_calls_concurrent")
-    _execute_tool_calls_sequential = _forward("agent.tool_executor", "execute_tool_calls_sequential")
-    _handle_max_iterations = _forward("agent.chat_completion_helpers", "handle_max_iterations")
+    _execute_tool_calls_concurrent = _forward("hermes_agent.agent.tool_executor", "execute_tool_calls_concurrent")
+    _execute_tool_calls_sequential = _forward("hermes_agent.agent.tool_executor", "execute_tool_calls_sequential")
+    _handle_max_iterations = _forward("hermes_agent.agent.chat_completion_helpers", "handle_max_iterations")
 
     def _conversation_root_id(self) -> Optional[str]:
         """Session-lineage ROOT id for Portal usage attribution, so one conversation keeps a single
@@ -1527,10 +1527,10 @@ def main(
         return _print_tool_listing()
 
     # One TLS authority: trust the OS store before any outbound call (bare
-    # requests/urllib included) resolves a CA bundle — see agent/ssl_verify.py.
+    # requests/urllib included) resolves a CA bundle — see hermes_agent/agent/ssl_verify.py.
     # The `hermes` CLI does this in hermes_cli.main; this console script
     # bypasses it. Never raises.
-    from agent.ssl_verify import install_truststore
+    from hermes_agent.agent.ssl_verify import install_truststore
 
     install_truststore()
 
@@ -1568,6 +1568,6 @@ def main(
 
 
 if __name__ == "__main__":
-    from agent.legacy_cli import main as _legacy_cli_main
+    from hermes_agent.agent.legacy_cli import main as _legacy_cli_main
 
     raise SystemExit(_legacy_cli_main(run=main))

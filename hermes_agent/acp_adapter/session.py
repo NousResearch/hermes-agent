@@ -515,8 +515,8 @@ class SessionManager:
         if self._agent_factory is not None:
             return self._agent_factory()
 
-        from run_agent import AIAgent
-        from agent.skill_utils import parse_config_string_list
+        from hermes_agent.run_agent import AIAgent
+        from hermes_agent.agent.skill_utils import parse_config_string_list
         from hermes_cli.config import load_config
         from hermes_cli.runtime_provider import resolve_runtime_provider
         from hermes_cli.tools_config import _get_platform_tools, enabled_mcp_server_names

@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 from collections import OrderedDict
 
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 from hermes_agent.gateway.pairing import CODE_TTL_SECONDS, _allowlist_env_for_platform
 
 # Display names come from the stranger. Bound them and keep the mention/markdown surface small in

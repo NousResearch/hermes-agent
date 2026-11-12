@@ -3,7 +3,7 @@
 Prevents mangled edits when concurrent subagents (same process, same
 filesystem) touch the same file: B writes a file A already read, so A's next
 write would clobber B's changes. Complements the single-agent path-overlap
-check in ``agent.tool_dispatch_helpers._should_parallelize_tool_batch``. A process-wide
+check in ``hermes_agent.agent.tool_dispatch_helpers._should_parallelize_tool_batch``. A process-wide
 ``FileStateRegistry`` tracks per-agent read stamps, the global last writer and
 a per-path lock; every method is a no-op under ``HERMES_DISABLE_FILE_STATE_GUARD=1``.
 """

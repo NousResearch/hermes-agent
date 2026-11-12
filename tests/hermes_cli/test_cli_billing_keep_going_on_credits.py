@@ -98,8 +98,8 @@ def test_turning_on_updates_the_session_state_at_once(sent, monkeypatch):
     """The "turn on Keep going" line must not wait for the next reply: the agent's state takes the new
     value and the notice policy re-runs; the account snapshot refreshes in the background."""
     import hermes_cli.nous_account as na
-    from agent.credits_tracker import CreditsState
-    from agent.usage_gauges import SCOPE_ALL, WindowGauge
+    from hermes_agent.agent.credits_tracker import CreditsState
+    from hermes_agent.agent.usage_gauges import SCOPE_ALL, WindowGauge
     refreshed, emitted = [], []
     monkeypatch.setattr(na, "get_nous_portal_account_info", lambda force_fresh=False: refreshed.append(force_fresh))
     cli = _Cli("agree")

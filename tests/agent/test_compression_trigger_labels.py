@@ -14,10 +14,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.turn_context_compaction import (
+from hermes_agent.agent.turn_context_compaction import (
     CompactionOutcome, _engine_preflight_maintenance, _idle_compaction, _run_preflight_passes,
 )
-from agent.turn_preflight import (
+from hermes_agent.agent.turn_preflight import (
     PreflightGateVerdict, compress_after_tool_results, run_preflight_compression,
 )
 
@@ -126,7 +126,7 @@ def test_automatic_caller_passes_its_trigger_label(drive, expected_label):
 def test_preflight_reads_the_cooldown_after_a_moved_route_clears_it(monkeypatch):
     """Preflight checks the compression route before it reads the failure cooldown: a route move clears
     the previous summariser's cooldown, so the same pass compresses with the replacement."""
-    import agent.turn_preflight as tp
+    import hermes_agent.agent.turn_preflight as tp
     labels: list = []
     agent = _agent(labels)
     cooldown = {"active": True}

@@ -223,7 +223,7 @@ def pkce_auth_handler(cfg: OAuthPKCEConfig) -> Callable[[str, Any], bool]:
     credential pool's generic refresh (which calls :func:`pkce_refresh_credential`) handles it."""
 
     def handler(action: str, args: Any) -> bool:
-        from agent.credential_pool import AUTH_TYPE_OAUTH, PooledCredential, load_pool
+        from hermes_agent.agent.credential_pool import AUTH_TYPE_OAUTH, PooledCredential, load_pool
 
         provider = _pool_provider(args)
         if action == "add":

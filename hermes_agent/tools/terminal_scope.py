@@ -2,7 +2,7 @@
 
 Multiplexed surfaces (gateway, dashboard/TUI, cron) serve several profiles from one process;
 mirroring terminal settings into ``os.environ`` let the first profile pin its backend onto
-everyone else (sandbox escape). Like ``agent/secret_scope.py``, a ContextVar holds the active
+everyone else (sandbox escape). Like ``hermes_agent/agent/secret_scope.py``, a ContextVar holds the active
 profile's COMPLETE ``TERMINAL_*`` policy; while bound, ``terminal_env`` resolves ONLY from it
 (omitted keys -> defined default, never ambient env). If the policy cannot be resolved a
 *refusal* scope is installed and terminal execution raises :class:`TerminalPolicyUnavailable`.
@@ -145,7 +145,7 @@ def build_profile_terminal_scope(
         except Exception as exc:
             if not isinstance(exc, PermissionError) or managed_scope.pinned_terminal_backend() is None:
                 raise TerminalPolicyUnavailable(f"cannot read {env_path}: {exc}") from exc
-        from agent.secret_scope import load_env_file
+        from hermes_agent.agent.secret_scope import load_env_file
 
         profile_env = load_env_file(env_path)
         scope.update((k, str(v)) for k, v in profile_env.items() if k.startswith("TERMINAL_"))

@@ -23,7 +23,7 @@ from keyring.backend import KeyringBackend
 from keyring.backends import fail
 from keyring.errors import PasswordDeleteError
 
-from agent.vault_store import VaultError, VaultStore
+from hermes_agent.agent.vault_store import VaultError, VaultStore
 
 _LOGIN = {"identifier_type": "email", "identifier": "jane@example.com", "password": "dummy-pw-not-real-42"}
 
@@ -274,7 +274,7 @@ def test_a_clone_failing_before_custody_never_deletes_the_source_entry(home, key
 
 
 def test_migration_whose_pointer_cannot_be_saved_leaves_no_untracked_entry(home, keychain, monkeypatch):
-    from agent import vault_keychain
+    from hermes_agent.agent import vault_keychain
 
     h = home()
     item = _add(VaultStore())
@@ -292,7 +292,7 @@ def test_migration_whose_pointer_cannot_be_saved_leaves_no_untracked_entry(home,
 
 @pytest.mark.parametrize("pointer_landed", [False, True])
 def test_copied_vault_keeps_opening_when_saving_its_own_pointer_fails(home, keychain, monkeypatch, pointer_landed):
-    from agent import vault_keychain
+    from hermes_agent.agent import vault_keychain
 
     work = home("work", key_storage="keychain")
     item = _add(VaultStore())

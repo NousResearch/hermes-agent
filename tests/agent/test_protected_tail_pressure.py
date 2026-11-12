@@ -18,15 +18,15 @@ from unittest.mock import patch
 
 import pytest
 
-from agent.context_compressor import (
+from hermes_agent.agent.context_compressor import (
     ContextCompressor,
     _MAX_TAIL_MESSAGE_FLOOR,
     _PRESSURE_KEEP_RECENT_MESSAGES,
     _tool_content_has_images,
 )
-from agent.model_metadata import estimate_messages_tokens_rough
-from agent.prompt_builder import steer_user_row
-from agent.turn_context import compression_made_progress
+from hermes_agent.agent.model_metadata import estimate_messages_tokens_rough
+from hermes_agent.agent.prompt_builder import steer_user_row
+from hermes_agent.agent.turn_context import compression_made_progress
 
 
 def _unique_tool_pair(i: int, chars: int) -> list[dict]:
@@ -89,7 +89,7 @@ def _already_compacted_session(
 @pytest.fixture()
 def compressor_128k():
     with patch(
-        "agent.context_compressor.get_model_context_length",
+        "hermes_agent.agent.context_compressor.get_model_context_length",
         return_value=128_000,
     ):
         c = ContextCompressor(
@@ -258,7 +258,7 @@ def test_mid_turn_compaction_keeps_the_pending_tool_round_verbatim(steers):
     inserted right after the newest tool result, so the round is followed by two steer rows.
     """
     ctx = 272_000
-    with patch("agent.context_compressor.get_model_context_length", return_value=ctx):
+    with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=ctx):
         c = ContextCompressor(
             model="test/model", threshold_percent=0.50, protect_first_n=3, protect_last_n=8,
             quiet_mode=True, config_context_length=ctx,

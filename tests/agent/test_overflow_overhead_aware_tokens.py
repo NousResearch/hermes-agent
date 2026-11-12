@@ -9,7 +9,7 @@ import pytest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 # ---------------------------------------------------------------------------
@@ -22,7 +22,7 @@ def _no_sleep(monkeypatch):
     """Short-circuit all time.sleep and jittered_backoff calls."""
     import time as _time
     monkeypatch.setattr(_time, "sleep", lambda *_a, **_k: None)
-    from agent import retry_utils as _retry_utils
+    from hermes_agent.agent import retry_utils as _retry_utils
     monkeypatch.setattr(_retry_utils, "jittered_backoff", lambda *a, **k: 0.0)
 
 
@@ -58,7 +58,7 @@ def agent():
     with (
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=_make_tool_defs("web_search")),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
     ):
         a = AIAgent(
             api_key="test-key-1234567890",
@@ -136,7 +136,7 @@ def test_long_context_retry_carrier_survives_failure_flush(agent, muted, monkeyp
         captured.append((kind, text))
         original(kind, text)
     monkeypatch.setattr(agent, "_buffer_retry_message", capture)
-    with (patch("agent.model_metadata.estimate_request_tokens_rough", return_value=_SENTINEL_TOKENS),
+    with (patch("hermes_agent.agent.model_metadata.estimate_request_tokens_rough", return_value=_SENTINEL_TOKENS),
           patch.object(agent, "_compress_context", return_value=([{"role": "user", "content": "compressed"}], "compressed prompt")),
           patch.object(agent, "_persist_session"), patch.object(agent, "_save_trajectory"),
           patch.object(agent, "_cleanup_task_resources")):
@@ -176,7 +176,7 @@ def test_overflow_recovery_compresses_with_tool_overhead_counted(agent, make_err
     """Each recovery path must pass approx_tokens that include tool-schema
     overhead: a messages-only estimate under-reports the request, so the
     compressor sizes its target wrong and the retry overflows again."""
-    from agent.model_metadata import estimate_messages_tokens_rough
+    from hermes_agent.agent.model_metadata import estimate_messages_tokens_rough
 
     agent.tools = [
         {

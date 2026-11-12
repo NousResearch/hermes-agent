@@ -14,7 +14,7 @@ import fnmatch
 import os
 from pathlib import Path
 
-from agent.file_safety import get_nt_namespace_error
+from hermes_agent.agent.file_safety import get_nt_namespace_error
 from hermes_agent.tools import file_state
 from hermes_agent.tools.binary_extensions import (
     has_binary_extension,
@@ -150,7 +150,7 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
     # on POSIX a leading "\??\" reads as a relative segment and gets anchored
     # under the base dir, hiding the prefix from the resolved-path checks,
     # while the same string relayed to a Windows host (remote backend, desktop
-    # bridge) triggers the NTLM-leak vector. See agent/file_safety.py.
+    # bridge) triggers the NTLM-leak vector. See hermes_agent/agent/file_safety.py.
     nt_err = get_nt_namespace_error(filepath, verb="Write")
     if nt_err:
         return nt_err
@@ -364,7 +364,7 @@ def _check_approval_required_write(paths: list[str], task_id: str = "default") -
     execution via ``ProxyCommand``). Routine gate: once/session/always, honors --yolo,
     fail-closed without an interactive/gateway channel."""
     try:
-        from agent.file_safety import is_write_approval_required
+        from hermes_agent.agent.file_safety import is_write_approval_required
     except Exception:
         return None
 
@@ -432,7 +432,7 @@ def _check_cross_profile_path(filepath: str, task_id: str = "default") -> str | 
     Hermes state (a write the host never reads). Not profile isolation — that guard was
     removed; ``cross_profile=True`` keeps bypassing this one for replay compat. Fails open."""
     try:
-        from agent.file_safety import get_container_mirror_warning, get_sandbox_mirror_warning
+        from hermes_agent.agent.file_safety import get_container_mirror_warning, get_sandbox_mirror_warning
     except Exception:
         return None
     resolved = _resolved_or_raw(filepath, task_id)

@@ -124,7 +124,7 @@ class _FakeChat:
 
 
 def _make_agent(base_url: str, session_id: str | None = None, session_db=None):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     agent = AIAgent(
         api_key="test-key", base_url=base_url, provider="custom", model="replay-model",
@@ -180,7 +180,7 @@ def _run_turns(wire: _FakeChat, agent_factory, history: list[dict], *, reload: b
 
 
 def _rough(messages) -> int:
-    from agent.model_metadata import estimate_messages_tokens_rough
+    from hermes_agent.agent.model_metadata import estimate_messages_tokens_rough
 
     return estimate_messages_tokens_rough(messages)
 
@@ -214,7 +214,7 @@ def scenario(wire: _FakeChat, *, shape: str, real: int, chars: int, tmp: Path) -
     persisted = reopened.get_messages_as_conversation(sid)
     compress_by_turn = [calls_t1]
     fresh = _make_agent(wire.base_url, session_id=sid, session_db=reopened)
-    from agent.usage_anchor import restore_usage_anchor
+    from hermes_agent.agent.usage_anchor import restore_usage_anchor
 
     probe = _make_agent(wire.base_url, session_id=sid, session_db=reopened)
     restore_usage_anchor(probe, persisted)
@@ -240,7 +240,7 @@ def scenario(wire: _FakeChat, *, shape: str, real: int, chars: int, tmp: Path) -
 
 def recovery_scenario(wire: _FakeChat, *, usage_less: bool) -> dict:
     """Real compression/retry, with only summary generation replaced by fixed local text."""
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     agent = _make_agent(wire.base_url)
     wire.requests.clear()

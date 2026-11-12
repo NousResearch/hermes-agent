@@ -7,11 +7,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from agent.prompt_cache_scope import conversation_id
-from agent.runtime_session_store import RuntimeSessionStore
+from hermes_agent.agent.prompt_cache_scope import conversation_id
+from hermes_agent.agent.runtime_session_store import RuntimeSessionStore
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_runtime import begin_runtime_epoch, mutate_worker_execution, register_worker_execution
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 PLUGIN = '''
 import json

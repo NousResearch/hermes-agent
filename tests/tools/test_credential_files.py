@@ -696,7 +696,7 @@ class TestMasterCredentialStoresAreNeverMountable:
 
 
     def test_missing_guard_fails_closed_with_error_log(self, tmp_path, caplog):
-        """If agent.file_safety can't be imported the mount is refused loudly.
+        """If hermes_agent.agent.file_safety can't be imported the mount is refused loudly.
 
         The fail-closed path must be observable (#67665): a silent deny with
         no diagnostic reproduces the trust gap the deny-list was added to fix.

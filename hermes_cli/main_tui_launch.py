@@ -15,7 +15,7 @@ import sys
 
 from pathlib import Path
 from typing import Optional
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("hermes_cli.main")

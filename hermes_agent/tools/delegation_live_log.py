@@ -74,7 +74,7 @@ def _redact(text: str) -> str:
     if not text:
         return text
     try:
-        from agent.redact import redact_sensitive_text
+        from hermes_agent.agent.redact import redact_sensitive_text
         return redact_sensitive_text(text, force=True) or ""
     except Exception:  # pragma: no cover - core module; never leak on failure
         return "[line withheld: redaction unavailable]"

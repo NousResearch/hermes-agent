@@ -2,12 +2,12 @@
 
 import pytest
 
-from agent.transports import get_transport
+from hermes_agent.agent.transports import get_transport
 
 
 @pytest.fixture
 def transport():
-    import agent.transports.codex
+    import hermes_agent.agent.transports.codex
     return get_transport("codex_responses")
 
 
@@ -50,7 +50,7 @@ def test_cron_backend_headers_and_legacy_scope(transport, execution_context, ove
     """Logical routing is stable while physical headers and request content stay intact."""
     from copy import deepcopy
 
-    from agent.transports.codex import _cache_scope_from_session_id
+    from hermes_agent.agent.transports.codex import _cache_scope_from_session_id
 
     messages = [
         {"role": "system", "content": "Keep this static instruction."},
@@ -92,7 +92,7 @@ def test_cron_compression_rotation_resolves_admitted_scope(transport, execution_
     """A real lineage lookup reconnects the rotated physical ID to the cron admission."""
     from types import SimpleNamespace
 
-    from agent.prompt_cache_scope import resolve_prompt_cache_scope
+    from hermes_agent.agent.prompt_cache_scope import resolve_prompt_cache_scope
     from hermes_agent.hermes_state import SessionDB
 
     root, rotated = "local-admitted-fire", "local-rotated-fire"
@@ -131,7 +131,7 @@ def test_cron_compression_rotation_resolves_admitted_scope(transport, execution_
     ("local-missing-job", ("local-missing-job", None)),
 ])
 def test_unadmitted_or_jobless_sessions_keep_scope(execution_context, sid, admission):
-    from agent.transports.codex import _cache_scope_from_session_id
+    from hermes_agent.agent.transports.codex import _cache_scope_from_session_id
 
     if admission is not None:
         execution_context(*admission, "fire-1")

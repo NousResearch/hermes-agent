@@ -91,14 +91,14 @@ class TestResolveAwsAuthEnvVar:
 
 
     def test_requires_both_access_key_and_secret(self):
-        from agent.bedrock_adapter import resolve_aws_auth_env_var
+        from hermes_agent.agent.bedrock_adapter import resolve_aws_auth_env_var
         # Only access key, no secret → should not match
         env = {"AWS_ACCESS_KEY_ID": "AKIA..."}
         assert resolve_aws_auth_env_var(env) != "AWS_ACCESS_KEY_ID"
 
 
     def test_returns_none_when_no_aws_auth(self):
-        from agent.bedrock_adapter import resolve_aws_auth_env_var
+        from hermes_agent.agent.bedrock_adapter import resolve_aws_auth_env_var
         # Mock botocore to return no credentials (covers EC2 IMDS fallback)
         mock_session = MagicMock()
         mock_session.get_credentials.return_value = None
@@ -110,11 +110,11 @@ class TestResolveAwsAuthEnvVar:
 
 class TestHasAwsCredentials:
     def test_true_with_profile(self):
-        from agent.bedrock_adapter import has_aws_credentials
+        from hermes_agent.agent.bedrock_adapter import has_aws_credentials
         assert has_aws_credentials({"AWS_PROFILE": "default"}) is True
 
     def test_false_with_empty_env(self):
-        from agent.bedrock_adapter import has_aws_credentials
+        from hermes_agent.agent.bedrock_adapter import has_aws_credentials
         mock_session = MagicMock()
         mock_session.get_credentials.return_value = None
         with patch.dict("sys.modules", {"botocore": MagicMock(), "botocore.session": MagicMock()}):
@@ -131,8 +131,8 @@ class TestScopedAwsSessionKwargs:
         refused at the production client seam BEFORE boto3 is touched (``{}`` would let
         ``boto3.Session()`` sign as A) and its bearer read is scoped, A again is unaffected.
         Control: a standalone run keeps the ambient chain (``{}`` + process-env bearer)."""
-        from agent import bedrock_adapter, secret_scope
-        from agent.bedrock_adapter import _cached_client, resolve_bedrock_bearer_token, scoped_aws_session_kwargs
+        from hermes_agent.agent import bedrock_adapter, secret_scope
+        from hermes_agent.agent.bedrock_adapter import _cached_client, resolve_bedrock_bearer_token, scoped_aws_session_kwargs
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
         home_a, home_b = tmp_path / "home-A", tmp_path / "home-B"
@@ -175,13 +175,13 @@ class TestScopedAwsSessionKwargs:
 
 class TestResolveBedrocRegion:
     def test_prefers_aws_region(self):
-        from agent.bedrock_adapter import resolve_bedrock_region
+        from hermes_agent.agent.bedrock_adapter import resolve_bedrock_region
         env = {"AWS_REGION": "eu-west-1", "AWS_DEFAULT_REGION": "us-west-2"}
         assert resolve_bedrock_region(env) == "eu-west-1"
 
 
     def test_defaults_to_us_east_1(self):
-        from agent.bedrock_adapter import resolve_bedrock_region
+        from hermes_agent.agent.bedrock_adapter import resolve_bedrock_region
         from unittest.mock import MagicMock
         mock_session = MagicMock()
         mock_session.get_config_variable.return_value = None
@@ -197,7 +197,7 @@ class TestConvertToolsToConverse:
     """Test OpenAI → Bedrock Converse tool definition conversion."""
 
     def test_converts_single_tool(self):
-        from agent.bedrock_adapter import convert_tools_to_converse
+        from hermes_agent.agent.bedrock_adapter import convert_tools_to_converse
         tools = [{
             "type": "function",
             "function": {
@@ -222,7 +222,7 @@ class TestConvertToolsToConverse:
 
 
     def test_empty_tools(self):
-        from agent.bedrock_adapter import convert_tools_to_converse
+        from hermes_agent.agent.bedrock_adapter import convert_tools_to_converse
         assert convert_tools_to_converse([]) == []
         assert convert_tools_to_converse(None) == []
 
@@ -235,7 +235,7 @@ class TestConvertMessagesToConverse:
     """Test OpenAI message format → Bedrock Converse format conversion."""
 
     def test_extracts_system_prompt(self):
-        from agent.bedrock_adapter import convert_messages_to_converse
+        from hermes_agent.agent.bedrock_adapter import convert_messages_to_converse
         messages = [
             {"role": "system", "content": "You are a helpful assistant."},
             {"role": "user", "content": "Hello"},
@@ -249,7 +249,7 @@ class TestConvertMessagesToConverse:
 
 
     def test_assistant_with_tool_calls(self):
-        from agent.bedrock_adapter import convert_messages_to_converse
+        from hermes_agent.agent.bedrock_adapter import convert_messages_to_converse
         messages = [
             {"role": "user", "content": "Read the file"},
             {
@@ -278,7 +278,7 @@ class TestConvertMessagesToConverse:
         assert tool_use_blocks[0]["toolUse"]["input"] == {"path": "/tmp/test.txt"}
 
     def test_tool_result_becomes_user_message(self):
-        from agent.bedrock_adapter import convert_messages_to_converse
+        from hermes_agent.agent.bedrock_adapter import convert_messages_to_converse
         messages = [
             {"role": "user", "content": "Read it"},
             {"role": "assistant", "content": None, "tool_calls": [{
@@ -308,7 +308,7 @@ class TestNormalizeConverseResponse:
     """Test Bedrock Converse response → OpenAI format conversion."""
 
     def test_text_response(self):
-        from agent.bedrock_adapter import normalize_converse_response
+        from hermes_agent.agent.bedrock_adapter import normalize_converse_response
         response = {
             "output": {
                 "message": {
@@ -332,7 +332,7 @@ class TestNormalizeConverseResponse:
         OpenAI's prompt_tokens). normalize_converse_response must add them
         back into prompt_tokens/total_tokens and surface the Anthropic-named
         fields so normalize_usage() picks them up via its existing fallback."""
-        from agent.bedrock_adapter import normalize_converse_response
+        from hermes_agent.agent.bedrock_adapter import normalize_converse_response
         response = {
             "output": {"message": {"role": "assistant", "content": [{"text": "hi"}]}},
             "stopReason": "end_turn",
@@ -351,7 +351,7 @@ class TestNormalizeConverseResponse:
         assert result.usage.cache_creation_input_tokens == 300
 
     def test_tool_use_response(self):
-        from agent.bedrock_adapter import normalize_converse_response
+        from hermes_agent.agent.bedrock_adapter import normalize_converse_response
         response = {
             "output": {
                 "message": {
@@ -381,7 +381,7 @@ class TestNormalizeConverseResponse:
         assert json.loads(tool_calls[0].function.arguments) == {"path": "/tmp/test.txt"}
 
     def test_redacted_reasoning_is_preserved_for_replay(self):
-        from agent.bedrock_adapter import normalize_converse_response
+        from hermes_agent.agent.bedrock_adapter import normalize_converse_response
 
         response = {
             "output": {
@@ -406,7 +406,7 @@ class TestNormalizeConverseResponse:
 
 
     def test_redacted_reasoning_replays_as_bedrock_content_block(self):
-        from agent.bedrock_adapter import convert_messages_to_converse
+        from hermes_agent.agent.bedrock_adapter import convert_messages_to_converse
 
         _system, messages = convert_messages_to_converse([
             {
@@ -429,7 +429,7 @@ class TestNormalizeConverseResponse:
         }
 
     def test_interleaved_reasoning_and_tools_keep_exact_order(self):
-        from agent.bedrock_adapter import convert_messages_to_converse, normalize_converse_response
+        from hermes_agent.agent.bedrock_adapter import convert_messages_to_converse, normalize_converse_response
 
         normalized = normalize_converse_response({
             "output": {"message": {"role": "assistant", "content": [
@@ -468,7 +468,7 @@ class TestNormalizeConverseStreamEvents:
     """Test Bedrock ConverseStream event → OpenAI format conversion."""
 
     def test_text_stream(self):
-        from agent.bedrock_adapter import normalize_converse_stream_events
+        from hermes_agent.agent.bedrock_adapter import normalize_converse_stream_events
         events = {"stream": [
             {"messageStart": {"role": "assistant"}},
             {"contentBlockStart": {"contentBlockIndex": 0, "start": {}}},
@@ -485,7 +485,7 @@ class TestNormalizeConverseStreamEvents:
         assert result.usage.completion_tokens == 3
 
     def test_redacted_reasoning_stream_is_preserved(self):
-        from agent.bedrock_adapter import normalize_converse_stream_events
+        from hermes_agent.agent.bedrock_adapter import normalize_converse_stream_events
 
         events = {"stream": [
             {"messageStart": {"role": "assistant"}},
@@ -506,7 +506,7 @@ class TestNormalizeConverseStreamEvents:
         }]
 
     def test_tool_use_stream(self):
-        from agent.bedrock_adapter import normalize_converse_stream_events
+        from hermes_agent.agent.bedrock_adapter import normalize_converse_stream_events
         events = {"stream": [
             {"messageStart": {"role": "assistant"}},
             {"contentBlockStart": {"contentBlockIndex": 0, "start": {
@@ -552,7 +552,7 @@ class TestNormalizeConverseStreamEvents:
         the text into one block per delta and let the toolUse start (index 1) overwrite the second fragment
         and sort into the middle — a ``[text, toolUse, text...]`` sidecar Claude 5 on Bedrock rejects on
         replay as "does not support assistant message prefill"."""
-        from agent.bedrock_adapter import normalize_converse_stream_events
+        from hermes_agent.agent.bedrock_adapter import normalize_converse_stream_events
         result = normalize_converse_stream_events({"stream": list(self._LIVE_TEXT_THEN_TOOL_EVENTS)})
         msg = result.choices[0].message
         assert msg.content == "I'll echo banana now."
@@ -565,7 +565,7 @@ class TestNormalizeConverseStreamEvents:
     def test_events_without_content_block_index_fall_back_to_arrival_order(self):
         """Proxies/test doubles may omit contentBlockIndex: deltas continue the current block, a start opens a
         new one, so text still lands before the toolUse instead of being overwritten by it."""
-        from agent.bedrock_adapter import normalize_converse_stream_events
+        from hermes_agent.agent.bedrock_adapter import normalize_converse_stream_events
         events = [{k: {kk: vv for kk, vv in v.items() if kk != "contentBlockIndex"} for k, v in e.items()}
                   for e in self._LIVE_TEXT_THEN_TOOL_EVENTS[:-2]]
         # Text after the tool's stop must open its own slot, not land on the closed tool block.
@@ -585,7 +585,7 @@ class TestBuildConverseKwargs:
     """Test the high-level kwargs builder for Converse API calls."""
 
     def test_basic_kwargs(self):
-        from agent.bedrock_adapter import build_converse_kwargs
+        from hermes_agent.agent.bedrock_adapter import build_converse_kwargs
         messages = [
             {"role": "system", "content": "Be helpful."},
             {"role": "user", "content": "Hi"},
@@ -601,7 +601,7 @@ class TestBuildConverseKwargs:
         assert len(kwargs["messages"]) >= 1
 
     def test_includes_tools(self):
-        from agent.bedrock_adapter import build_converse_kwargs
+        from hermes_agent.agent.bedrock_adapter import build_converse_kwargs
         tools = [{"type": "function", "function": {
             "name": "test", "description": "Test", "parameters": {},
         }}]
@@ -616,7 +616,7 @@ class TestBuildConverseKwargs:
     def test_max_tokens_none_omits_cap(self):
         """max_tokens=None omits inferenceConfig.maxTokens so Bedrock uses the
         model's maximum allowed output (the Converse field is optional)."""
-        from agent.bedrock_adapter import build_converse_kwargs
+        from hermes_agent.agent.bedrock_adapter import build_converse_kwargs
         kwargs = build_converse_kwargs(
             model="test-model",
             messages=[{"role": "user", "content": "Hi"}],
@@ -630,7 +630,7 @@ class TestBuildConverseKwargs:
     def test_max_tokens_none_and_no_sampling_drops_empty_inference_config(self):
         """When every inference param is absent, don't send an empty
         inferenceConfig object on the wire."""
-        from agent.bedrock_adapter import build_converse_kwargs
+        from hermes_agent.agent.bedrock_adapter import build_converse_kwargs
         kwargs = build_converse_kwargs(
             model="test-model",
             messages=[{"role": "user", "content": "Hi"}],
@@ -643,7 +643,7 @@ class TestBuildConverseKwargs:
         (ValidationException: "This model doesn't support the temperature field"); the
         _forbids_sampling_params guard is Claude-only, so Grok needs its own denylist.
         Sibling Bedrock models keep receiving sampling params."""
-        from agent.bedrock_adapter import build_converse_kwargs
+        from hermes_agent.agent.bedrock_adapter import build_converse_kwargs
         msgs = [{"role": "user", "content": "Hi"}]
         for model in ("us.xai.grok-4.6", "global.xai.grok-4.6"):
             cfg = build_converse_kwargs(
@@ -659,7 +659,7 @@ class TestBuildConverseKwargs:
     def test_cache_point_added_for_supported_model(self):
         """Claude and Nova on the Converse path get cachePoint markers on
         system, tools, and the message before the newest turn."""
-        from agent.bedrock_adapter import build_converse_kwargs
+        from hermes_agent.agent.bedrock_adapter import build_converse_kwargs
         tools = [{"type": "function", "function": {
             "name": "test", "description": "Test", "parameters": {},
         }}]
@@ -683,7 +683,7 @@ class TestBuildConverseKwargs:
         assert kwargs["messages"][-1]["content"][-1] != {"cachePoint": {"type": "default"}}
 
     def test_no_cache_point_for_unsupported_model(self):
-        from agent.bedrock_adapter import build_converse_kwargs
+        from hermes_agent.agent.bedrock_adapter import build_converse_kwargs
         messages = [
             {"role": "system", "content": "Be helpful."},
             {"role": "user", "content": "First"},
@@ -713,7 +713,7 @@ NOVA_TOOLS_REJECTION = (
 @pytest.fixture(autouse=True)
 def _clean_cache_point_rejections():
     """Rejections are process-wide; keep them from leaking between tests."""
-    from agent.bedrock_adapter import reset_cache_point_rejections
+    from hermes_agent.agent.bedrock_adapter import reset_cache_point_rejections
     reset_cache_point_rejections()
     yield
     reset_cache_point_rejections()
@@ -726,7 +726,7 @@ class TestCachePointRejectionRecovery:
     authority - record it, drop that one marker, and retry."""
 
     def _nova_kwargs(self):
-        from agent.bedrock_adapter import build_converse_kwargs
+        from hermes_agent.agent.bedrock_adapter import build_converse_kwargs
         return build_converse_kwargs(
             model="us.amazon.nova-pro-v1:0",
             messages=[
@@ -741,13 +741,13 @@ class TestCachePointRejectionRecovery:
         )
 
     def test_classifies_tools_rejection(self):
-        from agent.bedrock_adapter import cache_point_rejection_placement
+        from hermes_agent.agent.bedrock_adapter import cache_point_rejection_placement
         assert cache_point_rejection_placement(
             Exception(NOVA_TOOLS_REJECTION)
         ) == "tools"
 
     def test_classifies_system_and_messages_rejections(self):
-        from agent.bedrock_adapter import cache_point_rejection_placement
+        from hermes_agent.agent.bedrock_adapter import cache_point_rejection_placement
         assert cache_point_rejection_placement(Exception(
             "Malformed input request: #/system/1: extraneous key [cachePoint] "
             "is not permitted"
@@ -758,7 +758,7 @@ class TestCachePointRejectionRecovery:
         )) == "messages"
 
     def test_ignores_unrelated_errors(self):
-        from agent.bedrock_adapter import cache_point_rejection_placement
+        from hermes_agent.agent.bedrock_adapter import cache_point_rejection_placement
         assert cache_point_rejection_placement(
             Exception("ThrottlingException: Too many requests")
         ) is None
@@ -768,7 +768,7 @@ class TestCachePointRejectionRecovery:
         )) is None
 
     def test_strip_removes_only_the_rejected_placement(self):
-        from agent.bedrock_adapter import strip_cache_points
+        from hermes_agent.agent.bedrock_adapter import strip_cache_points
         kwargs = self._nova_kwargs()
         assert CACHE_POINT in kwargs["toolConfig"]["tools"]
         stripped = strip_cache_points(kwargs, "tools")
@@ -781,12 +781,12 @@ class TestCachePointRejectionRecovery:
 
     def test_strip_is_identity_when_marker_absent(self):
         """No marker to remove -> same object, so callers know a retry is futile."""
-        from agent.bedrock_adapter import strip_cache_points
+        from hermes_agent.agent.bedrock_adapter import strip_cache_points
         kwargs = {"modelId": "x", "toolConfig": {"tools": [{"toolSpec": {}}]}}
         assert strip_cache_points(kwargs, "tools") is kwargs
 
     def test_recovery_records_verdict_so_later_turns_omit_the_marker(self):
-        from agent.bedrock_adapter import recover_from_cache_point_rejection
+        from hermes_agent.agent.bedrock_adapter import recover_from_cache_point_rejection
         kwargs = self._nova_kwargs()
         retry = recover_from_cache_point_rejection(
             Exception(NOVA_TOOLS_REJECTION), kwargs
@@ -800,7 +800,7 @@ class TestCachePointRejectionRecovery:
         assert rebuilt["messages"][-2]["content"][-1] == CACHE_POINT
 
     def test_verdict_is_scoped_to_the_rejecting_model(self):
-        from agent.bedrock_adapter import (
+        from hermes_agent.agent.bedrock_adapter import (
             build_converse_kwargs,
             recover_from_cache_point_rejection,
         )
@@ -818,7 +818,7 @@ class TestCachePointRejectionRecovery:
 
     def test_recovery_declines_when_nothing_can_be_stripped(self):
         """A cachePoint rejection with no marker present must re-raise, not loop."""
-        from agent.bedrock_adapter import recover_from_cache_point_rejection
+        from hermes_agent.agent.bedrock_adapter import recover_from_cache_point_rejection
         kwargs = {"modelId": "us.amazon.nova-pro-v1:0",
                   "toolConfig": {"tools": [{"toolSpec": {}}]}}
         assert recover_from_cache_point_rejection(
@@ -826,7 +826,7 @@ class TestCachePointRejectionRecovery:
         ) is None
 
     def test_call_converse_retries_without_the_marker(self):
-        from agent.bedrock_adapter import call_converse
+        from hermes_agent.agent.bedrock_adapter import call_converse
         client = MagicMock()
         client.converse.side_effect = [
             Exception(NOVA_TOOLS_REJECTION),
@@ -835,7 +835,7 @@ class TestCachePointRejectionRecovery:
              "stopReason": "end_turn",
              "usage": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2}},
         ]
-        with patch("agent.bedrock_adapter._get_bedrock_runtime_client",
+        with patch("hermes_agent.agent.bedrock_adapter._get_bedrock_runtime_client",
                    return_value=client):
             response = call_converse(
                 region="us-east-1",
@@ -854,22 +854,22 @@ class TestCachePointRejectionRecovery:
     def test_call_converse_one_shot_carries_no_cache_point(self):
         """call_converse is the auxiliary entry point: a system + single-user request with no
         tools is never read back, so no section may carry a cachePoint (a pure cache write)."""
-        from agent.bedrock_adapter import call_converse
+        from hermes_agent.agent.bedrock_adapter import call_converse
         client = MagicMock()
         client.converse.return_value = {
             "output": {"message": {"role": "assistant", "content": [{"text": "ok"}]}},
             "stopReason": "end_turn", "usage": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2}}
-        with patch("agent.bedrock_adapter._get_bedrock_runtime_client", return_value=client):
+        with patch("hermes_agent.agent.bedrock_adapter._get_bedrock_runtime_client", return_value=client):
             call_converse(region="us-east-1", model="us.anthropic.claude-sonnet-4-6",
                           messages=[{"role": "system", "content": "Summarize."},
                                     {"role": "user", "content": "TRANSCRIPT"}])
         assert "cachePoint" not in repr(client.converse.call_args.kwargs)
 
     def test_call_converse_reraises_unrelated_errors(self):
-        from agent.bedrock_adapter import call_converse
+        from hermes_agent.agent.bedrock_adapter import call_converse
         client = MagicMock()
         client.converse.side_effect = Exception("ThrottlingException")
-        with patch("agent.bedrock_adapter._get_bedrock_runtime_client",
+        with patch("hermes_agent.agent.bedrock_adapter._get_bedrock_runtime_client",
                    return_value=client):
             with pytest.raises(Exception, match="ThrottlingException"):
                 call_converse(
@@ -889,7 +889,7 @@ class TestDiscoverBedrockModels:
 
 
     def test_provider_filter(self):
-        from agent.bedrock_adapter import discover_bedrock_models, reset_discovery_cache
+        from hermes_agent.agent.bedrock_adapter import discover_bedrock_models, reset_discovery_cache
         reset_discovery_cache()
 
         mock_client = MagicMock()
@@ -917,14 +917,14 @@ class TestDiscoverBedrockModels:
         }
         mock_client.list_inference_profiles.return_value = {"inferenceProfileSummaries": []}
 
-        with patch("agent.bedrock_adapter._get_bedrock_control_client", return_value=mock_client):
+        with patch("hermes_agent.agent.bedrock_adapter._get_bedrock_control_client", return_value=mock_client):
             models = discover_bedrock_models("us-east-1", provider_filter=["anthropic"])
 
         assert len(models) == 1
         assert models[0]["id"] == "anthropic.claude-v2"
 
     def test_caches_results(self):
-        from agent.bedrock_adapter import discover_bedrock_models, reset_discovery_cache
+        from hermes_agent.agent.bedrock_adapter import discover_bedrock_models, reset_discovery_cache
         reset_discovery_cache()
 
         mock_client = MagicMock()
@@ -941,7 +941,7 @@ class TestDiscoverBedrockModels:
         }
         mock_client.list_inference_profiles.return_value = {"inferenceProfileSummaries": []}
 
-        with patch("agent.bedrock_adapter._get_bedrock_control_client", return_value=mock_client):
+        with patch("hermes_agent.agent.bedrock_adapter._get_bedrock_control_client", return_value=mock_client):
             first = discover_bedrock_models("us-east-1")
             second = discover_bedrock_models("us-east-1")
 
@@ -951,10 +951,10 @@ class TestDiscoverBedrockModels:
 
 
     def test_handles_api_error_gracefully(self):
-        from agent.bedrock_adapter import discover_bedrock_models, reset_discovery_cache
+        from hermes_agent.agent.bedrock_adapter import discover_bedrock_models, reset_discovery_cache
         reset_discovery_cache()
 
-        with patch("agent.bedrock_adapter._get_bedrock_control_client", side_effect=Exception("No creds")):
+        with patch("hermes_agent.agent.bedrock_adapter._get_bedrock_control_client", side_effect=Exception("No creds")):
             models = discover_bedrock_models("us-east-1")
 
         assert models == []
@@ -962,13 +962,13 @@ class TestDiscoverBedrockModels:
 
 class TestExtractProviderFromArn:
     def test_extracts_anthropic(self):
-        from agent.bedrock_adapter import _extract_provider_from_arn
+        from hermes_agent.agent.bedrock_adapter import _extract_provider_from_arn
         arn = "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-4-6"
         assert _extract_provider_from_arn(arn) == "anthropic"
 
 
     def test_returns_empty_for_invalid_arn(self):
-        from agent.bedrock_adapter import _extract_provider_from_arn
+        from hermes_agent.agent.bedrock_adapter import _extract_provider_from_arn
         assert _extract_provider_from_arn("not-an-arn") == ""
         assert _extract_provider_from_arn("") == ""
 
@@ -990,7 +990,7 @@ class TestStreamConverseWithCallbacks:
         """The streaming path must fold cacheRead/WriteInputTokens into
         prompt_tokens the same way the non-streaming path does (see
         TestNormalizeConverseResponse.test_cache_tokens_folded_into_prompt_tokens)."""
-        from agent.bedrock_adapter import stream_converse_with_callbacks
+        from hermes_agent.agent.bedrock_adapter import stream_converse_with_callbacks
         events = {"stream": [
             {"messageStart": {"role": "assistant"}},
             {"contentBlockStart": {"contentBlockIndex": 0, "start": {}}},
@@ -1013,7 +1013,7 @@ class TestStreamConverseWithCallbacks:
 
     def test_text_deltas_suppressed_when_tool_use_present(self):
         """Text deltas should NOT fire when tool_use blocks are present."""
-        from agent.bedrock_adapter import stream_converse_with_callbacks
+        from hermes_agent.agent.bedrock_adapter import stream_converse_with_callbacks
         deltas = []
         events = {"stream": [
             {"messageStart": {"role": "assistant"}},
@@ -1048,7 +1048,7 @@ class TestGuardrailConfig:
     """Test that guardrail configuration is correctly passed through."""
 
     def test_guardrail_included_in_kwargs(self):
-        from agent.bedrock_adapter import build_converse_kwargs
+        from hermes_agent.agent.bedrock_adapter import build_converse_kwargs
         guardrail = {
             "guardrailIdentifier": "gr-abc123",
             "guardrailVersion": "1",
@@ -1064,7 +1064,7 @@ class TestGuardrailConfig:
 
 
     def test_no_guardrail_when_empty_dict(self):
-        from agent.bedrock_adapter import build_converse_kwargs
+        from hermes_agent.agent.bedrock_adapter import build_converse_kwargs
         kwargs = build_converse_kwargs(
             model="test-model",
             messages=[{"role": "user", "content": "Hi"}],
@@ -1079,7 +1079,7 @@ class TestGuardrailConfig:
 # ---------------------------------------------------------------------------
 
 def _openai_bedrock_id_forms():
-    from agent.bedrock_adapter import BEDROCK_OPENAI_RESPONSES_MODEL_IDS
+    from hermes_agent.agent.bedrock_adapter import BEDROCK_OPENAI_RESPONSES_MODEL_IDS
     return [f"{prefix}{model_id}" for model_id in BEDROCK_OPENAI_RESPONSES_MODEL_IDS
             for prefix in ("", "us.", "global.")]
 
@@ -1090,14 +1090,14 @@ class TestOpenAIBedrockClassifier:
 
     @pytest.mark.parametrize("model_id", _openai_bedrock_id_forms())
     def test_every_allowlisted_id_form_is_a_bedrock_openai_model(self, model_id):
-        from agent.bedrock_adapter import is_openai_bedrock_model
+        from hermes_agent.agent.bedrock_adapter import is_openai_bedrock_model
         assert is_openai_bedrock_model(model_id) is True
 
     @pytest.mark.parametrize("model_id", [
         "openai.gpt-6-astra", "openai.gpt-6-sol", "openai.gpt-6-luna", "openai.gpt-6.1-sol",
     ])
     def test_gpt6_generation_is_allowlisted(self, model_id):
-        from agent.bedrock_adapter import is_openai_bedrock_model
+        from hermes_agent.agent.bedrock_adapter import is_openai_bedrock_model
         assert is_openai_bedrock_model(model_id) is True
 
     @pytest.mark.parametrize("model_id", [
@@ -1105,7 +1105,7 @@ class TestOpenAIBedrockClassifier:
         "us.anthropic.claude-opus-5", "openai.gpt-99", "bogus.openai.gpt-6.1-sol", "", None,
     ])
     def test_non_allowlisted_ids_stay_off_the_openai_route(self, model_id):
-        from agent.bedrock_adapter import is_openai_bedrock_model
+        from hermes_agent.agent.bedrock_adapter import is_openai_bedrock_model
         assert is_openai_bedrock_model(model_id) is False
 
 
@@ -1113,18 +1113,18 @@ class TestBedrockContextLength:
     """Test Bedrock model context length lookup."""
 
     def setup_method(self):
-        from agent import bedrock_adapter
+        from hermes_agent.agent import bedrock_adapter
         bedrock_adapter.reset_client_cache()
 
     def test_unknown_model_gets_default(self):
-        from agent.bedrock_adapter import get_bedrock_context_length, BEDROCK_DEFAULT_CONTEXT_LENGTH
+        from hermes_agent.agent.bedrock_adapter import get_bedrock_context_length, BEDROCK_DEFAULT_CONTEXT_LENGTH
         assert get_bedrock_context_length("unknown.model-v1:0") == BEDROCK_DEFAULT_CONTEXT_LENGTH
 
     def test_unknown_model_fallback_is_reported_once_with_the_override(self, caplog):
         """A silent 128K fallback turned a 1M model into a 96K compression trigger; the static
         fallback must say so, name the model and the override, and not repeat every resolution."""
-        from agent.bedrock_adapter import get_bedrock_context_length, BEDROCK_DEFAULT_CONTEXT_LENGTH
-        with caplog.at_level("WARNING", logger="agent.bedrock_adapter"):
+        from hermes_agent.agent.bedrock_adapter import get_bedrock_context_length, BEDROCK_DEFAULT_CONTEXT_LENGTH
+        with caplog.at_level("WARNING", logger="hermes_agent.agent.bedrock_adapter"):
             assert get_bedrock_context_length("openai.gpt-99", probe=False) == BEDROCK_DEFAULT_CONTEXT_LENGTH
             assert get_bedrock_context_length("openai.gpt-99", probe=False) == BEDROCK_DEFAULT_CONTEXT_LENGTH
         warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
@@ -1134,33 +1134,33 @@ class TestBedrockContextLength:
         assert f"{BEDROCK_DEFAULT_CONTEXT_LENGTH:,}" in warnings[0]
 
     def test_known_model_does_not_warn(self, caplog):
-        from agent.bedrock_adapter import get_bedrock_context_length
-        with caplog.at_level("WARNING", logger="agent.bedrock_adapter"):
+        from hermes_agent.agent.bedrock_adapter import get_bedrock_context_length
+        with caplog.at_level("WARNING", logger="hermes_agent.agent.bedrock_adapter"):
             get_bedrock_context_length("us.anthropic.claude-sonnet-4-6", probe=False)
         assert not [r for r in caplog.records if r.levelname == "WARNING"]
 
     @pytest.mark.parametrize("model_id", _openai_bedrock_id_forms())
     def test_profile_prefixed_openai_ids_resolve_like_the_bare_id(self, model_id):
-        from agent.bedrock_adapter import get_bedrock_context_length
+        from hermes_agent.agent.bedrock_adapter import get_bedrock_context_length
         bare = model_id.split(".", 1)[1] if not model_id.startswith("openai.") else model_id
         assert get_bedrock_context_length(model_id, probe=False) == get_bedrock_context_length(bare, probe=False)
 
     def test_gpt61_sol_profile_gets_the_card_window(self):
         # model-card-openai-gpt-6-1-sol: "Context window: 1M tokens" (272K is the pricing tier).
-        from agent.bedrock_adapter import get_bedrock_context_length
+        from hermes_agent.agent.bedrock_adapter import get_bedrock_context_length
         assert get_bedrock_context_length("us.openai.gpt-6.1-sol", probe=False) == 1_000_000
 
     def test_gpt61_sol_profile_compression_trigger_honours_the_configured_cap(self):
         """Field report: a 400K-capped session on us.openai.gpt-6.1-sol compressed at 96,000
         (128K fallback x the small-window 75% floor). Through the real resolver and compressor,
         with the live probe unavailable, the trigger is the operator's cap."""
-        from agent.context_compressor import ContextCompressor
+        from hermes_agent.agent.context_compressor import ContextCompressor
         compressor = ContextCompressor(
             model="us.openai.gpt-6.1-sol", provider="bedrock", threshold_percent=0.5,
             base_url="https://bedrock-runtime.us-east-1.amazonaws.com", api_key="aws-sdk",
             threshold_tokens_cap=400_000, quiet_mode=True,
         )
-        with patch("agent.bedrock_adapter.probe_bedrock_context_length", return_value=None):
+        with patch("hermes_agent.agent.bedrock_adapter.probe_bedrock_context_length", return_value=None):
             assert compressor.context_length == 1_000_000
             assert compressor.threshold_tokens == 400_000
 
@@ -1169,16 +1169,16 @@ class TestBedrockContextLength:
         # Default call (no region) must NOT hit the network — returns the
         # static table value.  Guards backward compatibility for callers that
         # still invoke get_bedrock_context_length(model_id) with one arg.
-        from agent.bedrock_adapter import get_bedrock_context_length
-        with patch("agent.bedrock_adapter.probe_bedrock_context_length") as mock_probe:
+        from hermes_agent.agent.bedrock_adapter import get_bedrock_context_length
+        with patch("hermes_agent.agent.bedrock_adapter.probe_bedrock_context_length") as mock_probe:
             assert get_bedrock_context_length("anthropic.claude-opus-4-6") == 1_000_000
             mock_probe.assert_not_called()
 
     def test_static_catalog_claude_ids_match_their_anthropic_window(self):
         """Every Claude id in the Bedrock static fallback gets the same offline window as its bare
         Anthropic id, so a model added to the picker can't silently land on the 128K default."""
-        from agent.bedrock_adapter import get_bedrock_context_length
-        from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS, _longest_key_match
+        from hermes_agent.agent.bedrock_adapter import get_bedrock_context_length
+        from hermes_agent.agent.model_metadata import DEFAULT_CONTEXT_LENGTHS, _longest_key_match
         from hermes_cli.models_catalog_static import _PROVIDER_MODELS
 
         mismatched = []
@@ -1204,11 +1204,11 @@ class TestBedrockContextLength:
         (``claude-opus-4.8``) while Bedrock IDs use hyphens — normalize rather than skip, so a
         future 1M model that only ever gets a dotted alias cannot escape the check.
         """
-        from agent.bedrock_adapter import get_bedrock_context_length
-        from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS
+        from hermes_agent.agent.bedrock_adapter import get_bedrock_context_length
+        from hermes_agent.agent.model_metadata import DEFAULT_CONTEXT_LENGTHS
 
         mismatched = []
-        with patch("agent.bedrock_adapter.probe_bedrock_context_length") as mock_probe:
+        with patch("hermes_agent.agent.bedrock_adapter.probe_bedrock_context_length") as mock_probe:
             for name, expected in DEFAULT_CONTEXT_LENGTHS.items():
                 if not name.startswith("claude-") or expected < 1_000_000:
                     continue
@@ -1224,10 +1224,10 @@ class TestBedrockContextLength:
         default) to a hosted window no larger than the direct-API window DEFAULT_CONTEXT_LENGTHS
         holds for the same slug. Hosted limits come from the AWS cards and may be lower; they may
         never silently borrow the direct-API value."""
-        from agent.bedrock_adapter import (
+        from hermes_agent.agent.bedrock_adapter import (
             BEDROCK_DEFAULT_CONTEXT_LENGTH, BEDROCK_OPENAI_RESPONSES_MODEL_IDS, get_bedrock_context_length,
         )
-        from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS, _longest_key_match
+        from hermes_agent.agent.model_metadata import DEFAULT_CONTEXT_LENGTHS, _longest_key_match
 
         violations = []
         for model_id in BEDROCK_OPENAI_RESPONSES_MODEL_IDS:
@@ -1246,18 +1246,18 @@ class TestInferenceProfileContextLength:
     ARN = "arn:aws:bedrock:us-west-2:123456789012:application-inference-profile/abcdef123456"
 
     def setup_method(self):
-        from agent import bedrock_adapter
+        from hermes_agent.agent import bedrock_adapter
         bedrock_adapter._inference_profile_model_cache.clear()
 
     def test_arn_resolves_wrapped_model_window_in_the_arn_region(self):
-        # No region passed (agent/model_metadata.py::_resolve_bedrock_context_length passes none) and
+        # No region passed (hermes_agent/agent/model_metadata.py::_resolve_bedrock_context_length passes none) and
         # AWS_REGION elsewhere: the lookup must still run, in the ARN's own region, with the
         # parameter name botocore actually validates (inferenceProfileIdentifier).
-        from agent.bedrock_adapter import get_bedrock_context_length
+        from hermes_agent.agent.bedrock_adapter import get_bedrock_context_length
         client = MagicMock()
         client.get_inference_profile.return_value = {"models": [
             {"modelArn": "arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-sonnet-4-6"}]}
-        with patch("agent.bedrock_adapter._get_bedrock_control_client", return_value=client) as factory, \
+        with patch("hermes_agent.agent.bedrock_adapter._get_bedrock_control_client", return_value=client) as factory, \
                 patch.dict("os.environ", {"AWS_REGION": "us-east-1"}):
             assert get_bedrock_context_length(self.ARN, probe=False) == 1_000_000
             assert get_bedrock_context_length(self.ARN, probe=False) == 1_000_000  # cached per process
@@ -1267,11 +1267,11 @@ class TestInferenceProfileContextLength:
     def test_resolution_denied_falls_back_to_default_with_warning(self, caplog):
         # Without bedrock:GetInferenceProfile the default window applies and the silence is broken
         # with a WARNING naming the profile and the explicit-config escape hatch.
-        from agent.bedrock_adapter import get_bedrock_context_length, BEDROCK_DEFAULT_CONTEXT_LENGTH
+        from hermes_agent.agent.bedrock_adapter import get_bedrock_context_length, BEDROCK_DEFAULT_CONTEXT_LENGTH
         client = MagicMock()
         client.get_inference_profile.side_effect = Exception("AccessDeniedException")
-        with patch("agent.bedrock_adapter._get_bedrock_control_client", return_value=client), \
-                caplog.at_level("WARNING", logger="agent.bedrock_adapter"):
+        with patch("hermes_agent.agent.bedrock_adapter._get_bedrock_control_client", return_value=client), \
+                caplog.at_level("WARNING", logger="hermes_agent.agent.bedrock_adapter"):
             assert get_bedrock_context_length(self.ARN, probe=False) == BEDROCK_DEFAULT_CONTEXT_LENGTH
         warnings = [r for r in caplog.records if r.levelname == "WARNING"]
         assert len(warnings) == 1 and self.ARN in warnings[0].getMessage()
@@ -1280,12 +1280,12 @@ class TestInferenceProfileContextLength:
     def test_profile_wrapping_claude_keeps_prompt_cache_markers(self):
         # build_converse_kwargs gates cachePoint on the model id; the opaque profile ARN must be
         # resolved to the wrapped Claude (cached lookup) or the profile silently loses prompt caching.
-        from agent.bedrock_adapter import build_converse_kwargs
+        from hermes_agent.agent.bedrock_adapter import build_converse_kwargs
         client = MagicMock()
         client.get_inference_profile.return_value = {"models": [
             {"modelArn": "arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-sonnet-4-6"}]}
         messages = [{"role": "system", "content": "Be helpful."}, {"role": "user", "content": "Hi"}]
-        with patch("agent.bedrock_adapter._get_bedrock_control_client", return_value=client):
+        with patch("hermes_agent.agent.bedrock_adapter._get_bedrock_control_client", return_value=client):
             kwargs = build_converse_kwargs(model=self.ARN, messages=messages)
         assert kwargs["modelId"] == self.ARN  # the request still targets the profile
         assert kwargs["system"][-1] == {"cachePoint": {"type": "default"}}
@@ -1302,17 +1302,17 @@ class TestBedrockContextProbe:
 
 
     def test_probe_returns_none_when_client_unavailable(self):
-        from agent.bedrock_adapter import probe_bedrock_context_length
-        with patch("agent.bedrock_adapter._get_bedrock_runtime_client",
+        from hermes_agent.agent.bedrock_adapter import probe_bedrock_context_length
+        with patch("hermes_agent.agent.bedrock_adapter._get_bedrock_runtime_client",
                    side_effect=RuntimeError("boto3 missing")):
             assert probe_bedrock_context_length("any.model", "eu-central-1") is None
 
     def test_probe_result_beats_static_table(self):
         # A successful probe (1M) must override the stale table value (200K
         # via the 'anthropic.claude-opus-4' substring match).
-        from agent.bedrock_adapter import get_bedrock_context_length
+        from hermes_agent.agent.bedrock_adapter import get_bedrock_context_length
         err = "prompt is too long: 5000032 tokens > 1000000 maximum"
-        with patch("agent.bedrock_adapter._get_bedrock_runtime_client",
+        with patch("hermes_agent.agent.bedrock_adapter._get_bedrock_runtime_client",
                    return_value=self._client_raising(err)):
             assert get_bedrock_context_length(
                 "eu.anthropic.claude-opus-4-8",
@@ -1330,7 +1330,7 @@ class TestBuildConverseKwargsToolStripping:
 
 
     def test_tools_stripped_for_deepseek_r1(self):
-        from agent.bedrock_adapter import build_converse_kwargs
+        from hermes_agent.agent.bedrock_adapter import build_converse_kwargs
         tools = [{"type": "function", "function": {"name": "test", "description": "t", "parameters": {}}}]
         kwargs = build_converse_kwargs(
             model="us.deepseek.r1-v1:0",
@@ -1348,17 +1348,17 @@ class TestIsAnthropicBedrockModel:
     """Test Claude model detection for dual-path routing."""
 
     def test_us_claude_sonnet(self):
-        from agent.bedrock_adapter import is_anthropic_bedrock_model
+        from hermes_agent.agent.bedrock_adapter import is_anthropic_bedrock_model
         assert is_anthropic_bedrock_model("us.anthropic.claude-sonnet-4-6") is True
 
 
     def test_nova_is_not_anthropic(self):
-        from agent.bedrock_adapter import is_anthropic_bedrock_model
+        from hermes_agent.agent.bedrock_adapter import is_anthropic_bedrock_model
         assert is_anthropic_bedrock_model("us.amazon.nova-pro-v1:0") is False
 
 
     def test_au_inference_profile(self):
-        from agent.bedrock_adapter import is_anthropic_bedrock_model
+        from hermes_agent.agent.bedrock_adapter import is_anthropic_bedrock_model
         assert is_anthropic_bedrock_model("au.anthropic.claude-haiku-4-5-20251001-v1:0") is True
         assert is_anthropic_bedrock_model("au.anthropic.claude-sonnet-4-6") is True
 
@@ -1369,7 +1369,7 @@ class TestEmptyTextBlockFix:
     whitespace and gets rejected by the same Bedrock validation rule)."""
 
     def test_none_content_gets_placeholder(self):
-        from agent.bedrock_adapter import _convert_content_to_converse, _EMPTY_TEXT_PLACEHOLDER
+        from hermes_agent.agent.bedrock_adapter import _convert_content_to_converse, _EMPTY_TEXT_PLACEHOLDER
         blocks = _convert_content_to_converse(None)
         assert blocks[0]["text"] == _EMPTY_TEXT_PLACEHOLDER
         assert blocks[0]["text"].strip()
@@ -1385,7 +1385,7 @@ class TestInvalidateRuntimeClient:
     """Per-region eviction used to discard dead/stale bedrock-runtime clients."""
 
     def test_evicts_only_the_target_region(self):
-        from agent.bedrock_adapter import (
+        from hermes_agent.agent.bedrock_adapter import (
             _bedrock_runtime_client_cache,
             invalidate_runtime_client,
             reset_client_cache,
@@ -1403,7 +1403,7 @@ class TestInvalidateRuntimeClient:
         assert _bedrock_runtime_client_cache[("us-west-2", None)] == "live-client"
 
     def test_returns_false_when_region_not_cached(self):
-        from agent.bedrock_adapter import invalidate_runtime_client, reset_client_cache
+        from hermes_agent.agent.bedrock_adapter import invalidate_runtime_client, reset_client_cache
         reset_client_cache()
         assert invalidate_runtime_client("eu-west-1") is False
 
@@ -1414,7 +1414,7 @@ class TestIsStaleConnectionError:
 
     def test_detects_botocore_read_timeout(self):
         pytest.importorskip("botocore.exceptions", reason="botocore (with working exceptions module) required")
-        from agent.bedrock_adapter import is_stale_connection_error
+        from hermes_agent.agent.bedrock_adapter import is_stale_connection_error
         from botocore.exceptions import ReadTimeoutError
         exc = ReadTimeoutError(endpoint_url="https://bedrock.example")
         assert is_stale_connection_error(exc) is True
@@ -1423,7 +1423,7 @@ class TestIsStaleConnectionError:
     def test_detects_library_internal_assertion_error(self):
         """A bare AssertionError raised from inside urllib3/botocore signals
         a corrupted connection-pool invariant and should trigger eviction."""
-        from agent.bedrock_adapter import is_stale_connection_error
+        from hermes_agent.agent.bedrock_adapter import is_stale_connection_error
 
         # Fabricate an AssertionError whose traceback's last frame belongs
         # to a module named "urllib3.connectionpool". We do this by exec'ing
@@ -1439,7 +1439,7 @@ class TestIsStaleConnectionError:
 
 
     def test_ignores_unrelated_exceptions(self):
-        from agent.bedrock_adapter import is_stale_connection_error
+        from hermes_agent.agent.bedrock_adapter import is_stale_connection_error
         assert is_stale_connection_error(ValueError("bad input")) is False
         assert is_stale_connection_error(KeyError("missing")) is False
 
@@ -1452,7 +1452,7 @@ class TestCallConverseInvalidatesOnStaleError:
     def test_converse_does_not_evict_on_non_stale_error(self):
         """Non-stale errors (e.g. ValidationException) leave the client cache alone."""
         pytest.importorskip("botocore.exceptions", reason="botocore (with working exceptions module) required")
-        from agent.bedrock_adapter import (
+        from hermes_agent.agent.bedrock_adapter import (
             _bedrock_runtime_client_cache,
             call_converse,
             reset_client_cache,
@@ -1503,12 +1503,12 @@ class TestStreamingAccessDeniedDetection:
 
     def test_matches_access_denied_client_error(self):
         pytest.importorskip("botocore.exceptions", reason="botocore (with working exceptions module) required")
-        from agent.bedrock_adapter import is_streaming_access_denied_error
+        from hermes_agent.agent.bedrock_adapter import is_streaming_access_denied_error
         assert is_streaming_access_denied_error(self._denied_client_error()) is True
 
 
     def test_ignores_unrelated_errors(self):
-        from agent.bedrock_adapter import is_streaming_access_denied_error
+        from hermes_agent.agent.bedrock_adapter import is_streaming_access_denied_error
         assert is_streaming_access_denied_error(ValueError("boom")) is False
         assert is_streaming_access_denied_error(
             RuntimeError("stream not supported")
@@ -1528,8 +1528,8 @@ class TestAgentBedrockStreamRecovery:
     def test_streaming_denial_falls_back_to_converse_via_bedrock_stream(self):
         pytest.importorskip("botocore.exceptions", reason="botocore (with working exceptions module) required")
         from types import SimpleNamespace
-        from agent.bedrock_adapter import _bedrock_runtime_client_cache, reset_client_cache
-        from agent.chat_completion_helpers import _BedrockStream
+        from hermes_agent.agent.bedrock_adapter import _bedrock_runtime_client_cache, reset_client_cache
+        from hermes_agent.agent.chat_completion_helpers import _BedrockStream
         from botocore.exceptions import ClientError
 
         reset_client_cache()
@@ -1562,7 +1562,7 @@ class TestAgentBedrockStreamRecovery:
     @pytest.mark.parametrize("retry_fails", [False, True])
     def test_redacted_reasoning_recovery_on_agent_call_path(self, stream, retry_fails):
         from copy import deepcopy
-        from agent.chat_completion_helpers import _bedrock_converse_call
+        from hermes_agent.agent.chat_completion_helpers import _bedrock_converse_call
 
         kwargs = deepcopy(self._KW)
         kept_blocks = [
@@ -1582,7 +1582,7 @@ class TestAgentBedrockStreamRecovery:
         method.side_effect = [RuntimeError(CROSS_REGION_REJECTION),
                               second_error if retry_fails else (
                                   {"stream": events} if stream else _ok_converse_response())]
-        with patch("agent.bedrock_adapter._get_bedrock_runtime_client", return_value=client):
+        with patch("hermes_agent.agent.bedrock_adapter._get_bedrock_runtime_client", return_value=client):
             if retry_fails:
                 with pytest.raises(RuntimeError) as error:
                     _bedrock_converse_call(kwargs, stream=stream)
@@ -1606,12 +1606,12 @@ class TestAgentBedrockStreamRecovery:
 
     def test_unrelated_validation_error_is_not_retried_on_agent_stream_path(self):
         from copy import deepcopy
-        from agent.chat_completion_helpers import _bedrock_converse_call
+        from hermes_agent.agent.chat_completion_helpers import _bedrock_converse_call
 
         client = MagicMock()
         error = RuntimeError("ValidationException: invalid model identifier")
         client.converse_stream.side_effect = error
-        with patch("agent.bedrock_adapter._get_bedrock_runtime_client", return_value=client):
+        with patch("hermes_agent.agent.bedrock_adapter._get_bedrock_runtime_client", return_value=client):
             with pytest.raises(RuntimeError) as caught:
                 _bedrock_converse_call(deepcopy(self._KW), stream=True)
         assert caught.value is error
@@ -1620,8 +1620,8 @@ class TestAgentBedrockStreamRecovery:
 
     def test_stale_connection_evicts_client_on_agent_stream_path(self):
         pytest.importorskip("botocore.exceptions", reason="botocore (with working exceptions module) required")
-        from agent.bedrock_adapter import _bedrock_runtime_client_cache, reset_client_cache
-        from agent.chat_completion_helpers import _bedrock_converse_call
+        from hermes_agent.agent.bedrock_adapter import _bedrock_runtime_client_cache, reset_client_cache
+        from hermes_agent.agent.chat_completion_helpers import _bedrock_converse_call
         from botocore.exceptions import ConnectionClosedError
 
         reset_client_cache()
@@ -1647,7 +1647,7 @@ class TestRequireBoto3VersionCheck:
 
     def test_raises_runtime_error_when_boto3_too_old(self):
         """boto3 < 1.34.59 should raise RuntimeError with upgrade instructions."""
-        from agent.bedrock_adapter import _require_boto3
+        from hermes_agent.agent.bedrock_adapter import _require_boto3
 
         fake_boto3 = MagicMock()
         fake_boto3.__version__ = "1.34.46"
@@ -1658,7 +1658,7 @@ class TestRequireBoto3VersionCheck:
     def test_missing_boto3_error_reports_why_the_lazy_install_did_not_land(self, monkeypatch):
         """A completed install that needs a restart must not tell the user to install it again."""
         import pm
-        from agent.bedrock_adapter import _require_boto3
+        from hermes_agent.agent.bedrock_adapter import _require_boto3
         from pm.package import InstallError
 
         restart = InstallError("venv", "bedrock installed; restart Hermes to activate the new dependency environment")
@@ -1684,7 +1684,7 @@ class TestImageBase64Decoding:
     """
 
     def test_data_url_decoded_to_bytes(self):
-        from agent.bedrock_adapter import _convert_content_to_converse
+        from hermes_agent.agent.bedrock_adapter import _convert_content_to_converse
         import base64
 
         # A tiny 1x1 red PNG
@@ -1704,7 +1704,7 @@ class TestImageBase64Decoding:
         assert img_block["source"]["bytes"] == raw_png
 
     def test_invalid_base64_falls_back_to_encode(self):
-        from agent.bedrock_adapter import _convert_content_to_converse
+        from hermes_agent.agent.bedrock_adapter import _convert_content_to_converse
 
         data_url = "data:image/jpeg;base64,NOT_VALID_BASE64!!!"
         content = [{"type": "image_url", "image_url": {"url": data_url}}]
@@ -1771,7 +1771,7 @@ CROSS_REGION_REJECTION = (
 
 def _kimi_turn_history():
     """Turn 1 as the ConverseStream path captures it: signed thinking, a sealed blob, then a tool call."""
-    from agent.bedrock_adapter import normalize_converse_stream_events
+    from hermes_agent.agent.bedrock_adapter import normalize_converse_stream_events
     events = [
         {"messageStart": {"role": "assistant"}},
         {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"reasoningContent": {"text": "let me think"}}}},
@@ -1808,7 +1808,7 @@ class TestReasoningReplaySchema:
         pytest.importorskip("botocore.session", reason="botocore (bedrock extra) required")
         import botocore.session
         from botocore.validate import validate_parameters
-        from agent.bedrock_adapter import call_converse
+        from hermes_agent.agent.bedrock_adapter import call_converse
         shape = botocore.session.get_session().get_service_model("bedrock-runtime").operation_model("Converse").input_shape
         client = MagicMock()
 
@@ -1816,7 +1816,7 @@ class TestReasoningReplaySchema:
             validate_parameters(kwargs, shape)  # the real client's client-side validation
             return _ok_converse_response()
         client.converse.side_effect = converse
-        with patch("agent.bedrock_adapter._get_bedrock_runtime_client", return_value=client):
+        with patch("hermes_agent.agent.bedrock_adapter._get_bedrock_runtime_client", return_value=client):
             response = call_converse(region="us-east-1", model="global.moonshotai.kimi-k3", messages=_kimi_turn_history())
         assert response.choices[0].message.content == "done"
         replayed = client.converse.call_args.kwargs["messages"][1]["content"]
@@ -1825,7 +1825,7 @@ class TestReasoningReplaySchema:
         assert "toolUse" in replayed[2]
 
     def test_sync_response_reads_nested_reasoning_text(self):
-        from agent.bedrock_adapter import normalize_converse_response
+        from hermes_agent.agent.bedrock_adapter import normalize_converse_response
         msg = normalize_converse_response({
             "output": {"message": {"role": "assistant", "content": [
                 {"reasoningContent": {"reasoningText": {"text": "hmm", "signature": "s"}}}, {"text": "hi"}]}},
@@ -1840,10 +1840,10 @@ class TestSealedReasoningResendOnce:
     rejects it with ValidationException. Drop the sealed blocks, keep everything else, resend once (#115865)."""
 
     def test_call_converse_strips_sealed_blocks_and_keeps_other_turns_intact(self):
-        from agent.bedrock_adapter import call_converse
+        from hermes_agent.agent.bedrock_adapter import call_converse
         client = MagicMock()
         client.converse.side_effect = [Exception(CROSS_REGION_REJECTION), _ok_converse_response()]
-        with patch("agent.bedrock_adapter._get_bedrock_runtime_client", return_value=client):
+        with patch("hermes_agent.agent.bedrock_adapter._get_bedrock_runtime_client", return_value=client):
             response = call_converse(region="us-east-1", model="global.moonshotai.kimi-k3", messages=_kimi_turn_history())
         assert response.choices[0].message.content == "done"
         assert client.converse.call_count == 2
@@ -1852,10 +1852,10 @@ class TestSealedReasoningResendOnce:
         assert resent[0] == first[0] and resent[2] == first[2]  # untouched turns are replayed verbatim
 
     def test_call_converse_reraises_when_nothing_sealed_remains(self):
-        from agent.bedrock_adapter import call_converse
+        from hermes_agent.agent.bedrock_adapter import call_converse
         client = MagicMock()
         client.converse.side_effect = Exception(CROSS_REGION_REJECTION)
-        with patch("agent.bedrock_adapter._get_bedrock_runtime_client", return_value=client):
+        with patch("hermes_agent.agent.bedrock_adapter._get_bedrock_runtime_client", return_value=client):
             with pytest.raises(Exception, match="ValidationException"):
                 call_converse(region="us-east-1", model="m", messages=[{"role": "user", "content": "hi"}])
         assert client.converse.call_count == 1

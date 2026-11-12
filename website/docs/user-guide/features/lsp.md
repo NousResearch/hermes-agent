@@ -503,7 +503,7 @@ The same warning is logged once at server spawn time in
 
 **Server starts but never returns diagnostics**
 
-Check `~/.hermes/logs/agent.log` for `[agent.lsp.client]` entries —
+Check `~/.hermes/logs/agent.log` for `[hermes_agent.agent.lsp.client]` entries —
 both stderr from the language server and protocol errors land
 there. Some servers (rust-analyzer especially) need to finish a
 project-wide index before they emit per-file diagnostics; the first

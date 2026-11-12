@@ -30,8 +30,8 @@ import fire
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeElapsedColumn, TimeRemainingColumn
 from rich.console import Console
 from hermes_constants import OPENROUTER_BASE_URL, get_hermes_home
-from agent.compression_marker import elide_middle
-from agent.retry_utils import jittered_backoff
+from hermes_agent.agent.compression_marker import elide_middle
+from hermes_agent.agent.retry_utils import jittered_backoff
 from hermes_cli.env_loader import load_hermes_dotenv
 from hermes_cli._startup_fast import project_root_str
 
@@ -42,7 +42,7 @@ load_hermes_dotenv(hermes_home=get_hermes_home(), project_env=Path(project_root_
 def _response_finish_reason(response: Any) -> str:
     """Lowercased ``choices[0].finish_reason`` of a dict/object response, ``""`` if absent.
 
-    Local copy of ``agent.context_compressor._response_finish_reason``: this
+    Local copy of ``hermes_agent.agent.context_compressor._response_finish_reason``: this
     standalone CLI deliberately avoids importing the heavy context compressor.
     """
     try:
@@ -61,7 +61,7 @@ def _effective_temperature_for_model(model: str, requested_temperature: Optional
     callers must omit the ``temperature`` kwarg entirely in that case.
     """
     try:
-        from agent.auxiliary_client import _fixed_temperature_for_model, OMIT_TEMPERATURE
+        from hermes_agent.agent.auxiliary_client import _fixed_temperature_for_model, OMIT_TEMPERATURE
     except Exception:
         return requested_temperature
     fixed_temperature = _fixed_temperature_for_model(model, base_url)
@@ -308,7 +308,7 @@ class TrajectoryCompressor:
         self._use_call_llm = bool(provider)
         if provider:
             self._llm_provider = provider
-            from agent.auxiliary_client import resolve_provider_client
+            from hermes_agent.agent.auxiliary_client import resolve_provider_client
             client, _ = resolve_provider_client(provider, model=self.config.summarization_model)
             if client is None:
                 raise RuntimeError(f"Provider '{provider}' is not configured. Check your API key or run: hermes setup")
@@ -319,7 +319,7 @@ class TrajectoryCompressor:
             if not api_key:
                 raise RuntimeError(f"Missing API key. Set {self.config.api_key_env} environment variable.")
             from openai import OpenAI
-            from agent.auxiliary_client import _to_openai_base_url
+            from hermes_agent.agent.auxiliary_client import _to_openai_base_url
             self.client = OpenAI(api_key=api_key, base_url=_to_openai_base_url(self.config.base_url))
             # AsyncOpenAI is created lazily in _get_async_client() so it binds to the current event
             # loop — each process_directory() runs its own asyncio.run(); a shared client would hit
@@ -332,7 +332,7 @@ class TrajectoryCompressor:
     def _get_async_client(self):
         """Return a fresh AsyncOpenAI client bound to the running event loop."""
         from openai import AsyncOpenAI
-        from agent.auxiliary_client import _to_openai_base_url
+        from hermes_agent.agent.auxiliary_client import _to_openai_base_url
         self.async_client = AsyncOpenAI(api_key=self._async_client_api_key, base_url=_to_openai_base_url(self.config.base_url))
         return self.async_client
 
@@ -461,7 +461,7 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                 metrics.summarization_api_calls += 1
                 temperature, kwargs = self._summary_request(prompt)
                 if getattr(self, '_use_call_llm', False):
-                    from agent.auxiliary_client import call_llm
+                    from hermes_agent.agent.auxiliary_client import call_llm
                     response = call_llm(provider=self._llm_provider, temperature=temperature, **kwargs)
                 else:
                     response = self.client.chat.completions.create(**kwargs)
@@ -480,7 +480,7 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                 metrics.summarization_api_calls += 1
                 temperature, kwargs = self._summary_request(prompt)
                 if getattr(self, '_use_call_llm', False):
-                    from agent.auxiliary_client import async_call_llm
+                    from hermes_agent.agent.auxiliary_client import async_call_llm
                     response = await async_call_llm(provider=self._llm_provider, temperature=temperature, **kwargs)
                 else:
                     response = await self._get_async_client().chat.completions.create(**kwargs)

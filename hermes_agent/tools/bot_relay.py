@@ -521,7 +521,7 @@ def delivery_turn_author(from_profile: Any, from_handle: Any, from_connection: A
     them. A relayed DM always comes from another gateway, so the id carries the Desktop's id for the sender's
     connection (``local`` included) and only the recipient's own profiles are bare ``bot:<profile>``. None when
     the envelope names no sender."""
-    from agent.turn_author import bot_author_id
+    from hermes_agent.agent.turn_author import bot_author_id
 
     profile = str(from_profile or "").strip()
     if not profile:
@@ -549,7 +549,7 @@ def relaying_principal_author(principal: str) -> dict:
     Honcho writes a bot-authored turn into the bot's own a2a session and refuses conclusion / profile /
     mirror writes for it, while an unattributed turn is treated as the human's (#107598 review). The
     human-facing signature stays in the message text the sender composed."""
-    from agent.turn_author import bot_author_id
+    from hermes_agent.agent.turn_author import bot_author_id
 
     return {"id": bot_author_id("relay", str(principal or "").strip()), "name": "relayed teammate", "is_bot": True}
 
@@ -565,8 +565,8 @@ def delivery_env(author: Optional[dict], profile_home: str | Path | None = None)
     ``os.environ``; ``-p`` alone only pinned HERMES_HOME. ``profile_home`` is the target's home when the
     caller knows it (relay RPC, roster); otherwise the active override, and under multiplex the launch
     home."""
-    from agent.secret_scope import current_secret_scope, is_multiplex_active
-    from agent.turn_author import TURN_AUTHOR_ENV, turn_author_env
+    from hermes_agent.agent.secret_scope import current_secret_scope, is_multiplex_active
+    from hermes_agent.agent.turn_author import TURN_AUTHOR_ENV, turn_author_env
     from hermes_constants import get_hermes_home_override, get_routing_process_hermes_home
     from hermes_agent.tools.environments.local import served_profile_child_env
 

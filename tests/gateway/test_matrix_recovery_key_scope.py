@@ -4,7 +4,7 @@ secondary profile resolves its own recovery key (not the default profile's),
 otherwise E2EE cross-signing verification fails with "Key MAC does not match".
 
 The fix routes the recovery-key read through ``_scoped_recovery_key()``,
-which uses :func:`agent.secret_scope.get_secret` (scope-aware) and only falls
+which uses :func:`hermes_agent.agent.secret_scope.get_secret` (scope-aware) and only falls
 back to ``os.getenv`` for an *unscoped* read under multiplex — mirroring the
 established Slack app-token pattern (#59739).
 
@@ -16,7 +16,7 @@ to the default profile's configured path.
 """
 import pytest
 
-from agent import secret_scope as ss
+from hermes_agent.agent import secret_scope as ss
 from plugins.platforms.matrix.adapter import _recovery_key_output_path, _scoped_recovery_key
 
 

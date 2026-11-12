@@ -244,7 +244,7 @@ def forward_prompt(sid: str, session: dict, text: str, *, emit=None, home: Path 
         raise OwnerUnavailable("the chat has no stored session yet")
     home = Path(home or session.get("profile_home") or server._hermes_home).resolve()
     relay = _Relay(sid, session, key, home, discover_owner(home), text, emit or server._emit)
-    from agent.memory_provider import spawn_context_thread
+    from hermes_agent.agent.memory_provider import spawn_context_thread
     spawn_context_thread(relay.run, name=f"owner-forward-{key[:24]}").start()
     try:
         return relay.admitted.result(timeout=ADMIT_TIMEOUT_S)

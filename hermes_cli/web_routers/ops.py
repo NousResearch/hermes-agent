@@ -350,7 +350,7 @@ def _pool_entry_summary(entry: Any, index: int) -> dict[str, Any]:
 
 @router.get("/api/credentials/pool")
 async def list_credential_pool(profile: Optional[str] = None):
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
     from hermes_cli.auth import read_credential_pool
 
     def _run():
@@ -380,7 +380,7 @@ async def list_credential_pool(profile: Optional[str] = None):
 @router.post("/api/credentials/pool")
 async def add_credential_pool_entry(body: CredentialPoolAdd, profile: Optional[str] = None):
     import uuid
-    from agent.credential_pool import (
+    from hermes_agent.agent.credential_pool import (
         AUTH_TYPE_API_KEY,
         CUSTOM_POOL_PREFIX,
         SOURCE_MANUAL,
@@ -448,8 +448,8 @@ async def remove_credential_pool_entry(provider: str, index: int, profile: Optio
 
     See #55217.
     """
-    from agent.credential_pool import load_pool
-    from agent.credential_sources import find_removal_step
+    from hermes_agent.agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_sources import find_removal_step
     from hermes_cli.auth import suppress_credential_source
 
     provider = (provider or "").strip().lower()
@@ -676,7 +676,7 @@ async def list_hooks(profile: Optional[str] = None):
     script is currently executable, and the valid hook events for the form."""
     def _run():
         from hermes_cli.config import load_config as _load_config
-        from agent import shell_hooks
+        from hermes_agent.agent import shell_hooks
 
         valid_events = []
         with contextlib.suppress(Exception):
@@ -727,7 +727,7 @@ async def create_hook(body: HookCreate, profile: Optional[str] = None):
     ``hooks:`` block and, with ``approve``, records the allowlist entry so the
     hook actually fires. Takes effect on the next session / gateway restart.
     """
-    from agent import shell_hooks
+    from hermes_agent.agent import shell_hooks
 
     # Creating an auto-approved shell hook is strictly more privileged than removing one:
     # it writes an arbitrary command into `hooks:` and, with `approve`, into that profile's
@@ -773,7 +773,7 @@ async def create_hook(body: HookCreate, profile: Optional[str] = None):
 @router.delete("/api/ops/hooks")
 async def delete_hook(body: HookDelete, profile: Optional[str] = None):
     """Remove a hook from config.yaml and revoke its consent allowlist entry."""
-    from agent import shell_hooks
+    from hermes_agent.agent import shell_hooks
 
     profile = destructive_profile(profile, "DELETE /api/ops/hooks")
     event, command = _hook_body_fields(body)

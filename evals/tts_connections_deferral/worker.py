@@ -253,7 +253,7 @@ if ARM in ARMS:  # every arm pins its sentence: the tree's own default may be ei
 TOOLSETS = ["clarify", "code_execution", "cronjob", "file", "memory", "session_search", "skills", "terminal",
             "todo", "vision", "image_gen", "tts", "connections"]
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 agent = AIAgent(base_url=INFER_URL, api_key=INFER_KEY, provider="custom", model=MODEL, quiet_mode=True, skip_context_files=True,
                 skip_memory=True, skip_background_review=True, enabled_toolsets=TOOLSETS, max_iterations=20,
@@ -271,7 +271,7 @@ if DRY:
     import socket
     from types import SimpleNamespace
 
-    from agent.inline_tool_executors import _manage_connections
+    from hermes_agent.agent.inline_tool_executors import _manage_connections
     from hermes_agent.tools.terminal_tool import terminal_tool
 
     real_home = os.environ.get("TCD_REAL_HERMES_HOME") or "/nonexistent"

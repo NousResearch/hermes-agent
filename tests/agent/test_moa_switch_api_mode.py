@@ -55,7 +55,7 @@ def test_switch_to_moa_pins_chat_completions(monkeypatch, incoming_api_mode):
     loop dispatches through the MoAClient chat.completions facade rather than
     .responses.create against the moa://local placeholder.
     """
-    from agent import agent_runtime_helpers as arh
+    from hermes_agent.agent import agent_runtime_helpers as arh
 
     # Neutralize the post-swap machinery that needs a real AIAgent (credential
     # pool reload, context-compressor refresh, primary-runtime bookkeeping).

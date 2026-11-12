@@ -9,7 +9,7 @@ from tests.gateway.test_managed_turn_contract import assignment
 
 
 def _execute(tmp_path, monkeypatch, events, *, start_error=None, close_error=None):
-    from agent import managed_worker as worker
+    from hermes_agent.agent import managed_worker as worker
 
     class RPC:
         def __init__(self, home): pass
@@ -46,11 +46,11 @@ def _execute(tmp_path, monkeypatch, events, *, start_error=None, close_error=Non
     monkeypatch.setattr(worker, 'discover_profile_mcp', lambda policy: None)
     monkeypatch.setattr(worker, 'retire_agent', lambda agent: None)
     monkeypatch.setattr(worker, 'WorkerControls', Controls)
-    monkeypatch.setattr('agent.runtime_session_store.WorkerRPC', RPC)
-    monkeypatch.setattr('agent.runtime_session_store.RuntimeSessionStore', Store)
+    monkeypatch.setattr('hermes_agent.agent.runtime_session_store.WorkerRPC', RPC)
+    monkeypatch.setattr('hermes_agent.agent.runtime_session_store.RuntimeSessionStore', Store)
     monkeypatch.setattr('hermes_agent.tools.process_registry.process_registry.recover_from_checkpoint', lambda: None)
-    monkeypatch.setattr('run_agent.AIAgent', Agent)
-    monkeypatch.setattr('agent.title_generator.wait_for_title_upgrades', lambda: None)
+    monkeypatch.setattr('hermes_agent.run_agent.AIAgent', Agent)
+    monkeypatch.setattr('hermes_agent.agent.title_generator.wait_for_title_upgrades', lambda: None)
     worker.execute(frame, SimpleNamespace(send=lambda kind, **payload: events.append(kind)))
 
 

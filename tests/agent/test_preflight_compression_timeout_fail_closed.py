@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.turn_context import (
+from hermes_agent.agent.turn_context import (
     PreflightCompressionTimedOut,
     _fail_closed_after_preflight_timeout,
 )

@@ -1,7 +1,7 @@
 """Bot Mode roster probe — canonical Bot Chat system prompt section.
 
 When any profile carries ``ui_meta['hermes-bots']`` in profile.yaml (Bot-Mode-managed),
-a bot's canonical "Bot Chat" session — ONLY that session (agent/system_prompt.py enforces
+a bot's canonical "Bot Chat" session — ONLY that session (hermes_agent/agent/system_prompt.py enforces
 the ``BOT_CHAT_TITLE`` gate) — gets a "Messaging other agents" section. Silent (``""``)
 when no profile is managed or on any error. Older desktop builds appended a frozen copy of
 the section to SOUL.md; ``strip_legacy_protocol`` drops it at load time so the live roster
@@ -349,7 +349,7 @@ def get_bot_mode_protocol_section(home: str | os.PathLike | None = None, *, forc
 # Bot Chat sessions are effectively eternal, so "build the prompt once" would strand
 # capability changes (skills, toolsets, MCP, SOUL, roster, peers, model capability
 # overrides that change the prompt) forever. The fingerprint hashes exactly that
-# surface; the built prompt embeds it and agent/conversation_loop.py rebuilds only
+# surface; the built prompt embeds it and hermes_agent/agent/conversation_loop.py rebuilds only
 # when the stored epoch differs from disk — once per change, never per-turn drift.
 
 _EPOCH_PREFIX = "Capability epoch: "
@@ -364,7 +364,7 @@ def _model_prompt_capability_surface(model_cfg: object) -> dict:
     context files. Routing keys (provider, default, base_url) are identity lines, not this
     surface — and no model id is special-cased.
     """
-    from agent.image_routing import _coerce_capability_bool
+    from hermes_agent.agent.image_routing import _coerce_capability_bool
 
     if not isinstance(model_cfg, dict):
         model_cfg = {}
@@ -400,7 +400,7 @@ def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
     try:
         # Canonical loader (managed overlay + env expansion + normalization),
         # scoped to the bot's home via the override the loaders already honor.
-        from agent.skill_utils import parse_config_string_list
+        from hermes_agent.agent.skill_utils import parse_config_string_list
         from hermes_cli.config import load_config_readonly
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
@@ -440,7 +440,7 @@ def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
         # epoch and forced every Bot Chat to rebuild a system prompt whose skills index had not changed.
         # iter_skill_index_files is also org-token-gated, so the epoch moves on an org switch as well —
         # intended: a different org sees a different skills index, so it needs a different prompt.
-        from agent.skill_utils import iter_skill_index_files
+        from hermes_agent.agent.skill_utils import iter_skill_index_files
 
         return sorted(str(p.parent.relative_to(skills_root))
                       for p in iter_skill_index_files(skills_root, "SKILL.md"))

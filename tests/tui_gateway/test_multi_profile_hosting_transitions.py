@@ -39,7 +39,7 @@ def two_homes(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_hermes_home", root)
     monkeypatch.setattr(server, "_served_profile_homes", set())
     monkeypatch.setattr(lpp, "_snapshot", None)
-    monkeypatch.setattr("agent.secret_scope._MULTIPLEX_ACTIVE", False)
+    monkeypatch.setattr("hermes_agent.agent.secret_scope._MULTIPLEX_ACTIVE", False)
     return root, b
 
 
@@ -55,7 +55,7 @@ def test_send_keeps_external_source_value_over_raw_dotenv(two_homes, monkeypatch
                         {str(b.resolve()): {"SHARED_TOKEN": "b-manager-fresh"}})
     monkeypatch.setattr(env_loader, "_APPLIED_HOMES", {str(b.resolve())})
     with server._session_profile_runtime_scope({"profile_home": str(b)}):
-        from agent.secret_scope import current_secret_scope, get_secret
+        from hermes_agent.agent.secret_scope import current_secret_scope, get_secret
         assert get_secret("SHARED_TOKEN") == "b-manager-fresh"
         _load_hermes_env()
         assert get_secret("SHARED_TOKEN") == "b-manager-fresh"
@@ -65,7 +65,7 @@ def test_send_keeps_external_source_value_over_raw_dotenv(two_homes, monkeypatch
 def test_launch_body_survives_first_secondary_activation(two_homes):
     """Barrier: the launch RPC enters single-profile, B activates on another thread, the launch RPC
     resumes and still resolves its env-injected credential instead of raising."""
-    from agent.secret_scope import get_secret, is_multiplex_active
+    from hermes_agent.agent.secret_scope import get_secret, is_multiplex_active
 
     _root, b = two_homes
     entered, activated = threading.Event(), threading.Event()
@@ -91,7 +91,7 @@ def test_launch_body_survives_first_secondary_activation(two_homes):
 
 def test_launch_body_survives_first_secondary_activation_on_the_dashboard(two_homes, monkeypatch):
     pytest.importorskip("fastapi")
-    from agent.secret_scope import get_secret
+    from hermes_agent.agent.secret_scope import get_secret
     from hermes_cli import web_server_profiles as wsp
 
     _root, b = two_homes
@@ -117,7 +117,7 @@ def test_launch_body_survives_first_secondary_activation_on_the_dashboard(two_ho
 
 
 def test_release_resets_every_scope_when_one_reset_fails(two_homes, monkeypatch):
-    from agent.secret_scope import current_secret_scope
+    from hermes_agent.agent.secret_scope import current_secret_scope
     from hermes_constants import get_hermes_home_override
     from hermes_agent.tools import terminal_scope
 

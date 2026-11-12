@@ -7,7 +7,7 @@ wire) and #75202 (strict Responses-compatible providers reject an empty
 import json
 from pathlib import Path
 
-from agent.codex_responses_adapter import _chat_messages_to_responses_input
+from hermes_agent.agent.codex_responses_adapter import _chat_messages_to_responses_input
 
 
 def test_reasoning_without_tool_keeps_nonempty_following_item():

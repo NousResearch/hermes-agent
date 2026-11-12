@@ -84,7 +84,7 @@ def await_permission(
 
     Clients materialise the request's ``tool_call`` as a pending bubble, so once the answer is
     in, ``send_update`` (when given) closes it: ``completed`` for an allow, ``failed`` otherwise."""
-    from agent.async_utils import safe_schedule_threadsafe
+    from hermes_agent.agent.async_utils import safe_schedule_threadsafe
 
     coro = request_permission_fn(session_id=session_id, tool_call=tool_call, options=options)
     future = safe_schedule_threadsafe(coro, loop, logger=logger, log_message=f"{what}: failed to schedule on loop")

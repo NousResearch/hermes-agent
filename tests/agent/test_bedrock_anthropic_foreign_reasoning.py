@@ -21,9 +21,9 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from agent.anthropic_message_convert import convert_messages_to_anthropic
-from agent.bedrock_adapter import CONVERSE_ISSUER_TYPE
-from agent.error_classifier import FailoverReason, classify_api_error
+from hermes_agent.agent.anthropic_message_convert import convert_messages_to_anthropic
+from hermes_agent.agent.bedrock_adapter import CONVERSE_ISSUER_TYPE
+from hermes_agent.agent.error_classifier import FailoverReason, classify_api_error
 
 CLAUDE = "global.anthropic.claude-opus-5-5"
 GPT = "us.openai.gpt-6.1-sol"
@@ -126,8 +126,8 @@ def test_unresolved_profile_arn_stamp_keeps_claudes_own_thinking(monkeypatch, wi
     """A Claude configured by application-profile ARN stamps its Converse turns with the ARN. When
     GetInferenceProfile is not granted the ARN stays unresolved: that issuer is unknown, not foreign, so a
     switch to a plain Claude id keeps the turn's signed thinking on both Bedrock wires."""
-    import agent.bedrock_adapter as bedrock
-    from agent.bedrock_adapter import convert_messages_to_converse
+    import hermes_agent.agent.bedrock_adapter as bedrock
+    from hermes_agent.agent.bedrock_adapter import convert_messages_to_converse
 
     monkeypatch.setitem(bedrock._inference_profile_model_cache, PROFILE_ARN, PROFILE_ARN)
     history = [{"role": "user", "content": "q1"}, _claude_turn("a1", "claude-sig-1", issuer=PROFILE_ARN),
@@ -141,8 +141,8 @@ def test_unresolved_profile_arn_stamp_keeps_claudes_own_thinking(monkeypatch, wi
 
 @pytest.mark.parametrize("wire", ["anthropic", "converse"])
 def test_profile_arn_resolving_to_gpt_still_drops_its_reasoning(monkeypatch, wire):
-    import agent.bedrock_adapter as bedrock
-    from agent.bedrock_adapter import convert_messages_to_converse
+    import hermes_agent.agent.bedrock_adapter as bedrock
+    from hermes_agent.agent.bedrock_adapter import convert_messages_to_converse
 
     monkeypatch.setitem(bedrock._inference_profile_model_cache, PROFILE_ARN,
                         "arn:aws:bedrock:us-east-1::foundation-model/openai.gpt-6.1-sol")
@@ -232,7 +232,7 @@ class _FakeConverse:
 
 @pytest.fixture()
 def bedrock_claude_agent(monkeypatch):
-    import run_agent
+    from hermes_agent import run_agent
 
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIATESTTESTTESTTEST")
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "test-secret")
@@ -247,8 +247,8 @@ def bedrock_claude_agent(monkeypatch):
     log: list[dict] = []
     converse_models: list[str] = []
     client = SimpleNamespace(messages=_FakeMessages(log), close=lambda: None)
-    monkeypatch.setattr("agent.anthropic_adapter.build_anthropic_bedrock_client", lambda *a, **k: client)
-    monkeypatch.setattr("agent.bedrock_adapter._get_bedrock_runtime_client",
+    monkeypatch.setattr("hermes_agent.agent.anthropic_adapter.build_anthropic_bedrock_client", lambda *a, **k: client)
+    monkeypatch.setattr("hermes_agent.agent.bedrock_adapter._get_bedrock_runtime_client",
                         lambda *a, **k: _FakeConverse(converse_models))
 
     agent = run_agent.AIAgent(

@@ -28,7 +28,7 @@ class HumanInputRequest:
 
 def _redacted(text: str) -> str:
     try:
-        from agent.redact import redact_approval_display
+        from hermes_agent.agent.redact import redact_approval_display
         return redact_approval_display(text, force=True)
     except Exception:
         logger.debug("human-input hook prompt redaction failed", exc_info=True)

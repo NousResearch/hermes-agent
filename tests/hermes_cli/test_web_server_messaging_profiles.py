@@ -161,8 +161,8 @@ def test_scoped_onepassword_credential_counts_only_when_the_source_is_enabled(
 ):
     """A 1Password-mapped token is set/configured only when the profile's source is on and resolves it
     to a value."""
-    from agent.secret_sources.base import FetchResult
-    from agent.secret_sources.onepassword import OnePasswordSource
+    from hermes_agent.agent.secret_sources.base import FetchResult
+    from hermes_agent.agent.secret_sources.onepassword import OnePasswordSource
 
     fetched = []
 

@@ -42,10 +42,10 @@ def opens_spy(monkeypatch):
 
 def _writers(home: Path, monkeypatch):
     """``(label, callable, target_path)`` for every private-credential writer."""
-    from agent import anthropic_credentials
-    from agent.secret_sources._cache import CachedFetch, DiskCache
-    from agent.proxy_sources import iron_proxy
-    from agent.vault_store import VaultStore
+    from hermes_agent.agent import anthropic_credentials
+    from hermes_agent.agent.secret_sources._cache import CachedFetch, DiskCache
+    from hermes_agent.agent.proxy_sources import iron_proxy
+    from hermes_agent.agent.vault_store import VaultStore
     from hermes_agent.gateway import pairing
     from hermes_cli import auth as auth_mod
     from hermes_cli import process_identity

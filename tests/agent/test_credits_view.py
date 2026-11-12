@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent.account_usage import build_credits_view
+from hermes_agent.agent.account_usage import build_credits_view
 from hermes_cli.nous_account import NousPortalAccountInfo, NousPaidServiceAccessInfo
 
 def _account(**kwargs) -> NousPortalAccountInfo:

@@ -416,7 +416,7 @@ The auth code is single-use and short-lived (typically a few minutes). Send
   protect against SSRF scenarios where a crafted event could redirect the
   bearer token to the GCE metadata service.
 - **Redaction**: Service Account emails, subscription paths, and topic paths
-  are stripped from log output by `agent/redact.py`. The debug envelope dump
+  are stripped from log output by `hermes_agent/agent/redact.py`. The debug envelope dump
   (`GOOGLE_CHAT_DEBUG_RAW=1`) routes through the same redaction filter and
   logs at DEBUG level.
 - **Compliance**: if you plan to connect this bot to a regulated workspace

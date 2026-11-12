@@ -1,6 +1,6 @@
 """The onboarding chat's per-session pieces, shared by every runtime that hosts it (the session
 authority's local turns and the old sidecar): the ``onboarding`` toolset fold-in, the scripted opening
-and the per-turn note. Pure over the agent and the run record (``agent.onboarding_record``)."""
+and the per-turn note. Pure over the agent and the run record (``hermes_agent.agent.onboarding_record``)."""
 
 from __future__ import annotations
 
@@ -29,8 +29,8 @@ def onboarding_toolsets(enabled, db, session_id: str):
     """*enabled* plus ``onboarding`` for a chat whose run is in progress. Decided once, at agent build:
     the tool array is part of the cached prefix, so a finished run keeps setup_beat (as a refusal)
     until the session is rebuilt."""
-    from agent.onboarding_flow import is_active
-    from agent.onboarding_record import load
+    from hermes_agent.agent.onboarding_flow import is_active
+    from hermes_agent.agent.onboarding_record import load
     if keeps_toolsets(enabled):
         return enabled
     return with_onboarding(enabled) if is_active(load(db, session_id)) else enabled
@@ -41,7 +41,7 @@ def onboarding_chat_toolsets(enabled, db, session_id: str):
     an onboarding chat. Keyed on the record existing, never on the run being open, because the
     authority resolves toolsets every turn and the tool array is part of the cached prefix: a run that
     ends must not change it mid-conversation (setup_beat answers a finished run with a refusal)."""
-    from agent.onboarding_record import load
+    from hermes_agent.agent.onboarding_record import load
     if keeps_toolsets(enabled) or db is None:
         return enabled
     tip = db.get_compression_tip(session_id) or session_id
@@ -58,9 +58,9 @@ def carry_onboarding_toolset(enabled, agent):
 def onboarding_prelude(agent, history: Iterable[dict]) -> Iterator[tuple[str, str, dict]] | None:
     """The opening's scripted step, greeting and name card, while the name beat was never shown. A
     greeting already in the chat (a relaunch) is not said twice."""
-    from agent.onboarding_flow import PENDING, is_active
-    from agent.onboarding_record import load
-    from agent.onboarding_text import greeting
+    from hermes_agent.agent.onboarding_flow import PENDING, is_active
+    from hermes_agent.agent.onboarding_record import load
+    from hermes_agent.agent.onboarding_text import greeting
     if not builds_onboarding(agent):
         return None
     record = load(agent._session_db, agent.session_id)
@@ -77,9 +77,9 @@ def onboarding_prelude(agent, history: Iterable[dict]) -> Iterator[tuple[str, st
 def onboarding_turn_note(agent, *, history_empty: bool, card_waiting: bool) -> str:
     """Before a user turn in the onboarding chat, while no card waits: which card is closed and how to
     bring it back."""
-    from agent.onboarding_flow import is_active
-    from agent.onboarding_record import load
-    from agent.onboarding_text import turn_note
+    from hermes_agent.agent.onboarding_flow import is_active
+    from hermes_agent.agent.onboarding_record import load
+    from hermes_agent.agent.onboarding_text import turn_note
     if history_empty or card_waiting or not builds_onboarding(agent):
         return ""
     record = load(agent._session_db, agent.session_id)

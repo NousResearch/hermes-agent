@@ -149,7 +149,7 @@ def _run_on_mcp_loop(coro_or_factory, timeout: float = 30):
     """Schedule a coroutine (or zero-arg factory — avoids leaking a never-awaited coroutine when the
     loop is down) on the MCP loop and block until done, polling so user interrupts are honored."""
     from hermes_agent.tools.interrupt import is_interrupted
-    from agent.async_utils import safe_schedule_threadsafe
+    from hermes_agent.agent.async_utils import safe_schedule_threadsafe
 
     loop = _running_loop()
     if loop is None:
@@ -276,7 +276,7 @@ def _stop_mcp_loop(*, only_if_idle: bool = False) -> bool:
     # whose finalizer then resumes them to run cleanup against a loop that is already closed -> "Event loop
     # is closed" (#60197).
     if loop.is_running():
-        from agent.async_utils import safe_schedule_threadsafe
+        from hermes_agent.agent.async_utils import safe_schedule_threadsafe
 
         future = safe_schedule_threadsafe(
             _lifecycle._drain_and_stop_mcp_loop(), loop, logger=logger,

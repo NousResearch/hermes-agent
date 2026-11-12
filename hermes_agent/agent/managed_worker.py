@@ -35,10 +35,10 @@ RESULT_FIELDS = ('final_response', 'failed', 'interrupted', 'completed', 'partia
                  'session_id', 'requested_model', 'served_model', '_turn_input_tokens', '_turn_output_tokens',
                  'failure_retryable', 'failure_resets_at', 'billing_block', 'free_tier', 'usage_window_message',
                  'refused_turn_boundary_row_id')
-# The structured fields and their allowed keys: ``billing_block`` (``agent/billing_links.BillingBlock``
-# plus ``unverified``) and ``free_tier`` (``agent/turn_recovery._stamp_free_tier``). With
+# The structured fields and their allowed keys: ``billing_block`` (``hermes_agent/agent/billing_links.BillingBlock``
+# plus ``unverified``) and ``free_tier`` (``hermes_agent/agent/turn_recovery._stamp_free_tier``). With
 # ``failure_reason``, ``failure_retryable`` and ``failure_resets_at`` they are what
-# ``agent.error_surface.build_error_surface_from_result`` reads for the owner's error card.
+# ``hermes_agent.agent.error_surface.build_error_surface_from_result`` reads for the owner's error card.
 BILLING_FIELDS = ('provider', 'provider_label', 'model', 'billing_url', 'is_nous', 'message', 'unverified')
 STRUCTURED_FIELDS = {'billing_block': BILLING_FIELDS, 'free_tier': ('kind', 'message')}
 
@@ -120,7 +120,7 @@ def validate_bootstrap(frame):
             or (frame['safe_mode'] and not frame['ignore_user_config'])
             or (frame['api_key'] is not None and not isinstance(frame['api_key'], str))):
         raise ValueError('invalid_managed_worker_bootstrap')
-    from agent.turn_author import parse_turn_author
+    from hermes_agent.agent.turn_author import parse_turn_author
     if frame['turn_author'] is not None and (not isinstance(frame['turn_author'], dict)
                                             or parse_turn_author(frame['turn_author']) is None):
         raise ValueError('invalid_managed_worker_bootstrap')
@@ -137,10 +137,10 @@ def bind_worker_policy(frame):
     """
     config = json.loads(frame['policy']['config_json'])
     if not frame['ignore_user_config']:
-        from agent.safe_worker_policy import _bind_worker_config
+        from hermes_agent.agent.safe_worker_policy import _bind_worker_config
         _bind_worker_config(config)
         return
-    from agent.safe_worker_policy import _bind_safe_worker_policy
+    from hermes_agent.agent.safe_worker_policy import _bind_safe_worker_policy
     _bind_safe_worker_policy(safe_mode=frame['safe_mode'], ignore_user_config=True, config=config)
 
 
@@ -189,7 +189,7 @@ class WorkerControls:
     def stop(self):
         self.stopped.set()
         if self.agent is not None:
-            from agent.interrupt_compat import request_hard_interrupt
+            from hermes_agent.agent.interrupt_compat import request_hard_interrupt
             request_hard_interrupt(self.agent)  # parity with the canonical Stop (SessionAuthority.interrupt)
         with self.lock:
             for state in self.clarifications.values():
@@ -318,7 +318,7 @@ def tool_frame(call_id, name, args, *result):
     the result and its failure verdict); the owner builds the shared tool event from them."""
     frame = {'tool_call_id': str(call_id or ''), 'name': str(name or 'tool'), 'args': args if isinstance(args, dict) else {}}
     if result:
-        from agent.display import _detect_tool_failure
+        from hermes_agent.agent.display import _detect_tool_failure
         frame['result'] = result[0] if isinstance(result[0], str) else str(result[0])
         frame['is_error'] = bool(_detect_tool_failure(frame['name'], result[0])[0])
     from hermes_agent.gateway.session_tool_events import bounded_args, bounded_result
@@ -332,7 +332,7 @@ def execute(frame, channel):
     # The owner RPC below imports hermes_agent/gateway/config modules (hermes_cli.config, providers,
     # hermes_cli.plugins) transitively; the policy must already be frozen when they load.
     bind_worker_policy(frame)
-    from agent.runtime_session_store import RuntimeSessionStore, WorkerRPC
+    from hermes_agent.agent.runtime_session_store import RuntimeSessionStore, WorkerRPC
     scope = dict(frame['scope'])
     rpc = WorkerRPC(frame['home'])
     adopted = rpc('worker.adopt', **{k: v for k, v in scope.items() if k != 'epoch'})
@@ -350,7 +350,7 @@ def execute(frame, channel):
     policy = restore_policy(frame['policy'])
     register_worker_hooks(policy)
     discover_profile_mcp(policy)
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     from hermes_agent.tools.approval import register_gateway_notify, unregister_gateway_notify
     from hermes_agent.tools.approval_context import set_current_session_key
     set_current_session_key(frame['route'])
@@ -365,7 +365,7 @@ def execute(frame, channel):
             agent = _construct_agent(frame, AIAgent, policy, model=policy.model, provider=policy.provider, base_url=policy.base_url,
                 api_key=frame['api_key'], session_db=store, session_id=scope['session_id'],
                 # delegate_task stays offered: each child is reserved by the owner under this
-                # execution (agent/runtime_session_child.py) and retires with it.
+                # execution (hermes_agent/agent/runtime_session_child.py) and retires with it.
                 enabled_toolsets=list(policy.toolsets), max_iterations=policy.max_turns,
                 reasoning_config=policy.reasoning_config,
                 # ``tool`` / ``oneshot`` are storage labels for a CLI-surface agent (session_policy.SURFACES).
@@ -383,14 +383,14 @@ def execute(frame, channel):
                                                                                          **tool_frame(call_id, name, args, result)))
             controls.agent = agent
             if controls.stopped.is_set():
-                from agent.interrupt_compat import request_hard_interrupt
+                from hermes_agent.agent.interrupt_compat import request_hard_interrupt
                 request_hard_interrupt(agent)
             channel.send('ready', pid=os.getpid())
             history = store.get_messages_as_conversation(scope['session_id'])
             from hermes_agent.gateway.session_kanban import run_worker_turns
             if 'attachments_v1' in frame:
                 from hermes_agent.gateway.session_ingress_media import restore_attachments
-                from agent.image_routing import build_native_content_parts
+                from hermes_agent.agent.image_routing import build_native_content_parts
                 media = restore_attachments(frame)
                 content, skipped = build_native_content_parts(frame['text'], media['media_urls'])
                 if skipped:
@@ -407,7 +407,7 @@ def execute(frame, channel):
             agent = None
             # The auto-title thread bills through this store from a daemon thread; a title landing
             # after execution.finish is a stale_generation write that fails the close-time flush.
-            from agent.title_generator import wait_for_title_upgrades
+            from hermes_agent.agent.title_generator import wait_for_title_upgrades
             wait_for_title_upgrades()
             store.flush_token_counts()
             if result.get('final_response') is None and (result.get('interrupted') or result.get('failed')):

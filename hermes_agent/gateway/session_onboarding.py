@@ -1,11 +1,11 @@
 """First-run onboarding on the session authority: ``onboarding.start`` and ``onboarding.skip``.
 
 The onboarding chat is an ordinary local Desktop session the authority owns from its first row: the
-start creates it here, writes the run record (``agent.onboarding_record``) before any agent is built,
+start creates it here, writes the run record (``hermes_agent.agent.onboarding_record``) before any agent is built,
 attaches the asking connection and admits the hidden opening turn through the same durable FIFO as a
 typed message. The record is what makes it an onboarding chat for every later turn: the ``onboarding``
 toolset fold-in (``run_turn``), the scripted greeting and name card and the per-turn note
-(``run_turn_runner``), all from ``agent.onboarding_session``. ``onboarding.state`` and
+(``run_turn_runner``), all from ``hermes_agent.agent.onboarding_session``. ``onboarding.state`` and
 ``onboarding.set_run`` read and write only config and stay on the sidecar handler.
 """
 from __future__ import annotations
@@ -100,10 +100,10 @@ async def start(connection, ref, params):
 def _choose_run(authority, request):
     """A refused claim (5079) or a blocked one with nothing else to run on (5080) leaves no chat, so
     the install stays due."""
-    from agent.onboarding_facts import read_facts
-    from agent.onboarding_flow import Facts
-    from agent.onboarding_record import load, open_session_ids
-    from agent.onboarding_text import opening_prompt
+    from hermes_agent.agent.onboarding_facts import read_facts
+    from hermes_agent.agent.onboarding_flow import Facts
+    from hermes_agent.agent.onboarding_record import load, open_session_ids
+    from hermes_agent.agent.onboarding_text import opening_prompt
     from hermes_cli.auth_constants import AuthError
     db = authority.db
     open_ids = open_session_ids(db)
@@ -200,9 +200,9 @@ def _settle_runs(authority, request, plan, stored, discards):
     """The new chat's record and title, and the end of every other open run; returns the chats it
     deleted. One open run at a time: the kept run is open before the others end, so the install flag
     never closes in between."""
-    from agent.onboarding_flow import End
-    from agent.onboarding_record import advance, start
-    from agent.onboarding_text import CHAT_TITLE
+    from hermes_agent.agent.onboarding_flow import End
+    from hermes_agent.agent.onboarding_record import advance, start
+    from hermes_agent.agent.onboarding_text import CHAT_TITLE
     db = authority.db
     if plan['stored'] is None:
         # The record exists before any agent is built, so the first turn already folds the toolset in.
@@ -226,7 +226,7 @@ def _discard_unfinished_runs(db, stored_ids, discards):
     window reopened, or one a turn still writes (the delete refuses it), is kept, and its run ends as
     ``replaced`` so it is never resumed."""
     from pathlib import Path
-    from agent.onboarding_record import delete_chat
+    from hermes_agent.agent.onboarding_record import delete_chat
     sessions_dir = Path(db.db_path).parent / 'sessions'
     deleted = []
     for old in stored_ids:
@@ -246,7 +246,7 @@ def ending_run_on_delete(db, session_id, commit):
     """*commit* (the canonical delete's receipt transaction) wrapped so deleting the chat that holds
     the live run ends that run (``deleted``) and tells every window, as the sidecar's
     ``session.delete`` did. Returns the receipt."""
-    from agent.onboarding_record import delete_chat
+    from hermes_agent.agent.onboarding_record import delete_chat
     receipt = []
 
     def delete():
@@ -266,24 +266,24 @@ def _withdraw_setup_cards(authority, stored_ids):
 
 
 def _opening_for(authority, stored):
-    from agent.onboarding_flow import Facts
-    from agent.onboarding_record import load
-    from agent.onboarding_text import opening_prompt
+    from hermes_agent.agent.onboarding_flow import Facts
+    from hermes_agent.agent.onboarding_record import load
+    from hermes_agent.agent.onboarding_text import opening_prompt
     if (authority.db.get_session(stored) or {}).get('message_count'):
         return None
     return opening_prompt(Facts.from_stored(load(authority.db, stored)['facts']))
 
 
 def _run_id(authority, stored):
-    from agent.onboarding_record import load
+    from hermes_agent.agent.onboarding_record import load
     return (load(authority.db, stored) or {}).get('run_id') or ''
 
 
 async def skip(connection, ref, params):
     """Skip setup: end the chat's run and close the card that waits. The card's asker reads the
     skipped record when it wakes (``setup_beat``)."""
-    from agent.onboarding_flow import End
-    from agent.onboarding_record import advance, load
+    from hermes_agent.agent.onboarding_flow import End
+    from hermes_agent.agent.onboarding_record import advance, load
     from hermes_agent.gateway.session_runtime_workers import tracked_write
     from hermes_agent.gateway.session_server_requests import withdraw
     from pydantic import ValidationError
@@ -310,7 +310,7 @@ def arm_onboarding_turn(agent, owner, history):
     """The onboarding chat's per-turn inputs on an authority-owned local turn: the turn note (which
     card is closed and how to bring it back) appended to the API-only notes, and the scripted opening
     returned for ``run_conversation(prelude=...)``. Nothing for a chat without ``setup_beat``."""
-    from agent.onboarding_session import append_turn_note, builds_onboarding, onboarding_prelude, onboarding_turn_note
+    from hermes_agent.agent.onboarding_session import append_turn_note, builds_onboarding, onboarding_prelude, onboarding_turn_note
     if owner is None or not builds_onboarding(agent):
         return None
     from hermes_agent.gateway.session_server_requests import waiting

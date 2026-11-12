@@ -12,13 +12,13 @@ from types import SimpleNamespace
 from typing import Any, Callable
 import uuid
 
-from agent.credential_pool import (
+from hermes_agent.agent.credential_pool import (
     AUTH_TYPE_API_KEY, AUTH_TYPE_OAUTH, CUSTOM_POOL_PREFIX, SOURCE_MANUAL,
     SOURCE_MANUAL_DEVICE_CODE, STATUS_EXHAUSTED, STRATEGY_FILL_FIRST, STRATEGY_ROUND_ROBIN,
     STRATEGY_RANDOM, STRATEGY_LEAST_USED, PooledCredential, _codex_principal_identity,
     _exhausted_until, _normalize_custom_pool_name, get_pool_strategy, label_from_token, list_custom_pool_providers,
     load_pool)
-from agent.credential_pool_admin import CredentialNotSavedError
+from hermes_agent.agent.credential_pool_admin import CredentialNotSavedError
 import hermes_cli.auth as auth_mod
 from hermes_cli.auth import PROVIDER_REGISTRY
 from hermes_cli.auth_plugin_providers import (
@@ -124,7 +124,7 @@ def _provider_base_url(provider: str) -> str:
     if provider == "openrouter":
         return OPENROUTER_BASE_URL
     if provider.startswith(CUSTOM_POOL_PREFIX):
-        from agent.credential_pool import _get_custom_provider_config
+        from hermes_agent.agent.credential_pool import _get_custom_provider_config
         return str((_get_custom_provider_config(provider) or {}).get("base_url") or "").strip()
     configured = _configured_provider_entry(provider)
     if configured is not None:
@@ -204,7 +204,7 @@ def _format_exhausted_status(entry) -> str:
 
 
 def _anthropic_oauth_login(args) -> dict:
-    from agent import anthropic_credentials as anthropic_mod
+    from hermes_agent.agent import anthropic_credentials as anthropic_mod
     creds = anthropic_mod.run_hermes_oauth_login_pure()
     if not creds:
         raise SystemExit("Anthropic OAuth login did not return credentials.")
@@ -560,7 +560,7 @@ def auth_list_command(args) -> None:
 
 def _print_external_login_notice() -> None:
     """One line telling the user why no Codex CLI / Claude Code login shows up when adoption is off."""
-    from agent.credential_sources import EXTERNAL_LOGINS_NOT_ADOPTED_NOTICE, adopt_external_logins_enabled
+    from hermes_agent.agent.credential_sources import EXTERNAL_LOGINS_NOT_ADOPTED_NOTICE, adopt_external_logins_enabled
     if not adopt_external_logins_enabled():
         print(EXTERNAL_LOGINS_NOT_ADOPTED_NOTICE)
 
@@ -588,9 +588,9 @@ def auth_remove_command(args) -> None:
     print(f"Removed {provider} credential #{index} ({removed.label})")
 
     # Every credential source Hermes reads from (env vars, external OAuth files, auth.json blocks,
-    # custom config) has a RemovalStep in agent.credential_sources; it does the source-specific
+    # custom config) has a RemovalStep in hermes_agent.agent.credential_sources; it does the source-specific
     # cleanup while suppression + user-facing output are centralised here.
-    from agent.credential_sources import find_removal_step
+    from hermes_agent.agent.credential_sources import find_removal_step
     step = find_removal_step(provider, removed.source)
     if step is None:  # unregistered source, e.g. "manual": nothing external to clean up
         return
@@ -732,7 +732,7 @@ def auth_logout_command(args) -> None:
 def _print_bedrock_status() -> None:
     """Show AWS Bedrock credential status (not in the pool — uses boto3 chain)."""
     try:
-        from agent.bedrock_adapter import has_aws_credentials, resolve_aws_auth_env_var, resolve_bedrock_region
+        from hermes_agent.agent.bedrock_adapter import has_aws_credentials, resolve_aws_auth_env_var, resolve_bedrock_region
         if not has_aws_credentials():
             return
         region = resolve_bedrock_region()
@@ -760,7 +760,7 @@ def _print_azure_entra_status() -> None:
             str(model_cfg.get("provider") or "").strip().lower() != "azure-foundry"
             or str(model_cfg.get("auth_mode") or "").strip().lower() != "entra_id"):
             return
-        from agent.azure_identity_adapter import (
+        from hermes_agent.agent.azure_identity_adapter import (
             EntraIdentityConfig, SCOPE_AI_AZURE_DEFAULT, describe_active_credential, has_azure_identity_installed,
         )
         base_url = str(model_cfg.get("base_url") or "").strip()

@@ -22,7 +22,7 @@ import pytest
 @pytest.fixture()
 def fake_home(tmp_path, monkeypatch):
     """Point ``_hermes_home_path()`` at a tmp dir for isolated checks."""
-    import agent.file_safety as fs
+    import hermes_agent.agent.file_safety as fs
 
     home = tmp_path / "hermes_home"
     home.mkdir()
@@ -48,7 +48,7 @@ def _create(home: Path, rel: str | Path) -> Path:
 
 def test_arbitrary_hermes_home_file_not_blocked(fake_home):
     """Non-credential files inside HERMES_HOME stay readable."""
-    from agent.file_safety import get_read_block_error
+    from hermes_agent.agent.file_safety import get_read_block_error
 
     safe = _create(fake_home, "session_log.txt")
     assert get_read_block_error(str(safe)) is None
@@ -57,7 +57,7 @@ def test_arbitrary_hermes_home_file_not_blocked(fake_home):
 def test_subdirectory_named_auth_json_not_blocked(fake_home):
     """Only the top-level auth.json is the credential store; a file with the
     same name in a subdirectory (e.g., a skill mock) must remain readable."""
-    from agent.file_safety import get_read_block_error
+    from hermes_agent.agent.file_safety import get_read_block_error
 
     nested = _create(fake_home, Path("skills") / "my-skill" / "auth.json")
     assert get_read_block_error(str(nested)) is None
@@ -177,7 +177,7 @@ def test_search_tool_filters_credential_results(fake_home, tmp_path, monkeypatch
 
 def test_webhook_subscriptions_blocked(fake_home):
     """webhook_subscriptions.json holds per-route HMAC secrets — blocked."""
-    from agent.file_safety import get_read_block_error
+    from hermes_agent.agent.file_safety import get_read_block_error
 
     subs = _create(fake_home, "webhook_subscriptions.json")
     err = get_read_block_error(str(subs))
@@ -199,7 +199,7 @@ def test_identically_named_hermes_files_outside_home_not_blocked(
     those, not per-filename. ``.env`` is the exception: it's blocked anywhere
     on disk (see test_project_local_env_blocked) because the basename always
     means \"secret-bearing environment file\" regardless of directory."""
-    from agent.file_safety import get_read_block_error
+    from hermes_agent.agent.file_safety import get_read_block_error
 
     project = tmp_path / "myproject"
     project.mkdir()
@@ -224,7 +224,7 @@ def test_identically_named_hermes_files_outside_home_not_blocked(
 
 def test_non_secret_auth_subtree_file_not_blocked(fake_home):
     """Only the known Google OAuth token path is blocked, not all auth/*."""
-    from agent.file_safety import get_read_block_error
+    from hermes_agent.agent.file_safety import get_read_block_error
 
     note = _create(fake_home, Path("auth") / "notes.json")
     assert get_read_block_error(str(note)) is None
@@ -234,7 +234,7 @@ def test_config_yaml_not_blocked(fake_home):
     """config.yaml is NOT a credential file — agent should still be
     able to read it for debugging.  (Writes are denied separately by
     is_write_denied; reads stay allowed.)"""
-    from agent.file_safety import get_read_block_error
+    from hermes_agent.agent.file_safety import get_read_block_error
 
     cfg = _create(fake_home, "config.yaml")
     assert get_read_block_error(str(cfg)) is None
@@ -244,7 +244,7 @@ def test_profile_mode_blocks_root_credentials(tmp_path, monkeypatch):
     """Under a profile, HERMES_HOME = <root>/profiles/<name>, but
     <root>/auth.json must ALSO be blocked — credentials at root are
     inherited by every profile."""
-    import agent.file_safety as fs
+    import hermes_agent.agent.file_safety as fs
 
     root = tmp_path / "hermes"
     profile = root / "profiles" / "coder"
@@ -252,7 +252,7 @@ def test_profile_mode_blocks_root_credentials(tmp_path, monkeypatch):
     monkeypatch.setattr(fs, "_hermes_home_path", lambda: profile)
     monkeypatch.setattr(fs, "_hermes_root_path", lambda: root)
 
-    from agent.file_safety import get_read_block_error
+    from hermes_agent.agent.file_safety import get_read_block_error
 
     # Profile-local credential store: blocked
     profile_auth = profile / "auth.json"
@@ -292,8 +292,8 @@ def test_the_webapps_sign_in_files_are_neither_read_nor_written(tmp_path, monkey
     provider tokens its listener gave native apps and the Portal callback its Web Access registered. The
     agent's file tools neither read nor write anything there, in the profile's home or at the root: a
     write could plant a credential or a grant that the gateway then honours."""
-    import agent.file_safety as fs
-    from agent.file_safety import get_read_block_error, is_write_denied
+    import hermes_agent.agent.file_safety as fs
+    from hermes_agent.agent.file_safety import get_read_block_error, is_write_denied
 
     root = tmp_path / "hermes"
     profile = root / "profiles" / "coder"

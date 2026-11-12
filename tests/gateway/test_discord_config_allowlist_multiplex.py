@@ -25,7 +25,7 @@ THREAD = "1554296921646960760"
 @pytest.fixture
 def config_only_discord(monkeypatch):
     """Multiplexed default profile; the Discord allowlist lives only in config.yaml."""
-    from agent import secret_scope
+    from hermes_agent.agent import secret_scope
 
     home = Path(os.environ["HERMES_HOME"])
     (home / "config.yaml").write_text(
@@ -163,7 +163,7 @@ def test_discord_ignores_a_stray_group_allow_from(monkeypatch):
 def test_button_click_in_a_thread_resolves_a_thread_scoped_route():
     """A click carries the thread id, so the live verdict resolves a ``thread_id`` profile route
     the same way the thread's messages do (here: the routed profile's pairing store)."""
-    from agent import secret_scope
+    from hermes_agent.agent import secret_scope
     from hermes_agent.gateway.pairing import PairingStore
 
     home = Path(os.environ["HERMES_HOME"])
@@ -204,7 +204,7 @@ def test_secondary_profiles_own_bot_honors_its_config_allow_from_in_guild_channe
     the secondary's bot can come only from its adapter's ``allow_from`` (``PlatformConfig.extra``,
     where the config loader puts it), as its DMs already do.
     """
-    from agent import secret_scope
+    from hermes_agent.agent import secret_scope
     from hermes_agent.gateway.config import GatewayConfig, PlatformConfig
     from hermes_agent.gateway.pairing import PairingStore
     from hermes_agent.gateway.run import GatewayRunner

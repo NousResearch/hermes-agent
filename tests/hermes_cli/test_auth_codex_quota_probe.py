@@ -294,7 +294,7 @@ def test_pool_probe_not_fired_for_non_quota_exhaustion(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(tmp_path / "hermes", store)
 
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
 
     pool = load_pool("openai-codex")
     probes = []
@@ -399,7 +399,7 @@ def test_pool_selection_refreshes_expired_token_before_probe(tmp_path, monkeypat
     refresh_calls: list = []
     _fake_refresh(monkeypatch, fresh, refresh_calls)
     http_calls = _patch_expiry_aware_httpx(monkeypatch, _StubResponse(200, _usage_payload(0.0, 100.0)))
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
 
     pool = load_pool("openai-codex")
 
@@ -429,7 +429,7 @@ def test_pool_selection_keeps_probe_rotated_tokens_when_quota_restored(tmp_path,
     refresh_calls: list = []
     _fake_refresh(monkeypatch, fresh, refresh_calls)
     http_calls = _patch_expiry_aware_httpx(monkeypatch, _StubResponse(200, _usage_payload(0.0, 0.0)))
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
 
     pool = load_pool("openai-codex")
     selected = pool.select()
@@ -459,7 +459,7 @@ def test_pool_selection_throttles_failing_pre_probe_refresh(tmp_path, monkeypatc
     monkeypatch.setattr(auth_codex, "refresh_codex_oauth_pure", _failing_refresh)
     monkeypatch.setattr(auth_mod, "refresh_codex_oauth_pure", _failing_refresh)
     http_calls = _patch_expiry_aware_httpx(monkeypatch, _StubResponse(200, _usage_payload(0.0, 0.0)))
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
 
     pool = load_pool("openai-codex")
     for _ in range(5):

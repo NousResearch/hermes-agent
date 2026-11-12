@@ -6,7 +6,7 @@ import logging
 from dataclasses import asdict
 from pathlib import Path
 
-from agent.credential_persistence import fingerprint_secret_value
+from hermes_agent.agent.credential_persistence import fingerprint_secret_value
 from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 logger = logging.getLogger(__name__)
@@ -348,7 +348,7 @@ def disable_dropped_secrets(config, dropped, session=None):
     override using it is replaced by the session's primary route (``provider: main``). Never substitutes."""
     if not dropped:
         return config
-    from agent.auxiliary_task_config import _AUX_ROUTE_KEYS
+    from hermes_agent.agent.auxiliary_task_config import _AUX_ROUTE_KEYS
     auxiliary = config.get('auxiliary') if isinstance(config.get('auxiliary'), dict) else {}
     for task in sorted({path[1] for path in dropped if path[0] == 'auxiliary' and len(path) > 2}, key=str):
         block = auxiliary.get(task)

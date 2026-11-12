@@ -182,11 +182,11 @@ class PluginContext(PluginCapabilityCtxMixin):
 
     @property
     def llm(self) -> Any:
-        """Host-owned :class:`agent.plugin_llm.PluginLlm` facade: completions on the user's active
+        """Host-owned :class:`hermes_agent.agent.plugin_llm.PluginLlm` facade: completions on the user's active
         model/auth. Overrides (model, agent id, auth profile) are fail-closed, gated by
         ``plugins.entries.<plugin_id>.llm.*``."""
         if self._llm is None:
-            from agent.plugin_llm import PluginLlm
+            from hermes_agent.agent.plugin_llm import PluginLlm
             self._llm = PluginLlm(plugin_id=self.plugin_id)
         return self._llm
 
@@ -194,14 +194,14 @@ class PluginContext(PluginCapabilityCtxMixin):
     def subagent_lifecycle(self) -> Any:
         """Plugin-safe subagent lifecycle service: serializable handles and immutable snapshots,
         never a live agent or private registry."""
-        from agent.subagent_lifecycle import SubagentLifecycleService, get_active_subagent_parent
+        from hermes_agent.agent.subagent_lifecycle import SubagentLifecycleService, get_active_subagent_parent
         return SubagentLifecycleService(get_active_subagent_parent)
 
     @cached_property
     def delegation_backends(self) -> Any:
-        """``agent.delegation_backends.DelegationBackends``: list delegation backends and save one, optionally
+        """``hermes_agent.agent.delegation_backends.DelegationBackends``: list delegation backends and save one, optionally
         rebuilding the calling session's tools now (``/delegation``); a host remote facade on the owner process."""
-        from agent.delegation_backends import DelegationBackends
+        from hermes_agent.agent.delegation_backends import DelegationBackends
         return DelegationBackends()
 
     @property
@@ -493,14 +493,14 @@ class PluginContext(PluginCapabilityCtxMixin):
 
     @_serialized_replacement
     def register_context_engine(self, engine) -> Optional[PluginRegistration]:
-        """Register the (single) ``agent.context_engine.ContextEngine`` replacing the built-in
+        """Register the (single) ``hermes_agent.agent.context_engine.ContextEngine`` replacing the built-in
         ContextCompressor; a second registration is rejected with a warning."""
         if self._manager._context_engine is not None:
             _facade().logger.warning("Plugin '%s' tried to register a context engine, but one is "
                                      "already registered. Only one context engine plugin is allowed.",
                                      self.manifest.name)
             return
-        from agent.context_engine import ContextEngine
+        from hermes_agent.agent.context_engine import ContextEngine
         if self._wrong_type(engine, ContextEngine, "context engine"):
             return
         previous = self._manager._context_engine  # always None here; kept for the restore contract
@@ -514,9 +514,9 @@ class PluginContext(PluginCapabilityCtxMixin):
         return handle
 
     def register_context_reference(self, provider) -> None:
-        """Register a :class:`agent.context_references.ContextReferenceProvider`; ``provider.prefix`` defines
+        """Register a :class:`hermes_agent.agent.context_references.ContextReferenceProvider`; ``provider.prefix`` defines
         ``@<prefix>:``. Built-in prefixes (diff, staged, file, folder, git, url) are rejected."""
-        from agent.context_references import (
+        from hermes_agent.agent.context_references import (
             ContextReferenceProvider as _CRP, register_context_reference_provider as _register,
         )
         if self._wrong_type(provider, _CRP, "context reference provider"):
@@ -532,7 +532,7 @@ class PluginContext(PluginCapabilityCtxMixin):
         """Record a memory provider (inert). Activation is owned by ``plugins/memory`` via
         ``memory.provider``; a provider reaching here was loaded by the general manager, and
         without this method its ``register()`` would fail on a missing attribute."""
-        from agent.memory_provider import MemoryProvider
+        from hermes_agent.agent.memory_provider import MemoryProvider
         if self._wrong_type(provider, MemoryProvider, "memory provider"):
             return
         self._memory_provider = provider
@@ -682,11 +682,11 @@ class PluginContext(PluginCapabilityCtxMixin):
                                     previous=existing)
 
     def register_redaction_patterns(self, patterns) -> int:
-        """Additively register secret-token regexes with :mod:`agent.redact`; returns the count accepted.
+        """Additively register secret-token regexes with :mod:`hermes_agent.agent.redact`; returns the count accepted.
         Plugins can over-redact, never weaken built-ins; ``security.redact_secrets: false`` applies
         equally. Each pattern must compile and start with >= 2 literal characters; invalid entries warn
         and are skipped."""
-        from agent.redact import register_redaction_patterns as _register
+        from hermes_agent.agent.redact import register_redaction_patterns as _register
         try:
             count = _register(patterns, source=f"plugin:{self.manifest.name}")
         except Exception as exc:
@@ -704,7 +704,7 @@ class PluginContext(PluginCapabilityCtxMixin):
         ``desktop`` (served to the renderers over ``i18n.catalog``). Partial catalogs are fine; the last
         registration wins key by key. Resets the i18n caches; never changes ``display.language``. Raises
         ``ValueError`` for a malformed id/surface/file and ``FileNotFoundError`` for a missing path."""
-        from agent.i18n_layers import (
+        from hermes_agent.agent.i18n_layers import (
             SURFACES, is_language_id, load_locale_source, normalize_language_id, register_pack, unregister_pack,
         )
         lang_id = normalize_language_id(lang)
@@ -726,7 +726,7 @@ class PluginContext(PluginCapabilityCtxMixin):
         """Register every ``<lang>[.tui|.desktop].yaml`` under ``path`` (a pack's ``locales/`` dir). The
         loader calls this for plugins declaring ``provides_locales``; ``metadata`` maps ids to
         ``{endonym, rtl}``. A broken file is skipped with a warning so one typo never disables the pack."""
-        from agent.i18n_layers import scan_locale_dir
+        from hermes_agent.agent.i18n_layers import scan_locale_dir
         handles: list[PluginRegistration] = []
         for lang_id, surface, file in scan_locale_dir(_facade().Path(path)):
             meta = dict((metadata or {}).get(lang_id) or {})

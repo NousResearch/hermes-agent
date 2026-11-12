@@ -10,7 +10,7 @@ import pytest
 def _ensure_redaction_enabled(monkeypatch):
     """Ensure redaction is active regardless of host HERMES_REDACT_SECRETS."""
     monkeypatch.delenv("HERMES_REDACT_SECRETS", raising=False)
-    monkeypatch.setattr("agent.redact._REDACT_ENABLED", True)
+    monkeypatch.setattr("hermes_agent.agent.redact._REDACT_ENABLED", True)
 
 
 def _never_spawn():
@@ -91,8 +91,8 @@ class TestWebExtractSecretExfil:
 
     @pytest.mark.asyncio
     async def test_normalizes_non_ascii_url_before_extract_provider(self, monkeypatch):
-        from agent.web_search_provider import WebSearchProvider
-        from agent import web_search_registry
+        from hermes_agent.agent.web_search_provider import WebSearchProvider
+        from hermes_agent.agent import web_search_registry
         from hermes_agent.tools import web_tools
 
         class FakeExtractProvider(WebSearchProvider):

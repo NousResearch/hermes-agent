@@ -145,7 +145,7 @@ class TestStalenessCheck(unittest.TestCase):
         secret = "ghp_" + "A" * 40
         with open(self._tmpfile, "w") as f:
             f.write(f"token={secret}\n")
-        with patch("agent.redact._REDACT_ENABLED", True):
+        with patch("hermes_agent.agent.redact._REDACT_ENABLED", True):
             read = json.loads(read_file_tool(self._tmpfile, task_id="t2"))
             self.assertNotIn(secret, read["content"])
             refused = json.loads(write_file_tool(self._tmpfile, "token=«redacted:ghp_…»\n", task_id="t2"))

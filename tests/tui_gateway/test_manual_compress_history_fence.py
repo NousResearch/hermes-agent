@@ -8,8 +8,8 @@ import pytest
 
 def _agent_with_history(tmp_path, monkeypatch, in_place=False):
     from hermes_agent.hermes_state import SessionDB
-    from run_agent import AIAgent
-    from agent.context_compressor import SUMMARY_PREFIX
+    from hermes_agent.run_agent import AIAgent
+    from hermes_agent.agent.context_compressor import SUMMARY_PREFIX
 
     db = SessionDB(db_path=tmp_path / "state.db")
     parent = "manual-fence-parent"
@@ -63,7 +63,7 @@ def test_manual_compress_rejects_history_rewritten_before_admission(
 
         monkeypatch.setattr(db, "try_acquire_compression_lock", edit_then_acquire)
     try:
-        with caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
+        with caplog.at_level(logging.INFO, logger="hermes_agent.agent.conversation_compression"):
             removed, _ = server._compress_session_history(
                 session, focus_topic=compress_args, before_messages=before, history_version=1,
             )
@@ -87,7 +87,7 @@ def test_manual_compress_rejects_history_rewritten_before_admission(
 
 
 def test_manual_compress_releases_lease_when_snapshot_check_raises(tmp_path, monkeypatch):
-    from agent.conversation_compression_manual import compress_now, parse_compress_args
+    from hermes_agent.agent.conversation_compression_manual import compress_now, parse_compress_args
 
     db, agent, parent, before = _agent_with_history(tmp_path, monkeypatch)
 

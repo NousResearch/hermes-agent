@@ -33,7 +33,7 @@ def _adopt_gateway_toolsets(cli, store):
     if getattr(cli, "enabled_toolsets", None) is None and isinstance(info.get("enabled_toolsets"), list):
         cli.enabled_toolsets = list(info["enabled_toolsets"])
     if info.get("unknown_toolsets"):
-        from agent.i18n import t as _t
+        from hermes_agent.agent.i18n import t as _t
         names = ", ".join(info["unknown_toolsets"])
         cli._console_print(f"[bold red]{_t('cli.startup.unknown_toolsets', names=names)}[/]")
 
@@ -64,7 +64,7 @@ def _explicit_launch_skills(cli):
     requested = getattr(cli, "_preload_skills_requested", None) or []
     if not requested:
         return None
-    from agent.skill_commands import resolve_auto_load_skills
+    from hermes_agent.agent.skill_commands import resolve_auto_load_skills
     from cli import CLI_CONFIG
     auto = set() if getattr(cli, "ignore_rules", False) else set(resolve_auto_load_skills(CLI_CONFIG))
     return [name for name in requested if name not in auto] or None
@@ -81,7 +81,7 @@ def _record_shell_hook_consent():
     if os.environ.get("HERMES_TUI_GATEWAY_URL", "").strip() or flags.get("safe_mode") or flags.get("ignore_user_config"):
         return
     try:
-        from agent.shell_hooks import record_consent_from_config
+        from hermes_agent.agent.shell_hooks import record_consent_from_config
         from hermes_cli.config import load_config
         record_consent_from_config(load_config())
     except Exception:  # health: allow BLE001 -- consent is best effort; the gateway skips unapproved hooks
@@ -317,7 +317,7 @@ class CLIInitMixin:
         # Only a picked list rides session.create; _build_cli_from_args clears this unless -t was typed (the
         # gateway resolves the profile default and coding posture itself; a stale explicit name is refused, #138670).
         self._explicit_toolsets = toolsets is not None
-        from agent.skill_utils import parse_config_string_list
+        from hermes_agent.agent.skill_utils import parse_config_string_list
 
         self.disabled_toolsets = parse_config_string_list(CLI_CONFIG["agent"].get("disabled_toolsets"))
         # No local "Unknown toolsets" check: plugin toolsets are only known where plugins load. The gateway
@@ -438,7 +438,7 @@ class CLIInitMixin:
             self._session_db_unavailable = True
             logger.warning("Failed to initialize SessionDB — session will NOT be indexed for search: %s", e)
             from hermes_agent.hermes_state_user_copy import describe_storage_failure, storage_failure_details
-            from agent.i18n import t
+            from hermes_agent.agent.i18n import t
             failure = describe_storage_failure(e)
             def _present_store_warning():
                 try:

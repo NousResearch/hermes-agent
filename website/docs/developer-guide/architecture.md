@@ -195,7 +195,7 @@ If you are new to the codebase:
 
 ### Agent Loop
 
-The synchronous orchestration engine (`AIAgent`, exposed by the `run_agent.py` facade; the loop lives in `agent/conversation_loop.py` and `agent/turn_*.py`). Handles provider selection, prompt construction, tool execution, retries, fallback, callbacks, compression, and persistence. Supports three API modes for different provider backends.
+The synchronous orchestration engine (`AIAgent`, exposed by the `hermes_agent/run_agent.py` facade; the loop lives in `hermes_agent/agent/conversation_loop.py` and `hermes_agent/agent/turn_*.py`). Handles provider selection, prompt construction, tool execution, retries, fallback, callbacks, compression, and persistence. Supports three API modes for different provider backends.
 
 → [Agent Loop Internals](./agent-loop.md)
 
@@ -277,7 +277,7 @@ hermes_agent/tools/*.py  (each calls registry.register() at import time)
        ↑
 hermes_agent/model_tools.py  (imports hermes_agent/tools/registry + triggers tool discovery)
        ↑
-run_agent.py, cli.py, hermes_agent/batch_runner.py, environments/
+hermes_agent/run_agent.py, cli.py, hermes_agent/batch_runner.py, environments/
 ```
 
 This chain means tool registration happens at import time, before any agent instance is created. Any `hermes_agent/tools/*.py` file with a top-level `registry.register()` call is auto-discovered — no manual import list needed.

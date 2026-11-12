@@ -79,7 +79,7 @@ async def test_blocked_loop_after_expiry_dumps_diagnostics(monkeypatch):
     import asyncio as _asyncio
     import time as _time
 
-    from agent import deadline as _deadline
+    from hermes_agent.agent import deadline as _deadline
 
     dumps = []
     monkeypatch.setattr(

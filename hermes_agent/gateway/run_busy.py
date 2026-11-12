@@ -16,8 +16,8 @@ import functools
 import json
 import os
 import time
-from agent.i18n import DEFAULT_LANGUAGE, t
-from agent.session_activity import format_iteration_progress
+from hermes_agent.agent.i18n import DEFAULT_LANGUAGE, t
+from hermes_agent.agent.session_activity import format_iteration_progress
 from hermes_agent.gateway.config import Platform
 from hermes_agent.gateway.platforms.base import EphemeralReply
 from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
@@ -918,7 +918,7 @@ class GatewayBusySessionMixin:
 
         # One-time onboarding hint about the queue/interrupt knob (flag persisted to config.yaml).
         try:
-            from agent.onboarding import (BUSY_INPUT_FLAG, busy_input_hint_gateway, is_seen, mark_seen)
+            from hermes_agent.agent.onboarding import (BUSY_INPUT_FLAG, busy_input_hint_gateway, is_seen, mark_seen)
             if not is_seen(_load_gateway_config(), BUSY_INPUT_FLAG):
                 _hint_mode = (
                     "steer" if is_steer_mode
@@ -1153,7 +1153,7 @@ class GatewayBusySessionMixin:
     async def _handle_pause_command(self, event: MessageEvent):
         """`/pause [reason]` engages the global emergency stop; `/pause off` lifts it (the estop gate
         lets slash commands through while paused so messaging-only operators are never locked out)."""
-        from agent import estop
+        from hermes_agent.agent import estop
         args = (event.get_command_args() or "").strip()
         if args.lower() in {"off", "resume", "stop", "disengage"}:
             if estop.disengage():
@@ -1360,8 +1360,8 @@ class GatewayBusySessionMixin:
         epoch = self._route_stop_epoch(epoch_key)
 
         def rewrite():  # disk-bound skill scan and load, off the loop (#111091)
-            from agent.skill_bundles import resolve_bundle_command_key
-            from agent.skill_commands import resolve_skill_command_key
+            from hermes_agent.agent.skill_bundles import resolve_bundle_command_key
+            from hermes_agent.agent.skill_commands import resolve_skill_command_key
             if resolve_bundle_command_key(command) is None and resolve_skill_command_key(command) is None:
                 return False, None
             return True, self._hm_skill_slash_rewrite(event, source, session_key, command)

@@ -91,7 +91,7 @@ def _launch_profile_scope():
     ``launch_profile_scope_if_multiplexed``, whose first entry freezes the launch env snapshot
     before startup has written ``GATEWAY_RELAY_*`` into ``os.environ``.
     """
-    from agent.secret_scope import is_multiplex_active
+    from hermes_agent.agent.secret_scope import is_multiplex_active
 
     if not is_multiplex_active():
         return contextlib.nullcontext()

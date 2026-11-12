@@ -21,7 +21,7 @@ from unittest import mock
 
 import pytest
 
-from agent import runtime_self_protection as rsp
+from hermes_agent.agent import runtime_self_protection as rsp
 
 
 @pytest.fixture
@@ -122,14 +122,14 @@ def test_is_protected_path_covers_venv_children_and_base(fake_runtime):
 
 
 def test_file_safety_denies_write_to_running_interpreter(fake_runtime):
-    from agent.file_safety import _classify_write_denial
+    from hermes_agent.agent.file_safety import _classify_write_denial
 
     assert _classify_write_denial(fake_runtime["exe"]) == "credential"
     assert _classify_write_denial(os.path.join(fake_runtime["venv"], "pyvenv.cfg")) == "credential"
 
 
 def test_file_safety_allows_unrelated_paths(fake_runtime, tmp_path):
-    from agent.file_safety import _classify_write_denial
+    from hermes_agent.agent.file_safety import _classify_write_denial
 
     scratch = tmp_path / "scratch.txt"
     assert _classify_write_denial(str(scratch)) is None

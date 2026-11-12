@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from agent.status_output import StatusOutputMixin
+from hermes_agent.agent.status_output import StatusOutputMixin
 from hermes_agent.gateway.run_turn_runner import TurnRunner
 from hermes_agent.gateway.turn_context import TurnContext
 from hermes_agent.gateway.session import SessionSource

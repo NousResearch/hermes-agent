@@ -40,7 +40,7 @@ def _report_context_length_detection(model_name: str, base_url: str, api_key: st
     is NOT written to config, which would freeze a probe result into a permanent override.
     """
     try:
-        from agent.model_metadata import DEFAULT_FALLBACK_CONTEXT, get_model_context_length
+        from hermes_agent.agent.model_metadata import DEFAULT_FALLBACK_CONTEXT, get_model_context_length
         from hermes_cli.banner import _format_context_length
         detected = get_model_context_length(model_name, base_url=base_url, api_key=api_key or "")
     except Exception:  # a failing probe must never block the save
@@ -241,7 +241,7 @@ def _discover_named_custom_models(provider_info: dict, api_key: str, configured_
         should_use_ollama_native_catalog,
     )
 
-    from agent.command_token_source import build_command_token_provider, materialize_probe_api_key
+    from hermes_agent.agent.command_token_source import build_command_token_provider, materialize_probe_api_key
     source = build_command_token_provider(provider_info.get("key_cmd", ""), provider_info["name"])
     api_key = materialize_probe_api_key(source if source is not None else api_key)
     name, base_url = provider_info["name"], provider_info["base_url"]
@@ -337,7 +337,7 @@ def _model_flow_named_custom(config, provider_info):
     # Resolve key_env through the profile secret scope (fresh .env; never another
     # profile's process env under multiplexing), like the runtime does (#67935).
     if not api_key and key_env:
-        from agent.secret_scope import get_secret_str
+        from hermes_agent.agent.secret_scope import get_secret_str
         api_key = get_secret_str(key_env, "")
     # Only configured credentials may be persisted, never a short-lived probe token.
     config_api_key = _custom_provider_api_key_config_value(provider_info, api_key)

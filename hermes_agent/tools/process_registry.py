@@ -1131,7 +1131,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
     @staticmethod
     def _spawn_env(env_vars: dict) -> dict:
         """Sanitized child env from the session's client toolchain; PYTHONUNBUFFERED so poll sees progress."""
-        from agent.session_client_env import toolchain_environ
+        from hermes_agent.agent.session_client_env import toolchain_environ
         env = _terminal_env(_sanitize_subprocess_env(toolchain_environ(), env_vars))
         env["PYTHONUNBUFFERED"] = "1"
         return env
@@ -2627,7 +2627,7 @@ def _redact_process_result(result: dict) -> dict:
     """
     if not isinstance(result, dict):
         return result
-    from agent.redact import redact_sensitive_text, redact_terminal_output
+    from hermes_agent.agent.redact import redact_sensitive_text, redact_terminal_output
 
     command = result.get("command") or ""
     # The hook's task_id is the process OWNER's (poll/log/wait results carry only session_id).

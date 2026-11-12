@@ -24,7 +24,7 @@ from types import SimpleNamespace
 
 
 def _make_anthropic_agent(**kwargs):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     defaults = dict(
         api_key="test-key",
@@ -64,7 +64,7 @@ class TestStreamStaleCircuitBreaker:
     def test_interrupted_pre_response_wait_advances_streak(self, monkeypatch):
         """Qualified pre-response interrupts advance the breaker, while early
         and mid-stream user cancellations remain neutral."""
-        from agent.chat_completion_helpers import (
+        from hermes_agent.agent.chat_completion_helpers import (
             _check_stale_giveup,
             _record_interrupted_provider_wait,
         )
@@ -159,7 +159,7 @@ class TestStreamStaleCircuitBreaker:
         """The stale timer re-fires every window while the worker has not started its
         attempt yet (CPU-starved host) or has not unwound a kill; one attempt must still
         count once, or a single wedged turn trips the breaker for the next one."""
-        from agent import chat_completion_helpers as h
+        from hermes_agent.agent import chat_completion_helpers as h
 
         monkeypatch.setenv("HERMES_STREAM_STALE_TIMEOUT", "0.1")
         monkeypatch.setenv("HERMES_STREAM_STALE_GIVEUP", "50")
@@ -194,7 +194,7 @@ class TestStreamStaleCircuitBreaker:
             return cm
 
         agent._anthropic_client.messages.stream.side_effect = _stream_side_effect
-        with caplog.at_level("WARNING", logger="agent.chat_completion_helpers"), pytest.raises(Exception):
+        with caplog.at_level("WARNING", logger="hermes_agent.agent.chat_completion_helpers"), pytest.raises(Exception):
             agent._interruptible_streaming_api_call({})
 
         kills = sum("Stream stale for" in r.getMessage() for r in caplog.records)

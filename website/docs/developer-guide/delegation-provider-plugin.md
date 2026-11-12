@@ -22,13 +22,13 @@ inherits the parent's route when those are empty. It is itself a plugin, the bun
 `ctx.register_delegation_provider()` seam as yours; it is also the smallest complete example.
 A configured backend that is not installed or reports unavailable **fails closed**: `delegate_task`
 returns a tool error naming the backend and the fix, no child starts, and its schema parameters are
-absent. `/delegation` switches the backend (`agent.delegation_backends`, below).
+absent. `/delegation` switches the backend (`hermes_agent.agent.delegation_backends`, below).
 
 ## Skeleton
 
 ```python
 # ~/.hermes/plugins/delegation-tiers/__init__.py
-from agent.delegation_provider import DelegationProvider, DelegationRouteError
+from hermes_agent.agent.delegation_provider import DelegationProvider, DelegationRouteError
 
 
 class Tiers(DelegationProvider):
@@ -83,7 +83,7 @@ hermes plugins enable delegation-tiers
 
 ## The interface
 
-`DelegationProvider` (`agent/delegation_provider.py`) subclasses the shared `ProviderBase`. Every
+`DelegationProvider` (`hermes_agent/agent/delegation_provider.py`) subclasses the shared `ProviderBase`. Every
 method receives `config`, the `delegation` section of the active profile's `config.yaml`: `dict(config)`
 is the default route, and `self.settings(config)` is your backend's own block,
 `delegation.backends.<name>` (empty when unset). Keep your settings there, never beside the core
@@ -157,7 +157,7 @@ when a fallback provider took over. The `default` backend's children leave the r
 `display_name` and `summary` (one user-facing line; never shown to the model) label your backend in
 pickers such as `/delegation`. A plugin uses `ctx.delegation_backends` (same methods; `list_backends()` returns
 plain dicts). It is a host remote facade, so under `plugins.isolation: host` it acts on the Hermes process, not
-the plugin host. Core code calls `agent.delegation_backends` directly:
+the plugin host. Core code calls `hermes_agent.agent.delegation_backends` directly:
 
 | Call | Does |
 |---|---|

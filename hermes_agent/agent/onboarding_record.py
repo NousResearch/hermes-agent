@@ -15,10 +15,10 @@ import uuid
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from agent.onboarding_flow import (
+from hermes_agent.agent.onboarding_flow import (
     Applied, End, Event, Facts, Step, applies_to, apply, is_active, new_record,
 )
-from agent.onboarding_text import reminder
+from hermes_agent.agent.onboarding_text import reminder
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +75,7 @@ def _close_install_flag() -> None:
     from hermes_cli.onboarding_run import set_run
     from hermes_constants import get_default_hermes_root
 
-    from agent.onboarding import PROFILE_BUILD_FLAG
+    from hermes_agent.agent.onboarding import PROFILE_BUILD_FLAG
 
     section = config_mod.read_user_config_raw(get_default_hermes_root() / "config.yaml").get("onboarding")
     section = section if isinstance(section, dict) else {}

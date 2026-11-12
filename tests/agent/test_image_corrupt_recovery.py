@@ -9,12 +9,12 @@ further image-bearing turn could ever succeed).
 The fix is deliberately narrow (see review history below): only a
 recognized corruption wording routes to strip-and-retry.
 
-  1. agent/error_classifier.py: xAI's "Invalid PNG image." wording
+  1. hermes_agent/agent/error_classifier.py: xAI's "Invalid PNG image." wording
      classifies as FailoverReason.image_corrupt — a new reason distinct
      from image_too_large, because shrinking corrupt bytes can't fix them.
      It must NOT be routed to the shrink path, and it takes precedence
      over image_too_large when a message trips both pattern lists.
-  2. agent/conversation_loop.py: the image_corrupt branch strips image
+  2. hermes_agent/agent/conversation_loop.py: the image_corrupt branch strips image
      parts via the existing _strip_images_from_messages helper and
      retries once.
 
@@ -43,8 +43,8 @@ import copy
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from agent.error_classifier import FailoverReason, classify_api_error
-from agent.message_sanitization import _strip_images_from_messages
+from hermes_agent.agent.error_classifier import FailoverReason, classify_api_error
+from hermes_agent.agent.message_sanitization import _strip_images_from_messages
 
 class _FakeApiError(Exception):
     """Stand-in for an openai.BadRequestError with status_code + body."""
@@ -207,12 +207,12 @@ def _mock_response(content: str):
 def _make_agent():
     """Build a minimal AIAgent, mirroring the idiom in
     tests/agent/test_fallback_429_after_timeout.py."""
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     with (
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI", return_value=MagicMock()),
     ):
         agent = AIAgent(
             api_key="fx",  # unused — the OpenAI client is mocked below
@@ -282,9 +282,9 @@ class TestRunConversationRecoversFromCorruptImage400:
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
-            patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()),
-            patch("agent.agent_runtime_helpers.time.sleep"),
-            patch("agent.model_metadata.get_model_context_length", return_value=200000),
+            patch("hermes_agent.agent.process_bootstrap.OpenAI", return_value=MagicMock()),
+            patch("hermes_agent.agent.agent_runtime_helpers.time.sleep"),
+            patch("hermes_agent.agent.model_metadata.get_model_context_length", return_value=200000),
         ):
             result = agent.run_conversation(
                 "did that look right?", conversation_history=history
@@ -373,9 +373,9 @@ class TestRunConversationRecoversFromCorruptImage400:
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
-            patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()),
-            patch("agent.agent_runtime_helpers.time.sleep"),
-            patch("agent.model_metadata.get_model_context_length", return_value=200000),
+            patch("hermes_agent.agent.process_bootstrap.OpenAI", return_value=MagicMock()),
+            patch("hermes_agent.agent.agent_runtime_helpers.time.sleep"),
+            patch("hermes_agent.agent.model_metadata.get_model_context_length", return_value=200000),
         ):
             result = agent.run_conversation(
                 "did that look right?", conversation_history=history

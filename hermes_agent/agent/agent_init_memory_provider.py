@@ -7,10 +7,10 @@ import logging
 from contextlib import suppress
 from typing import Any
 
-from agent.agent_init_params import _GATEWAY_IDENTITY_PARAMS
+from hermes_agent.agent.agent_init_params import _GATEWAY_IDENTITY_PARAMS
 from hermes_constants import get_hermes_home
 
-logger = logging.getLogger("run_agent")
+logger = logging.getLogger("hermes_agent.run_agent")
 
 
 # Deduped: the gateway builds a fresh AIAgent per message, so it would warn every turn.

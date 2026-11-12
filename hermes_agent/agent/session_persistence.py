@@ -9,7 +9,7 @@ from contextlib import nullcontext
 
 from typing import Any, Dict, List, Optional, Tuple
 
-from agent.context_compressor import (
+from hermes_agent.agent.context_compressor import (
     COMPRESSED_SUMMARY_METADATA_KEY,
     _DB_PERSISTED_MARKER,
     ContextCompressor,
@@ -18,18 +18,18 @@ from agent.context_compressor import (
     drop_shadowed_checkpoints,
     user_originated_turn_view,
 )
-from agent.lazy_forward import forward as _forward, forward_static as _forward_static
-from agent.memory_context import sanitize_context
+from hermes_agent.agent.lazy_forward import forward as _forward, forward_static as _forward_static
+from hermes_agent.agent.memory_context import sanitize_context
 
-from agent.tool_dispatch_helpers import _is_multimodal_tool_result, _multimodal_text_summary
-from agent.trajectory import save_trajectory as _save_trajectory_to_file
-from agent.message_metadata import (
+from hermes_agent.agent.tool_dispatch_helpers import _is_multimodal_tool_result, _multimodal_text_summary
+from hermes_agent.agent.trajectory import save_trajectory as _save_trajectory_to_file
+from hermes_agent.agent.message_metadata import (
     DB_ROW_SNAPSHOT, MERGED_TURN_PREFIX, REPAIR_BOOKKEEPING_FIELDS, RESTORED_FROM_STORE, TOOL_CALL_UID,
     copy_identity_fields, message_uid_or_none, tool_call_uid_from_history)
-from agent.transcript_repair import sync_flushed_message_markers
+from hermes_agent.agent.transcript_repair import sync_flushed_message_markers
 
 
-logger = logging.getLogger("run_agent")  # origin module's name: log records / caplog filters unchanged
+logger = logging.getLogger("hermes_agent.run_agent")  # origin module's name: log records / caplog filters unchanged
 
 # Flags marking ephemeral recovery scaffolding the loop pops before appending the real response.
 # Persistence must skip them or a resumed session replays synthetic turns / breaks prefix-cache reuse.
@@ -54,7 +54,7 @@ def _is_ephemeral_scaffolding(msg: Any) -> bool:
     return isinstance(msg, dict) and any(msg.get(flag) for flag in _EPHEMERAL_SCAFFOLDING_FLAGS)
 
 
-# `_DB_PERSISTED_MARKER` (agent.context_compressor) is the intrinsic "already written to SQLite" marker: an
+# `_DB_PERSISTED_MARKER` (hermes_agent.agent.context_compressor) is the intrinsic "already written to SQLite" marker: an
 # id(msg) set can alias a freed dict's address onto a new message, a key on the dict cannot. The `_` prefix is
 # mandatory (wire sanitizers strip `_` keys). CONTRACT: the marker asserts the dict's CONTENT is durable as
 # written — any in-place mutation that must persist MUST pop it (turn_finalizer, context_compressor).
@@ -135,7 +135,7 @@ def _durable_content(content: Any) -> Any:
 
 def _image_marker(part: dict) -> str:
     """``[screenshot]`` at the image's position; a caller-chosen ``detail`` rides along so a replay
-    (``agent.image_replay``) rebuilds the part the live turn sent."""
+    (``hermes_agent.agent.image_replay``) rebuilds the part the live turn sent."""
     url = part.get("image_url")
     detail = part.get("detail") or (url.get("detail") if isinstance(url, dict) else None)
     return f"[screenshot detail={detail}]" if detail in ("low", "high", "auto") else "[screenshot]"
@@ -514,7 +514,7 @@ class SessionPersistenceMixin:
         ``_flush_messages_to_session_db`` and written only to the DB row, never mutating the live message
         list used by the API call (#48677 is thus closed for every persist caller, not just this one).
         """
-        from agent.agent_runtime_helpers import note_turn_persisted
+        from hermes_agent.agent.agent_runtime_helpers import note_turn_persisted
         with _persist_lock(self):
             # Only the scaffolding goes here. Closing a tool tail this uncovers is the exit
             # owner's job (``_close_transcript_tail``, ``abort_turn_on_interrupt``): only it knows
@@ -538,7 +538,7 @@ class SessionPersistenceMixin:
         while tail("_empty_recovery_synthetic", "_empty_terminal_sentinel"):
             messages.pop()
 
-    _repair_message_sequence = _forward("agent.agent_runtime_helpers", "repair_message_sequence")
+    _repair_message_sequence = _forward("hermes_agent.agent.agent_runtime_helpers", "repair_message_sequence")
 
     def _flush_messages_to_session_db(self, messages: list[dict], conversation_history: Optional[list[dict]] = None):
         """Serialize direct and turn-boundary session flushes per agent."""
@@ -593,8 +593,8 @@ class SessionPersistenceMixin:
                 return messages[:i]
         return messages.copy()
 
-    _format_tools_for_system_message = _forward("agent.system_prompt", "format_tools_for_system_message")
-    _convert_to_trajectory_format = _forward("agent.agent_runtime_helpers", "convert_to_trajectory_format")
+    _format_tools_for_system_message = _forward("hermes_agent.agent.system_prompt", "format_tools_for_system_message")
+    _convert_to_trajectory_format = _forward("hermes_agent.agent.agent_runtime_helpers", "convert_to_trajectory_format")
 
     def _save_trajectory(self, messages: list[dict[str, Any]], user_query: str, completed: bool):
         """Save conversation trajectory to JSONL file."""
@@ -603,5 +603,5 @@ class SessionPersistenceMixin:
         trajectory = self._convert_to_trajectory_format(messages, user_query, completed)
         _save_trajectory_to_file(trajectory, self.model, completed)
 
-    _extract_api_error_context = _forward_static("agent.agent_runtime_helpers", "extract_api_error_context")
-    _dump_api_request_debug = _forward("agent.agent_runtime_helpers", "dump_api_request_debug")
+    _extract_api_error_context = _forward_static("hermes_agent.agent.agent_runtime_helpers", "extract_api_error_context")
+    _dump_api_request_debug = _forward("hermes_agent.agent.agent_runtime_helpers", "dump_api_request_debug")

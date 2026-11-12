@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.native_compaction import (
+from hermes_agent.agent.native_compaction import (
     native_compaction_context_management,
     resolve_native_compaction_capabilities,
 )

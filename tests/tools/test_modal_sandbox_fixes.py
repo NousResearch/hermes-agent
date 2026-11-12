@@ -283,7 +283,7 @@ class TestDockerHostBindApproval:
     def test_raising_registry_lookup_keeps_container_guards_on(self, monkeypatch):
         """A registry that raises during the provider lookup must fail soft to guards-on,
         not propagate out of the approval predicate."""
-        from agent import terminal_env_registry as R
+        from hermes_agent.agent import terminal_env_registry as R
         import hermes_agent.tools.approval as A
 
         def boom(*_a, **_k):
@@ -294,8 +294,8 @@ class TestDockerHostBindApproval:
 
     def test_registered_disposable_plugin_skips_container_guards(self):
         """Plugin classification uses its registered provider, not built-in names only."""
-        from agent import terminal_env_registry
-        from agent.terminal_env_provider import TerminalEnvironmentProvider
+        from hermes_agent.agent import terminal_env_registry
+        from hermes_agent.agent.terminal_env_provider import TerminalEnvironmentProvider
         import hermes_agent.tools.approval as A
 
         class DisposablePlugin(TerminalEnvironmentProvider):

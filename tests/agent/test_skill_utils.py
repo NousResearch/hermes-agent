@@ -1,9 +1,9 @@
-"""Tests for agent/skill_utils.py."""
+"""Tests for hermes_agent/agent/skill_utils.py."""
 
 
 import pytest
 
-from agent.skill_utils import (
+from hermes_agent.agent.skill_utils import (
     get_disabled_skill_names,
     get_external_skills_dirs,
     is_excluded_skill_path,
@@ -28,7 +28,7 @@ from agent.skill_utils import (
 
 def test_skill_config_helpers_share_raw_config_parse_cache(tmp_path, monkeypatch):
     """Repeated skill config helpers should parse config.yaml only once."""
-    from agent import skill_utils
+    from hermes_agent.agent import skill_utils
 
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir()
@@ -94,7 +94,7 @@ class TestMultiprofileRawConfigCache:
 
     @staticmethod
     def _load_under(home) -> list:
-        from agent import skill_utils
+        from hermes_agent.agent import skill_utils
         from hermes_constants import (
             reset_hermes_home_override,
             set_hermes_home_override,
@@ -107,7 +107,7 @@ class TestMultiprofileRawConfigCache:
             reset_hermes_home_override(token)
 
     def test_watcher_rotation_reparses_no_unchanged_config(self, tmp_path, monkeypatch):
-        from agent import skill_utils
+        from hermes_agent.agent import skill_utils
 
         homes = [tmp_path / f"scope-{i:02d}" for i in range(33)]
         for i, home in enumerate(homes):
@@ -131,7 +131,7 @@ class TestMultiprofileRawConfigCache:
     def test_editing_one_profile_reparses_only_that_profile(
         self, tmp_path, monkeypatch
     ):
-        from agent import skill_utils
+        from hermes_agent.agent import skill_utils
 
         first, second = tmp_path / "first", tmp_path / "second"
         _write_disabled_config(first, "old-disabled")
@@ -163,7 +163,7 @@ class TestMultiprofileRawConfigCache:
         from concurrent.futures import ThreadPoolExecutor
         from threading import Event
 
-        from agent import skill_utils
+        from hermes_agent.agent import skill_utils
 
         first, second = tmp_path / "first", tmp_path / "second"
         _write_disabled_config(first, "first-disabled")
@@ -199,7 +199,7 @@ class TestMultiprofileRawConfigCache:
         import sys
         from concurrent.futures import ThreadPoolExecutor
 
-        from agent import skill_utils
+        from hermes_agent.agent import skill_utils
 
         homes = [tmp_path / f"scope-{i:02d}" for i in range(24)]
         for i, home in enumerate(homes):
@@ -273,7 +273,7 @@ class TestDisabledSkillsJsonArrayString:
             encoding="utf-8",
         )
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        from agent import skill_utils
+        from hermes_agent.agent import skill_utils
 
         getattr(skill_utils, "_raw_config_cache_clear", lambda: None)()
 
@@ -284,7 +284,7 @@ class TestDisabledSkillsJsonArrayString:
 def test_skill_config_home_vars_use_subprocess_home(tmp_path, monkeypatch):
     """``~`` / ``$HOME`` / ``${HOME}`` defaults resolve against the HOME tools receive, not the
     control process HOME; other variables keep normal expansion (#12260)."""
-    from agent import skill_utils
+    from hermes_agent.agent import skill_utils
 
     # A backslash in the home path must not be read as a regex-replacement escape.
     hermes_home = tmp_path / "da\\ta"
@@ -384,14 +384,14 @@ def test_skill_support_path_uses_explicit_discovery_root_not_cwd(tmp_path, monke
 
 class TestNormalizeSkillLookupName:
     def test_relative_path_unchanged(self, tmp_path, monkeypatch):
-        from agent.skill_utils import normalize_skill_lookup_name
+        from hermes_agent.agent.skill_utils import normalize_skill_lookup_name
 
         # Relative identifiers early-return before any root lookup.
         assert normalize_skill_lookup_name("foo/bar") == "foo/bar"
 
 
     def test_absolute_via_symlink_uses_lexical_relative_path(self, tmp_path, monkeypatch):
-        from agent.skill_utils import normalize_skill_lookup_name
+        from hermes_agent.agent.skill_utils import normalize_skill_lookup_name
 
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
@@ -476,7 +476,7 @@ class TestBOMToleranceSiblingSites:
     def test_prompt_builder_strips_bom_frontmatter(self):
         # A BOM'd context file (AGENTS.md etc.) must not leak raw
         # frontmatter into the system prompt.
-        from agent.prompt_builder import _strip_yaml_frontmatter
+        from hermes_agent.agent.prompt_builder import _strip_yaml_frontmatter
 
         out = _strip_yaml_frontmatter("\ufeff---\nfoo: bar\n---\nBody text\n")
         assert out.strip() == "Body text"

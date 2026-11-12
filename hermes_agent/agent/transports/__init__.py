@@ -5,7 +5,7 @@
 import contextlib
 import importlib
 
-from agent.transports.types import (
+from hermes_agent.agent.transports.types import (
     NormalizedResponse,
     ToolCall,
     Usage,
@@ -38,7 +38,7 @@ def _discover_transports() -> None:
     _discovered = True
     for name in _TRANSPORT_MODULES:
         with contextlib.suppress(ImportError):
-            importlib.import_module(f"agent.transports.{name}")
+            importlib.import_module(f"hermes_agent.agent.transports.{name}")
 
 
 def registered_api_modes() -> frozenset:

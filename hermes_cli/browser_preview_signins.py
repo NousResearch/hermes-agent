@@ -22,7 +22,7 @@ _COOKIE_FIELDS = ("name", "value", "domain", "path", "expires", "httpOnly", "sec
 def _read_cookies(cdp_url: str) -> list[dict[str, Any]]:
     from websockets.sync.client import connect
 
-    from agent.proxy_bypass import loopback_connect_kwargs
+    from hermes_agent.agent.proxy_bypass import loopback_connect_kwargs
     with connect(cdp_url, open_timeout=_CDP_TIMEOUT_S, close_timeout=2, max_size=None,
                  **loopback_connect_kwargs(cdp_url)) as ws:
         ws.send(json.dumps({"id": 1, "method": "Storage.getCookies", "params": {}}))

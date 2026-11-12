@@ -131,7 +131,7 @@ class ChronosCronScheduler(CronScheduler):
             "to the built-in cron ticker for this process so scheduled jobs keep firing on time.")
         if self._stop_event is None:
             return  # start() never ran (e.g. a CLI `hermes cron add`); nothing to tick here
-        from agent.memory_provider import spawn_context_thread
+        from hermes_agent.agent.memory_provider import spawn_context_thread
         from hermes_agent.cron.scheduler_provider import InProcessCronScheduler
         spawn_context_thread(
             InProcessCronScheduler().start, name="cron-scheduler-chronos-fallback",

@@ -25,7 +25,7 @@ _EPISODE_IDLE_S = 120.0
 
 
 def _ra():
-    import run_agent
+    from hermes_agent import run_agent
     return run_agent
 
 
@@ -104,7 +104,7 @@ def _retry_after_backoff(agent: Any, pool: Any, episode: dict[str, Any], *, fail
 
 def recover_auth_failure(agent, pool, *, status_code, has_retried_429, error_context, api_key_hint,
                          credential_id, rotate_and_swap):
-    from agent.agent_runtime_helpers import _is_entitlement_403
+    from hermes_agent.agent.agent_runtime_helpers import _is_entitlement_403
     log = _ra().logger
     if _is_entitlement_403(agent, status_code, error_context):
         log.info(

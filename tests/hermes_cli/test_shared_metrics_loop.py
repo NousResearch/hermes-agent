@@ -102,7 +102,7 @@ def test_memory_failure_class_names_each_store_refusal_and_never_its_text(home):
 
 
 def test_memory_provider_tools_report_bounded_provider_and_op(home):
-    from agent.memory_manager import MemoryManager
+    from hermes_agent.agent.memory_manager import MemoryManager
 
     class _Provider:
         def __init__(self, name, tool, result=None, boom=False):
@@ -144,7 +144,7 @@ def test_disabled_shared_metrics_record_no_loop_rows(home, monkeypatch):
 
 
 def test_async_curator_pass_records_in_the_profile_that_started_it(home, tmp_path):
-    from agent import curator
+    from hermes_agent.agent import curator
 
     owner = tmp_path / "owner-profile"
     owner.mkdir()
@@ -162,7 +162,7 @@ def test_async_curator_pass_records_in_the_profile_that_started_it(home, tmp_pat
 
 
 def test_scheduled_ticks_that_find_the_pass_held_elsewhere_record_nothing(home, monkeypatch):
-    from agent import curator
+    from hermes_agent.agent import curator
 
     monkeypatch.setattr(curator, "should_run_now", lambda: True)
     monkeypatch.setattr(curator, "_claim_run", lambda: False)

@@ -186,7 +186,7 @@ class TestGenerateGeminiTts:
         }
         monkeypatch.setenv("GEMINI_API_KEY", "test-key")
 
-        with patch("agent.auxiliary_client.call_llm", side_effect=RuntimeError("boom")), \
+        with patch("hermes_agent.agent.auxiliary_client.call_llm", side_effect=RuntimeError("boom")), \
              patch("requests.post", return_value=mock_gemini_response) as mock_post:
             _generate_gemini_tts("Hi there.", str(tmp_path / "test.wav"), config)
 

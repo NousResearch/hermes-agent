@@ -72,7 +72,7 @@ with open(config_path, "w") as f:
 
 # Fresh import — must not have any browser modules cached.
 for name in list(sys.modules):
-    if name.startswith("hermes_agent.tools.") or name.startswith("agent.") or name.startswith("plugins."):
+    if name.startswith("hermes_agent.tools.") or name.startswith("hermes_agent.agent.") or name.startswith("plugins."):
         sys.modules.pop(name, None)
 
 try:

@@ -145,7 +145,7 @@ class TestResolveProvider:
         # the specific "GitHub token alone shouldn't auto-pick copilot"
         # behavior, not the Bedrock fallback.
         monkeypatch.setattr(
-            "agent.bedrock_adapter.has_aws_credentials",
+            "hermes_agent.agent.bedrock_adapter.has_aws_credentials",
             lambda env=None, **_kw: False,
         )
         monkeypatch.setenv("GITHUB_TOKEN", "gh-test-token")
@@ -276,11 +276,11 @@ class TestHasAnyProviderConfigured:
         monkeypatch.setattr("hermes_cli.auth.get_auth_status", lambda _pid: {})
         # Simulate valid Claude Code credentials
         monkeypatch.setattr(
-            "agent.anthropic_credentials.read_claude_code_credentials",
+            "hermes_agent.agent.anthropic_credentials.read_claude_code_credentials",
             lambda: {"accessToken": "sk-ant-test", "refreshToken": "ref-tok"},
         )
         monkeypatch.setattr(
-            "agent.anthropic_credentials.is_claude_code_token_valid",
+            "hermes_agent.agent.anthropic_credentials.is_claude_code_token_valid",
             lambda creds: True,
         )
         from hermes_cli.main import _has_any_provider_configured
@@ -611,7 +611,7 @@ class TestHuggingFaceModels:
     def test_model_metadata_has_context_lengths(self):
         """Every HF model should have a context length entry."""
         from hermes_cli.models import _PROVIDER_MODELS
-        from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS
+        from hermes_agent.agent.model_metadata import DEFAULT_CONTEXT_LENGTHS
         lower_keys = {k.lower() for k in DEFAULT_CONTEXT_LENGTHS}
         hf_models = _PROVIDER_MODELS["huggingface"]
         for model in hf_models:
@@ -693,7 +693,7 @@ class TestMinimaxOAuthProvider:
         # Aux model for the minimax-oauth provider now lives on the
         # ProviderProfile (plugins/model-providers/minimax/__init__.py),
         # not the legacy _API_KEY_PROVIDER_AUX_MODELS dict in
-        # agent/auxiliary_client.py. The profile layer is the source
+        # hermes_agent/agent/auxiliary_client.py. The profile layer is the source
         # of truth; _get_aux_model_for_provider() reads from it first
         # and only falls back to the dict when no profile is registered.
         from hermes_agent import model_tools
@@ -1011,7 +1011,7 @@ class TestDeepInfraProviderProfile:
 
     def test_profile_registered_with_alias_and_aux(self):
         from providers import get_provider_profile
-        from agent.auxiliary_client import _get_aux_model_for_provider
+        from hermes_agent.agent.auxiliary_client import _get_aux_model_for_provider
         from hermes_cli.auth import resolve_provider
         from hermes_cli.config import OPTIONAL_ENV_VARS
         from hermes_cli.models import CANONICAL_PROVIDERS

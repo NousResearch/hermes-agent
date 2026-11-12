@@ -25,7 +25,7 @@ _CREDIT_LIMITED_402 = (
 
 
 def _turn(script):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     home = Path(os.environ["HERMES_HOME"])
     with FakeLLMServer(script) as srv:

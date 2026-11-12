@@ -22,7 +22,7 @@ def discard_unpublished_vault_key(ref: Optional[dict]) -> None:
     """A create that fails after a --clone-all copy got its own keychain entry (``ref``, returned by
     ``VaultStore.own_copied_key``) deletes exactly that entry; never one inferred from the source."""
     if ref is not None:
-        from agent.vault_keychain import delete_key
+        from hermes_agent.agent.vault_keychain import delete_key
         delete_key(ref)
 
 

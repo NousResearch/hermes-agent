@@ -298,10 +298,10 @@ def is_todo_tool_call(tool_call: Any) -> bool:
 
     Covers the current name, legacy aliases, and the ``tool_call`` bridge (``todo_list`` is deferred by
     default, and the transcript keeps the bridge name). The bridge is peeled from the recorded arguments
-    only, never live tool-search config, and must wrap exactly one call. Keep this module free of model_tools / agent.tool_executor
+    only, never live tool-search config, and must wrap exactly one call. Keep this module free of model_tools / hermes_agent.agent.tool_executor
     imports: TUI resume and run_agent call this without loading either.
     """
-    from agent.message_sanitization import _tc_field
+    from hermes_agent.agent.message_sanitization import _tc_field
 
     fn = _tc_field(tool_call, "function")
     name, raw_args = _tc_field(fn, "name") or "", _tc_field(fn, "arguments")

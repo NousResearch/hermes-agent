@@ -6,8 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.fast_mode import SERVICE_TIER_WORDS, STATIC_TIERS, parse_service_tier
-from agent.usage_pricing import (
+from hermes_agent.agent.fast_mode import SERVICE_TIER_WORDS, STATIC_TIERS, parse_service_tier
+from hermes_agent.agent.usage_pricing import (
     _OPENAI_ULTRAFAST_PRICING,
     CanonicalUsage,
     estimate_usage_cost,
@@ -138,7 +138,7 @@ def test_served_ultrafast_on_a_model_without_a_published_rate_is_unknown(model):
     ("https://api.openai.com.proxy.example/v1", "0.007", "provider_models_api"),
 ])
 def test_context_alias_pricing_preserves_custom_endpoint_rates(monkeypatch, provider, base_url, amount, source):
-    import agent.usage_pricing as pricing
+    import hermes_agent.agent.usage_pricing as pricing
 
     monkeypatch.setattr(pricing, "fetch_endpoint_model_metadata", lambda *a, **kw: {
         "gpt-6-astra-900k": {"pricing": {"prompt": "0.000003", "completion": "0.000004"}},
@@ -152,8 +152,8 @@ def test_context_alias_pricing_preserves_custom_endpoint_rates(monkeypatch, prov
 
 @pytest.mark.parametrize("model", SOL_SPELLINGS)
 def test_sol_ultrafast_codex_request_uses_the_wire_slug_and_keeps_subscription_accounting(model):
-    from agent.fast_mode import effective_request_overrides
-    from agent.transports.codex import ResponsesApiTransport
+    from hermes_agent.agent.fast_mode import effective_request_overrides
+    from hermes_agent.agent.transports.codex import ResponsesApiTransport
     from hermes_cli.model_normalize import normalize_model_for_provider
 
     base_url = "https://chatgpt.com/backend-api/codex"
@@ -173,7 +173,7 @@ def test_sol_ultrafast_codex_request_uses_the_wire_slug_and_keeps_subscription_a
 
 
 def test_codex_stream_assembler_keeps_the_served_tier():
-    from agent.codex_runtime import _consume_codex_event_stream
+    from hermes_agent.agent.codex_runtime import _consume_codex_event_stream
 
     done = {"type": "response.completed", "response": {"id": "r1", "status": "completed", "service_tier": "default",
                                                        "usage": {"input_tokens": 1, "output_tokens": 1}}}

@@ -379,7 +379,7 @@ async def test_estop_refuses_fire_before_admission_and_lifts_on_resume(adapter, 
     """`hermes pause` must stop the NAS-driven door too: 503 + Retry-After (NAS redelivers
     after `hermes resume`) and no ``claim_fire`` — a claim followed by a 503 would leave a
     claimed job that the retry and the misfire backstop both race for."""
-    from agent import estop
+    from hermes_agent.agent import estop
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     estop._logged_components.clear()

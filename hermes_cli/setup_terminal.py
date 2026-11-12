@@ -250,7 +250,7 @@ def _setup_backend_ssh(config: dict) -> None:
 
 def _setup_backend_plugin(config: dict, backend: str) -> None:
     try:
-        from agent.terminal_env_registry import get_provider
+        from hermes_agent.agent.terminal_env_registry import get_provider
         provider = get_provider(backend)
         _setup.print_success(f"Terminal backend: {provider.display_name}")
         for line in provider.setup_instructions():
@@ -289,7 +289,7 @@ def setup_terminal_backend(config: dict):
     try:
         from hermes_cli.plugins import discover_plugins
         discover_plugins()  # idempotent — plugin state may not be loaded yet
-        from agent.terminal_env_registry import list_providers
+        from hermes_agent.agent.terminal_env_registry import list_providers
         for provider in list_providers():
             pname = provider.name.strip().lower()
             backends.append((pname, f"{provider.display_name} - {provider.description}"))

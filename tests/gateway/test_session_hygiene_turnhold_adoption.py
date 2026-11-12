@@ -137,15 +137,15 @@ def _install_fakes(monkeypatch, gateway_run, tmp_path, agent_cls):
     fake_dotenv = types.ModuleType("dotenv")
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
     monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
-    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent = types.ModuleType("hermes_agent.run_agent")
     fake_run_agent.AIAgent = agent_cls
-    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    monkeypatch.setitem(sys.modules, "hermes_agent.run_agent", fake_run_agent)
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr(
         gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"}
     )
     monkeypatch.setattr(
-        "agent.model_metadata.get_model_context_length",
+        "hermes_agent.agent.model_metadata.get_model_context_length",
         lambda *_args, **_kwargs: 100,
     )
 

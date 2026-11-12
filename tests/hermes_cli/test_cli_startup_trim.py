@@ -30,9 +30,9 @@ def test_chat_launch_registers_no_shell_hooks_or_webhooks(monkeypatch, command):
     monkeypatch.setattr(main_mod, "_guard_noninteractive_user_config", lambda _a: None)
     monkeypatch.setitem(sys.modules, "hermes_cli.plugins", types.SimpleNamespace(
         discover_plugins=lambda: None, start_background_plugin_discovery=lambda: None))
-    monkeypatch.setitem(sys.modules, "agent.shell_hooks", types.SimpleNamespace(
+    monkeypatch.setitem(sys.modules, "hermes_agent.agent.shell_hooks", types.SimpleNamespace(
         register_from_config=lambda *a, **k: calls.append("hooks")))
-    monkeypatch.setitem(sys.modules, "agent.outbound_webhooks", types.SimpleNamespace(
+    monkeypatch.setitem(sys.modules, "hermes_agent.agent.outbound_webhooks", types.SimpleNamespace(
         register_from_config=lambda *a, **k: calls.append("webhooks")))
     main_mod._prepare_agent_startup(_args(command))
     assert calls == []
@@ -46,9 +46,9 @@ def test_non_chat_agent_command_still_registers_hooks(monkeypatch):
         discover_plugins=lambda: None, start_background_plugin_discovery=lambda: None))
     monkeypatch.setitem(sys.modules, "hermes_cli.config", types.SimpleNamespace(
         load_config=dict, read_raw_config=dict))
-    monkeypatch.setitem(sys.modules, "agent.shell_hooks", types.SimpleNamespace(
+    monkeypatch.setitem(sys.modules, "hermes_agent.agent.shell_hooks", types.SimpleNamespace(
         register_from_config=lambda *a, **k: calls.append("hooks")))
-    monkeypatch.setitem(sys.modules, "agent.outbound_webhooks", types.SimpleNamespace(
+    monkeypatch.setitem(sys.modules, "hermes_agent.agent.outbound_webhooks", types.SimpleNamespace(
         register_from_config=lambda *a, **k: calls.append("webhooks")))
     from hermes_cli import mcp_startup
     monkeypatch.setattr(mcp_startup, "start_background_mcp_discovery", lambda **k: None)
@@ -69,9 +69,9 @@ def test_only_foreground_commands_may_prompt_for_hook_consent(monkeypatch, comma
         discover_plugins=lambda: None, start_background_plugin_discovery=lambda: None))
     monkeypatch.setitem(sys.modules, "hermes_cli.config", types.SimpleNamespace(
         load_config=dict, read_raw_config=dict))
-    monkeypatch.setitem(sys.modules, "agent.shell_hooks", types.SimpleNamespace(
+    monkeypatch.setitem(sys.modules, "hermes_agent.agent.shell_hooks", types.SimpleNamespace(
         register_from_config=lambda *a, **k: seen.append(k)))
-    monkeypatch.setitem(sys.modules, "agent.outbound_webhooks", types.SimpleNamespace(
+    monkeypatch.setitem(sys.modules, "hermes_agent.agent.outbound_webhooks", types.SimpleNamespace(
         register_from_config=lambda *a, **k: None))
     from hermes_cli import mcp_startup
     monkeypatch.setattr(mcp_startup, "start_background_mcp_discovery", lambda **k: None)
@@ -96,9 +96,9 @@ def test_deferred_first_turn_discovers_no_plugins_spawns_no_mcp_and_registers_no
     monkeypatch.setattr(plugins_mod, "discover_plugins", lambda *a, **k: calls.append("plugins"))
     monkeypatch.setattr(mcp_startup, "start_background_mcp_discovery", lambda **k: calls.append("mcp"))
     monkeypatch.setattr(mcp_startup, "ensure_mcp_discovery_before_agent_build", lambda **k: calls.append("mcp"))
-    monkeypatch.setitem(sys.modules, "agent.shell_hooks", types.SimpleNamespace(
+    monkeypatch.setitem(sys.modules, "hermes_agent.agent.shell_hooks", types.SimpleNamespace(
         register_from_config=lambda *a, **k: calls.append("hooks")))
-    monkeypatch.setitem(sys.modules, "agent.outbound_webhooks", types.SimpleNamespace(
+    monkeypatch.setitem(sys.modules, "hermes_agent.agent.outbound_webhooks", types.SimpleNamespace(
         register_from_config=lambda *a, **k: calls.append("webhooks")))
     monkeypatch.setattr(gateway_agent, "GatewayAgent", lambda *_a, **_k: types.SimpleNamespace())
     cli._session_db, cli._resumed, cli.conversation_history = object(), False, []

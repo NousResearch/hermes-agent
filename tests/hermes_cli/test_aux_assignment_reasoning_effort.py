@@ -2,7 +2,7 @@
 
 ``POST /api/model/set`` carries ``reasoning_effort`` for an auxiliary task: omitted → the task's
 override is left alone; explicit null → cleared (inherit); a level → set. Runtime reads it from
-``auxiliary.<task>.reasoning_effort`` (``agent/auxiliary_client.py``).
+``auxiliary.<task>.reasoning_effort`` (``hermes_agent/agent/auxiliary_client.py``).
 """
 
 import pytest

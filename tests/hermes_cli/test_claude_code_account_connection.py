@@ -9,7 +9,7 @@ HEADERS = {"X-Hermes-Session-Token": _SESSION_TOKEN}
 
 def test_expired_claude_code_token_is_not_connected(monkeypatch):
     """A present but expired access token must not mark the account Connected."""
-    from agent import anthropic_credentials
+    from hermes_agent.agent import anthropic_credentials
 
     monkeypatch.setattr(
         anthropic_credentials,

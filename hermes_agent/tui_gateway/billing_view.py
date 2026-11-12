@@ -2,7 +2,7 @@
 
 STRUCTURED envelopes (result.ok / result.error) rather than JSON-RPC errors, so
 rpc() always resolves and the client branches on the typed billing code.
-Data-building lives in agent/billing_view.py + hermes_cli/nous_billing.py.
+Data-building lives in hermes_agent/agent/billing_view.py + hermes_cli/nous_billing.py.
 Bodies are rebound onto server.py's globals at install time (method_ctx.bind_module),
 so tests may still monkeypatch e.g. ``server._usage_payload``.
 """
@@ -81,7 +81,7 @@ def _serialize_billing_state(state, *, free_tier_account: bool = False) -> dict:
     """Serialize a BillingState for the wire (Decimals → strings, money-safe). ``free_tier_account`` marks the
     Nous free tier: no account, no balance, nothing to pay; the renderer branches on it before
     ``logged_in``."""
-    from agent.billing_view import format_money
+    from hermes_agent.agent.billing_view import format_money
     from hermes_cli.anon_auth import GUEST_MODEL
 
     card = mc = None
@@ -127,7 +127,7 @@ def _plan_usage_payload(state) -> Optional[dict]:
     if not getattr(state, "logged_in", False):
         return None
     try:
-        from agent.credits_tracker import _window_seed_fields
+        from hermes_agent.agent.credits_tracker import _window_seed_fields
         from hermes_cli.nous_account import cached_nous_portal_account_info
         snapshot = cached_nous_portal_account_info(any_age=True)
         if snapshot is None or _window_seed_fields(getattr(snapshot, "usage_window", None)) is None:
@@ -145,7 +145,7 @@ def _usage_payload(state) -> dict:
     if not getattr(state, "logged_in", False):
         return {"available": False}
     try:
-        from agent.billing_usage import build_usage_model
+        from hermes_agent.agent.billing_usage import build_usage_model
         return _serialize_usage_model(build_usage_model())
     except Exception:
         return {"available": False}
@@ -155,7 +155,7 @@ def _serialize_usage_bar(bar) -> Optional[dict]:
     """Serialize a UsageBar (dollar magnitudes → display strings + fractions)."""
     if bar is None:
         return None
-    from agent.billing_usage import _fmt_usd
+    from hermes_agent.agent.billing_usage import _fmt_usd
     return {
         "kind": bar.kind, "remaining_display": _fmt_usd(bar.remaining_usd),
         "total_display": _fmt_usd(bar.total_usd), "spent_display": _fmt_usd(bar.spent_usd),
@@ -164,7 +164,7 @@ def _serialize_usage_bar(bar) -> Optional[dict]:
 
 def _serialize_usage_model(model) -> dict:
     """Serialize a UsageModel for the wire — the shared two-bar dollar view (fail-open)."""
-    from agent.billing_usage import _fmt_usd, format_renews
+    from hermes_agent.agent.billing_usage import _fmt_usd, format_renews
     if model is None or not getattr(model, "available", False):
         return {"ok": True, "available": False}
 
@@ -183,8 +183,8 @@ def _serialize_usage_model(model) -> dict:
 
 def _serialize_subscription_state(state) -> dict:
     """Serialize a SubscriptionState for the wire (Decimals → strings)."""
-    from agent.billing_usage import format_renews
-    from agent.billing_view import format_money
+    from hermes_agent.agent.billing_usage import format_renews
+    from hermes_agent.agent.billing_view import format_money
 
     current = None
     if state.current is not None:

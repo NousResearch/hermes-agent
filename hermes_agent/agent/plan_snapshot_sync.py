@@ -34,7 +34,7 @@ def _profile_key() -> str:
 def _snapshot_full_ids(snapshot: Any) -> Optional[frozenset[str]]:
     """Ids of the full allowances in the cached snapshot; None when it has no window plan."""
     window = getattr(snapshot, "usage_window", None)
-    from agent.credits_tracker import _window_seed_fields
+    from hermes_agent.agent.credits_tracker import _window_seed_fields
     if _window_seed_fields(window) is None:
         return None
     return frozenset(g.id for g in (getattr(window, "gauges", None) or ()) if g.full)
@@ -103,7 +103,7 @@ def sync_plan_snapshot(state: Any) -> bool:
             _inflight.add(key)
             _last_attempt[key] = (seen, now)
         # Under this profile's contextvars (its Hermes home and auth store), as the credits seed thread does.
-        from agent.memory_provider import spawn_context_thread
+        from hermes_agent.agent.memory_provider import spawn_context_thread
         spawn_context_thread(_refresh, args=(plan_changed, key), name="nous-plan-sync").start()
         return True
     except Exception:

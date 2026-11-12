@@ -5,10 +5,10 @@ from __future__ import annotations
 import inspect
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from agent.auxiliary_client import AuxiliaryExplicitCancellation
+from hermes_agent.agent.auxiliary_client import AuxiliaryExplicitCancellation
 
 if TYPE_CHECKING:
-    from agent.context_compressor import _HandoffScan
+    from hermes_agent.agent.context_compressor import _HandoffScan
 
 
 def _accepts_keyword_argument(callable_obj: Any, name: str) -> bool:
@@ -49,7 +49,7 @@ class SummaryDispatchMixin:
             return
         if not getattr(self, "_summary_model_fallen_back", False):
             return
-        from agent.auxiliary_task_config import authoritative_auxiliary_task
+        from hermes_agent.agent.auxiliary_task_config import authoritative_auxiliary_task
 
         call_kwargs["task"] = authoritative_auxiliary_task(call_kwargs.get("task") or "compression")
         for key, value in (
@@ -69,11 +69,11 @@ class SummaryDispatchMixin:
         """Run the summary LLM; a cancellation rolls back the handoff scan's self-heal mutation first.
         A deterministic pin (repeated stall, #112420) skips the LLM: ``None`` lets Phase 3 insert the static
         fallback summary, or abort under ``abort_on_summary_failure`` exactly like a failed summary call."""
-        from agent.context_compressor import take_deterministic_summary_pin
+        from hermes_agent.agent.context_compressor import take_deterministic_summary_pin
         if take_deterministic_summary_pin():
             # A detached stale attempt must not stamp error state or mutate the shared telemetry dict
             # the fallback owns; unwind as a cancellation before any write lands.
-            from agent.conversation_compression import _raise_if_stale_attempt
+            from hermes_agent.agent.conversation_compression import _raise_if_stale_attempt
 
             _raise_if_stale_attempt(self)
             # Surfaces through the fallback summary's reason line and the host's one-shot user warning.
@@ -100,7 +100,7 @@ class SummaryDispatchMixin:
             # The caller's own generation rides a ContextVar because shared compressor attributes can
             # only name the current owner, never the caller's attempt. Working-attempt comparison (not
             # the entry generation) so a no-op claim does not suppress the owning attempt's rollback.
-            from agent.conversation_compression import _caller_attempt_is_current
+            from hermes_agent.agent.conversation_compression import _caller_attempt_is_current
 
             if _caller_attempt_is_current(self):
                 self._previous_summary = scan.previous_summary_before

@@ -28,7 +28,7 @@ from hermes_agent.hermes_state import SessionDB
 
 def _build_agent_with_db(db: SessionDB, session_id: str, **compressor_kwargs):
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key",
@@ -68,7 +68,7 @@ def _build_agent_with_db(db: SessionDB, session_id: str, **compressor_kwargs):
 
 def _timeout_after_entry(monkeypatch, started):
     """Start the real timeout wait after the engine reached its blocking point."""
-    from agent import conversation_compression as cc
+    from hermes_agent.agent import conversation_compression as cc
 
     wait = cc._await_worker_within_budget
     futures = []
@@ -155,8 +155,8 @@ def test_host_timeout_releases_pool_slot_while_protected_provider_is_still_block
     immediately; otherwise four slow streams consume all four shared compression
     workers until the auxiliary stream's much longer absolute ceiling expires.
     """
-    from agent import auxiliary_client as aux
-    from agent import conversation_compression as cc
+    from hermes_agent.agent import auxiliary_client as aux
+    from hermes_agent.agent import conversation_compression as cc
 
     deadline = time.time() + 5
     while time.time() < deadline:
@@ -231,7 +231,7 @@ def test_f4_five_step_stale_holder_regression(tmp_path: Path) -> None:
     5. Prove it cannot clear cooldown, release the new holder's lease, or
        publish stale state.
     """
-    from agent.conversation_compression import (
+    from hermes_agent.agent.conversation_compression import (
         CompressionCommitFence,
         run_compress_context_with_progress_timeout,
     )
@@ -350,7 +350,7 @@ def test_f5_session_contextvar_rebound_after_rotation(
     # Enable the owned pooled wrapper so rotation happens on a WORKER thread
     # (the caller's ContextVar can only be repaired by the caller).
     monkeypatch.setattr(
-        "agent.conversation_compression.resolve_context_compression_timeouts",
+        "hermes_agent.agent.conversation_compression.resolve_context_compression_timeouts",
         lambda cfg=None: (5.0, 10.0),
     )
 

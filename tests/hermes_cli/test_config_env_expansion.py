@@ -122,7 +122,7 @@ class TestExpansionUnderProfileScope:
     out.  Outside multiplex the scope is an overlay and environ still applies."""
 
     def test_scoped_ref_never_reads_another_profiles_environ(self, monkeypatch):
-        from agent import secret_scope as ss
+        from hermes_agent.agent import secret_scope as ss
 
         monkeypatch.setenv("MATRIX_ACCESS_TOKEN", "default-token")
         was_active = ss.is_multiplex_active()

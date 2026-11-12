@@ -75,7 +75,7 @@ async def probe(peer):
         await async_wait_until(lambda: not adapter._active_sessions, timeout=15, what='adapter sessions idle')
 
     if sys.argv[1] == 'multiplex':
-        from agent.secret_scope import set_multiplex_active
+        from hermes_agent.agent.secret_scope import set_multiplex_active
         from hermes_agent.gateway.profile_routing import ProfileRoute
         state = Path(os.environ['HERMES_HOME'])
         transport = state / 'profiles' / 'transport'

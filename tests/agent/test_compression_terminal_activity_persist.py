@@ -14,7 +14,7 @@ turn-hold / timeout / abort) calls ``_touch_activity`` WITHOUT ``force_persist``
 stamp lands inside the open persist window — the normal case, because the heartbeat just wrote — the
 durable row keeps the mid-compression label while in-memory state is already terminal.
 
-``agent/session_activity.py`` already documents the intended contract for that rate limit:
+``hermes_agent/agent/session_activity.py`` already documents the intended contract for that rate limit:
 "force_persist (terminal stamps) is the only bypass". These tests pin it.
 """
 
@@ -27,14 +27,14 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.session_activity import ActivityProvenance
+from hermes_agent.agent.session_activity import ActivityProvenance
 from hermes_agent.hermes_state import SessionDB
 
 
 def _agent_with_db(db: SessionDB, session_id: str):
     """Real ``AIAgent`` wired to ``db`` and pinned to ``session_id`` (no network, no LLM)."""
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key",
@@ -52,7 +52,7 @@ def _agent_with_db(db: SessionDB, session_id: str):
 
 def _mid_compression_durable_stamp(agent, db: SessionDB, session_id: str) -> None:
     """Drive one heartbeat tick through the real durable path, as a long compression does."""
-    from agent.conversation_compression import _CompressionActivityHeartbeat
+    from hermes_agent.agent.conversation_compression import _CompressionActivityHeartbeat
 
     heartbeat = _CompressionActivityHeartbeat(agent, interval_seconds=3600.0)
     # Open the persist window so the tick writes through, exactly like a >60s compression.
@@ -76,7 +76,7 @@ def session(tmp_path):
 
 def test_host_timeout_stamp_is_durable_inside_persist_window(session):
     """Host compression timeout must not leave 'in progress' in the durable projection."""
-    from agent.compression_facade import _report_compression_timeout
+    from hermes_agent.agent.compression_facade import _report_compression_timeout
 
     _mid_compression_durable_stamp(session.agent, session.db, session.session_id)
 
@@ -130,7 +130,7 @@ def test_gateway_hygiene_terminal_stamps_are_durable(session, provenance_name, d
 
 def test_reconnect_reader_sees_terminal_state_not_in_progress(session):
     """A fresh reader (reconnect / another process) must observe the truthful terminal state."""
-    from agent.compression_facade import _report_compression_timeout
+    from hermes_agent.agent.compression_facade import _report_compression_timeout
 
     _mid_compression_durable_stamp(session.agent, session.db, session.session_id)
     _report_compression_timeout(
@@ -146,7 +146,7 @@ def test_reconnect_reader_sees_terminal_state_not_in_progress(session):
 
 def test_orphan_reap_converges_terminated_compression_row(session):
     """Orphan reaping a session left by a dead host must end a row that is no longer 'in progress'."""
-    from agent.compression_facade import _report_compression_timeout
+    from hermes_agent.agent.compression_facade import _report_compression_timeout
 
     _mid_compression_durable_stamp(session.agent, session.db, session.session_id)
     _report_compression_timeout(

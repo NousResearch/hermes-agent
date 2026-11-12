@@ -15,7 +15,7 @@ from tests.gateway.test_session_transcript_snapshot import _every_page, _two_han
 
 
 def _merged(text, goal):
-    from agent.context_compressor import (
+    from hermes_agent.agent.context_compressor import (
         SUMMARY_PREFIX, _MERGED_PRIOR_CONTEXT_HEADER, _MERGED_SUMMARY_DELIMITER, _SUMMARY_END_MARKER,
     )
     return (f'{_MERGED_PRIOR_CONTEXT_HEADER}\n{text}\n{_MERGED_SUMMARY_DELIMITER}\n{SUMMARY_PREFIX}\n'
@@ -66,7 +66,7 @@ def _seeded_transcript(db, segment, seed):
 
 def _inner(content):
     """The wrapped text of a carrier's content (a plain row's own text)."""
-    from agent.context_compressor import _MERGED_PRIOR_CONTEXT_HEADER, _MERGED_SUMMARY_DELIMITER
+    from hermes_agent.agent.context_compressor import _MERGED_PRIOR_CONTEXT_HEADER, _MERGED_SUMMARY_DELIMITER
     while isinstance(content, str) and content.startswith(_MERGED_PRIOR_CONTEXT_HEADER):
         content = content[len(_MERGED_PRIOR_CONTEXT_HEADER) + 1:].split(f'\n{_MERGED_SUMMARY_DELIMITER}', 1)[0]
     return content

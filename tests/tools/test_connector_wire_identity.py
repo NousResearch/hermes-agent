@@ -91,7 +91,7 @@ def test_correlation_ids_go_only_with_send_consent(send):
 
 
 def test_session_header_is_the_conversation_root(monkeypatch):
-    from agent.portal_tags import reset_conversation_context, set_conversation_context
+    from hermes_agent.agent.portal_tags import reset_conversation_context, set_conversation_context
 
     _consent(True)
     token = set_conversation_context("root-session")

@@ -172,7 +172,7 @@ def test_shell_hooks_hide_hook_command_windows(monkeypatch):
     """``platforms("windows")``: ``shell_hooks._spawn`` only adds ``creationflags``
     under its module-level ``IS_WINDOWS``, so on Linux the flag patch was
     what created the thing being asserted."""
-    from agent import shell_hooks
+    from hermes_agent.agent import shell_hooks
 
     captured = []
 
@@ -260,8 +260,8 @@ def test_tui_shell_exec_rpc_hides_console_window(monkeypatch):
 
 # ── #47971 LSP spawn + installer paths (salvage) ────────────────────────────
 #
-# The LSP language-server spawn (agent/lsp/client.py::_spawn) and the
-# npm/go LSP auto-installers (agent/lsp/install.py) are reachable from
+# The LSP language-server spawn (hermes_agent/agent/lsp/client.py::_spawn) and the
+# npm/go LSP auto-installers (hermes_agent/agent/lsp/install.py) are reachable from
 # console-less parents — a VS Code/Zed extension host running the ACP
 # adapter — where a .cmd-wrapped server (pyright-langserver.CMD via
 # cmd.exe /c) or an npm/go console app flashes a window on Windows.
@@ -272,7 +272,7 @@ def test_tui_shell_exec_rpc_hides_console_window(monkeypatch):
 def test_lsp_client_spawn_hides_console_window(monkeypatch):
     import asyncio
 
-    from agent.lsp import client as lsp_client
+    from hermes_agent.agent.lsp import client as lsp_client
 
     captured = []
 

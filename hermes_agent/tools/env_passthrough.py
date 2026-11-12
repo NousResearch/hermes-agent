@@ -147,7 +147,7 @@ def resolve_passthrough_value(name: str, fallback: str | None = None) -> str | N
     a missing key returns ``None``, never the process-global env, and an unscoped read
     raises the fail-closed ``UnscopedSecretError``. Outside multiplexing an installed
     scope keeps overlay semantics and an unscoped caller keeps its fallback."""
-    from agent.secret_scope import (
+    from hermes_agent.agent.secret_scope import (
         _is_global_env, current_secret_scope, get_secret, is_multiplex_active)
     # Global terminal/runtime settings are not profile secrets; ``fallback`` is
     # already the caller's effective value (incl. an explicit per-call override).
@@ -167,7 +167,7 @@ def scoped_passthrough_additions(present: Iterable[str]) -> dict[str, str]:
     also happens to define — the served profile's own value has no way in (#114209). Reads the
     bound scope alone: never ``os.environ``, never another profile. Empty without a scope, so
     single-profile spawns are byte-identical."""
-    from agent.secret_scope import _is_global_env, current_secret_scope
+    from hermes_agent.agent.secret_scope import _is_global_env, current_secret_scope
     scope = current_secret_scope()
     if not scope:
         return {}

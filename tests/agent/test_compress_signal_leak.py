@@ -9,7 +9,7 @@ def test_signal_cleared_on_entry_between_calls(monkeypatch):
     be None after call 2 because the entry code cleared it. This prevents
     a prior auto-compress lock-skip from causing a subsequent successful
     manual /compress to falsely report 'Compression already in progress'."""
-    from agent.conversation_compression import compress_context
+    from hermes_agent.agent.conversation_compression import compress_context
 
     agent = MagicMock()
     agent._cached_system_prompt = ""
@@ -24,7 +24,7 @@ def test_signal_cleared_on_entry_between_calls(monkeypatch):
     ]
 
     monkeypatch.setattr(
-        "agent.conversation_compression._compression_lock_holder",
+        "hermes_agent.agent.conversation_compression._compression_lock_holder",
         lambda a: "pid=test:holder",
     )
 

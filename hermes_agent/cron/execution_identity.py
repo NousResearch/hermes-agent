@@ -49,6 +49,6 @@ def exit_cron_execution(token: Optional[Token]) -> None:
 
 
 def current_cron_execution() -> Optional[CronExecution]:
-    from agent.delegation_context import is_delegated_child_context
+    from hermes_agent.agent.delegation_context import is_delegated_child_context
 
     return None if is_delegated_child_context() else _CURRENT.get()

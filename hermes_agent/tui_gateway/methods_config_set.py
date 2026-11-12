@@ -245,7 +245,7 @@ def _set_fast(rid, params, key, value, session):
         current_tier = session["create_service_tier_override"] or None  # pre-build pin beats global
     else:
         current_tier = _load_service_tier()
-    from agent.fast_mode import STATIC_TIERS, service_tier_word
+    from hermes_agent.agent.fast_mode import STATIC_TIERS, service_tier_word
     if raw == "status":
         return _kv(rid, key, service_tier_word(current_tier))
     nv = _FAST_WORDS.get(raw, ("normal" if current_tier in STATIC_TIERS else "fast") if raw in {"", "toggle"} else None)
@@ -265,7 +265,7 @@ def _set_fast(rid, params, key, value, session):
                                                 base_url=getattr(agent, "base_url", None),
                                                 tier="ultrafast" if nv == "ultrafast" else None)
         if overrides is not None and nv == "ultrafast":
-            from agent.codex_service_tiers import ultrafast_offered
+            from hermes_agent.agent.codex_service_tiers import ultrafast_offered
             if not ultrafast_offered(target_model, provider=getattr(agent, "provider", None),
                                      base_url=getattr(agent, "base_url", None),
                                      access_token=getattr(agent, "api_key", None)):
@@ -560,7 +560,7 @@ def _set_display_toggle(rid, params, key, value, session):
 
 def _set_daybreak(rid, params, key, value, session):
     """``agent.daybreak``: profile-wide like the native owner's (hermes_agent/gateway/session_tui_config.py). Every turn
-    reads it (prompt_turn._sync_agent_daybreak); requests check eligibility (agent/codex_service_tiers.py)."""
+    reads it (prompt_turn._sync_agent_daybreak); requests check eligibility (hermes_agent/agent/codex_service_tiers.py)."""
     on = _BOOL_WORDS.get(str(value).strip().lower())
     if on is None:
         return _err(rid, 4002, f"{key} takes true or false")

@@ -8,7 +8,7 @@ import threading
 
 
 def test_soul_md_scoped_to_home_override_not_ambient(tmp_path, monkeypatch):
-    from agent import prompt_builder
+    from hermes_agent.agent import prompt_builder
 
     default_home = tmp_path / "default"
     default_home.mkdir()
@@ -37,7 +37,7 @@ def test_soul_md_scoped_to_home_override_not_ambient(tmp_path, monkeypatch):
 
 
 def test_soul_md_override_missing_file_returns_none(tmp_path, monkeypatch):
-    from agent import prompt_builder
+    from hermes_agent.agent import prompt_builder
 
     default_home = tmp_path / "default"
     default_home.mkdir()
@@ -52,7 +52,7 @@ def test_soul_md_override_missing_file_returns_none(tmp_path, monkeypatch):
 
 
 def test_soul_md_ambient_unchanged_without_override(tmp_path, monkeypatch):
-    from agent import prompt_builder
+    from hermes_agent.agent import prompt_builder
 
     home = tmp_path / "home"
     home.mkdir()

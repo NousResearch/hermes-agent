@@ -13,7 +13,7 @@ feed a transcript of 1,000 operational notifications around a single human turn
 and assert the operational rows are invisible to the anchor/focus logic.
 """
 
-from agent.context_compressor import ContextCompressor
+from hermes_agent.agent.context_compressor import ContextCompressor
 
 def _compressor() -> ContextCompressor:
     cc = ContextCompressor(

@@ -11,7 +11,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from agent.onboarding_flow import Facts
+from hermes_agent.agent.onboarding_flow import Facts
 from hermes_cli import anon_auth, install_state
 from tests.hermes_cli.anon_portal import as_local_desktop_backend, install_portal
 from hermes_agent.tui_gateway import server
@@ -24,7 +24,7 @@ def root(tmp_path, monkeypatch) -> Path:
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(server, "_hermes_home", str(home))
     monkeypatch.setattr(server, "_db", None)
-    monkeypatch.setattr("agent.onboarding_facts.read_facts", lambda **kw: Facts(os="macos", arch="arm64"))
+    monkeypatch.setattr("hermes_agent.agent.onboarding_facts.read_facts", lambda **kw: Facts(os="macos", arch="arm64"))
     return home
 
 

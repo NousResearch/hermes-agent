@@ -42,7 +42,7 @@ def _call_make_agent(cfg):
                 return_value=_runtime(),
             )
         )
-        mock_agent = stack.enter_context(patch("run_agent.AIAgent"))
+        mock_agent = stack.enter_context(patch("hermes_agent.run_agent.AIAgent"))
         from hermes_agent.tui_gateway.server import _make_agent
 
         _make_agent("sid-1", "key-1")

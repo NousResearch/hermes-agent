@@ -123,10 +123,10 @@ if len(sys.argv) == 1:
 else:
     # Fresh credential-free process, real production imports; no prompt seams mocked.
     sys.path.insert(0, str(SRC))
-    from run_agent import AIAgent
-    from agent.system_prompt import build_system_prompt, build_system_prompt_parts
-    from agent.prompt_builder import build_context_files_prompt
-    from agent.prompt_caching import build_prompt_cache_plan
+    from hermes_agent.run_agent import AIAgent
+    from hermes_agent.agent.system_prompt import build_system_prompt, build_system_prompt_parts
+    from hermes_agent.agent.prompt_builder import build_context_files_prompt
+    from hermes_agent.agent.prompt_caching import build_prompt_cache_plan
 
     agent = AIAgent(
         api_key="offline-not-a-credential",
@@ -155,7 +155,7 @@ else:
         static_system_prefix=agent._cached_system_prompt_static,
     )
     plan_data = dataclasses.asdict(plan)
-    from agent.conversation_loop import _stored_prompt_matches_runtime
+    from hermes_agent.agent.conversation_loop import _stored_prompt_matches_runtime
 
     decoy = "\n\nOperator instructions:\nHost: Example\nUser home directory: /example\nCurrent working directory: /example\n"
     restore_matches = _stored_prompt_matches_runtime(agent, full)

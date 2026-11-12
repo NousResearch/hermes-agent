@@ -160,7 +160,7 @@ def run_worker(
     session surface keeps it off, because its caller waits for an authorization URL."""
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     try:
-        from agent.secret_scope import (
+        from hermes_agent.agent.secret_scope import (
             build_profile_secret_scope, reset_secret_scope, set_secret_scope)
         from hermes_agent.tools.mcp_dashboard_oauth import dashboard_oauth_flow
         from hermes_agent.tools.mcp_oauth import force_interactive_oauth

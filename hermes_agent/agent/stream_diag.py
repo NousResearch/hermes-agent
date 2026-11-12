@@ -207,7 +207,7 @@ def connect_exhausted_notice(error: BaseException, *, attempts: int, base_url: A
     names the host, the attempt count and the serialized request size so a body-size limit is
     distinguishable from an outage without reading agent.log."""
     from urllib.parse import urlparse
-    from agent.stream_max_lifetime import StreamLifetimeExceeded
+    from hermes_agent.agent.stream_max_lifetime import StreamLifetimeExceeded
     if isinstance(error, StreamLifetimeExceeded):  # the stream DID open; the opt-in cap cut every attempt
         return f"❌ {error} ({attempts} attempt{'s' if attempts != 1 else ''})"
     request = _failed_request(error)

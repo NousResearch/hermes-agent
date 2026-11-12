@@ -1,10 +1,10 @@
-"""Tests for agent/error_surface.py — turn-error → UI layer descriptors."""
+"""Tests for hermes_agent/agent/error_surface.py — turn-error → UI layer descriptors."""
 
 from __future__ import annotations
 
 import pytest
 
-from agent.error_surface import (
+from hermes_agent.agent.error_surface import (
     LAYER_AUTH,
     LAYER_BILLING,
     LAYER_DISK,

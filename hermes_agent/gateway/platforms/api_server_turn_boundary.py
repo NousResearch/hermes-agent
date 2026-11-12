@@ -44,7 +44,7 @@ def response_turn_start_index(
     Mocked/legacy paths return only this turn's suffix (no user row): the prefix match stays as
     the fallback for them.
     """
-    from agent.turn_context import reanchor_current_turn_user_idx
+    from hermes_agent.agent.turn_context import reanchor_current_turn_user_idx
 
     agent_messages = result.get("messages") if isinstance(result, dict) else None
     if not isinstance(agent_messages, list) or not agent_messages:

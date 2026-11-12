@@ -27,7 +27,7 @@ def _console():
 
 
 def _cmd_add(args) -> None:
-    from agent.vault_store import (
+    from hermes_agent.agent.vault_store import (
         LOGIN_IDENTIFIER_TYPES,
         VAULT_KINDS,
         VaultError,
@@ -85,7 +85,7 @@ def _cmd_add(args) -> None:
                 kind="login", label=label, secret=secret, origin=origin
             )
         else:
-            from agent.vault_store import ADDRESS_FIELDS, PAYMENT_FIELDS, REQUIRED_FIELDS
+            from hermes_agent.agent.vault_store import ADDRESS_FIELDS, PAYMENT_FIELDS, REQUIRED_FIELDS
 
             fields = PAYMENT_FIELDS if kind == "payment" else ADDRESS_FIELDS
             origin = ""
@@ -113,7 +113,7 @@ def _cmd_add(args) -> None:
 def _cmd_list(args) -> None:
     """Local items always; external managers only for the lifetime of this CLI process (a
     `hermes vault list` unlock does not carry into a chat session — unlock there when asked)."""
-    from agent.vault_backends import enabled_backends
+    from hermes_agent.agent.vault_backends import enabled_backends
 
     c = _console()
     rows, locked = [], []
@@ -141,8 +141,8 @@ def _cmd_list(args) -> None:
 
 def _cmd_sources(args) -> None:
     """Show the detected password managers; `--disable`/`--enable` flip the opt-out (`vault.<name>.enabled`)."""
-    from agent.vault_backends import enabled_backends
-    from agent.vault_backends.base import external_backend_classes, is_installed
+    from hermes_agent.agent.vault_backends import enabled_backends
+    from hermes_agent.agent.vault_backends.base import external_backend_classes, is_installed
     from hermes_cli.config import _ensure_dict, load_config, save_config
 
     c = _console()
@@ -174,7 +174,7 @@ def _cmd_sources(args) -> None:
 
 
 def _cmd_rm(args) -> None:
-    from agent.vault_store import get_vault_store
+    from hermes_agent.agent.vault_store import get_vault_store
 
     c = _console()
     if get_vault_store().remove_item(args.handle):
@@ -185,8 +185,8 @@ def _cmd_rm(args) -> None:
 
 def _cmd_key(args) -> None:
     """Show where the local vault's key lives, or move it between vault.key and the OS keychain."""
-    from agent import vault_keychain
-    from agent.vault_store import configured_key_storage, get_vault_store
+    from hermes_agent.agent import vault_keychain
+    from hermes_agent.agent.vault_store import configured_key_storage, get_vault_store
 
     c = _console()
     store = get_vault_store()
@@ -283,7 +283,7 @@ def register_cli(subparser) -> None:
 
 
 def vault_command(args) -> None:
-    from agent.vault_store import VaultError
+    from hermes_agent.agent.vault_store import VaultError
 
     handler = getattr(args, "_vault_handler", None)
     try:

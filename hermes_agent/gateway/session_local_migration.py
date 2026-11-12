@@ -113,7 +113,7 @@ def legacy_launch_params(row):
             params['reasoning'] = reasoning
     tier = saved.get('service_tier')
     if isinstance(tier, str):
-        from agent.fast_mode import parse_exact_service_tier
+        from hermes_agent.agent.fast_mode import parse_exact_service_tier
         try:
             parse_exact_service_tier(tier)
         except ValueError:

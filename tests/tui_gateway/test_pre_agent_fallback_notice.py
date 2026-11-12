@@ -29,7 +29,7 @@ def _build(monkeypatch, tmp_path, *, primary_fails: bool):
                 "provider": kwargs.get("requested") or "openai-codex", "api_mode": "chat_completions"}
 
     with patch("hermes_cli.runtime_provider.resolve_runtime_provider", side_effect=_resolve), \
-         patch("run_agent.AIAgent", _StubAgent):
+         patch("hermes_agent.run_agent.AIAgent", _StubAgent):
         return server._make_agent("sid", "key", context_cwd_is_launch_artifact=False)
 
 
@@ -67,7 +67,7 @@ def test_fallback_build_survives_model_string_shorthand(monkeypatch, tmp_path):
                 "provider": "anthropic", "api_mode": "chat_completions"}
 
     with patch("hermes_cli.runtime_provider.resolve_runtime_provider", side_effect=_resolve), \
-         patch("run_agent.AIAgent", _StubAgent):
+         patch("hermes_agent.run_agent.AIAgent", _StubAgent):
         agent = server._make_agent("sid", "key", context_cwd_is_launch_artifact=False)
     assert (agent.kwargs["provider"], agent.kwargs["model"]) == ("anthropic", "claude-sonnet-5")
     assert "gpt-5.6-sol" in agent._pending_fallback_notice and "anthropic/claude-sonnet-5" in agent._pending_fallback_notice

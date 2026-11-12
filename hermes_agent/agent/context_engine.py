@@ -13,8 +13,8 @@ import json
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 
-from agent.compression_marker import elide_middle
-from agent.redact import redact_sensitive_text
+from hermes_agent.agent.compression_marker import elide_middle
+from hermes_agent.agent.redact import redact_sensitive_text
 
 
 MEMORY_CONTEXT_MAX_CHARS = 6_000
@@ -53,14 +53,14 @@ class ContextEngine(ABC):
     def name(self) -> str:
         """Short identifier (e.g. 'compressor', 'lcm')."""
 
-    # Token state: engines MUST maintain these; run_agent.py reads them directly.
+    # Token state: engines MUST maintain these; hermes_agent/run_agent.py reads them directly.
     last_prompt_tokens: int = 0
     last_completion_tokens: int = 0
     last_total_tokens: int = 0
     threshold_tokens: int = 0
     context_length: int = 0
     compression_count: int = 0
-    # Compaction parameters (read by run_agent.py for preflight). protect_first_n counts
+    # Compaction parameters (read by hermes_agent/run_agent.py for preflight). protect_first_n counts
     # non-system head messages kept verbatim IN ADDITION to the always-protected system
     # prompt (3 keeps the historical head shape).
     # These control the preflight compression check. Subclasses may override via __init__ or property;
@@ -211,7 +211,7 @@ class ContextEngine(ABC):
         return json.dumps({"error": f"Unknown context engine tool: {name}"})
 
     def get_status(self) -> dict[str, Any]:
-        """Status dict with the standard fields run_agent.py expects."""
+        """Status dict with the standard fields hermes_agent/run_agent.py expects."""
         # Clamp the -1 "compression just ran, awaiting real usage" sentinel to 0 so no
         # reader sees a negative usage_percent on the transitional turn.
         last_prompt = max(self.last_prompt_tokens, 0)
@@ -241,7 +241,7 @@ class ContextEngine(ABC):
         value, not the previous model's override.
         """
         self.context_length = context_length
-        from agent.context_compressor import resolve_model_threshold
+        from hermes_agent.agent.context_compressor import resolve_model_threshold
         if not hasattr(self, "_config_threshold_percent"):
             self._config_threshold_percent = self.threshold_percent
         self._base_threshold_percent = resolve_model_threshold(

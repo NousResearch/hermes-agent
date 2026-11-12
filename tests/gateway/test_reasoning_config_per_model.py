@@ -119,7 +119,7 @@ class TestApiServerPerModelReasoning:
              patch("hermes_agent.gateway.run._resolve_runtime_agent_kwargs") as kwargs_mock, \
              patch("hermes_agent.gateway.run._resolve_gateway_model") as model_mock, \
              patch("hermes_agent.gateway.run._load_gateway_config") as cfg_mock, \
-             patch("run_agent.AIAgent") as agent_cls:
+             patch("hermes_agent.run_agent.AIAgent") as agent_cls:
             kwargs_mock.return_value = {
                 "api_key": "k", "base_url": None, "provider": None,
                 "api_mode": None, "command": None, "args": [],

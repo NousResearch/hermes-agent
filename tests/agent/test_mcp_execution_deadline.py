@@ -9,9 +9,9 @@ from hermes_agent.tools.registry import registry
 
 
 def test_registered_deadline_survives_sequential_execution_and_bridge(tmp_path):
-    from agent.tool_executor import execute_tool_calls_sequential
+    from hermes_agent.agent.tool_executor import execute_tool_calls_sequential
     from hermes_cli.config import atomic_config_write, get_config_path
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     atomic_config_write(get_config_path(), {"timeouts": {"tools": {"sequential_call": 2}}})
     release = threading.Event()
@@ -75,7 +75,7 @@ def test_extended_deadline_is_a_barrier_for_direct_and_bridged_batches():
     registry.register(name=name, toolset="deadline-probe", schema={"name": name},
                       handler=lambda args, **kw: "ok", execution_timeout=1000, override=True)
     try:
-        from agent.tool_dispatch_helpers import _batch_admission
+        from hermes_agent.agent.tool_dispatch_helpers import _batch_admission
 
         for exposed, args in [(name, {}), ("tool_call", {"calls": [{"name": name, "arguments": {}}]})]:
             call = SimpleNamespace(function=SimpleNamespace(name=exposed, arguments=json.dumps(args)))

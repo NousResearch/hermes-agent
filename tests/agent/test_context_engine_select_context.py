@@ -18,8 +18,8 @@ from __future__ import annotations
 from typing import Any, Dict, List
 from unittest.mock import MagicMock
 
-from agent.context_engine import ContextEngine
-from agent.conversation_loop import (
+from hermes_agent.agent.context_engine import ContextEngine
+from hermes_agent.agent.conversation_loop import (
     _apply_context_engine_selection,
     _notify_context_engine_turn_complete,
 )

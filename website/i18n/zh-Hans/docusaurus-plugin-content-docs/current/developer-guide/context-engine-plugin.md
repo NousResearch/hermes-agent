@@ -10,7 +10,7 @@ Context engine 插件用于替换内置的 `ContextCompressor`，以实现管理
 
 ## 工作原理
 
-Agent 的上下文管理基于 `ContextEngine` ABC（`agent/context_engine.py`）构建。内置的 `ContextCompressor` 是默认实现。插件引擎必须实现相同的接口。
+Agent 的上下文管理基于 `ContextEngine` ABC（`hermes_agent/agent/context_engine.py`）构建。内置的 `ContextCompressor` 是默认实现。插件引擎必须实现相同的接口。
 
 同一时间只能有**一个** context engine 处于激活状态。选择由配置驱动：
 
@@ -39,7 +39,7 @@ plugins/context_engine/lcm/
 你的引擎必须实现以下**必需**方法：
 
 ```python
-from agent.context_engine import ContextEngine
+from hermes_agent.agent.context_engine import ContextEngine
 
 class LCMEngine(ContextEngine):
 
@@ -169,7 +169,7 @@ context:
 ## 测试
 
 ```python
-from agent.context_engine import ContextEngine
+from hermes_agent.agent.context_engine import ContextEngine
 
 def test_engine_satisfies_abc():
     engine = YourEngine(context_length=200000)

@@ -11,7 +11,7 @@ import pytest
 
 
 def test_resolve_runtime_provider_raises_autherror_when_unresolved(monkeypatch):
-    import agent.vertex_adapter as va
+    import hermes_agent.agent.vertex_adapter as va
     from hermes_cli import runtime_provider as rp
     from hermes_cli.auth import AuthError
 
@@ -21,7 +21,7 @@ def test_resolve_runtime_provider_raises_autherror_when_unresolved(monkeypatch):
 
 
 def test_vertex_registered_in_provider_registry():
-    """PROVIDER_REGISTRY (hermes_cli.auth) is what agent/auxiliary_client.py's
+    """PROVIDER_REGISTRY (hermes_cli.auth) is what hermes_agent/agent/auxiliary_client.py's
     resolve_provider_client() looks up before dispatching on auth_type. Without
     an entry here, the ``elif pconfig.auth_type == "vertex":`` branch there is
     unreachable dead code — every auxiliary Vertex call (vision, title
@@ -36,7 +36,7 @@ def test_vertex_registered_in_provider_registry():
 
 def test_vertex_registered_in_hermes_overlays():
     """hermes_cli.providers.get_provider("vertex") backs
-    _preserve_provider_with_base_url() in agent/auxiliary_client.py, which
+    _preserve_provider_with_base_url() in hermes_agent/agent/auxiliary_client.py, which
     decides whether a MoA slot's resolved Vertex (base_url, api_key) pair
     keeps its "vertex" provider identity or silently collapses to "custom" —
     losing the identity _refresh_provider_credentials() needs to re-mint an
@@ -62,7 +62,7 @@ class _CountingCreds:
 def _vertex_cli_shell(monkeypatch, tmp_path, *, loadable: bool):
     import types
 
-    import agent.vertex_adapter as va
+    import hermes_agent.agent.vertex_adapter as va
     from hermes_cli.cli_agent_setup_mixin import CLIAgentSetupMixin
 
     home = tmp_path / "hermes"

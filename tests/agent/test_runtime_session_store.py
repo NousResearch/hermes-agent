@@ -3,7 +3,7 @@ import os
 
 import pytest
 
-from agent.runtime_session_store import RuntimeSessionStore, WorkerPersistenceError
+from hermes_agent.agent.runtime_session_store import RuntimeSessionStore, WorkerPersistenceError
 
 
 def test_outbox_freezes_failed_payload_and_reopens_exclusively(tmp_path):
@@ -83,7 +83,7 @@ def test_outbox_filesystem_failure_is_sticky(tmp_path, monkeypatch):
     store = RuntimeSessionStore(lambda *a, **k: {}, {'session_id': 's'}, tmp_path / 'private')
     def fail_replace(*args):
         raise OSError('disk unavailable')
-    monkeypatch.setattr('agent.runtime_session_store.os.replace', fail_replace)
+    monkeypatch.setattr('hermes_agent.agent.runtime_session_store.os.replace', fail_replace)
     try:
         with pytest.raises(OSError, match='disk unavailable'):
             store.queue_token_counts('s', input_tokens=1)

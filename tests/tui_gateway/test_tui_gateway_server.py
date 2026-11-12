@@ -153,7 +153,7 @@ def test_session_context_uses_session_cwd(monkeypatch, tmp_path):
     falling back to os.getcwd() makes agents answer from the desktop app folder
     even when the sidebar/session cwd is a real project.
     """
-    from agent.runtime_cwd import resolve_agent_cwd
+    from hermes_agent.agent.runtime_cwd import resolve_agent_cwd
 
     sid = "cwd-sid"
     session_key = "cwd-key"
@@ -672,9 +672,9 @@ def test_prompt_submit_golden_transcript_matches_flag_off_and_on(monkeypatch):
     monkeypatch.setattr(server, "_session_info", lambda _agent, _session=None: dict(fixed_info))
     monkeypatch.setattr(server, "make_stream_renderer", lambda _cols: None)
     monkeypatch.setattr(server, "render_message", lambda _raw, _cols: None)
-    fake_title = types.ModuleType("agent.title_generator")
+    fake_title = types.ModuleType("hermes_agent.agent.title_generator")
     fake_title.maybe_auto_title = lambda *args, **kwargs: None
-    monkeypatch.setitem(sys.modules, "agent.title_generator", fake_title)
+    monkeypatch.setitem(sys.modules, "hermes_agent.agent.title_generator", fake_title)
 
     def run_flag_off():
         events = []
@@ -744,7 +744,7 @@ def test_session_context_explicit_cwd_for_ephemeral_task(monkeypatch, tmp_path):
     """Background/preview tasks use ephemeral ids absent from `_sessions`, so the
     parent workspace is passed explicitly; it must pin instead of clearing back
     to the gateway launch dir."""
-    from agent.runtime_cwd import resolve_agent_cwd
+    from hermes_agent.agent.runtime_cwd import resolve_agent_cwd
 
     project = tmp_path / "project"
     project.mkdir()
@@ -880,7 +880,7 @@ def test_profile_scoped_agent_build_installs_secret_scope(monkeypatch, tmp_path)
     import threading
     import uuid
 
-    from agent.secret_scope import current_secret_scope
+    from hermes_agent.agent.secret_scope import current_secret_scope
 
     profile_home = tmp_path / "profiles" / "grace"
     profile_home.mkdir(parents=True)
@@ -1504,13 +1504,13 @@ def test_usage_ticker_unbounded_join_waits_out_blocked_emit(monkeypatch):
 
 
 def test_tui_verbose_tool_details_fail_closed_when_redaction_fails(monkeypatch):
-    redact_module = types.ModuleType("agent.redact")
+    redact_module = types.ModuleType("hermes_agent.agent.redact")
 
     def fail_redaction(*_args, **_kwargs):
         raise RuntimeError("redaction unavailable")
 
     redact_module.redact_sensitive_text = fail_redaction
-    monkeypatch.setitem(sys.modules, "agent.redact", redact_module)
+    monkeypatch.setitem(sys.modules, "hermes_agent.agent.redact", redact_module)
 
     assert server._redact_tui_verbose_text("api_key=secret") == ""
     assert server._tool_args_text({"api_key": "secret"}) == ""
@@ -1539,13 +1539,13 @@ def test_tui_verbose_default_cap_stays_small(monkeypatch):
 
 
 def test_tui_verbose_tool_events_omit_details_when_redaction_fails(monkeypatch):
-    redact_module = types.ModuleType("agent.redact")
+    redact_module = types.ModuleType("hermes_agent.agent.redact")
 
     def fail_redaction(*_args, **_kwargs):
         raise RuntimeError("redaction unavailable")
 
     redact_module.redact_sensitive_text = fail_redaction
-    monkeypatch.setitem(sys.modules, "agent.redact", redact_module)
+    monkeypatch.setitem(sys.modules, "hermes_agent.agent.redact", redact_module)
 
     events: list[tuple[str, str, dict]] = []
     monkeypatch.setattr(
@@ -1663,7 +1663,7 @@ def test_system_battery_fails_open(monkeypatch):
 
     monkeypatch.setitem(
         sys.modules,
-        "agent.battery",
+        "hermes_agent.agent.battery",
         types.SimpleNamespace(read_battery=boom, battery_category=lambda _s: "dim"),
     )
 
@@ -2448,7 +2448,7 @@ def test_load_enabled_toolsets_folds_project_into_focus_posture(monkeypatch):
     # the project tools while sitting in a repo.
     monkeypatch.delenv("HERMES_TUI_TOOLSETS", raising=False)
 
-    import agent.coding_context as cc
+    import hermes_agent.agent.coding_context as cc
 
     monkeypatch.setattr(cc, "coding_selection", lambda **_: ["coding", "figma"])
 
@@ -2459,7 +2459,7 @@ def test_load_enabled_toolsets_honors_disabled_project_on_focus_path(monkeypatch
     """#54433: focus/coding posture must not re-add `project` when disabled."""
     monkeypatch.delenv("HERMES_TUI_TOOLSETS", raising=False)
 
-    import agent.coding_context as cc
+    import hermes_agent.agent.coding_context as cc
 
     monkeypatch.setattr(cc, "coding_selection", lambda **_: ["coding", "figma"])
     monkeypatch.setattr(server, "_load_disabled_toolsets", lambda: ["project"])
@@ -2475,7 +2475,7 @@ def test_load_enabled_toolsets_honors_disabled_project_on_configured_fallback(
     """#54433: configured/fallback path must not re-add disabled `project`."""
     monkeypatch.delenv("HERMES_TUI_TOOLSETS", raising=False)
 
-    import agent.coding_context as cc
+    import hermes_agent.agent.coding_context as cc
     import hermes_cli.tools_config as tools_config_mod
 
     monkeypatch.setattr(cc, "coding_selection", lambda **_: None)
@@ -2684,7 +2684,7 @@ def test_history_to_messages_preserves_tool_calls_for_resume_display():
 def test_history_to_messages_types_the_failed_turn_boundary_for_resume():
     """Desktop keys the failed-turn boundary on ``display_kind`` (a room poller must not post it
     as the member's reply); rows written before the closer typed it are typed on read."""
-    from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, FAILED_TURN_NOTICE, PARTIAL_FAILED_TURN_NOTICE
+    from hermes_agent.agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, FAILED_TURN_NOTICE, PARTIAL_FAILED_TURN_NOTICE
 
     history = [
         {"role": "user", "content": "a"},
@@ -2701,7 +2701,7 @@ def test_history_to_messages_types_the_failed_turn_boundary_for_resume():
 
 
 def test_history_to_messages_drops_pure_compaction_scaffolding():
-    from agent.context_compressor import (
+    from hermes_agent.agent.context_compressor import (
         HISTORICAL_TASK_HEADING,
         SUMMARY_PREFIX,
         _SUMMARY_END_MARKER,
@@ -2722,7 +2722,7 @@ def test_history_to_messages_drops_pure_compaction_scaffolding():
 
 
 def test_history_to_messages_preserves_live_ask_without_compaction_scaffolding():
-    from agent.context_compressor import (
+    from hermes_agent.agent.context_compressor import (
         HISTORICAL_TASK_HEADING,
         SUMMARY_PREFIX,
         _SUMMARY_END_MARKER,
@@ -2748,7 +2748,7 @@ def test_history_to_messages_preserves_live_ask_without_compaction_scaffolding()
 
 
 def test_history_to_messages_unwraps_merged_assistant_carrier():
-    from agent.context_compressor import (
+    from hermes_agent.agent.context_compressor import (
         HISTORICAL_TASK_HEADING,
         SUMMARY_PREFIX,
         _MERGED_PRIOR_CONTEXT_HEADER,
@@ -3034,8 +3034,8 @@ def test_expand_skill_invocation_for_replay_round_trips_the_projection(
     # agent the literal "/work fix it" instead of the skill, so the server
     # re-expands it — the exact inverse of _skill_scaffold_projection, with the
     # body never leaving the server.
-    from agent import skill_commands
-    from agent import skill_utils
+    from hermes_agent.agent import skill_commands
+    from hermes_agent.agent import skill_utils
     from hermes_agent.tools import skills_tool
 
     skills_dir = tmp_path / "skills"
@@ -3058,8 +3058,8 @@ def test_expand_skill_invocation_for_replay_round_trips_the_projection(
 
 
 def test_expand_skill_invocation_for_replay_leaves_ordinary_text_alone(monkeypatch):
-    from agent import skill_commands
-    from agent import skill_utils
+    from hermes_agent.agent import skill_commands
+    from hermes_agent.agent import skill_utils
 
     monkeypatch.setattr(skill_utils, "get_external_skills_dirs", lambda *a, **k: [])
     monkeypatch.setattr(skill_commands, "_skill_commands_by_key", {})
@@ -3072,8 +3072,8 @@ def test_expand_skill_invocation_for_replay_leaves_ordinary_text_alone(monkeypat
 def _two_repo_project_skill_sessions(tmp_path, monkeypatch) -> tuple[Path, Path]:
     """Two trusted repos (``alpha-skill`` / ``beta-skill``) bound to sessions ``sid-a`` / ``sid-b``, in a
     launch shape whose process cwd and TERMINAL_CWD both point at a non-project dir."""
-    from agent import skill_commands
-    from agent import skill_utils
+    from hermes_agent.agent import skill_commands
+    from hermes_agent.agent import skill_utils
     from hermes_agent.tools import skills_tool
 
     def repo(name: str, skill: str) -> Path:
@@ -3112,7 +3112,7 @@ def test_command_dispatch_and_catalog_resolve_project_skills_from_the_session_cw
     # ``/<name>`` died with "not a quick/plugin/bundle/skill command". Two sessions in two trusted repos
     # in ONE process must each catalog and dispatch their own repo's skill (the cached registry is
     # keyed by project root, not just platform + home).
-    from agent import skill_utils
+    from hermes_agent.agent import skill_utils
 
     _two_repo_project_skill_sessions(tmp_path, monkeypatch)
     for sid, own, other in (("sid-a", "alpha-skill", "beta-skill"), ("sid-b", "beta-skill", "alpha-skill")):
@@ -3217,7 +3217,7 @@ def test_complete_slash_and_skills_reload_are_bound_to_the_session_cwd(tmp_path,
     # The '/' popup and /reload-skills ran the registry unbound: the popup never offered a project skill
     # ``command.dispatch`` accepts, and a rescan after that dispatch reported the session's project skills
     # as "Removed" and republished a registry without them.
-    from agent import skill_commands
+    from hermes_agent.agent import skill_commands
 
     _two_repo_project_skill_sessions(tmp_path, monkeypatch)
     items = server._methods["complete.slash"]("s", {"text": "/alph", "session_id": "sid-a"})["result"]["items"]
@@ -4618,7 +4618,7 @@ def test_make_agent_passes_configured_fallback_chain(monkeypatch):
             "credential_pool": None,
         },
     )
-    monkeypatch.setattr("run_agent.AIAgent", fake_agent)
+    monkeypatch.setattr("hermes_agent.run_agent.AIAgent", fake_agent)
     monkeypatch.setattr(server, "_load_enabled_toolsets", lambda *_a, **_kw: ["file"])
     monkeypatch.setattr(server, "_get_db", lambda: None)
 
@@ -4661,7 +4661,7 @@ def _capture_make_agent_kwargs(monkeypatch) -> dict:
         return types.SimpleNamespace(model=kwargs.get("model"))
 
     _setup_make_agent_mocks(monkeypatch, {})
-    monkeypatch.setattr("run_agent.AIAgent", fake_agent)
+    monkeypatch.setattr("hermes_agent.run_agent.AIAgent", fake_agent)
     return captured
 
 
@@ -7114,7 +7114,7 @@ def test_prompt_submit_resolves_row_id_absorbed_into_marker_merge(monkeypatch):
     """
     import copy
 
-    from agent.agent_runtime_helpers import repair_message_sequence
+    from hermes_agent.agent.agent_runtime_helpers import repair_message_sequence
 
     verbatim = [
         {"_row_id": 12131, "role": "user", "content": "first"},
@@ -7236,7 +7236,7 @@ def test_prompt_submit_resolves_row_id_swallowed_by_marker_merge(monkeypatch):
     import contextlib
     import copy
 
-    from agent.agent_runtime_helpers import repair_message_sequence
+    from hermes_agent.agent.agent_runtime_helpers import repair_message_sequence
 
     verbatim = [
         {"_row_id": 201, "role": "user", "content": "first"},
@@ -7321,7 +7321,7 @@ def test_prompt_submit_resolves_row_id_swallowed_by_plain_user_merge(monkeypatch
     import contextlib
     import copy
 
-    from agent.agent_runtime_helpers import repair_message_sequence
+    from hermes_agent.agent.agent_runtime_helpers import repair_message_sequence
 
     verbatim = [
         {"_row_id": 301, "role": "user", "content": "first"},
@@ -9657,7 +9657,7 @@ def test_setup_runtime_check_reports_target_model_on_credential_failure(monkeypa
 
 def test_setup_runtime_check_scopes_launch_profile_in_multiplex_backend(monkeypatch, tmp_path):
     """The launch profile needs a scope too when its Codex route reads an override."""
-    from agent import secret_scope
+    from hermes_agent.agent import secret_scope
     from hermes_agent.tui_gateway import launch_profile_policy
 
     launch_home = tmp_path / ".hermes"
@@ -9700,7 +9700,7 @@ def test_setup_readiness_scopes_to_requested_profile(monkeypatch, tmp_path):
     backend. ``profile`` binds THAT profile's home + .env — launch-process
     credentials must not make an unconfigured bot look ready, and the bot's
     own .env must be what the strict check sees."""
-    from agent import secret_scope
+    from hermes_agent.agent import secret_scope
     from hermes_constants import get_hermes_home
 
     bot_home = tmp_path / "profiles" / "bot"
@@ -9812,7 +9812,7 @@ def _slash_skill_fixtures(monkeypatch):
         ),
     )
     monkeypatch.setattr(
-        "agent.skill_commands.get_skill_commands",
+        "hermes_agent.agent.skill_commands.get_skill_commands",
         lambda: {
             "/work": {"description": "Fresh worktree"},
             "/research": {"description": "Look it up"},
@@ -9821,7 +9821,7 @@ def _slash_skill_fixtures(monkeypatch):
             **{cmd: {"description": "Filler"} for cmd in filler},
         },
     )
-    monkeypatch.setattr("agent.skill_bundles.get_skill_bundles", dict)
+    monkeypatch.setattr("hermes_agent.agent.skill_bundles.get_skill_bundles", dict)
 
 
 def _slash_completions(text: str) -> list[dict]:
@@ -10264,7 +10264,7 @@ def test_config_set_model_recovers_failed_profile_resume_after_build_completes(
     Both the failed and replacement generations cross the real deferred-build
     boundary. Provider resolution is the only model-switch leaf replaced.
     """
-    from agent.secret_scope import current_secret_scope
+    from hermes_agent.agent.secret_scope import current_secret_scope
     from hermes_constants import get_hermes_home
 
     launch_url = "https://launch.example/v1"
@@ -11376,7 +11376,7 @@ def test_session_compress_reports_aborted_summary_without_success(monkeypatch):
 
 def test_session_compress_syncs_session_key_after_rotation(monkeypatch):
     """LCM notification follows the TUI's final session-key transition."""
-    from agent.conversation_compression import (
+    from hermes_agent.agent.conversation_compression import (
         _queue_context_engine_compression_notification,
     )
 
@@ -11427,7 +11427,7 @@ def test_session_compress_syncs_session_key_after_rotation(monkeypatch):
 
 
 def test_session_compress_sync_failure_discards_lcm_notification(monkeypatch):
-    from agent.conversation_compression import (
+    from hermes_agent.agent.conversation_compression import (
         _queue_context_engine_compression_notification,
     )
 
@@ -11631,7 +11631,7 @@ def test_prompt_submit_expands_context_refs(monkeypatch):
         def start(self):
             self._target()
 
-    fake_ctx = types.ModuleType("agent.context_references")
+    fake_ctx = types.ModuleType("hermes_agent.agent.context_references")
     fake_ctx.preprocess_context_references = (
         lambda message, **kwargs: types.SimpleNamespace(
             blocked=False,
@@ -11641,7 +11641,7 @@ def test_prompt_submit_expands_context_refs(monkeypatch):
             injected_tokens=0,
         )
     )
-    fake_meta = types.ModuleType("agent.model_metadata")
+    fake_meta = types.ModuleType("hermes_agent.agent.model_metadata")
     fake_meta.get_model_context_length = lambda *args, **kwargs: 100000
 
     server._sessions["sid"] = _session(agent=_Agent())
@@ -11649,8 +11649,8 @@ def test_prompt_submit_expands_context_refs(monkeypatch):
     monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
     monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
     monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
-    monkeypatch.setitem(sys.modules, "agent.context_references", fake_ctx)
-    monkeypatch.setitem(sys.modules, "agent.model_metadata", fake_meta)
+    monkeypatch.setitem(sys.modules, "hermes_agent.agent.context_references", fake_ctx)
+    monkeypatch.setitem(sys.modules, "hermes_agent.agent.model_metadata", fake_meta)
 
     server.handle_request(
         {
@@ -12053,7 +12053,7 @@ def test_commands_catalog_ranks_skill_commands_by_recorded_usage(monkeypatch):
         ),
     )
     monkeypatch.setattr(
-        "agent.skill_commands.scan_skill_commands",
+        "hermes_agent.agent.skill_commands.scan_skill_commands",
         lambda: {
             "/research": {"name": "research", "description": "Look it up"},
             "/research-paper-writing": {
@@ -12283,7 +12283,7 @@ def test_session_status_falls_back_to_agent_before_first_host_frame(monkeypatch)
 
 
 def test_skills_reload_runs_in_gateway_process(monkeypatch):
-    from agent import skill_commands
+    from hermes_agent.agent import skill_commands
 
     called = {}
     monkeypatch.setattr(
@@ -12517,7 +12517,7 @@ def test_rollback_restore_skips_legacy_compaction_handoff(monkeypatch):
     display_kind. Same bug class as the display_kind marker above, caught
     only by the is_user_originated_turn predicate.
     """
-    from agent.context_compressor import (
+    from hermes_agent.agent.context_compressor import (
         COMPRESSED_SUMMARY_METADATA_KEY,
         HISTORICAL_TASK_HEADING,
         SUMMARY_PREFIX,
@@ -12578,7 +12578,7 @@ def test_rollback_restore_skips_legacy_compaction_handoff(monkeypatch):
 
 def test_rollback_restore_preserves_composite_carrier_scaffold(monkeypatch, tmp_path):
     """A checkpoint restore drops the live ask but keeps compacted context."""
-    from agent.context_compressor import (
+    from hermes_agent.agent.context_compressor import (
         HISTORICAL_TASK_HEADING,
         SUMMARY_PREFIX,
         _SUMMARY_END_MARKER,
@@ -14063,7 +14063,7 @@ def test_prompt_submit_row_id_accepts_full_lineage_ordinal(monkeypatch):
     reconcile cross-check must treat `tip_ordinal + prefix_user_count` as
     agreement, not #82756 drift — and the cut stays aimed by the row id.
     """
-    from agent.context_compressor import (
+    from hermes_agent.agent.context_compressor import (
         HISTORICAL_TASK_HEADING,
         SUMMARY_PREFIX,
         _SUMMARY_END_MARKER,
@@ -16767,7 +16767,7 @@ def test_session_branch_installs_parent_profile_secret_scope(monkeypatch, tmp_pa
     """
     import threading
 
-    from agent.secret_scope import current_secret_scope
+    from hermes_agent.agent.secret_scope import current_secret_scope
 
     profile_home = tmp_path / "profiles" / "mlperf"
     profile_home.mkdir(parents=True)
@@ -17291,7 +17291,7 @@ class _ImmediateThread:
 def test_prompt_submit_wires_live_title_rename_callback(monkeypatch):
     """The gateway hands the agent a hook so a new title repaints the sidebar.
 
-    Titling itself moved into the shared turn prologue (agent/turn_context.py),
+    Titling itself moved into the shared turn prologue (hermes_agent/agent/turn_context.py),
     so the gateway's only remaining job is delivering the rename event. Asserted
     by calling the hook the gateway installed and checking what it emits.
     """
@@ -17864,7 +17864,7 @@ def test_verification_status_returns_recorded_evidence(tmp_path, monkeypatch):
     )
     (project / "pnpm-lock.yaml").write_text("", encoding="utf-8")
     try:
-        from agent.verification_evidence import record_terminal_result
+        from hermes_agent.agent.verification_evidence import record_terminal_result
 
         record_terminal_result(
             command="pnpm run test",
@@ -17898,7 +17898,7 @@ def test_verification_status_outside_workspace_is_not_applicable(monkeypatch, tm
     # tmp-root ancestor (e.g. /tmp/package.json left by another tool) would
     # otherwise make _marker_root() resolve tmp_path as a workspace and flip
     # the status to "unverified".
-    from agent import coding_context
+    from hermes_agent.agent import coding_context
 
     monkeypatch.setattr(coding_context, "project_facts_for", lambda _cwd=None: None)
 
@@ -18016,7 +18016,7 @@ def _setup_make_agent_mocks(monkeypatch, cfg):
 def test_make_agent_reads_nested_max_turns(monkeypatch):
     _setup_make_agent_mocks(monkeypatch, {"agent": {"max_turns": 200}})
 
-    with patch("run_agent.AIAgent") as mock_agent:
+    with patch("hermes_agent.run_agent.AIAgent") as mock_agent:
         server._make_agent("sid1", "key1")
 
     assert mock_agent.call_args.kwargs["max_iterations"] == 200
@@ -18027,7 +18027,7 @@ def test_make_agent_nested_max_turns_takes_priority(monkeypatch):
         monkeypatch, {"agent": {"max_turns": 400}, "max_turns": 100}
     )
 
-    with patch("run_agent.AIAgent") as mock_agent:
+    with patch("hermes_agent.run_agent.AIAgent") as mock_agent:
         server._make_agent("sid1", "key1")
 
     assert mock_agent.call_args.kwargs["max_iterations"] == 400
@@ -18055,7 +18055,7 @@ def test_make_agent_uses_session_runtime_overrides(monkeypatch):
         fake_resolve_runtime_provider,
     )
 
-    with patch("run_agent.AIAgent") as mock_agent:
+    with patch("hermes_agent.run_agent.AIAgent") as mock_agent:
         server._make_agent(
             "sid1",
             "key1",
@@ -18075,7 +18075,7 @@ def test_make_agent_uses_session_runtime_overrides(monkeypatch):
 def test_make_agent_handles_null_agent_config(monkeypatch):
     _setup_make_agent_mocks(monkeypatch, {"agent": None, "max_turns": 80})
 
-    with patch("run_agent.AIAgent") as mock_agent:
+    with patch("hermes_agent.run_agent.AIAgent") as mock_agent:
         server._make_agent("sid1", "key1")
 
     assert mock_agent.call_args.kwargs["max_iterations"] == 80
@@ -18412,7 +18412,7 @@ def test_session_save_writes_under_hermes_home_with_system_prompt(monkeypatch, t
 def test_session_save_lands_in_the_sessions_own_profile_a_b_a(monkeypatch, tmp_path):
     """/save writes under the SESSION's profile home, launch -> secondary -> launch under multiplexing:
     the RPC runs unscoped, so get_hermes_home() alone names the launch profile (#125241)."""
-    from agent.secret_scope import set_multiplex_active
+    from hermes_agent.agent.secret_scope import set_multiplex_active
     launch_home = tmp_path / ".hermes"
     work_home = launch_home / "profiles" / "s6probe-work"
     work_home.mkdir(parents=True)
@@ -19544,7 +19544,7 @@ def test_reset_session_agent_clears_session_overrides(monkeypatch):
     ],
 )
 def test_billing_state_serializes_auto_reload_card_union(monkeypatch, card, expected):
-    from agent.billing_view import AutoReload, AutoReloadCard, BillingState
+    from hermes_agent.agent.billing_view import AutoReload, AutoReloadCard, BillingState
 
     monkeypatch.setattr(server, "_usage_payload", lambda state: {"available": False})
     auto_reload_card = AutoReloadCard(
@@ -19562,7 +19562,7 @@ def test_billing_state_serializes_auto_reload_card_union(monkeypatch, card, expe
 
 
 def test_billing_state_serializes_server_plan_capability(monkeypatch):
-    from agent.billing_view import BillingState
+    from hermes_agent.agent.billing_view import BillingState
 
     monkeypatch.setattr(server, "_usage_payload", lambda state: {"available": False})
     state = BillingState(
@@ -20041,7 +20041,7 @@ class TestResolveRuntimeWithFallback:
             "hermes_cli.runtime_provider.resolve_runtime_provider",
             fake_resolve,
         )
-        monkeypatch.setattr("run_agent.AIAgent", fake_agent)
+        monkeypatch.setattr("hermes_agent.run_agent.AIAgent", fake_agent)
         monkeypatch.setattr(server, "_load_enabled_toolsets", lambda *_a, **_kw: ["file"])
         monkeypatch.setattr(server, "_get_db", lambda: None)
 
@@ -20611,8 +20611,8 @@ def test_native_vision_turn_persists_a_renderable_image_ref(tmp_path):
     can render after a restart."""
     from unittest.mock import MagicMock
 
-    from agent.image_routing import build_native_content_parts
-    from run_agent import AIAgent
+    from hermes_agent.agent.image_routing import build_native_content_parts
+    from hermes_agent.run_agent import AIAgent
 
     img_dir = tmp_path / "Application Support" / "composer-images"
     img_dir.mkdir(parents=True)
@@ -22144,7 +22144,7 @@ def test_persist_live_session_system_prompt_binds_session_cwd(monkeypatch, tmp_p
         def _build_system_prompt(self, system_message=None):
             # The real builder embeds resolve_agent_cwd() via
             # prompt_builder.build_environment_hints().
-            from agent.runtime_cwd import resolve_agent_cwd
+            from hermes_agent.agent.runtime_cwd import resolve_agent_cwd
 
             return f"Current working directory: {resolve_agent_cwd()}"
 

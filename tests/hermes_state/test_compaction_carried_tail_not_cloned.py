@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from agent.message_metadata import DB_ROW_SNAPSHOT, RESTORED_FROM_STORE
+from hermes_agent.agent.message_metadata import DB_ROW_SNAPSHOT, RESTORED_FROM_STORE
 from hermes_agent.hermes_state import SessionDB
 
 SID = "sess1"
@@ -208,7 +208,7 @@ def test_a_rewritten_carry_claims_only_what_the_compressor_rewrote(db: SessionDB
 
 def _replayed(db: SessionDB) -> list:
     """The content the next provider request carries per live row, through the turn's own sidecar substitution."""
-    from agent.turn_context import substitute_api_content
+    from hermes_agent.agent.turn_context import substitute_api_content
 
     replayed = []
     for message in db.get_messages_as_conversation(SID):

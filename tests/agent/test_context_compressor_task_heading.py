@@ -7,7 +7,7 @@ so grounding must replace it (and any duplicate task section) rather than prepen
 
 from unittest.mock import patch
 
-from agent.context_compressor import ContextCompressor, HISTORICAL_TASK_HEADING
+from hermes_agent.agent.context_compressor import ContextCompressor, HISTORICAL_TASK_HEADING
 
 _LEGACY_ACTIVE_TASK_HEADING = "## Active Task"
 
@@ -40,7 +40,7 @@ def test_grounding_collapses_alias_and_duplicate_task_sections():
 
 def test_long_user_request_is_not_quoted_by_summary_model():
     """Long quotes stall Codex output; the postprocessor preserves source wording."""
-    with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+    with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000):
         compressor = ContextCompressor(model="test", quiet_mode=True)
     section = compressor._build_summary_prompt(
         "A long user request", 500, None, "", True

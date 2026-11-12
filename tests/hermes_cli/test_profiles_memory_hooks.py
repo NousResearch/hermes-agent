@@ -1,4 +1,4 @@
-"""Profile create/rename reach the memory provider the profile selects (agent.memory_provider's
+"""Profile create/rename reach the memory provider the profile selects (hermes_agent.agent.memory_provider's
 on_profile_created / on_profile_renamed), and a provider name is kept free as a profile alias."""
 
 from pathlib import Path
@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from agent.memory_provider import MemoryProvider
+from hermes_agent.agent.memory_provider import MemoryProvider
 
 
 @pytest.fixture
@@ -65,7 +65,7 @@ def test_create_and_rename_call_the_selected_providers_hooks_with_its_home_bound
 
 def test_the_hook_reads_the_new_profiles_secrets_not_the_callers(profile_env, monkeypatch):
     import plugins.memory as memory_pkg
-    from agent.secret_scope import get_secret
+    from hermes_agent.agent.secret_scope import get_secret
     from hermes_cli.profiles import create_profile
 
     seen = []
@@ -114,7 +114,7 @@ def test_an_unreadable_config_backend_never_fails_create(profile_env, monkeypatc
 
 def test_a_missing_profile_secret_never_falls_back_to_the_callers_env(profile_env, monkeypatch):
     import plugins.memory as memory_pkg
-    from agent.secret_scope import get_secret
+    from hermes_agent.agent.secret_scope import get_secret
     from hermes_cli.profiles import create_profile
 
     seen = []
@@ -187,7 +187,7 @@ def test_a_failing_provider_hook_never_fails_create_or_rename(profile_env, monke
 
 def test_a_profile_without_an_external_provider_binds_no_secret_scope(profile_env, monkeypatch):
     """The common create: nothing selected, so no secret hydration, effective config or provider load."""
-    from agent import secret_scope
+    from hermes_agent.agent import secret_scope
     from hermes_cli.profiles import create_profile
 
     built = []

@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections import Counter
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from agent.message_metadata import DB_ROW_SNAPSHOT, MESSAGE_UID, message_uid_or_none
+from hermes_agent.agent.message_metadata import DB_ROW_SNAPSHOT, MESSAGE_UID, message_uid_or_none
 from hermes_cli.timefmt import coerce_epoch
 from hermes_agent.hermes_state_common import _id_chunks, _placeholders
 from hermes_agent.hermes_state_messages import _parse_tool_calls
@@ -42,7 +42,7 @@ def _holds_as_block(inner: str, outer: str) -> bool:
 
 def _images_replaced(stored: Any, held: Any) -> bool:
     """True when *held* is *stored* with at least one image part swapped for a text part, all else equal."""
-    from agent.context_compressor import _is_image_part
+    from hermes_agent.agent.context_compressor import _is_image_part
 
     if not (isinstance(stored, list) and isinstance(held, list)) or len(stored) != len(held):
         return False
@@ -162,7 +162,7 @@ class SessionCoverageMixin:
         ``set_message_api_content``, a re-stamped reasoning item). A copy WITHOUT the row's ``api_content``
         stands for it only when its own content is those bytes (the flush stores sanitize-changed text as the
         sidecar), or when the compressor rewrote the content, which drops the stale sidecar by design."""
-        from agent.transcript_repair import REPLAY_SIDECARS
+        from hermes_agent.agent.transcript_repair import REPLAY_SIDECARS
 
         serialized = self._serialized_message_row(row["session_id"], held, float(row["timestamp"] or 0))
         content = self._decode_content(row["content"])
@@ -184,7 +184,7 @@ class SessionCoverageMixin:
         row-addressed load, which omits the digest by design) may predate any number of rewrites, so the row
         is cloned: a duplicate, never an older instruction in place of the current one."""
         # Runtime import avoids the transcript_repair -> hermes_state_messages module cycle.
-        from agent.transcript_repair import transcript_row_snapshot
+        from hermes_agent.agent.transcript_repair import transcript_row_snapshot
 
         snapshot = held.get(DB_ROW_SNAPSHOT)
         return isinstance(snapshot, str) and snapshot == transcript_row_snapshot(row)
@@ -351,7 +351,7 @@ class SessionCoverageMixin:
         Only rows at or below *watermark*: the repair ran on a load taken before the snapshot, so a
         run appended later that joins to the same text is another surface's, not the merged one.
         """
-        from agent.conversation_compression_archive import MERGED_DURABLE_ROWS, OWN_ROW, RETIRED_DURABLE_ROWS
+        from hermes_agent.agent.conversation_compression_archive import MERGED_DURABLE_ROWS, OWN_ROW, RETIRED_DURABLE_ROWS
 
         content, width = message.get("content"), message.get(MERGED_DURABLE_ROWS)
         if message.get("role") != "user" or not isinstance(content, str) or type(width) is not int or width < 2:
@@ -413,8 +413,8 @@ class SessionCoverageMixin:
         """
         if covered_ids is None:
             return None
-        from agent.context_compressor import _DB_PERSISTED_MARKER
-        from agent.conversation_compression_archive import (
+        from hermes_agent.agent.context_compressor import _DB_PERSISTED_MARKER
+        from hermes_agent.agent.conversation_compression_archive import (
             ABSORBED_ROW_IDS, MERGED_DURABLE_ROWS, OWN_ROW, RETIRED_DURABLE_ROWS, RETIRED_ROW)
 
         proved = [int(row_id) for row_id in covered_ids if isinstance(row_id, int) and row_id > 0]
@@ -460,7 +460,7 @@ class SessionCoverageMixin:
         without ids are in neither, so their count is added. A dict that holds a ``_row_id`` was
         written back as a single row by an earlier compaction.
         """
-        from agent.conversation_compression_archive import ABSORBED_ROW_IDS, MERGED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS
+        from hermes_agent.agent.conversation_compression_archive import ABSORBED_ROW_IDS, MERGED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS
 
         def behind(message: dict[str, Any]) -> int:
             merged, unnamed = message.get(MERGED_DURABLE_ROWS), message.get(UNNAMED_DURABLE_ROWS)

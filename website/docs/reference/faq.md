@@ -111,7 +111,7 @@ Both persist across sessions. See [Memory](../user-guide/features/memory.md) and
 Yes. Import the `AIAgent` class and use Hermes programmatically:
 
 ```python
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 agent = AIAgent(model="anthropic/claude-opus-4.7")
 response = agent.chat("Explain quantum computing briefly")

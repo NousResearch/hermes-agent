@@ -145,7 +145,7 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
   in `disconnect()`/`stop()`, so two profiles cannot share one credential. Canonical:
   `plugins/platforms/irc/adapter.py`.
 - **Multiplex profile-scoped env reads MUST fail closed — never borrow from `os.environ`**
-  (`agent/secret_scope.py`; #72348, #86905). Under `gateway.multiplex_profiles`, `os.environ` holds
+  (`hermes_agent/agent/secret_scope.py`; #72348, #86905). Under `gateway.multiplex_profiles`, `os.environ` holds
   the DEFAULT profile's values; a secondary profile's `.env` exists only in its secret scope,
   bound per profile *activity* by `_profile_runtime_scope` (turn, callback, eviction, tick — never
   only "per turn"). All profile-level env config — credentials
@@ -187,7 +187,7 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
   profile's OWN scope through `run_turn.py::_standalone_launch_scope` — `.env` over the env frozen at
   activation, never a `.env`-only rebuild (systemd / `op run` keys have no file) and never live
   `os.environ`. Gate a new standalone path on that helper, not on the config flag (#112878).
-- **Hooks and observers register per served profile.** `agent/shell_hooks.py::register_from_config`
+- **Hooks and observers register per served profile.** `hermes_agent/agent/shell_hooks.py::register_from_config`
   and lifecycle observers are prepared under each profile's scope at startup
   and on profile add/remove; idempotence keys include the profile, and `hooks/` paths resolve at call
   time (a module constant freezes to the first importer). Shell hooks are also re-synced (added AND
@@ -206,7 +206,7 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
   bridge its own pidfile (pid + start time + port) does not identify. `needs_attention` is
   set and cleared at the single writer (`_update_platform_runtime_status`) on the connect path.
 - **One launch-home identity.** "Does this task serve a routed profile?" compares the override
-  with `hermes_constants.get_routing_process_hermes_home()` (`agent/secret_scope.py::
+  with `hermes_constants.get_routing_process_hermes_home()` (`hermes_agent/agent/secret_scope.py::
   serves_routed_profile` and `_is_process_home`, `hermes_agent/tools/environments/local.py::_is_routed_home`,
   `hermes_cli/env_loader.py::_process_hermes_home`), never with `os.environ["HERMES_HOME"]` read
   live: an embedding host that mirrors the served profile into the env var per turn (Hermes

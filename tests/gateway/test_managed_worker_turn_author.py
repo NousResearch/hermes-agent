@@ -14,7 +14,7 @@ def _policy(tmp_path):
 
 def test_bootstrap_frame_carries_the_admitted_author(tmp_path, monkeypatch):
     from hermes_agent.gateway import session_managed_worker as smw
-    from agent.managed_worker import validate_bootstrap
+    from hermes_agent.agent.managed_worker import validate_bootstrap
 
     monkeypatch.setattr('hermes_agent.gateway.session_policy.launch_key', lambda authority, policy: None)
     live = SimpleNamespace(source=SimpleNamespace(user_id='u', chat_id='c'), route='route')

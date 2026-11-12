@@ -6,7 +6,7 @@ envelope, or format drift."""
 
 import pytest
 
-from agent.vault_store import VaultError, VaultStore
+from hermes_agent.agent.vault_store import VaultError, VaultStore
 
 
 def _corrupt(store: VaultStore, payload: bytes) -> None:

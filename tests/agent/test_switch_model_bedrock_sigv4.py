@@ -8,9 +8,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.bedrock_adapter import BedrockOpenAISigV4Auth
-from agent.context_compressor import ContextCompressor
-from run_agent import AIAgent
+from hermes_agent.agent.bedrock_adapter import BedrockOpenAISigV4Auth
+from hermes_agent.agent.context_compressor import ContextCompressor
+from hermes_agent.run_agent import AIAgent
 
 MANTLE = "https://bedrock-mantle.us-east-1.api.aws/openai/v1"
 RUNTIME_EU = "https://bedrock-runtime.eu-west-1.amazonaws.com"
@@ -36,7 +36,7 @@ def aws_env(monkeypatch):
     monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
 
 
-@patch("agent.model_metadata.get_model_context_length", return_value=272_000)
+@patch("hermes_agent.agent.model_metadata.get_model_context_length", return_value=272_000)
 def test_switch_to_bedrock_mantle_installs_sigv4_http_client(_ctx, aws_env):
     agent = _agent()
 
@@ -52,7 +52,7 @@ def test_switch_to_bedrock_mantle_installs_sigv4_http_client(_ctx, aws_env):
     [("us.anthropic.claude-opus-4-6-v1", "anthropic_messages", "AnthropicBedrock"),
      ("us.amazon.nova-pro-v1:0", "bedrock_converse", "NoneType")],
 )
-@patch("agent.model_metadata.get_model_context_length", return_value=200_000)
+@patch("hermes_agent.agent.model_metadata.get_model_context_length", return_value=200_000)
 def test_switch_to_bedrock_runtime_wires_binds_region_and_sdk(_ctx, aws_env, model, api_mode, anthropic_client_type):
     agent = _agent()
 
@@ -66,7 +66,7 @@ def test_switch_to_bedrock_runtime_wires_binds_region_and_sdk(_ctx, aws_env, mod
 
 @pytest.mark.parametrize("api_mode", ["anthropic_messages", "bedrock_converse"])
 def test_fallback_to_bedrock_binds_runtime_not_generic_client(aws_env, api_mode):
-    from agent.client_lifecycle import _swap_fallback_clients
+    from hermes_agent.agent.client_lifecycle import _swap_fallback_clients
     agent = _agent()
     fb_client = MagicMock(base_url=RUNTIME_EU, api_key="aws-sdk")
     agent.model, agent.provider, agent.base_url, agent.api_mode = "us.amazon.nova-pro-v1:0", "bedrock", RUNTIME_EU, api_mode

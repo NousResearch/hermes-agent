@@ -8,7 +8,7 @@ from datetime import datetime, timezone, UTC
 from pathlib import Path, PurePosixPath
 from typing import Dict, Iterator, List, Optional, Set, Tuple
 
-from agent.skill_utils import is_excluded_skill_path
+from hermes_agent.agent.skill_utils import is_excluded_skill_path
 from utils import atomic_write_text
 
 logger = logging.getLogger("hermes_agent.tools.skills_sync")

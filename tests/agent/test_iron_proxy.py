@@ -20,7 +20,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.proxy_sources import iron_proxy as ip
+from hermes_agent.agent.proxy_sources import iron_proxy as ip
 
 
 # ---------------------------------------------------------------------------
@@ -564,7 +564,7 @@ def test_partial_bitwarden_secrets_honor_allow_env_fallback(
     ip.write_mappings([_sample_mapping("OPENROUTER_API_KEY")])
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-host-fallback")
 
-    import agent.secret_sources.bitwarden as bw
+    import hermes_agent.agent.secret_sources.bitwarden as bw
     monkeypatch.setattr(
         bw, "fetch_bitwarden_secrets", lambda **kw: ({}, []),
     )
@@ -590,7 +590,7 @@ def test_partial_bitwarden_secrets_raise_without_fallback(
     ip.write_mappings([_sample_mapping("OPENROUTER_API_KEY")])
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-host")
 
-    import agent.secret_sources.bitwarden as bw
+    import hermes_agent.agent.secret_sources.bitwarden as bw
     monkeypatch.setattr(
         bw, "fetch_bitwarden_secrets", lambda **kw: ({}, []),
     )
@@ -613,18 +613,18 @@ def test_bitwarden_importerror_raise_without_fallback(
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-host")
 
     # Simulate the BWS SDK not being installed.  The lazy import
-    # ``from agent.secret_sources import bitwarden`` inside
+    # ``from hermes_agent.agent.secret_sources import bitwarden`` inside
     # _build_proxy_subprocess_env resolves through the parent package's
     # cached attribute; deleting both the sys.modules entry AND the
     # parent-package attribute forces a real import that we intercept.
     #
     # In addition, block importlib.reload in case the test infra used it.
-    import agent.secret_sources as ss
-    monkeypatch.delitem(sys.modules, "agent.secret_sources.bitwarden", raising=False)
-    monkeypatch.delitem(sys.modules, "agent.secret_sources.bitwarden.bws", raising=False)
+    import hermes_agent.agent.secret_sources as ss
+    monkeypatch.delitem(sys.modules, "hermes_agent.agent.secret_sources.bitwarden", raising=False)
+    monkeypatch.delitem(sys.modules, "hermes_agent.agent.secret_sources.bitwarden.bws", raising=False)
     monkeypatch.delattr(ss, "bitwarden", raising=False)
 
-    # Now block the re-import.  ``from agent.secret_sources import
+    # Now block the re-import.  ``from hermes_agent.agent.secret_sources import
     # bitwarden`` resolves to a submodule attribute; setting it to a
     # sentinel that raises on attribute access is more reliable than
     # trying to intercept __import__ at the C level.

@@ -16,7 +16,7 @@ import time
 from pathlib import Path
 from typing import Any, List, Optional
 
-from agent.search_policy import SEARCH_PRUNE_DIR_NAMES
+from hermes_agent.agent.search_policy import SEARCH_PRUNE_DIR_NAMES
 from hermes_agent.tools import interrupt as tool_interrupt
 from hermes_agent.tools.file_operations_common import ExecuteResult, SearchMatch, SearchResult
 

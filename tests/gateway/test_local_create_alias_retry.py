@@ -217,7 +217,7 @@ def _rotate_key(home):
 async def test_an_overlapping_exact_alias_retry_after_a_key_rotation_reuses_the_held_key(owner, order):
     """Both attempts share one key slot: the retry staged after ``.env`` rotated the alias's key runs with
     the key the first attempt holds, and whichever commits stores that key's fingerprint."""
-    from agent.credential_persistence import fingerprint_secret_value
+    from hermes_agent.agent.credential_persistence import fingerprint_secret_value
     from hermes_agent.gateway.session_policy import launch_key, restore_policy
     home, authority, connection = owner
     params = _params(home, model='alias-key')

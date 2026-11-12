@@ -9,9 +9,9 @@ Hermes is a large repository, and most contributions touch exactly one subsystem
 
 | Subsystem | Source directories | Docs entry point |
 |-----------|-------------------|------------------|
-| Agent core (loop, transports, compression) | `agent/`, `run_agent.py` | [Agent Loop](agent-loop.md), [Context Compression & Caching](context-compression-and-caching.md) |
-| Prompt assembly | `agent/prompt_builder.py`, `agent/system_prompt.py` | [Prompt Assembly](prompt-assembly.md) |
-| Model providers & transports | `agent/transports/`, `plugins/model-providers/`, `hermes_cli/models.py` | [Adding Providers](adding-providers.md), [Model Provider Plugins](model-provider-plugin.md), [Provider Runtime](provider-runtime.md) |
+| Agent core (loop, transports, compression) | `agent/`, `hermes_agent/run_agent.py` | [Agent Loop](agent-loop.md), [Context Compression & Caching](context-compression-and-caching.md) |
+| Prompt assembly | `hermes_agent/agent/prompt_builder.py`, `hermes_agent/agent/system_prompt.py` | [Prompt Assembly](prompt-assembly.md) |
+| Model providers & transports | `hermes_agent/agent/transports/`, `plugins/model-providers/`, `hermes_cli/models.py` | [Adding Providers](adding-providers.md), [Model Provider Plugins](model-provider-plugin.md), [Provider Runtime](provider-runtime.md) |
 | Built-in tools | `hermes_agent/tools/` | [Adding Tools](adding-tools.md), [Tools Runtime](tools-runtime.md) |
 | Messaging gateway | `gateway/`, `plugins/platforms/` | [Gateway Internals](gateway-internals.md), [Adding Platform Adapters](adding-platform-adapters.md) |
 | CLI | `hermes_cli/` | [Extending the CLI](extending-the-cli.md) |
@@ -20,7 +20,7 @@ Hermes is a large repository, and most contributions touch exactly one subsystem
 | Cron / scheduled jobs | `cron/` | [Cron Internals](cron-internals.md) |
 | Session storage | `hermes_agent/hermes_state.py`, `hermes_state_*.py` | [Session Storage](session-storage.md) |
 | Browser stack | `hermes_agent/tools/browser_use_cli.py` (`browser_exec`), `hermes_agent/tools/browser_session*.py`, `hermes_agent/tools/browser_launcher.py`, `hermes_agent/tools/browser_supervisor.py`, `hermes_agent/tools/browser_cdp_tool.py` | [Browser Supervisor](browser-supervisor.md) |
-| Egress firewall | `agent/proxy_sources/iron_proxy.py` | [Egress Internals](egress-internals.md) |
+| Egress firewall | `hermes_agent/agent/proxy_sources/iron_proxy.py` | [Egress Internals](egress-internals.md) |
 | ACP (IDE integration) | `hermes_agent/acp_adapter/` | [ACP Internals](acp-internals.md) |
 | Desktop app | `apps/desktop/` | [Desktop Plugin SDK](desktop-plugin-sdk.md), [Worktree UI Development](worktree-ui-dev.md) |
 | TUI | `ui-tui/`, `hermes_agent/tui_gateway/` | [Worktree UI Development](worktree-ui-dev.md) |

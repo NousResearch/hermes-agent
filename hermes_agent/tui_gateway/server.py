@@ -24,7 +24,7 @@ from typing import Any, Callable, NamedTuple, Optional
 
 # Several of these look unused here but are resolved BARE by split-module bodies rebound onto this
 # namespace (method_ctx.bind_module) — deleting one breaks a handler at call time, not import time.
-from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
+from hermes_agent.agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
 from hermes_constants import (
     get_hermes_home, get_hermes_home_override, get_process_hermes_home, profile_name_for_home,
     reset_hermes_home_override, set_hermes_home_override)
@@ -37,13 +37,13 @@ from hermes_agent.tui_gateway.pet_sheet import _clone_pet_payload, _pet_row_fram
 from utils import is_truthy_value
 from hermes_agent.hermes_state_ids import new_session_id
 from hermes_agent.tools.environments.local import hermes_subprocess_env
-from agent.fast_mode import STATIC_TIERS
-from agent.replay_cleanup import canonicalize_replay_history
-from agent.reasoning_effort import clamp_effort, route_supported_efforts
-from agent.voice_turn_route import session_runtime_view
-from agent.compaction_display import project_compaction_message_for_display
-from agent.skill_commands import describe_skill_invocation
-from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
+from hermes_agent.agent.fast_mode import STATIC_TIERS
+from hermes_agent.agent.replay_cleanup import canonicalize_replay_history
+from hermes_agent.agent.reasoning_effort import clamp_effort, route_supported_efforts
+from hermes_agent.agent.voice_turn_route import session_runtime_view
+from hermes_agent.agent.compaction_display import project_compaction_message_for_display
+from hermes_agent.agent.skill_commands import describe_skill_invocation
+from hermes_agent.agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from hermes_agent.tui_gateway import git_probe, stream_segments
 from hermes_agent.tui_gateway.checkpoints import (_load_checkpoints_enabled, _resolve_checkpoint_hash,
                                      resolve_checkpoints_enabled as _resolve_checkpoints_enabled)
@@ -592,7 +592,7 @@ def _event_frame(event: str, sid: str, payload: dict | None = None) -> dict:
 
 
 def _emit(event: str, sid: str, payload: dict | None = None) -> bool:
-    from agent.notification_presentation import event_presentation_muted
+    from hermes_agent.agent.notification_presentation import event_presentation_muted
     if event_presentation_muted(event, sid):
         return False
     return write_json(_event_frame(event, sid, stream_segments.stamp_session_frame(_sessions.get(sid), event, payload)))
@@ -746,7 +746,7 @@ def _status_update(sid: str, kind: str, text: str | None = None):
     # summarizing indicator — otherwise idle/preflight compaction looks like a hung turn.
     # See #97239.
     if out_kind == "lifecycle":
-        from agent.conversation_compression import is_compaction_progress_status
+        from hermes_agent.agent.conversation_compression import is_compaction_progress_status
         if is_compaction_progress_status(body):
             out_kind = "compacting"
     _emit("status.update", sid, {"kind": out_kind, "text": body})
@@ -1195,7 +1195,7 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
             _ensure_session_db_row(session)
         with (contextlib.nullcontext(db) if db is not None else _session_db(session)) as db:
             if db is not None:
-                from agent.context_compressor import _DB_PERSISTED_MARKER
+                from hermes_agent.agent.context_compressor import _DB_PERSISTED_MARKER
                 # Same stale-key hazard as the submit row: this durable pivot must land in the session the
                 # live agent writes to, or a model switch between turns on a rotated session files the notice
                 # under a parent the conversation no longer reads from (#123545).
@@ -1203,7 +1203,7 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
                 # The in-memory strip above keeps one marker; the durable rows need the same invariant or N
                 # switches leave N active rows that all replay on resume (#65891 kept it in memory only).
                 db.deactivate_messages_by_display_kind(target, "model_switch")
-                from agent.message_metadata import stamp_message_uid
+                from hermes_agent.agent.message_metadata import stamp_message_uid
                 entry["_row_id"] = db.append_message(
                     session_id=target, role="user", content=marker, display_kind="model_switch",
                     message_uid=stamp_message_uid(entry))
@@ -1295,7 +1295,7 @@ def _get_usage(agent) -> dict:
     }
     comp = getattr(agent, "context_compressor", None)
     if comp:
-        from agent.context_breakdown import context_usage_fields
+        from hermes_agent.agent.context_breakdown import context_usage_fields
         usage.update(context_usage_fields(comp))
         usage["compressions"] = getattr(comp, "compression_count", 0) or 0
     # Cache-hit ratio + rolling latency/tps (CLI status-bar parity). Omitted, not fabricated, when there is no
@@ -1304,7 +1304,7 @@ def _get_usage(agent) -> dict:
         # Mirrors the classic CLI bar (cli.py _get_status_bar_snapshot / PR #98250): hit =
         # session_cache_read_tokens / session_prompt_tokens (CanonicalUsage.prompt_tokens = input +
         # cache_read + cache_write) latency/tps read the deque(maxlen=10) history maintained per API call in
-        # agent/conversation_loop.py.
+        # hermes_agent/agent/conversation_loop.py.
         _prompt_total = int(getattr(agent, "session_prompt_tokens", 0) or 0)
         _cache_read = int(getattr(agent, "session_cache_read_tokens", 0) or 0)
         if _prompt_total > 0 and _cache_read > 0:
@@ -1546,7 +1546,7 @@ def _tool_ctx(name: str, args: dict) -> str:
     """Argument preview for a tool row — never a phrased label: clients own their phrasing, so
     ``build_tool_label`` here would stutter ("Running Running …") and leak into the desktop's ``args.context``."""
     with contextlib.suppress(Exception):
-        from agent.display import build_tool_preview
+        from hermes_agent.agent.display import build_tool_preview
         return build_tool_preview(name, args, max_len=80) or ""
     return ""
 
@@ -1681,7 +1681,7 @@ def _pet_cfg() -> dict:
 
 def _pet_config_scale() -> float:
     """Configured ``display.pet.scale`` (or the engine default), never raises."""
-    from agent.pet import constants
+    from hermes_agent.agent.pet import constants
     with contextlib.suppress(Exception):
         return float(_pet_cfg().get("scale", constants.DEFAULT_SCALE) or constants.DEFAULT_SCALE)
     return constants.DEFAULT_SCALE
@@ -1691,7 +1691,7 @@ def _pet_sprite_payload(pet, *, scale: float) -> dict:
     """Renderer payload (spritesheet bytes + geometry) for *pet* — one shape for ``pet.info`` (active
     mascot) and ``pet.hatch`` (unadopted preview)."""
     import base64
-    from agent.pet import constants
+    from hermes_agent.agent.pet import constants
     try:
         stat = pet.spritesheet.stat()
         cache_key = (str(pet.spritesheet), stat.st_mtime_ns, stat.st_size, pet.slug, pet.display_name, round(scale, 4))
@@ -1703,7 +1703,7 @@ def _pet_sprite_payload(pet, *, scale: float) -> dict:
         if cached is not None:
             return _clone_pet_payload(cached)
     try:  # real (padding-trimmed) frame count per state; {} → the canvas uses the static framesPerState
-        from agent.pet import render
+        from hermes_agent.agent.pet import render
         frames_by_state = render.state_frame_counts(str(pet.spritesheet))
     except Exception:
         frames_by_state = {}
@@ -1728,7 +1728,7 @@ def _pet_sprite_payload(pet, *, scale: float) -> dict:
 
 def _pet_active_selection():
     """Resolve configured active pet + scale from config."""
-    from agent.pet import constants, store
+    from hermes_agent.agent.pet import constants, store
     pet_cfg = _pet_cfg()
     enabled = is_truthy_value(pet_cfg.get("enabled"), default=False)
     pet = store.resolve_active_pet(str(pet_cfg.get("slug", "") or "")) if enabled else None

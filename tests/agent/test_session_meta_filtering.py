@@ -5,7 +5,7 @@ chat-completions API, via both the API-boundary guard in
 _sanitize_api_messages() and the CLI session-restore paths.
 """
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 # ---------------------------------------------------------------------------
 # Layer 1 — _sanitize_api_messages role-allowlist guard

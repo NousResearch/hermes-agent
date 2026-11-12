@@ -237,9 +237,9 @@ def test_a_long_first_browser_exec_owns_its_daemon_before_the_call_returns(monke
 
 
 def test_a_managed_worker_never_owns_its_harness_daemon(fake_daemon, registered, monkeypatch):
-    """A managed per-turn worker keeps its browser between turns (agent/managed_worker.py); owning
+    """A managed per-turn worker keeps its browser between turns (hermes_agent/agent/managed_worker.py); owning
     the daemon would kill it with every turn's worker, as _owns_job already avoids for jobs."""
-    from agent import runtime_session_store
+    from hermes_agent.agent import runtime_session_store
     proc, runtime = fake_daemon
     _publish(runtime, "bu", proc.pid)
     monkeypatch.setattr(runtime_session_store, "_worker_process", True)

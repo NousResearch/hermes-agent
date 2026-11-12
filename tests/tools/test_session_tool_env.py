@@ -25,7 +25,7 @@ def _parts(env):
 
 
 def test_terminal_run_env_starts_from_the_sessions_toolchain(daemon_env):
-    from agent.session_client_env import client_env_scope
+    from hermes_agent.agent.session_client_env import client_env_scope
     from hermes_agent.tools.environments.local import _make_run_env
     with client_env_scope(CLIENT):
         env = _make_run_env({})
@@ -44,7 +44,7 @@ def test_tool_envs_carry_the_behaviour_values_the_session_uses(daemon_env, monke
     ephemeral prompt) never reach its tool subprocesses; a remote client's session still uses the
     daemon's host values (prefill file), and an unbound session (messaging, cron) all of them."""
     import sys
-    from agent.session_client_env import BEHAVIOUR_ENV, client_env_scope
+    from hermes_agent.agent.session_client_env import BEHAVIOUR_ENV, client_env_scope
     from hermes_agent.tools.code_execution_env import _build_child_env
     from hermes_agent.tools.environments.local import _make_run_env
     from hermes_agent.tools.process_registry import ProcessRegistry
@@ -66,7 +66,7 @@ def test_tool_envs_carry_the_behaviour_values_the_session_uses(daemon_env, monke
 
 
 def test_background_process_env_starts_from_the_sessions_toolchain(daemon_env):
-    from agent.session_client_env import client_env_scope
+    from hermes_agent.agent.session_client_env import client_env_scope
     from hermes_agent.tools.process_registry import ProcessRegistry
     with client_env_scope(CLIENT):
         env = ProcessRegistry._spawn_env({})
@@ -76,7 +76,7 @@ def test_background_process_env_starts_from_the_sessions_toolchain(daemon_env):
 
 def test_execute_code_child_env_starts_from_the_sessions_toolchain(daemon_env, tmp_path):
     import sys
-    from agent.session_client_env import client_env_scope
+    from hermes_agent.agent.session_client_env import client_env_scope
     from hermes_agent.tools.code_execution_env import _build_child_env
     kwargs = dict(rpc_endpoint='sock', rpc_token='t', tmpdir=str(tmp_path), child_python=sys.executable)
     with client_env_scope(CLIENT):
@@ -92,7 +92,7 @@ REFUSED = {'NODE_BEARER': 'b', 'NODE_CREDS': 'c', 'CONDA_DSN': 'postgres://u:p@h
 
 
 def test_credential_and_control_names_are_refused_by_execute_codes_secret_policy():
-    from agent.session_client_env import accept_client_env, collect_client_env
+    from hermes_agent.agent.session_client_env import accept_client_env, collect_client_env
     config = {'terminal': {'client_env_passthrough': ['DEPLOY_WEBHOOK', 'HERMES_KANBAN_DB', 'MY_TOOLCHAIN_HOME']}}
     sent = {**REFUSED, 'NVM_DIR': '/client/.nvm', 'MY_TOOLCHAIN_HOME': '/opt/tc', 'PATH': '/client/bin'}
     kept = {'NVM_DIR': '/client/.nvm', 'MY_TOOLCHAIN_HOME': '/opt/tc', 'PATH': '/client/bin'}
@@ -104,7 +104,7 @@ def test_execute_code_scrubs_after_merging_the_sessions_toolchain(daemon_env, tm
     """A bound map (say, one committed before this rule) still cannot carry a secret or a control marker
     into the sandbox; the client's non-secret toolchain names (NVM_DIR) do reach it."""
     import sys
-    from agent.session_client_env import client_env_scope
+    from hermes_agent.agent.session_client_env import client_env_scope
     from hermes_agent.tools.code_execution_env import _build_child_env
     with client_env_scope({**CLIENT, **REFUSED}):
         env = _build_child_env(rpc_endpoint='sock', rpc_token='t', tmpdir=str(tmp_path), child_python=sys.executable)
@@ -120,7 +120,7 @@ def test_execute_code_runs_each_sessions_own_interpreter(tmp_path):
     import sys
     import venv
     from pathlib import Path
-    from agent.session_client_env import client_env_scope
+    from hermes_agent.agent.session_client_env import client_env_scope
     roots = {name: tmp_path / name for name in ('alpha', 'beta', 'daemon')}
     for root in roots.values():
         venv.EnvBuilder(with_pip=False, symlinks=False).create(root)

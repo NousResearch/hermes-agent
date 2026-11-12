@@ -125,7 +125,7 @@ import hermes_agent.tools.process_registry as pr
 pr._SYSTEMD_SCOPE_AVAILABLE = False
 from hermes_agent.tools.process_registry import process_registry
 import hermes_agent.tools.async_delegation as ad
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 agent = AIAgent(base_url=INFER_URL, api_key=INFER_KEY, provider="custom", model=MODEL, quiet_mode=True,
                 skip_context_files=True, skip_memory=True, skip_background_review=True,

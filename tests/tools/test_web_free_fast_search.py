@@ -162,7 +162,7 @@ def test_direct_perplexity_key_beats_free_fast_search(monkeypatch, tmp_path, gat
 def test_free_fast_search_eligibility_follows_the_served_profile(monkeypatch, tmp_path, gateway_server):
     """Multiplex A→B→A: profile A holds a zero-credit Portal identity, B none; each answers from its own store."""
     from hermes_cli.nous_account import reset_nous_portal_account_info_cache
-    from agent.secret_scope import set_multiplex_active
+    from hermes_agent.agent.secret_scope import set_multiplex_active
     from hermes_agent.gateway.run import _profile_runtime_scope
     from hermes_agent.tools import web_tools
 

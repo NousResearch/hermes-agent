@@ -1,7 +1,7 @@
 """Provider-native replay carriers stay private to their owning provider."""
 from copy import deepcopy
 
-from agent.transports.chat_completions import ChatCompletionsTransport
+from hermes_agent.agent.transports.chat_completions import ChatCompletionsTransport
 from providers.base import ProviderProfile
 
 OPENROUTER = "https://openrouter.ai/api/v1"

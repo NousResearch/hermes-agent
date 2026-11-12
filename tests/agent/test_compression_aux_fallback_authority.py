@@ -8,13 +8,13 @@ the main credential to the wrong host.
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from agent.auxiliary_client import _resolve_task_provider_model
-from agent.auxiliary_task_config import (
+from hermes_agent.agent.auxiliary_client import _resolve_task_provider_model
+from hermes_agent.agent.auxiliary_task_config import (
     AuthoritativeAuxiliaryTask,
     _get_auxiliary_task_config,
     authoritative_auxiliary_task,
 )
-from agent.context_compressor import ContextCompressor
+from hermes_agent.agent.context_compressor import ContextCompressor
 
 
 CONFLICTING_COMPRESSION = {
@@ -82,7 +82,7 @@ def test_authoritative_task_strips_only_destination_fields():
 
 
 def test_truncated_aux_summary_retries_on_complete_main_route():
-    with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
+    with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100_000):
         compressor = ContextCompressor(
             model="main-model",
             provider="openrouter",
@@ -102,7 +102,7 @@ def test_truncated_aux_summary_retries_on_complete_main_route():
             route_info.update(provider="google", model="aux-model")
         return _response("partial summary", finish_reason="length")
 
-    with patch("agent.context_compressor.call_llm", side_effect=fake_call_llm):
+    with patch("hermes_agent.agent.context_compressor.call_llm", side_effect=fake_call_llm):
         result = compressor._generate_summary(_messages())
 
     assert result is not None and "complete summary via main model" in result
@@ -132,7 +132,7 @@ def test_main_retry_is_not_fast_lane_certified_by_the_failed_aux_reasoning():
     certify (and disable reasoning on) the main destination."""
     from unittest.mock import MagicMock
 
-    from agent.auxiliary_client import call_llm
+    from hermes_agent.agent.auxiliary_client import call_llm
 
     config = {"auxiliary": {"compression": {"provider": "openrouter", "model": "main-model",
                                             "base_url": "https://aux.invalid/v1", "reasoning_effort": "none"}}}
@@ -142,8 +142,8 @@ def test_main_retry_is_not_fast_lane_certified_by_the_failed_aux_reasoning():
     client.chat.completions.create.return_value = response
     with (
         patch("hermes_cli.config.load_config_readonly", return_value=config),
-        patch("agent.auxiliary_client._get_cached_client", return_value=(client, "main-model")),
-        patch("agent.auxiliary_client._validate_llm_response", return_value=response),
+        patch("hermes_agent.agent.auxiliary_client._get_cached_client", return_value=(client, "main-model")),
+        patch("hermes_agent.agent.auxiliary_client._validate_llm_response", return_value=response),
     ):
         call_llm(task=authoritative_auxiliary_task("compression"), provider="openrouter", model="main-model",
                  api_key="main-key", messages=_messages())

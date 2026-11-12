@@ -1,4 +1,4 @@
-"""Tests for agent.portal_tags — Nous Portal request tag contract."""
+"""Tests for hermes_agent.agent.portal_tags — Nous Portal request tag contract."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 def test_nous_portal_tags_contains_product_and_client():
     """Every Nous Portal request gets BOTH the product tag and the base-version tag."""
-    from agent.portal_tags import nous_portal_tags
+    from hermes_agent.agent.portal_tags import nous_portal_tags
     from hermes_cli.version_info import get_version_info
 
     tags = nous_portal_tags()
@@ -34,7 +34,7 @@ def test_nous_portal_tags_contains_product_and_client():
 
 def test_ambient_context_set_none_clears():
     """set_conversation_context(None) publishes no tag (and coerces '')."""
-    from agent.portal_tags import (
+    from hermes_agent.agent.portal_tags import (
         get_conversation_context,
         nous_portal_tags,
         reset_conversation_context,
@@ -54,7 +54,7 @@ def test_ambient_context_isolated_between_contexts():
     """Two copied Contexts (≈ two concurrent agents) don't leak into each other."""
     import contextvars
 
-    from agent.portal_tags import (
+    from hermes_agent.agent.portal_tags import (
         conversation_tag,
         nous_portal_tags,
         set_conversation_context,
@@ -77,7 +77,7 @@ def test_ambient_context_propagates_via_thread_context_helper():
     """propagate_context_to_thread carries the tag onto executor workers (MoA path)."""
     from concurrent.futures import ThreadPoolExecutor
 
-    from agent.portal_tags import (
+    from hermes_agent.agent.portal_tags import (
         conversation_tag,
         nous_portal_tags,
         reset_conversation_context,
@@ -119,7 +119,7 @@ def test_nous_sticky_key_matches_conversation_tag():
     ``agent.session_id`` at compaction, and for delegate-subagent trees that
     should tag as the parent conversation.
     """
-    from agent.portal_tags import (
+    from hermes_agent.agent.portal_tags import (
         conversation_tag,
         reset_conversation_context,
         set_conversation_context,
@@ -147,13 +147,13 @@ def test_nous_sticky_key_matches_conversation_tag():
 
 def test_compress_context_preserves_ambient_context(monkeypatch):
     """In-turn compaction inherits the turn's root and restores it untouched."""
-    import agent.conversation_compression as cc
-    from agent.portal_tags import (
+    import hermes_agent.agent.conversation_compression as cc
+    from hermes_agent.agent.portal_tags import (
         get_conversation_context,
         reset_conversation_context,
         set_conversation_context,
     )
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     seen = {}
 

@@ -21,8 +21,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from hermes_agent.hermes_state import SessionDB
-from agent.context_compressor import _DB_PERSISTED_MARKER as _DB_PERSISTED_MARKER_KEY
-from run_agent import AIAgent
+from hermes_agent.agent.context_compressor import _DB_PERSISTED_MARKER as _DB_PERSISTED_MARKER_KEY
+from hermes_agent.run_agent import AIAgent
 
 
 def _make_flush_agent(db: SessionDB, session_id: str):
@@ -61,15 +61,15 @@ def _seed_session(db: SessionDB, sid: str, turns: int = 3) -> None:
 def test_marker_constant_in_sync() -> None:
     """One shared literal across every module that touches the marker.
 
-    ``hermes_state`` and ``agent.turn_finalizer`` import the constant from
-    ``agent.context_compressor`` (single source), so the only genuine drift
+    ``hermes_state`` and ``hermes_agent.agent.turn_finalizer`` import the constant from
+    ``hermes_agent.agent.context_compressor`` (single source), so the only genuine drift
     surface left is ``run_agent``'s predating copy — hermes_state cannot
     import run_agent (circular), and run_agent's own literal predates the
     consolidation.
     """
-    import agent.context_compressor as cc
-    import agent.turn_finalizer as tf
-    import agent.session_persistence as sp
+    import hermes_agent.agent.context_compressor as cc
+    import hermes_agent.agent.turn_finalizer as tf
+    import hermes_agent.agent.session_persistence as sp
 
     assert _DB_PERSISTED_MARKER_KEY == sp._DB_PERSISTED_MARKER
     assert _DB_PERSISTED_MARKER_KEY == cc._DB_PERSISTED_MARKER
@@ -137,7 +137,7 @@ def test_compaction_copy_strips_stamp_so_child_flush_writes(tmp_path: Path) -> N
     not defeat that: a loaded row that goes through the compaction copy is
     written to the child exactly once.
     """
-    from agent.context_compressor import _fresh_compaction_message_copy
+    from hermes_agent.agent.context_compressor import _fresh_compaction_message_copy
 
     db = SessionDB(db_path=tmp_path / "state.db")
     _seed_session(db, "PARENT", turns=2)
@@ -166,7 +166,7 @@ def test_noop_progress_check_is_marker_insensitive(tmp_path: Path) -> None:
     marker-swept — a raw ``==`` would misclassify the semantically-identical
     no-op as progress and rotate the session for nothing.
     """
-    from agent.conversation_compression import _strip_marker_for_comparison
+    from hermes_agent.agent.conversation_compression import _strip_marker_for_comparison
 
     db = SessionDB(db_path=tmp_path / "state.db")
     _seed_session(db, "NOOP", turns=2)

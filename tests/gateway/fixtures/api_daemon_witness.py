@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 import runpy
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 original = AIAgent.run_conversation
 

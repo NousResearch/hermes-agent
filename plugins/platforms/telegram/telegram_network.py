@@ -15,7 +15,7 @@ from typing import Iterable, Optional
 
 import httpx
 
-from agent.ssl_verify import platform_ssl_context
+from hermes_agent.agent.ssl_verify import platform_ssl_context
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +25,7 @@ _TELEGRAM_API_HOST = "api.telegram.org"
 def _describe_transport_error(error: Exception) -> str:
     """Return a non-empty, secret-safe exception representation for diagnostics."""
     try:
-        from agent.redact import redact_sensitive_text
+        from hermes_agent.agent.redact import redact_sensitive_text
 
         return redact_sensitive_text(repr(error), force=True)
     except Exception:

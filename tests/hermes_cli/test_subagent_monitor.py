@@ -1,7 +1,7 @@
 """The dock is bounded, session-owned, and only repaints changing live work."""
 from types import SimpleNamespace
 
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 
 
 def test_dock_scopes_children_and_fits_short_narrow_terminal(monkeypatch):

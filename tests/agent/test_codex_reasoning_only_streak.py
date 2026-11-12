@@ -13,9 +13,9 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import run_agent
-from agent.conversation_loop import _CODEX_INCOMPLETE_NUDGE
-from agent.error_classifier import FailoverReason
+from hermes_agent import run_agent
+from hermes_agent.agent.conversation_loop import _CODEX_INCOMPLETE_NUDGE
+from hermes_agent.agent.error_classifier import FailoverReason
 from tests.agent.test_run_agent_codex_responses import (
     _build_agent,
     _codex_incomplete_message_response,
@@ -61,7 +61,7 @@ def test_reasoning_only_streak_reaches_fallback_with_one_grace_call(monkeypatch,
         _codex_message_response("Fallback answered."),
     ])
 
-    with caplog.at_level("WARNING", logger="agent.conversation_loop"):
+    with caplog.at_level("WARNING", logger="hermes_agent.agent.conversation_loop"):
         result = agent.run_conversation("keep thinking")
 
     assert result["completed"] is True

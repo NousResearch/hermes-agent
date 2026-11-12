@@ -19,7 +19,7 @@ import json
 
 import pytest
 
-from agent.moa_loop import MoAChatCompletions
+from hermes_agent.agent.moa_loop import MoAChatCompletions
 
 
 def _enable_traces(tmp_path, monkeypatch):
@@ -30,7 +30,7 @@ def _enable_traces(tmp_path, monkeypatch):
 
     # save_moa_turn reads config via hermes_cli.config.load_config; stub it to
     # return traces-on so the test doesn't depend on a real config file.
-    from agent import moa_trace
+    from hermes_agent.agent import moa_trace
 
     monkeypatch.setattr(
         moa_trace,

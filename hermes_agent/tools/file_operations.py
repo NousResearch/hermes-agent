@@ -24,7 +24,7 @@ from typing import Optional, Dict
 from pathlib import Path
 
 from hermes_agent.tools.binary_extensions import has_binary_extension
-from agent.file_safety import get_write_denied_error
+from hermes_agent.agent.file_safety import get_write_denied_error
 from hermes_agent.tools.file_operations_common import (
     ExecuteResult, PatchResult, ReadResult, SearchResult, WriteResult,
     _UTF8_BOM, _detect_line_ending, _has_bom, _normalize_line_endings, _strip_bom,

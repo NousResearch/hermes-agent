@@ -27,8 +27,8 @@ import logging
 import os
 from typing import Optional
 
-from agent.vault_backends.base import LoginBackend
-from agent.vault_store import VaultItemMeta, normalize_origin
+from hermes_agent.agent.vault_backends.base import LoginBackend
+from hermes_agent.agent.vault_store import VaultItemMeta, normalize_origin
 
 logger = logging.getLogger(__name__)
 
@@ -166,7 +166,7 @@ class BrowserProfileLoginBackend(LoginBackend):
         if not copy_dir:
             return []
         from hermes_agent.tools.browser_real_profile_logins import read_login_metadata
-        from agent.vault_store import VaultError
+        from hermes_agent.agent.vault_store import VaultError
         out: list[VaultItemMeta] = []
         for row in read_login_metadata(copy_dir):
             nav_url = row["origin_url"].strip()
@@ -203,7 +203,7 @@ class BrowserProfileLoginBackend(LoginBackend):
 
     def resolve_password(self, handle: str) -> str:
         nav_url, username = self._split(handle)
-        from agent.vault_store import VaultError
+        from hermes_agent.agent.vault_store import VaultError
         try:
             origin = normalize_origin(nav_url)
         except VaultError:

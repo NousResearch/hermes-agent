@@ -57,7 +57,7 @@ class _Claim:
 
 
 async def run(params, board_db):
-    from agent.retry_utils import jittered_backoff
+    from hermes_agent.agent.retry_utils import jittered_backoff
     from hermes_cli.gateway_client import connect_gateway, GatewayClientError, outside_restart_wait
     from websockets.exceptions import WebSocketException
     if os.environ.get('HERMES_TUI_GATEWAY_URL'):

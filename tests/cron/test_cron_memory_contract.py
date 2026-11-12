@@ -8,7 +8,7 @@ This contract FLIPPED TWICE in August 2026 and must never flip silently again:
   * PR #91447 flipped it BACK: "cron jobs now load and update persistent
     memory like every other agent" — ``skip_memory=False`` at the scheduler's
     AIAgent construction site, ``memory`` removed from the cron denylist,
-    and ``agent/agent_init.py`` clarified that ``skip_memory`` skips the
+    and ``hermes_agent/agent/agent_init.py`` clarified that ``skip_memory`` skips the
     *external memory provider* path (built-in MEMORY.md/USER.md store follows
     the normal ``not skip_memory or memory-toolset-requested`` rule).
 
@@ -35,7 +35,7 @@ without that citation.
 
 Tests drive the REAL owner bridge (``hermes_agent.gateway.session_cron.execute``, the path
 ``hermes_agent.cron.scheduler.run_job`` hands a fire to) and capture the actual kwargs the
-scheduler passes to AIAgent (patched at ``run_agent.AIAgent``, matching
+scheduler passes to AIAgent (patched at ``hermes_agent.run_agent.AIAgent``, matching
 tests/cron/test_scheduler.py's pattern). The ON direction (default
 skip_memory=False, memory not denylisted, per-job memory toolset kept) is
 already pinned by tests/cron/test_scheduler.py::test_run_job_*memory*; this
@@ -79,7 +79,7 @@ def _run_job_patches(tmp_path):
                 "api_mode": "chat_completions",
             },
         ),
-        patch("run_agent.AIAgent", return_value=mock_agent),
+        patch("hermes_agent.run_agent.AIAgent", return_value=mock_agent),
     ]
     with contextlib.ExitStack() as stack:
         entered = [stack.enter_context(cm) for cm in base]

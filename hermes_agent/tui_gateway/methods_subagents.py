@@ -162,7 +162,7 @@ def _failed_delegations(session_id, owner):
 
 @method("subagent.interrupt")
 def _(rid, params):
-    from agent.interrupt_compat import request_hard_interrupt
+    from hermes_agent.agent.interrupt_compat import request_hard_interrupt
 
     subagent_id = _str_param(params, "subagent_id")
     if not subagent_id:

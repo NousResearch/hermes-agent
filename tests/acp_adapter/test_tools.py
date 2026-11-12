@@ -90,8 +90,8 @@ class TestBuildToolTitle:
         ],
     )
     def test_title_derives_from_display_preview(self, tool_name, args):
-        """ACP titles are the shared agent.display preview, not a parallel per-tool table."""
-        from agent.display import build_tool_preview
+        """ACP titles are the shared hermes_agent.agent.display preview, not a parallel per-tool table."""
+        from hermes_agent.agent.display import build_tool_preview
 
         assert build_tool_preview(tool_name, args, max_len=80) in build_tool_title(tool_name, args)
 

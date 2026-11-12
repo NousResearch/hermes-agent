@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 import pytest
 
-from agent.context_compressor import (
+from hermes_agent.agent.context_compressor import (
     COMPRESSED_SUMMARY_METADATA_KEY,
     ContextCompressor,
     _ACTIVE_TASK_MAX_CHARS,
@@ -40,7 +40,7 @@ def _make_compressor(**overrides) -> ContextCompressor:
     }
     kwargs.update(overrides)
     with patch(
-        "agent.context_compressor.get_model_context_length",
+        "hermes_agent.agent.context_compressor.get_model_context_length",
         return_value=100_000,
     ):
         instance = ContextCompressor(**kwargs)
@@ -233,7 +233,7 @@ def test_a_tail_that_fits_the_budget_still_anchors_the_active_request() -> None:
 def test_active_request_survives_repeated_compaction_and_restart(tmp_path) -> None:
     # Fallback compaction (no LLM summary) + SQLite reload between cycles:
     # the active request must be recognized from persisted content alone.
-    from agent.conversation_compression import _ensure_compressed_has_user_turn
+    from hermes_agent.agent.conversation_compression import _ensure_compressed_has_user_turn
     from hermes_agent.hermes_state import SessionDB
 
     db_path = tmp_path / "state.db"
@@ -268,7 +268,7 @@ def test_active_request_survives_repeated_compaction_and_restart(tmp_path) -> No
 
     # Only a replay after the LAST end marker is live: a carrier merged into a
     # newer summary's prior context is history, and a leftover flag is not content.
-    from agent.context_compressor import (
+    from hermes_agent.agent.context_compressor import (
         SUMMARY_PREFIX,
         _MERGED_PRIOR_CONTEXT_HEADER,
         _MERGED_SUMMARY_DELIMITER,

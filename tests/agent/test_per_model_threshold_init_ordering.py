@@ -18,8 +18,8 @@ Covers the gaps flagged in the review of PR #63020:
 
 from unittest.mock import patch
 
-from agent.context_compressor import ContextCompressor
-from agent.context_engine import ContextEngine
+from hermes_agent.agent.context_compressor import ContextCompressor
+from hermes_agent.agent.context_engine import ContextEngine
 
 
 class _StubEngine(ContextEngine):
@@ -61,12 +61,12 @@ def test_plugin_engine_gets_model_thresholds_before_initial_update_model():
     with (
         patch("hermes_cli.config.load_config", return_value=cfg), patch("hermes_cli.config.load_config_readonly", return_value=cfg),
         patch("plugins.context_engine.load_context_engine", return_value=engine),
-        patch("agent.model_metadata.get_model_context_length", return_value=1_000_000),
+        patch("hermes_agent.agent.model_metadata.get_model_context_length", return_value=1_000_000),
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
     ):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             model="glm-5.2",
@@ -92,7 +92,7 @@ def test_plugin_engine_gets_model_thresholds_before_initial_update_model():
 class TestFloorInteractionOnModelSwitch:
     """The small-context floor stacks on per-model overrides at switch time."""
 
-    @patch("agent.context_compressor.get_model_context_length")
+    @patch("hermes_agent.agent.context_compressor.get_model_context_length")
     def test_switch_override_below_floor_is_raised_to_floor(self, mock_ctx):
         """Switching to a small-context model with a sub-floor override → floor."""
         mock_ctx.return_value = 1_000_000

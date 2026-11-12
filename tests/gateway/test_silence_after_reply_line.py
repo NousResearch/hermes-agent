@@ -2,7 +2,7 @@
 
 A human turn that ends on a bare marker gets a visible "needed a reply" fallback (#110952). When
 the marker follows a reply the model already wrote beside a housekeeping tool, the agent ends the
-turn on that reply instead (``agent/turn_final_response.py``), before the output transform and
+turn on that reply instead (``hermes_agent/agent/turn_final_response.py``), before the output transform and
 persistence. The agent cannot judge the turn's silence policy itself, so ``TurnRunner`` sets
 ``_silence_marker_needs_reply`` from the same ``silence_allowed`` verdict the outer shaping uses,
 for the duration of that run only, including each queued follow-up's own verdict.
@@ -51,9 +51,9 @@ async def _run(monkeypatch, tmp_path, *, queued_reply_expected=None, queued=Fals
     fake_dotenv = types.ModuleType("dotenv")
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
     monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
-    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent = types.ModuleType("hermes_agent.run_agent")
     fake_run_agent.AIAgent = RecordingAgent
-    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    monkeypatch.setitem(sys.modules, "hermes_agent.run_agent", fake_run_agent)
     monkeypatch.setattr(RecordingAgent, "seen", [])
     monkeypatch.setattr(RecordingAgent, "instances", [])
 

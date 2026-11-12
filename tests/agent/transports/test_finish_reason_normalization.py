@@ -12,8 +12,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.message_sanitization import normalize_finish_reason
-from agent.transports.chat_completions import ChatCompletionsTransport
+from hermes_agent.agent.message_sanitization import normalize_finish_reason
+from hermes_agent.agent.transports.chat_completions import ChatCompletionsTransport
 from hermes_constants import PARTIAL_STREAM_STUB_ID
 
 
@@ -56,10 +56,10 @@ def _make_stream_chunk(content=None, finish_reason=None):
 
 
 @pytest.mark.parametrize("raw,expected", [("STOP", "stop"), ("MAX_TOKENS", "length")])
-@patch("run_agent.AIAgent._create_request_openai_client")
-@patch("run_agent.AIAgent._close_request_openai_client")
+@patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+@patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
 def test_streaming_capture_folds_uppercase_finish_reason(_mock_close, mock_create, monkeypatch, raw, expected):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     def _stream():
         yield _make_stream_chunk(content="partial answer")

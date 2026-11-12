@@ -41,7 +41,7 @@ def _unattended_unknown(rows):
 def settle_recovered_unattended(db, epoch) -> int:
     """Boot recovery, right after ``recover_session_inputs`` fenced lost turns ``unknown`` and before
     any FIFO is scheduled: settle every unattended one. Synchronous; runs off the owner loop."""
-    from agent.turn_failure_copy import AUTOMATION_INTERRUPTED_NOTICE
+    from hermes_agent.agent.turn_failure_copy import AUTOMATION_INTERRUPTED_NOTICE
     from hermes_agent.gateway.session_ingress_media import release_admission_media
     from hermes_agent.gateway.session_results import close_discarded_turn
     from hermes_agent.hermes_state_runtime import RuntimeStoreError, _row, resolve_unknown_session_input
@@ -70,7 +70,7 @@ async def settle_unattended_unknown(authority, ref) -> bool:
     drain re-reads its FIFO instead of pausing; a person's ``unknown`` row still pauses it."""
     import asyncio
 
-    from agent.turn_failure_copy import AUTOMATION_INTERRUPTED_NOTICE
+    from hermes_agent.agent.turn_failure_copy import AUTOMATION_INTERRUPTED_NOTICE
     from hermes_agent.hermes_state_runtime import RuntimeStoreError, list_session_admissions
     rows = await asyncio.to_thread(list_session_admissions, authority.db, session_id=ref.session_id)
     settled = False

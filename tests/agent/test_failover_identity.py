@@ -13,12 +13,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.chat_completion_helpers import rewrite_prompt_model_identity
-from agent.conversation_loop import (
+from hermes_agent.agent.chat_completion_helpers import rewrite_prompt_model_identity
+from hermes_agent.agent.conversation_loop import (
     _redecorate_prompt_cache_for_provider,
     _sync_failover_system_message,
 )
-from agent.prompt_caching import apply_anthropic_cache_control
+from hermes_agent.agent.prompt_caching import apply_anthropic_cache_control
 
 
 _PROMPT = (
@@ -265,7 +265,7 @@ class TestRedecoratePromptCacheOnPolicyChange:
         assert decorated[0]["content"][0]["text"] == self._STATIC
 
     def test_replans_tools_for_the_active_destination(self):
-        from agent.prompt_caching import build_prompt_cache_plan
+        from hermes_agent.agent.prompt_caching import build_prompt_cache_plan
 
         tools = [{"type": "function", "function": {"name": "lookup", "parameters": {"type": "object", "properties": {}}}}]
         messages = [
@@ -324,7 +324,7 @@ class TestRedecoratePromptCacheOnPolicyChange:
 
         class _Completions:
             def rebase_prepared_request(self, prepared, messages):
-                from agent.moa_loop import _attach_reference_guidance
+                from hermes_agent.agent.moa_loop import _attach_reference_guidance
 
                 out = [dict(m) for m in messages]
                 _attach_reference_guidance(out, prepared["guidance"])
@@ -368,7 +368,7 @@ class TestPeelReferenceGuidanceRoundTrip:
     def _round_trip(self, base):
         import copy
 
-        from agent.moa_loop import _attach_reference_guidance, peel_reference_guidance
+        from hermes_agent.agent.moa_loop import _attach_reference_guidance, peel_reference_guidance
 
         attached = copy.deepcopy(base)
         _attach_reference_guidance(attached, self._GUIDANCE)
@@ -390,7 +390,7 @@ class TestPeelReferenceGuidanceRoundTrip:
     def test_guidance_only_part_drops_message_not_empty_residue(self):
         # If the guidance part is the only content left after peeling, the
         # whole message goes — an empty-content user turn must never remain.
-        from agent.moa_loop import peel_reference_guidance
+        from hermes_agent.agent.moa_loop import peel_reference_guidance
 
         messages = [
             {"role": "user", "content": "task"},

@@ -198,7 +198,7 @@ class TestCLIUsageNoAgentAccountLimits:
     """#42904: `/usage` without a live agent (TUI/Desktop slash-worker) still renders account limits."""
 
     def _no_agent_cli(self, monkeypatch, snapshot):
-        from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
+        from hermes_agent.agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
         cli_obj = _make_cli()
         cli_obj.provider, cli_obj.base_url, cli_obj.api_key = "openai-codex", None, None
         cli_obj._print_nous_credits_block = lambda: False
@@ -212,7 +212,7 @@ class TestCLIUsageNoAgentAccountLimits:
                 provider=provider, source="usage_api", fetched_at=datetime.now(), plan="Pro",
                 windows=(AccountUsageWindow(label="Weekly", used_percent=1.0),),
             )
-        monkeypatch.setattr("agent.account_usage.fetch_account_usage", _fetch)
+        monkeypatch.setattr("hermes_agent.agent.account_usage.fetch_account_usage", _fetch)
         return cli_obj, seen
 
     def test_no_agent_prints_codex_account_limits(self, capsys, monkeypatch):

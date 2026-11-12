@@ -38,7 +38,7 @@ def two_profiles(tmp_path, monkeypatch):
 
 
 def _snapshot():
-    from agent.secret_scope import get_secret
+    from hermes_agent.agent.secret_scope import get_secret
     from hermes_cli.config import load_config_readonly
     from hermes_constants import get_hermes_home
     return {"home": str(get_hermes_home()), "secret": get_secret("PROBE_SECRET"),
@@ -70,7 +70,7 @@ def test_profile_route_resolves_the_target_profiles_model_and_key(two_profiles):
 
 
 def test_unknown_profile_is_refused_with_an_instruction(two_profiles):
-    from agent.delegation_provider import DelegationRouteError
+    from hermes_agent.agent.delegation_provider import DelegationRouteError
     from hermes_agent.tools.delegate_tool_routes import _route_to_task_route
 
     with pytest.raises(DelegationRouteError, match="hermes profile list"):
@@ -92,7 +92,7 @@ def test_child_is_built_and_converses_inside_the_target_profile_scope(two_profil
                          "soul": kwargs.get("load_soul_identity")}
         return MagicMock(session_id="child-1")
 
-    with patch("run_agent.AIAgent", side_effect=construct):
+    with patch("hermes_agent.run_agent.AIAgent", side_effect=construct):
         child = _build_child_agent(task_index=0, goal="work as coder", context=None, toolsets=None,
                                    model=route.creds["model"], max_iterations=5, task_count=1,
                                    parent_agent=parent, **_route_overrides(route))
@@ -106,7 +106,7 @@ def test_child_is_built_and_converses_inside_the_target_profile_scope(two_profil
         provider, model, _delegate_profile_home = "custom", "coder-model", coder
 
         def run_conversation(self, user_message, **kw):
-            from agent.prompt_builder import load_soul_md
+            from hermes_agent.agent.prompt_builder import load_soul_md
             seen["ran"] = {**_snapshot(), "soul": load_soul_md()}
             return {"final_response": "ok", "completed": True}
 
@@ -124,7 +124,7 @@ def test_child_is_built_and_converses_inside_the_target_profile_scope(two_profil
 
 
 def test_secret_missing_from_target_profile_never_falls_back_to_the_launch_env(two_profiles):
-    from agent.secret_scope import get_secret
+    from hermes_agent.agent.secret_scope import get_secret
     from hermes_agent.tools.delegate_tool_routes import delegated_profile_scope
 
     _, coder = two_profiles
@@ -149,7 +149,7 @@ def _build(route, parent):
         seen.update(kwargs)
         return MagicMock(session_id="child-1")
 
-    with patch("run_agent.AIAgent", side_effect=construct):
+    with patch("hermes_agent.run_agent.AIAgent", side_effect=construct):
         child = _build_child_agent(task_index=0, goal="work as coder", context=None, toolsets=None,
                                    model=route.creds["model"], max_iterations=5, task_count=1,
                                    parent_agent=parent, **_route_overrides(route))
@@ -240,12 +240,12 @@ def test_profile_child_lease_and_schema_retry_run_inside_the_target_profile(two_
     assert _snapshot() == {"home": str(launch), "secret": "launch-secret", "model": "launch-model"}
 
 
-@pytest.mark.parametrize("failing", ["agent.secret_scope.set_secret_scope",
+@pytest.mark.parametrize("failing", ["hermes_agent.agent.secret_scope.set_secret_scope",
                                      "hermes_agent.tools.terminal_scope.install_profile_terminal_scope"])
 def test_profile_scope_that_fails_to_enter_leaves_the_parent_in_its_own_profile(two_profiles, failing):
     """A step of the scope binding that raises unwinds the steps already bound: the parent never stays
     inside the child's profile (home override, secret scope, multiplex flag)."""
-    from agent.secret_scope import current_secret_scope_home, is_multiplex_active
+    from hermes_agent.agent.secret_scope import current_secret_scope_home, is_multiplex_active
     from hermes_agent.tools.delegate_tool_routes import delegated_profile_scope
 
     _, coder = two_profiles
@@ -278,8 +278,8 @@ def test_profile_route_is_refused_under_a_managed_worker_config_snapshot(two_pro
     config.yaml is unreachable there: refuse instead of pairing the launch model with the target's keys."""
     import os
 
-    from agent import safe_worker_policy
-    from agent.delegation_provider import DelegationRouteError
+    from hermes_agent.agent import safe_worker_policy
+    from hermes_agent.agent.delegation_provider import DelegationRouteError
     from hermes_agent.tools.delegate_tool_routes import _route_to_task_route
 
     launch, _ = two_profiles

@@ -58,7 +58,7 @@ def run_lsp_command(args: argparse.Namespace) -> int:
 
 def _all_servers() -> list:
     """Config-declared servers (``lsp.servers.<id>.extensions``) ahead of the built-in registry."""
-    from agent.lsp.servers import SERVERS, custom_servers
+    from hermes_agent.agent.lsp.servers import SERVERS, custom_servers
     from hermes_cli.config import load_config_readonly
     try:
         lsp_cfg = load_config_readonly().get("lsp") or {}
@@ -69,8 +69,8 @@ def _all_servers() -> list:
 
 def _status_for(server_id: str) -> str:
     import os
-    from agent.lsp.install import detect_status
-    from agent.lsp.servers import SERVERS, ServerContext
+    from hermes_agent.agent.lsp.install import detect_status
+    from hermes_agent.agent.lsp.servers import SERVERS, ServerContext
     custom = next((s for s in _all_servers() if s.server_id == server_id and s not in SERVERS), None)
     if custom is not None:  # no install recipe: installed iff the configured command resolves
         cwd = os.getcwd()
@@ -79,8 +79,8 @@ def _status_for(server_id: str) -> str:
 
 
 def _cmd_status(emit_json: bool) -> int:
-    from agent.lsp import get_service
-    from agent.lsp.servers import UNTRUSTED_SAFE_SERVERS
+    from hermes_agent.agent.lsp import get_service
+    from hermes_agent.agent.lsp.servers import UNTRUSTED_SAFE_SERVERS
     servers = _all_servers()
     svc = get_service()
     info = svc.get_status() if svc is not None else {"enabled": False}
@@ -134,7 +134,7 @@ def _cmd_list(installed_only: bool) -> int:
 
 
 def _cmd_install(server_id: str) -> int:
-    from agent.lsp.install import try_install, INSTALL_RECIPES
+    from hermes_agent.agent.lsp.install import try_install, INSTALL_RECIPES
     pkg = _recipe_pkg_for(server_id)
     if _status_for(server_id) == "installed":
         sys.stdout.write(f"{server_id} already installed\n")
@@ -152,8 +152,8 @@ def _cmd_install(server_id: str) -> int:
 
 
 def _cmd_install_all(include_manual: bool) -> int:
-    from agent.lsp.servers import SERVERS
-    from agent.lsp.install import try_install, INSTALL_RECIPES
+    from hermes_agent.agent.lsp.servers import SERVERS
+    from hermes_agent.agent.lsp.install import try_install, INSTALL_RECIPES
     rc = 0
     for s in SERVERS:
         pkg = _recipe_pkg_for(s.server_id)
@@ -172,14 +172,14 @@ def _cmd_install_all(include_manual: bool) -> int:
 
 
 def _cmd_restart() -> int:
-    from agent.lsp import shutdown_service
+    from hermes_agent.agent.lsp import shutdown_service
     shutdown_service()
     sys.stdout.write("LSP service shut down. Next edit will respawn clients.\n")
     return 0
 
 
 def _cmd_which(server_id: str) -> int:
-    from agent.lsp.install import INSTALL_RECIPES, _existing_binary
+    from hermes_agent.agent.lsp.install import INSTALL_RECIPES, _existing_binary
     resolved = _existing_binary((INSTALL_RECIPES.get(server_id) or {}).get("bin", server_id))
     if resolved:
         sys.stdout.write(resolved + "\n")
@@ -205,7 +205,7 @@ def _recipe_pkg_for(server_id: str) -> str:
 def _backend_warnings() -> list:
     """Notes about missing sidecar tools that make a server spawn fine but emit nothing (e.g. shellcheck)."""
     import shutil
-    from agent.lsp.install import _existing_binary
+    from hermes_agent.agent.lsp.install import _existing_binary
     if _existing_binary("bash-language-server") is not None and shutil.which("shellcheck") is None:
         return ["bash-language-server is installed but shellcheck is missing — "
                 "diagnostics will be empty (apt: shellcheck, brew: shellcheck, scoop: shellcheck)."]

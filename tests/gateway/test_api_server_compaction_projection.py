@@ -5,8 +5,8 @@ from __future__ import annotations
 from aiohttp.test_utils import TestClient, TestServer
 import pytest
 
-from agent.compaction_display import project_compaction_message_for_display
-from agent.context_compressor import (
+from hermes_agent.agent.compaction_display import project_compaction_message_for_display
+from hermes_agent.agent.context_compressor import (
     COMPRESSED_SUMMARY_METADATA_KEY,
     HISTORICAL_TASK_HEADING,
     SUMMARY_PREFIX,

@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.turn_context import export_current_turn_boundary
+from hermes_agent.agent.turn_context import export_current_turn_boundary
 
 
 class _Agent:
@@ -63,12 +63,12 @@ def test_preflight_timeout_envelope_exports_nothing():
 
 @pytest.fixture()
 def loop_agent():
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     with (
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
     ):
         a = AIAgent(
             api_key="test-key-1234567890",

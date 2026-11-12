@@ -16,7 +16,7 @@ from hermes_agent.gateway.profile_routing import ProfileRoute
 
 @pytest.fixture
 def mux_home(tmp_path, monkeypatch):
-    from agent import secret_scope
+    from hermes_agent.agent import secret_scope
 
     home = tmp_path / "hh"
     (home / "profiles" / "secondary").mkdir(parents=True)

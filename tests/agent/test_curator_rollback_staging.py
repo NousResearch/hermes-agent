@@ -14,7 +14,7 @@ def test_failed_rollback_keeps_unrestored_metadata(
     skills = home / "skills"
     skills.mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(home))
-    from agent import curator_backup as curator
+    from hermes_agent.agent import curator_backup as curator
 
     for name in ("alpha", "beta"):
         skill = skills / name
@@ -78,7 +78,7 @@ def test_retain_staging_never_raises(tmp_path, monkeypatch, mode):
     skills = home / "skills"
     skills.mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(home))
-    from agent import curator_backup as curator
+    from hermes_agent.agent import curator_backup as curator
 
     skill = skills / "alpha"
     skill.mkdir()

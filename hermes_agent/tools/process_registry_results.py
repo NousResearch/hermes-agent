@@ -47,7 +47,7 @@ def _result_paths():
 
 
 def save_completed_result(session) -> None:
-    from agent.redact import redact_sensitive_text, redact_terminal_output
+    from hermes_agent.agent.redact import redact_sensitive_text, redact_terminal_output
     from hermes_agent.tools.process_registry import MAX_OUTPUT_CHARS
 
     with session._lock:

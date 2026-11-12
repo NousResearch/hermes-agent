@@ -23,7 +23,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 # A plausible-looking OAuth token (``sk-ant-`` without the ``-api`` suffix).
 _OAUTH_LIKE_TOKEN = "sk-ant-oauth-example-1234567890abcdef"
@@ -34,7 +34,7 @@ def agent():
     with (
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
     ):
         a = AIAgent(
             api_key="test-key-1234567890",
@@ -61,9 +61,9 @@ class TestOAuthFlagOnRefresh:
         agent._is_anthropic_oauth = False
 
         with (
-            patch("agent.anthropic_credentials.resolve_anthropic_token",
+            patch("hermes_agent.agent.anthropic_credentials.resolve_anthropic_token",
                   return_value=_OAUTH_LIKE_TOKEN),
-            patch("agent.anthropic_adapter.build_anthropic_client",
+            patch("hermes_agent.agent.anthropic_adapter.build_anthropic_client",
                   return_value=MagicMock()),
         ):
             result = agent._try_refresh_anthropic_client_credentials()
@@ -89,9 +89,9 @@ class TestOAuthFlagOnRefresh:
         agent._is_anthropic_oauth = False
 
         with (
-            patch("agent.anthropic_credentials.resolve_anthropic_token",
+            patch("hermes_agent.agent.anthropic_credentials.resolve_anthropic_token",
                   return_value=_OAUTH_LIKE_TOKEN),
-            patch("agent.anthropic_adapter.build_anthropic_client",
+            patch("hermes_agent.agent.anthropic_adapter.build_anthropic_client",
                   return_value=MagicMock()),
         ):
             result = agent._try_refresh_anthropic_client_credentials()
@@ -117,8 +117,8 @@ class TestOAuthFlagOnRefresh:
         agent._primary_runtime = {"anthropic_api_key": old, "is_anthropic_oauth": False}
 
         with (
-            patch("agent.anthropic_credentials.resolve_anthropic_token", return_value=new),
-            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+            patch("hermes_agent.agent.anthropic_credentials.resolve_anthropic_token", return_value=new),
+            patch("hermes_agent.agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
         ):
             result = agent._try_refresh_anthropic_client_credentials()
 
@@ -131,7 +131,7 @@ class TestOAuthFlagOnRefresh:
         """Claude Code revokes the old token on refresh. Manual /compress and turn-start compaction
         run before any main request, so compress_context must refresh first and move every holder
         (the compressor forwards its OWN ``api_key``), or the summary 401s for the session's life."""
-        from agent.conversation_compression import compress_context
+        from hermes_agent.agent.conversation_compression import compress_context
 
         old, new = "sk-ant-oat01-old", "sk-ant-oat01-new"
         seen, announced = [], []
@@ -148,7 +148,7 @@ class TestOAuthFlagOnRefresh:
             return [{"role": "user", "content": "[summary]"}, {"role": "assistant", "content": "tail"}]
 
         with (
-            patch("agent.anthropic_credentials.resolve_anthropic_token", return_value=new),
+            patch("hermes_agent.agent.anthropic_credentials.resolve_anthropic_token", return_value=new),
             patch.object(AIAgent, "_build_direct_anthropic_client", return_value=MagicMock()),
             patch.object(cc, "compress", side_effect=fake_compress),
             patch.object(agent, "_emit_status", side_effect=lambda _s: announced.append(agent._anthropic_api_key)),
@@ -165,10 +165,10 @@ class TestOAuthFlagOnRefresh:
     def test_auxiliary_main_route_uses_refreshed_token(self, agent):
         """Production order: the turn publishes its aux runtime BEFORE the first request triggers
         the silent refresh, so same-turn `auto` aux calls must still pick up the new token."""
-        from agent import auxiliary_client as aux
-        from agent.auxiliary_key_rotation import rotate_runtime_main_api_key
-        from agent.chat_completion_helpers import _context_thread_target
-        from agent.turn_context import _publish_runtime_main
+        from hermes_agent.agent import auxiliary_client as aux
+        from hermes_agent.agent.auxiliary_key_rotation import rotate_runtime_main_api_key
+        from hermes_agent.agent.chat_completion_helpers import _context_thread_target
+        from hermes_agent.agent.turn_context import _publish_runtime_main
 
         old, new = "sk-ant...aaaa", "sk-ant...bbbb"
         agent.api_mode, agent.provider, agent.model = "anthropic_messages", "anthropic", "claude-opus-4-6"
@@ -186,8 +186,8 @@ class TestOAuthFlagOnRefresh:
         try:
             _publish_runtime_main(agent)
             with (
-                patch("agent.anthropic_credentials.resolve_anthropic_token", return_value=new),
-                patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+                patch("hermes_agent.agent.anthropic_credentials.resolve_anthropic_token", return_value=new),
+                patch("hermes_agent.agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
             ):
                 # The refresh runs in the request worker's copied Context; the turn thread reads after.
                 worker = threading.Thread(target=_context_thread_target(
@@ -229,7 +229,7 @@ class TestOAuthFlagOnCredentialSwap:
         entry.runtime_api_key = _OAUTH_LIKE_TOKEN
         entry.runtime_base_url = "https://open.bigmodel.cn/api/anthropic"
 
-        with patch("agent.anthropic_adapter.build_anthropic_client",
+        with patch("hermes_agent.agent.anthropic_adapter.build_anthropic_client",
                    return_value=MagicMock()):
             agent._swap_credential(entry)
 
@@ -242,11 +242,11 @@ class TestOAuthFlagOnConstruction:
         with (
             patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
             patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-            patch("agent.anthropic_adapter.build_anthropic_client",
+            patch("hermes_agent.agent.anthropic_adapter.build_anthropic_client",
                   return_value=MagicMock()),
             # Simulate a stale ANTHROPIC_TOKEN in the env — the init code
             # MUST NOT fall back to it when provider != anthropic.
-            patch("agent.anthropic_credentials.resolve_anthropic_token",
+            patch("hermes_agent.agent.anthropic_credentials.resolve_anthropic_token",
                   return_value=_OAUTH_LIKE_TOKEN),
         ):
             agent = AIAgent(

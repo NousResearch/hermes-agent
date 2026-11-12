@@ -165,7 +165,7 @@ def run_command_provider(
     ``timeout`` is an IDLE timeout, reset whenever the command emits output — a slow-but-alive
     provider survives, a silently stalled one is killed. Child env is scrubbed of Hermes secrets
     while propagating delegated-child lineage markers."""
-    from agent.delegation_context import delegated_child_subprocess_env
+    from hermes_agent.agent.delegation_context import delegated_child_subprocess_env
     from hermes_agent.tools.env_passthrough import resolve_passthrough_value
     from hermes_agent.tools.environments.local import hermes_subprocess_env
     scrubbed = hermes_subprocess_env(inherit_credentials=False)

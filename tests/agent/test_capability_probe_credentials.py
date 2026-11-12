@@ -4,7 +4,7 @@ from unittest.mock import patch
 import httpx
 import pytest
 
-from agent import auxiliary_client, image_routing, model_metadata
+from hermes_agent.agent import auxiliary_client, image_routing, model_metadata
 from hermes_cli import models_local
 
 

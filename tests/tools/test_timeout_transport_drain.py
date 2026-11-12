@@ -168,8 +168,8 @@ def test_agent_drain_shuts_sockets_down_without_fd_release(monkeypatch):
     import threading as _threading
     from unittest.mock import patch
 
-    with patch("run_agent.AIAgent.__init__", return_value=None):
-        from run_agent import AIAgent
+    with patch("hermes_agent.run_agent.AIAgent.__init__", return_value=None):
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent.__new__(AIAgent)
 
@@ -185,7 +185,7 @@ def test_agent_drain_shuts_sockets_down_without_fd_release(monkeypatch):
     agent._codex_session = None
     agent._active_request_abort = None
 
-    import agent.agent_runtime_helpers as arh
+    import hermes_agent.agent.agent_runtime_helpers as arh
 
     monkeypatch.setattr(arh, "_iter_pool_sockets", lambda _c: iter([sock]))
 

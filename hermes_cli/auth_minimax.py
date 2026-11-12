@@ -331,7 +331,7 @@ def build_minimax_oauth_token_provider() -> Callable[[], str]:
             raise _minimax_err("MiniMax OAuth state has no access_token after refresh.", "no_access_token", relogin=True)
         return token
 
-    from agent.credential_source import MINIMAX_OAUTH, tag_credential_source
+    from hermes_agent.agent.credential_source import MINIMAX_OAUTH, tag_credential_source
     return tag_credential_source(_provide, MINIMAX_OAUTH)
 
 

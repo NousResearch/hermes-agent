@@ -247,7 +247,7 @@ class FanoutTransport:
                     # write() acknowledges buffered tokens/timeouts, not socket
                     # progress. Await the real send so WS cannot move an
                     # unbounded backlog underneath this bounded mailbox.
-                    from agent.async_utils import safe_schedule_threadsafe
+                    from hermes_agent.agent.async_utils import safe_schedule_threadsafe
                     frames = [frame for frame, _size in batch]
                     if write_current is not None:
                         send = write_current(frames, lambda generation=generation: self._is_current(peer, generation))

@@ -1,4 +1,4 @@
-"""Tests for the local-endpoint probe disk L2 cache in agent/model_metadata.
+"""Tests for the local-endpoint probe disk L2 cache in hermes_agent/agent/model_metadata.
 
 Contract:
 - only SUCCESSFUL probes are persisted (failures never pin a verdict);
@@ -12,7 +12,7 @@ import json
 import time
 from unittest.mock import MagicMock, patch
 
-import agent.model_metadata as MM
+import hermes_agent.agent.model_metadata as MM
 
 
 def _clear_in_proc():

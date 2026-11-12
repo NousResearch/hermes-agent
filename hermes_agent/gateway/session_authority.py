@@ -958,7 +958,7 @@ class SessionAuthority:
                     self.delivered_stops[ref.session_id] = generation
         # Stop hard-cancels this turn (aborts compression too). Background delegations are not the
         # turn: they keep running and report back; `/stop` and session close/reset end them.
-        from agent.interrupt_compat import request_hard_interrupt
+        from hermes_agent.agent.interrupt_compat import request_hard_interrupt
         if agent is not None:
             request_hard_interrupt(agent)
         return self._handle(ref)
@@ -1021,7 +1021,7 @@ class SessionAuthority:
                 clear()
             if self.pending_stops.get(session_id) == generation:
                 del self.pending_stops[session_id]
-                from agent.interrupt_compat import request_hard_interrupt
+                from hermes_agent.agent.interrupt_compat import request_hard_interrupt
                 request_hard_interrupt(agent)
             latched, steers = self.pending_steers.pop(session_id, (None, ()))
             for text in steers if latched == generation else ():
@@ -1289,7 +1289,7 @@ class SessionAuthority:
                     # A cold /refine's review shares the session id, as the resident agent's does:
                     # cancel it before the turn (its bounded wait runs off-loop). Inside the try: a
                     # drain cancelled here must still clear the executing stamp.
-                    from agent.background_review import cancel_background_review_for_live_turn
+                    from hermes_agent.agent.background_review import cancel_background_review_for_live_turn
                     await asyncio.to_thread(cancel_background_review_for_live_turn, live.review)
                 await settled(ref)  # plugins see a session's open before its first turn
                 return await execute_finite_admission(self, ref, row), 'completed'

@@ -21,7 +21,7 @@ _CONTEXT_CACHE_LOCK_TIMEOUT_SECONDS = 5.0
 def _write_context_cache(cache: dict[str, int], bedrock_confirmed: dict | None = None) -> None:
     """Atomic write (a truncating write killed mid-dump leaves a partial file that
     _load_context_cache() swallows as {}, wiping EVERY cached length). Raises on failure."""
-    from agent.model_metadata import _get_context_cache_path  # facade seam: tests patch the path there
+    from hermes_agent.agent.model_metadata import _get_context_cache_path  # facade seam: tests patch the path there
     document = {"context_lengths": cache}
     if bedrock_confirmed:
         document["bedrock_confirmed_v1"] = bedrock_confirmed
@@ -35,7 +35,7 @@ def locked_context_cache(fn):
     """
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
-        from agent.model_metadata import _get_context_cache_path  # facade seam: tests patch the path there
+        from hermes_agent.agent.model_metadata import _get_context_cache_path  # facade seam: tests patch the path there
         from hermes_cli.auth import _file_lock
         path = _get_context_cache_path()
         lock_path = path.with_name(path.name + ".lock")
@@ -56,7 +56,7 @@ def drop_context_cache_rows(stale_keys: set[str], label: str) -> None:
     """Remove every key shape of one cached entry (and its Bedrock provenance) under the cache lock.
 
     Only the file update is locked: callers evict their in-process probe caches unconditionally."""
-    from agent.model_metadata import _load_context_cache_document  # facade seam: tests patch it there
+    from hermes_agent.agent.model_metadata import _load_context_cache_document  # facade seam: tests patch it there
     document = _load_context_cache_document()
     cache = document.get("context_lengths") or {}
     confirmed = document.get("bedrock_confirmed_v1") or {}

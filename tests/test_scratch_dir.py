@@ -24,7 +24,7 @@ def test_boot_hook_and_prompt_hand_the_prune_to_one_child(scratch_prune_spawns, 
     starts exactly one prune process, for that dir; the prompt build starts no other. A routed
     caller's process prunes the routed home's dir, never the launch home's."""
     import hermes_constants as constants
-    from agent.prompt_builder import _local_host_hints
+    from hermes_agent.agent.prompt_builder import _local_host_hints
 
     monkeypatch.setattr(constants, "_scratch_pruned_once", False)
     home = tmp_path / "launch"

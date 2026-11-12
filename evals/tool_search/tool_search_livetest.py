@@ -351,7 +351,7 @@ def reset_module_state():
     """Drop cached modules so the new HERMES_HOME takes effect."""
     keys = [k for k in sys.modules.keys()
             if k.startswith(("hermes_agent.tools.", "hermes_agent.model_tools", "hermes_agent.toolsets",
-                             "hermes_cli", "agent.", "run_agent"))]
+                             "hermes_cli", "hermes_agent.agent.", "hermes_agent.run_agent"))]
     for k in keys:
         del sys.modules[k]
 
@@ -389,7 +389,7 @@ def run_one_scenario(scenario: dict[str, Any], enabled: bool, out_dir: Path) -> 
     final_response = ""
     messages_out = []
     try:
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         agent = AIAgent(
             provider="openrouter",
             model="anthropic/claude-haiku-4.5",

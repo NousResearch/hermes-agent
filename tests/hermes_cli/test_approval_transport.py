@@ -397,7 +397,7 @@ def test_transport_resolution_error_does_not_log_plugin_exception(monkeypatch, c
 
 
 def test_redaction_failure_denies_before_transport_callback(monkeypatch):
-    import agent.redact
+    import hermes_agent.agent.redact
     from hermes_agent.tools import approval
 
     manager = PluginManager()
@@ -413,7 +413,7 @@ def test_redaction_failure_denies_before_transport_callback(monkeypatch):
             raise RuntimeError("redactor unavailable")
         return text
 
-    monkeypatch.setattr(agent.redact, "redact_sensitive_text", redaction_failed)
+    monkeypatch.setattr(hermes_agent.agent.redact, "redact_sensitive_text", redaction_failed)
 
     result = approval.check_all_command_guards("rm -rf /tmp/example", "local")
 

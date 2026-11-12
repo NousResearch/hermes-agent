@@ -3,7 +3,7 @@ from __future__ import annotations
 import importlib
 import sys
 
-from agent import jiter_preload
+from hermes_agent.agent import jiter_preload
 
 
 def test_preload_jiter_native_extension_loads_sdk_parser_dependency():

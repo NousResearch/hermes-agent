@@ -16,9 +16,9 @@ from typing import Any, Optional
 
 import pytest
 
-import agent.transports.codex_app_server_session as session_mod
-from agent.transports.codex_app_server import CodexAppServerTransportError
-from agent.transports.codex_app_server_session import (
+import hermes_agent.agent.transports.codex_app_server_session as session_mod
+from hermes_agent.agent.transports.codex_app_server import CodexAppServerTransportError
+from hermes_agent.agent.transports.codex_app_server_session import (
     CodexAppServerSession,
     _ServerRequestRouting,
     _approval_choice_to_codex_decision,
@@ -202,8 +202,8 @@ class TestLifecycle:
         ``_ensure_codex_session`` sends ``model`` + ``modelProvider=<name>`` on thread/start and never the
         API key; openai/openai-codex agents send the selected model with codex's own provider."""
         import hermes_cli.runtime_provider as rp
-        from agent.codex_runtime import _ensure_codex_session
-        from agent.transports import codex_app_server_session as sess_mod
+        from hermes_agent.agent.codex_runtime import _ensure_codex_session
+        from hermes_agent.agent.transports import codex_app_server_session as sess_mod
         monkeypatch.setattr(rp, "load_config", lambda: {
             "providers": {"my-gateway": {"api": "https://gateway.example.com/v1", "api_key": "sk-secret"}}})
         clients: list[FakeClient] = []
@@ -238,8 +238,8 @@ class TestLifecycle:
         """#100531: a stored id goes out as ``thread/resume`` (same params as thread/start, never a
         second ``thread/start``); when codex cannot hand it back the failure is typed and the NEXT
         ensure_started() starts a fresh thread on the same handshaken client."""
-        from agent.transports.codex_app_server import CodexAppServerError
-        from agent.transports.codex_app_server_session import CodexThreadResumeError
+        from hermes_agent.agent.transports.codex_app_server import CodexAppServerError
+        from hermes_agent.agent.transports.codex_app_server_session import CodexThreadResumeError
 
         client = FakeClient()
         client._request_handler = lambda method, params: (
@@ -478,7 +478,7 @@ class TestRunTurn:
         """When codex stderr has content (non-OAuth), the tail gets attached
         to the user-facing error so config/provider problems are debuggable
         instead of just 'Internal error'. Credential-shaped values in stderr
-        are redacted via agent.redact(force=True); web-URL query params pass
+        are redacted via hermes_agent.agent.redact(force=True); web-URL query params pass
         through (see fix(redact): pass web URLs through unchanged)."""
         client = FakeClient()
         client.set_stderr_tail([
@@ -486,7 +486,7 @@ class TestRunTurn:
             "Authorization: Bearer sk-live-deadbeefdeadbeef",
             "url=https://api.example.com/v1?token=querysecret12345",
         ])
-        from agent.transports.codex_app_server import CodexAppServerError
+        from hermes_agent.agent.transports.codex_app_server import CodexAppServerError
 
         def boom(method, params):
             if method == "turn/start":
@@ -532,7 +532,7 @@ class TestRunTurn:
     def test_plugin_401_stderr_keeps_primary_rpc_error_visible(self, op):
         """#75167: an ambient ChatGPT plugin prewarm 401 in codex stderr must not rewrite an
         unrelated RPC error into the `codex login` hint (turn and compaction paths alike)."""
-        from agent.transports.codex_app_server import CodexAppServerError
+        from hermes_agent.agent.transports.codex_app_server import CodexAppServerError
 
         client = FakeClient()
         client.set_stderr_tail(["WARN ChatGPT plugin prewarm failed: HTTP 401 Unauthorized"])
@@ -1028,7 +1028,7 @@ class TestThreadStartCrossFill:
 
 
     def test_missing_thread_id_raises(self):
-        from agent.transports.codex_app_server import CodexAppServerError
+        from hermes_agent.agent.transports.codex_app_server import CodexAppServerError
 
         client = FakeClient()
         client._request_handler = lambda method, params: (
@@ -1045,20 +1045,20 @@ class TestHasTurnAbortedMarker:
     """Unit coverage for the marker matcher itself."""
 
     def test_empty_string(self):
-        from agent.transports.codex_app_server_session import (
+        from hermes_agent.agent.transports.codex_app_server_session import (
             _has_turn_aborted_marker,
         )
         assert _has_turn_aborted_marker("") is False
         assert _has_turn_aborted_marker(None) is False  # type: ignore[arg-type]
 
     def test_plain_text_no_marker(self):
-        from agent.transports.codex_app_server_session import (
+        from hermes_agent.agent.transports.codex_app_server_session import (
             _has_turn_aborted_marker,
         )
         assert _has_turn_aborted_marker("normal response with no markers") is False
 
     def test_open_marker(self):
-        from agent.transports.codex_app_server_session import (
+        from hermes_agent.agent.transports.codex_app_server_session import (
             _has_turn_aborted_marker,
         )
         assert _has_turn_aborted_marker("blah <turn_aborted> blah") is True
@@ -1073,7 +1073,7 @@ class TestClassifyOAuthFailure:
 
 
     def test_empty_inputs(self):
-        from agent.transports.codex_app_server_session import (
+        from hermes_agent.agent.transports.codex_app_server_session import (
             _classify_oauth_failure,
         )
         assert _classify_oauth_failure() is None
@@ -1095,7 +1095,7 @@ class TestClassifyOAuthFailure:
         """#75167: ambient plugin 401/oauth stderr must not become the re-login hint; the
         primary error's own 401 Unauthorized and strong stderr credential signals still do,
         while a bare `401` token in an unrelated primary error does not."""
-        from agent.transports.codex_app_server_session import _classify_oauth_failure
+        from hermes_agent.agent.transports.codex_app_server_session import _classify_oauth_failure
 
         assert (_classify_oauth_failure(primary, stderr=stderr) is not None) is expected
 
@@ -1208,8 +1208,8 @@ class TestTransportLoss:
 
 
 def test_only_current_turn_progress_reaches_hermes_activity_clock():
-    from agent.activity_tracking import ActivityTrackingMixin
-    from agent.codex_runtime import make_codex_app_server_event_bridge
+    from hermes_agent.agent.activity_tracking import ActivityTrackingMixin
+    from hermes_agent.agent.codex_runtime import make_codex_app_server_event_bridge
 
     agent = ActivityTrackingMixin()
     agent._touch_activity("starting new turn")

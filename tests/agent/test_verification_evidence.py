@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from agent.verification_evidence import (
+from hermes_agent.agent.verification_evidence import (
     classify_verification_command,
     mark_workspace_edited,
     record_terminal_result,
@@ -588,10 +588,10 @@ def test_recording_expires_old_edit_only_state(tmp_path, monkeypatch):
 def test_windows_exe_interpreter_records_ad_hoc_evidence(tmp_path, monkeypatch, interpreter):
     """A venv's absolute ``Scripts\\python.exe`` (or the ``py`` launcher) is the interpreter shape
     Windows hands the agent; ``.exe`` must not hide it from the ad-hoc branch (review follow-up)."""
-    from agent.verification_evidence import _find_ad_hoc_match
+    from hermes_agent.agent.verification_evidence import _find_ad_hoc_match
 
     monkeypatch.setattr(
-        "agent.verification_evidence._is_temp_script_path",
+        "hermes_agent.agent.verification_evidence._is_temp_script_path",
         lambda token, root: "hermes-verify-" in token and token.endswith(".py"),
     )
     win_script = r"C:\Users\me\AppData\Local\Temp\hermes-verify-x.py"
@@ -608,7 +608,7 @@ def test_windows_backslash_ad_hoc_script_path_is_matched(tmp_path, monkeypatch):
     path resolves correctly. The test verifies the posix=False splitting
     fallback — the actual fix from #53553.
     """
-    from agent.verification_evidence import _find_ad_hoc_match
+    from hermes_agent.agent.verification_evidence import _find_ad_hoc_match
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     (tmp_path / "package.json").write_text("{}", encoding="utf-8")
@@ -620,7 +620,7 @@ def test_windows_backslash_ad_hoc_script_path_is_matched(tmp_path, monkeypatch):
         return "hermes-ad-hoc" in token and ".py" in token
 
     monkeypatch.setattr(
-        "agent.verification_evidence._is_temp_script_path",
+        "hermes_agent.agent.verification_evidence._is_temp_script_path",
         mock_is_temp_script,
     )
 

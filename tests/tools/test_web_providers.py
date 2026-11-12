@@ -25,7 +25,7 @@ class TestWebProviderABCs:
     """The unified WebSearchProvider ABC enforces the interface contract.
 
     After PR #25182, all seven providers are subclasses of
-    :class:`agent.web_search_provider.WebSearchProvider`. The legacy
+    :class:`hermes_agent.agent.web_search_provider.WebSearchProvider`. The legacy
     in-tree ABCs at ``tools.web_providers.base`` (separate
     ``WebSearchProvider`` + ``WebExtractProvider``) were deleted in the
     same PR — providers now advertise capabilities via
@@ -36,7 +36,7 @@ class TestWebProviderABCs:
 
     def test_search_only_provider_skips_extract(self):
         """Search-only providers don't have to implement extract()."""
-        from agent.web_search_provider import WebSearchProvider
+        from hermes_agent.agent.web_search_provider import WebSearchProvider
 
         class SearchOnly(WebSearchProvider):
             @property
@@ -153,7 +153,7 @@ class TestUnconfiguredErrorEnvelopeParity:
     def _populate_web_registry(self):
         self._register_providers()
         yield
-        from agent.web_search_registry import _reset_for_tests
+        from hermes_agent.agent.web_search_registry import _reset_for_tests
         _reset_for_tests()
 
     def _clear_web_creds(self, monkeypatch):
@@ -179,7 +179,7 @@ class TestUnconfiguredErrorEnvelopeParity:
         erroring (covered in test_web_keyless_fallback.py).
         """
         from hermes_agent.tools import web_tools
-        from agent import web_search_registry
+        from hermes_agent.agent import web_search_registry
 
         self._clear_web_creds(monkeypatch)
         monkeypatch.setattr(web_tools, "_firecrawl_client", None, raising=False)
@@ -250,7 +250,7 @@ class TestUnconfiguredErrorEnvelopeParity:
 class TestDispatchersTriggerPluginDiscovery:
     """Regression tests for #27580: each web_*_tool dispatcher must
     idempotently call ``_ensure_web_plugins_loaded()`` before consulting
-    ``agent.web_search_registry``.
+    ``hermes_agent.agent.web_search_registry``.
 
     Without this, a tool call from a context that hasn't already loaded
     plugins (subprocess agent runs, delegate children, standalone scripts,
@@ -268,7 +268,7 @@ class TestDispatchersTriggerPluginDiscovery:
         """Reset the web_search registry to empty and return a callback
         that restores the original contents. Used in a try/finally so the
         snapshot is restored even when the dispatcher under test raises."""
-        from agent import web_search_registry
+        from hermes_agent.agent import web_search_registry
 
         with web_search_registry._lock:
             original = dict(web_search_registry._providers)
@@ -295,8 +295,8 @@ class TestDispatchersTriggerPluginDiscovery:
         import asyncio
         import json
         from unittest.mock import MagicMock
-        from agent.web_search_provider import WebSearchProvider
-        from agent import web_search_registry
+        from hermes_agent.agent.web_search_provider import WebSearchProvider
+        from hermes_agent.agent import web_search_registry
         from hermes_agent.tools import web_tools
 
         restore = self._clear_registry()
@@ -379,8 +379,8 @@ class TestDispatchersTriggerPluginDiscovery:
         """
         import json
         from unittest.mock import MagicMock
-        from agent.web_search_provider import WebSearchProvider
-        from agent import web_search_registry
+        from hermes_agent.agent.web_search_provider import WebSearchProvider
+        from hermes_agent.agent import web_search_registry
         from hermes_agent.tools import web_tools
 
         restore = self._clear_registry()
@@ -440,7 +440,7 @@ class TestDisabledPluginDiagnostic:
     """
 
     def _clear_registry(self):
-        from agent import web_search_registry
+        from hermes_agent.agent import web_search_registry
 
         with web_search_registry._lock:
             original = dict(web_search_registry._providers)
@@ -470,7 +470,7 @@ class TestDisabledPluginDiagnostic:
         monkeypatch.setattr(plugins_mod, "get_plugin_manager", lambda: _StubMgr())
 
     def test_disabled_web_plugin_for_matches_by_key(self, monkeypatch):
-        from agent.web_search_registry import _disabled_web_plugin_for
+        from hermes_agent.agent.web_search_registry import _disabled_web_plugin_for
 
         self._patch_manager(monkeypatch, {
             "web/firecrawl": self._FakeLoaded(False, "disabled via config"),
@@ -493,7 +493,7 @@ class TestDisabledPluginDiagnostic:
                 web_tools, "_load_web_config",
                 lambda: {"search_backend": "firecrawl"},
             )
-            import agent.web_search_registry as wsr
+            import hermes_agent.agent.web_search_registry as wsr
             monkeypatch.setattr(
                 wsr, "_read_config_key",
                 lambda *path: "firecrawl" if path == ("web", "search_backend") else None,

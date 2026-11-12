@@ -440,7 +440,7 @@ description: "My custom Python TTS backend"
 
 `__init__.py`:
 ```python
-from agent.tts_provider import TTSProvider
+from hermes_agent.agent.tts_provider import TTSProvider
 
 
 class MyTTSProvider(TTSProvider):
@@ -489,7 +489,7 @@ Override these on your provider class for richer integration:
 - `voice_compatible` property → set `True` if your output is Opus-compatible and the gateway should deliver it as a voice bubble (default `False` = regular audio attachment).
 - `warm()` / `release()` → called when a surface toggles speech output on / when the last lease across surfaces is released, while your provider is the configured `tts.provider` — preload or unload a local model server here. Both default to no-ops; exceptions are logged at debug and never fail the toggle.
 
-See `agent/tts_provider.py` for the full ABC including docstrings.
+See `hermes_agent/agent/tts_provider.py` for the full ABC including docstrings.
 
 ## Voice Message Transcription (STT)
 
@@ -728,7 +728,7 @@ description: "My custom Python STT backend"
 
 `__init__.py`:
 ```python
-from agent.transcription_provider import TranscriptionProvider
+from hermes_agent.agent.transcription_provider import TranscriptionProvider
 
 
 class MySTTProvider(TranscriptionProvider):
@@ -783,4 +783,4 @@ Override these on your provider class for richer integration:
 - `default_model()` → string returned when the user doesn't override the model.
 - `get_setup_schema()` → return `{name, badge, tag, env_vars: [{key, prompt, url}]}` to power picker rows in `hermes tools` / `hermes setup` (the picker category for STT is not yet shipped — this metadata is available to plugins for forward compatibility).
 
-See `agent/transcription_provider.py` for the full ABC including docstrings.
+See `hermes_agent/agent/transcription_provider.py` for the full ABC including docstrings.

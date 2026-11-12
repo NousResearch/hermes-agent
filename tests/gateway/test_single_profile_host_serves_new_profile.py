@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 import hermes_constants
-from agent.secret_scope import is_multiplex_active
+from hermes_agent.agent.secret_scope import is_multiplex_active
 from hermes_agent.gateway.config import GatewayConfig
 from hermes_agent.gateway.run import GatewayRunner
 from hermes_agent.gateway.status import flush_runtime_status, write_runtime_status
@@ -79,7 +79,7 @@ async def test_profile_created_after_a_single_profile_boot_is_served_without_a_r
         assert restarts == [] and not runner._draining
         # The new profile reads its own credentials and never borrows the launch profile's env.
         assert is_multiplex_active()
-        from agent.secret_scope import UnscopedSecretError, get_secret
+        from hermes_agent.agent.secret_scope import UnscopedSecretError, get_secret
         from hermes_agent.gateway.run import _profile_runtime_scope
         with _profile_runtime_scope(bot.resolve()):
             assert get_secret("OPENAI_API_KEY") == "bot-own-key"
@@ -147,7 +147,7 @@ def test_launch_profile_work_on_a_standalone_host_binds_its_scope_once_a_second_
     still-standalone gateway) must bind the launch scope, not crash with UnscopedSecretError."""
     from types import SimpleNamespace
 
-    from agent.secret_scope import get_secret
+    from hermes_agent.agent.secret_scope import get_secret
     from hermes_agent.gateway.session_authorities import owner_scope
     from hermes_agent.tui_gateway.launch_profile_policy import activate_multi_profile_hosting
 

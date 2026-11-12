@@ -64,7 +64,7 @@ class TestRedactApiErrorText:
     def test_redacts_regardless_of_global_redaction_setting(self):
         # force=True must mask even when global redaction is disabled.
         secret = "sk-forced-redaction-0987654321"
-        with patch("agent.redact._REDACT_ENABLED", False):
+        with patch("hermes_agent.agent.redact._REDACT_ENABLED", False):
             out = _redact_api_error_text(Exception(f"boom AWS_SECRET_ACCESS_KEY={secret}"))
         assert secret not in out
 
@@ -217,7 +217,7 @@ class TestAdapterInit:
             def __init__(self, **kwargs):
                 captured.update(kwargs)
 
-        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        monkeypatch.setattr("hermes_agent.run_agent.AIAgent", FakeAgent)
         monkeypatch.setattr(
             "hermes_agent.gateway.run._resolve_runtime_agent_kwargs",
             lambda: {
@@ -2568,7 +2568,7 @@ def _make_routing_adapter(routes) -> APIServerAdapter:
 
 def _patch_create_agent_runtime(monkeypatch, captured: dict, fake_agent_cls):
     """Stub out every external dependency of _create_agent."""
-    monkeypatch.setattr("run_agent.AIAgent", fake_agent_cls)
+    monkeypatch.setattr("hermes_agent.run_agent.AIAgent", fake_agent_cls)
     monkeypatch.setattr(
         "hermes_agent.gateway.run._resolve_runtime_agent_kwargs",
         lambda: {
@@ -3051,7 +3051,7 @@ class TestCreateAgentModelRecovery:
                 captured.append(dict(kwargs))
 
         _patch_create_agent_runtime(monkeypatch, {}, FakeAgent)
-        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        monkeypatch.setattr("hermes_agent.run_agent.AIAgent", FakeAgent)
 
         adapter = APIServerAdapter(PlatformConfig(enabled=True))
         monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)

@@ -11,7 +11,7 @@ from __future__ import annotations
 import os
 from typing import Any, Iterable, Optional
 
-from agent.delegation_context import owned_kanban_task
+from hermes_agent.agent.delegation_context import owned_kanban_task
 
 
 # Every tool that ends this worker's responsibility for the card, not just the two that

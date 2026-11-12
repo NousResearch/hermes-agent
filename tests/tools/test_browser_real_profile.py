@@ -642,7 +642,7 @@ class TestSnapshotIsCredentialStore:
         )
 
     def test_read_guard_blocks_snapshot(self, tmp_path, monkeypatch):
-        import agent.file_safety as fs
+        import hermes_agent.agent.file_safety as fs
         home = tmp_path / ".hermes"
         (home / "browser-profile" / "chrome" / "Default").mkdir(parents=True)
         cookies = home / "browser-profile" / "chrome" / "Default" / "Cookies"
@@ -652,7 +652,7 @@ class TestSnapshotIsCredentialStore:
         assert err
 
     def test_read_guard_allows_normal_file(self, tmp_path, monkeypatch):
-        import agent.file_safety as fs
+        import hermes_agent.agent.file_safety as fs
         home = tmp_path / ".hermes"
         home.mkdir(parents=True)
         monkeypatch.setenv("HERMES_HOME", str(home))

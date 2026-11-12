@@ -5,8 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.agent_init import _init_session_state
-from agent.session_persistence import SessionPersistenceMixin
+from hermes_agent.agent.agent_init import _init_session_state
+from hermes_agent.agent.session_persistence import SessionPersistenceMixin
 from hermes_agent.hermes_state import SessionDB
 
 

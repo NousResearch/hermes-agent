@@ -4,7 +4,7 @@ import threading
 
 import pytest
 
-from agent.replay_cleanup import canonicalize_replay_history
+from hermes_agent.agent.replay_cleanup import canonicalize_replay_history
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.tui_gateway import server
 

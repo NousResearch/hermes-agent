@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 def _response(content="done", *, tool_calls=None):
@@ -38,7 +38,7 @@ moa:
             return _response("reference advice")
         return _response("aggregator acted")
 
-    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+    monkeypatch.setattr("hermes_agent.agent.moa_loop.call_llm", fake_call_llm)
 
     agent = AIAgent(
         api_key="moa-virtual-provider",
@@ -221,8 +221,8 @@ def test_moa_generic_client_rebuild_preserves_virtual_facade(monkeypatch, tmp_pa
     replacement helper. If it rebuilds from stale fallback ``_client_kwargs``,
     the next prepared MoA request leaks its private kwarg into the OpenAI SDK.
     """
-    from agent.chat_completion_helpers import _dispatch_nonstreaming_api_request
-    from agent.moa_loop import MoAClient
+    from hermes_agent.agent.chat_completion_helpers import _dispatch_nonstreaming_api_request
+    from hermes_agent.agent.moa_loop import MoAClient
 
     home = tmp_path / ".hermes"
     home.mkdir()
@@ -324,7 +324,7 @@ def test_call_llm_extra_headers_reach_transport_create(monkeypatch):
     """
     from types import SimpleNamespace
 
-    from agent import auxiliary_client as ac
+    from hermes_agent.agent import auxiliary_client as ac
 
     captured = {}
 
@@ -373,7 +373,7 @@ def test_retry_same_provider_sync_preserves_extra_headers(monkeypatch):
     """
     from types import SimpleNamespace
 
-    from agent import auxiliary_client as ac
+    from hermes_agent.agent import auxiliary_client as ac
 
     captured = {}
 
@@ -424,7 +424,7 @@ def test_reference_messages_drops_system_but_renders_tools_as_text():
     tool_calls arrays (strict providers reject those), while the reference
     still has the full picture. The view ends on a user turn.
     """
-    from agent.moa_loop import _reference_messages
+    from hermes_agent.agent.moa_loop import _reference_messages
 
     messages = [
         {"role": "system", "content": "huge hermes system prompt"},
@@ -455,8 +455,8 @@ def test_reference_messages_drops_system_but_renders_tools_as_text():
 
 
 def test_reference_view_keeps_the_data_use_requirement_of_a_folded_tool_result():
-    from agent.message_metadata import data_use_requirement
-    from agent.moa_loop import _reference_messages
+    from hermes_agent.agent.message_metadata import data_use_requirement
+    from hermes_agent.agent.moa_loop import _reference_messages
 
     messages = [
         {"role": "user", "content": "read my mail"},
@@ -468,8 +468,8 @@ def test_reference_view_keeps_the_data_use_requirement_of_a_folded_tool_result()
 
 
 def test_max_iterations_summary_keeps_the_data_use_requirement_on_every_moa_slot(monkeypatch, tmp_path):
-    from agent.chat_completion_helpers import handle_max_iterations
-    from agent.message_metadata import data_use_requirement
+    from hermes_agent.agent.chat_completion_helpers import handle_max_iterations
+    from hermes_agent.agent.message_metadata import data_use_requirement
 
     home = tmp_path / ".hermes"
     home.mkdir()
@@ -486,7 +486,7 @@ def test_max_iterations_summary_keeps_the_data_use_requirement_on_every_moa_slot
         calls.append((kwargs["task"], data_use_requirement(kwargs["messages"])))
         return _response("summary")
 
-    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+    monkeypatch.setattr("hermes_agent.agent.moa_loop.call_llm", fake_call_llm)
     agent = AIAgent(
         api_key="moa-virtual-provider", base_url="moa://local", model="review", provider="moa",
         quiet_mode=True, skip_context_files=True, skip_memory=True, enabled_toolsets=["file"], max_iterations=1,
@@ -512,7 +512,7 @@ def test_reference_messages_ends_with_user_not_assistant_prefill():
     turn asking for judgement rather than DELETING the agent's latest context —
     the reference must still see the current state to advise on it.
     """
-    from agent.moa_loop import _reference_messages
+    from hermes_agent.agent.moa_loop import _reference_messages
 
     messages = [
         {"role": "user", "content": "q1"},
@@ -553,7 +553,7 @@ def test_run_reference_prepends_advisory_system_prompt(monkeypatch):
     doesn't have. The system prompt reframes it as an analyst advising the
     aggregator, and the advisory transcript still ends on a user turn.
     """
-    from agent.moa_loop import _REFERENCE_SYSTEM_PROMPT, _run_reference
+    from hermes_agent.agent.moa_loop import _REFERENCE_SYSTEM_PROMPT, _run_reference
 
     captured = {}
 
@@ -561,7 +561,7 @@ def test_run_reference_prepends_advisory_system_prompt(monkeypatch):
         captured.update(kwargs)
         return _response("advice")
 
-    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+    monkeypatch.setattr("hermes_agent.agent.moa_loop.call_llm", fake_call_llm)
 
     _label, text, _acct = _run_reference(
         {"provider": "openai-codex", "model": "gpt-5.5"},
@@ -589,7 +589,7 @@ def test_references_run_in_parallel(monkeypatch):
     """
     import threading
 
-    from agent import moa_loop
+    from hermes_agent.agent import moa_loop
 
     # Force _extract_text down its fallback path (no transport normalize).
     monkeypatch.setattr(moa_loop, "get_transport", lambda *_a, **_k: None)
@@ -629,12 +629,12 @@ def test_references_run_in_parallel(monkeypatch):
 def test_references_parallel_interrupt_aborts_wait(monkeypatch):
     """A user interrupt mid-fanout must stop the wait instead of blocking
     until every reference (including a wedged one) finishes or times out on
-    its own — mirroring the interrupt check agent.tool_executor already
+    its own — mirroring the interrupt check hermes_agent.agent.tool_executor already
     applies to its own concurrent tool batch."""
     import threading
     import time
 
-    from agent import moa_loop
+    from hermes_agent.agent import moa_loop
 
     monkeypatch.setattr(moa_loop, "get_transport", lambda *_a, **_k: None)
     monkeypatch.setattr(moa_loop, "_REFERENCE_POLL_INTERVAL_S", 0.05)
@@ -694,8 +694,8 @@ def test_slot_runtime_anthropic_oauth_routes_through_provider_branch(monkeypatch
     to provider=custom (which would send the token as x-api-key → bare 429) is
     _resolve_task_provider_model via _preserve_provider_with_base_url.
     """
-    from agent import moa_loop
-    from agent.auxiliary_client import _resolve_task_provider_model
+    from hermes_agent.agent import moa_loop
+    from hermes_agent.agent.auxiliary_client import _resolve_task_provider_model
 
     def fake_resolve(*, requested, target_model=None):
         return {
@@ -756,20 +756,20 @@ def test_run_reference_captures_usage_and_cost(monkeypatch):
     Before this, _run_reference discarded response.usage entirely, so the
     advisor fan-out was invisible to cost tracking.
     """
-    from agent.moa_loop import _RefAccounting, _run_reference
-    from agent.usage_pricing import CanonicalUsage
+    from hermes_agent.agent.moa_loop import _RefAccounting, _run_reference
+    from hermes_agent.agent.usage_pricing import CanonicalUsage
 
     monkeypatch.setattr(
-        "agent.moa_loop.call_llm",
+        "hermes_agent.agent.moa_loop.call_llm",
         lambda **kw: _response_with_usage(prompt=1000, completion=200, cached=400),
     )
     # Keep runtime resolution + pricing deterministic.
     monkeypatch.setattr(
-        "agent.moa_loop._slot_runtime",
+        "hermes_agent.agent.moa_loop._slot_runtime",
         lambda slot: {"provider": "openrouter", "model": slot.get("model")},
     )
     monkeypatch.setattr(
-        "agent.usage_pricing.estimate_usage_cost",
+        "hermes_agent.agent.usage_pricing.estimate_usage_cost",
         lambda *a, **k: SimpleNamespace(amount_usd=0.0123, status="estimated", source="table"),
     )
 
@@ -792,7 +792,7 @@ def test_run_reference_captures_usage_and_cost(monkeypatch):
 
 def test_canonical_usage_add():
     """CanonicalUsage sums per bucket (used to fold advisor tokens in)."""
-    from agent.usage_pricing import CanonicalUsage
+    from hermes_agent.agent.usage_pricing import CanonicalUsage
 
     a = CanonicalUsage(input_tokens=100, output_tokens=20, cache_read_tokens=5)
     b = CanonicalUsage(input_tokens=50, output_tokens=10, cache_write_tokens=3)
@@ -816,7 +816,7 @@ def test_reference_guidance_appended_at_end_in_tool_loop():
     prompt prefix early and defeat the server's KV-cache reuse, forcing a full
     re-prefill of the whole conversation on every tool-loop step.
     """
-    from agent.moa_loop import _attach_reference_guidance
+    from hermes_agent.agent.moa_loop import _attach_reference_guidance
 
     messages = [
         {"role": "system", "content": "system prompt"},
@@ -849,8 +849,8 @@ def test_reference_messages_flattens_cache_decorated_content():
     models answered "no user request is present" (live incident, Jul 14 2026,
     preset "closed", session 20260714_001520_28157b).
     """
-    from agent.moa_loop import _reference_messages
-    from agent.prompt_caching import apply_anthropic_cache_control
+    from hermes_agent.agent.moa_loop import _reference_messages
+    from hermes_agent.agent.prompt_caching import apply_anthropic_cache_control
 
     plain = [
         {"role": "system", "content": "hermes system prompt"},
@@ -884,7 +884,7 @@ def test_reference_messages_flattens_cache_decorated_content():
 
 def test_prepared_aggregator_preserves_reasoning_config(monkeypatch):
     """Prepared MoA requests retain the acting aggregator reasoning policy."""
-    from agent import moa_loop
+    from hermes_agent.agent import moa_loop
 
     captured = {}
     expected_reasoning = {"enabled": True, "effort": "high"}
@@ -920,8 +920,8 @@ def test_prepared_aggregator_preserves_reasoning_config(monkeypatch):
 
 
 def test_aggregate_moa_context_sanitizes_failed_reference_and_forwards_timeout(monkeypatch):
-    from agent import moa_loop
-    from agent.usage_pricing import CanonicalUsage
+    from hermes_agent.agent import moa_loop
+    from hermes_agent.agent.usage_pricing import CanonicalUsage
 
     outputs = [
         ("good-model", "useful advice", moa_loop._RefAccounting(CanonicalUsage())),
@@ -976,7 +976,7 @@ def test_aggregate_moa_context_sanitizes_failed_reference_and_forwards_timeout(m
 
 def test_aggregate_skips_aggregator_when_all_references_failed(monkeypatch):
     """When every reference returns [failed: …], the aggregator is skipped entirely."""
-    from agent.moa_loop import aggregate_moa_context
+    from hermes_agent.agent.moa_loop import aggregate_moa_context
 
     call_count = {"n": 0}
 
@@ -986,9 +986,9 @@ def test_aggregate_skips_aggregator_when_all_references_failed(monkeypatch):
             raise RuntimeError("provider down key=super-secret")
         raise AssertionError("aggregator should not be called when all references fail")
 
-    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+    monkeypatch.setattr("hermes_agent.agent.moa_loop.call_llm", fake_call_llm)
     monkeypatch.setattr(
-        "agent.moa_loop._slot_runtime",
+        "hermes_agent.agent.moa_loop._slot_runtime",
         lambda slot: {"provider": slot["provider"], "model": slot["model"]},
     )
 
@@ -1024,7 +1024,7 @@ def test_interrupted_but_completed_reference_keeps_real_accounting(monkeypatch):
     must keep its REAL output and accounting — the call billed."""
     from concurrent.futures import wait as real_wait
 
-    from agent import moa_loop
+    from hermes_agent.agent import moa_loop
 
     monkeypatch.setattr(moa_loop, "get_transport", lambda *_a, **_k: None)
     monkeypatch.setattr(moa_loop, "_REFERENCE_POLL_INTERVAL_S", 0.05)
@@ -1069,7 +1069,7 @@ def test_late_completing_interrupted_reference_feeds_accounting_sink(monkeypatch
     import threading
     import time
 
-    from agent import moa_loop
+    from hermes_agent.agent import moa_loop
 
     monkeypatch.setattr(moa_loop, "get_transport", lambda *_a, **_k: None)
     monkeypatch.setattr(moa_loop, "_REFERENCE_POLL_INTERVAL_S", 0.05)
@@ -1129,8 +1129,8 @@ def test_facade_does_not_cache_interrupted_reference_results(monkeypatch, tmp_pa
     placeholder notes on every later iteration of the turn. The facade must
     leave the cache empty so the next create() re-runs the references, and
     a late-completing reference's real spend must land in pending usage."""
-    from agent import moa_loop
-    from agent.usage_pricing import CanonicalUsage
+    from hermes_agent.agent import moa_loop
+    from hermes_agent.agent.usage_pricing import CanonicalUsage
 
     home = tmp_path / ".hermes"
     home.mkdir()
@@ -1207,7 +1207,7 @@ class _CountingCtxLen:
 
 def _trim(messages, *, window=1000, reserve=None, cache=None, counting=None,
           monkeypatch=None):
-    from agent import model_metadata, moa_loop
+    from hermes_agent.agent import model_metadata, moa_loop
 
     stub = counting or _CountingCtxLen(window)
     monkeypatch.setattr(model_metadata, "get_model_context_length", stub)
@@ -1265,7 +1265,7 @@ def test_reference_trim_caches_resolution_failures(monkeypatch):
 
 def _naive_reference_trim(messages, budget):
     """The original pop-and-re-estimate loop, kept as the spec for equivalence."""
-    from agent.model_metadata import estimate_messages_tokens_rough
+    from hermes_agent.agent.model_metadata import estimate_messages_tokens_rough
 
     has_system = bool(messages) and messages[0].get("role") == "system"
     head = [messages[0]] if has_system else []
@@ -1283,7 +1283,7 @@ def test_reference_trim_matches_naive_pop_loop(monkeypatch):
     """Running-total trim returns the same frames as the naive loop."""
     import random
 
-    from agent import moa_loop
+    from hermes_agent.agent import moa_loop
 
     rng = random.Random(20260802)
     for _ in range(60):
@@ -1322,7 +1322,7 @@ def test_reference_trim_matches_naive_pop_loop(monkeypatch):
 
 def test_reference_trim_weighs_each_message_once(monkeypatch):
     """Heavy trims stay O(n): no full re-estimate per dropped frame."""
-    from agent import model_metadata
+    from hermes_agent.agent import model_metadata
 
     weighed = {"n": 0}
     real = model_metadata.estimate_messages_tokens_rough
@@ -1346,7 +1346,7 @@ def test_reference_trim_weighs_each_message_once(monkeypatch):
 def test_render_tool_calls_tolerates_namespace_shapes():
     """SDK-shaped (SimpleNamespace) tool_call entries must render their real
     function name+args, not degrade to '[called tool: tool]'."""
-    from agent.moa_loop import _render_tool_calls
+    from hermes_agent.agent.moa_loop import _render_tool_calls
 
     ns_call = SimpleNamespace(
         function=SimpleNamespace(name="web_search", arguments='{"query": "x"}')

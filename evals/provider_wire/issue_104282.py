@@ -64,8 +64,8 @@ class Handler(BaseHTTPRequestHandler):
 server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
 threading.Thread(target=server.serve_forever, daemon=True).start()
 from openai import OpenAI
-from agent.auxiliary_client import _CodexCompletionsAdapter
-from agent.codex_responses_adapter import _preflight_codex_input_items
+from hermes_agent.agent.auxiliary_client import _CodexCompletionsAdapter
+from hermes_agent.agent.codex_responses_adapter import _preflight_codex_input_items
 
 client = OpenAI(
     api_key="fixture",
@@ -116,7 +116,7 @@ print(
             "repo": str(root),
             "outcomes": outcomes,
             "captures": captures,
-            "adapter_module": sys.modules["agent.auxiliary_client"].__file__,
+            "adapter_module": sys.modules["hermes_agent.agent.auxiliary_client"].__file__,
         },
         indent=2,
     )

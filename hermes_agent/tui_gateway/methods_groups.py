@@ -119,14 +119,14 @@ def _api_server_key(profile: str | None = None) -> str:
     # Published onto the server by methods_bot_relay.register (an explicit routed profile is
     # authoritative: never borrow the process profile's key on a multiplexed gateway).
     if profile and _bound_server is not None and profile != _current_profile():
-        from agent.secret_scope import build_profile_secret_scope
+        from hermes_agent.agent.secret_scope import build_profile_secret_scope
         home = _bound_server._profile_home(profile)
         if home is None:
             return ""
         return str(build_profile_secret_scope(home).get("API_SERVER_KEY") or "").strip()
     scoped = ""
     with contextlib.suppress(Exception):
-        from agent.secret_scope import get_secret
+        from hermes_agent.agent.secret_scope import get_secret
         scoped = (get_secret("API_SERVER_KEY", "") or "").strip()
     return scoped or (os.getenv("API_SERVER_KEY") or "").strip()
 

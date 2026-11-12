@@ -6,7 +6,7 @@ each carrying its own blocks, so without a shared ceiling the projection grows l
 attachment count while the top-level ``blocks`` path is capped once.
 """
 
-from agent.compression_marker import _COMPRESSION_MARKER_RE
+from hermes_agent.agent.compression_marker import _COMPRESSION_MARKER_RE
 from plugins.platforms.slack.adapter import SlackAdapter
 
 

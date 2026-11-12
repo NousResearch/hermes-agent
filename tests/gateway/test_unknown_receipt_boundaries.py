@@ -76,7 +76,7 @@ async def test_discard_closes_turn_lost_while_parked_on_a_tool(owner, monkeypatc
     """A turn lost waiting on approval/clarify ends on an unanswered assistant ``tool_calls`` row.
     Discard must close it too, or repair prunes the call, drops the empty row and merges the
     discarded input into the follower's request."""
-    from agent.agent_runtime_helpers import repair_message_sequence
+    from hermes_agent.agent.agent_runtime_helpers import repair_message_sequence
     owner.db.create_session('s', source='test')
     owner.sessions['s'] = LiveSession(None, 'route')
     ref = SessionRef(owner.profile_id, 's')

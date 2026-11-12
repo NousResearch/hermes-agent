@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent import nous_wire
+from hermes_agent.agent import nous_wire
 from hermes_cli import providers as _providers
 
 
@@ -62,7 +62,7 @@ class TestHook:
     def _auto(self, monkeypatch):
         monkeypatch.setattr(_providers, "_nous_anthropic_wire", lambda: "auto")
         self.switches = []
-        monkeypatch.setattr("agent.agent_runtime_helpers.switch_model",
+        monkeypatch.setattr("hermes_agent.agent.agent_runtime_helpers.switch_model",
                             lambda agent, m, p, api_key="", base_url="", api_mode="", **k: self.switches.append(api_mode) or setattr(agent, "api_mode", api_mode))
 
     def test_gmi_cleared_schedules_once_and_applies_at_next_iteration(self, monkeypatch):
@@ -109,7 +109,7 @@ class TestHook:
 
         def boom(*a, **k):
             raise RuntimeError("no client")
-        monkeypatch.setattr("agent.agent_runtime_helpers.switch_model", boom)
+        monkeypatch.setattr("hermes_agent.agent.agent_runtime_helpers.switch_model", boom)
         a = _agent()
         assert nous_wire.maybe_switch_wire_after_first_response(a, _resp(id="msg_01abc"), 1) is True
         assert nous_wire.apply_pending_wire_switch(a) is False
@@ -120,8 +120,8 @@ def test_real_agent_usage_recorder_calls_the_hook_once(tmp_path, monkeypatch):
     """The wiring: record_response_usage on a real AIAgent invokes the hook on call 1 only."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text("nous:\n  anthropic_wire: auto\n", encoding="utf-8")
-    from run_agent import AIAgent
-    from agent import turn_usage
+    from hermes_agent.run_agent import AIAgent
+    from hermes_agent.agent import turn_usage
     calls = []
     monkeypatch.setattr(nous_wire, "maybe_switch_wire_after_first_response",
                         lambda agent, response, n: calls.append((n, nous_wire.classify_upstream(response))) or False)

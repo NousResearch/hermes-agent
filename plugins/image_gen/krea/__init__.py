@@ -20,8 +20,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import requests
 
-from agent.secret_scope import get_secret
-from agent.image_gen_provider import DEFAULT_ASPECT_RATIO, resolve_aspect_ratio, save_url_image, success_response
+from hermes_agent.agent.secret_scope import get_secret
+from hermes_agent.agent.image_gen_provider import DEFAULT_ASPECT_RATIO, resolve_aspect_ratio, save_url_image, success_response
 from plugins.image_gen._common import (
     ErrorFn, HttpFailure, StaticImageGenProvider, collect_source_images, error_factory, load_image_gen_config,
     post_json, prompt_required_error, resolve_static_model)
@@ -345,7 +345,7 @@ def _inline_local_images(
 ) -> tuple[list[Any], Optional[dict[str, Any]]]:
     """Embed local image files as data URIs; URLs and data URIs pass through unchanged. A ref is
     a Krea 2 ``{url, strength}`` object or a Krea 3 source string; legacy objects pass through."""
-    from agent.file_safety import raise_if_read_blocked
+    from hermes_agent.agent.file_safety import raise_if_read_blocked
 
     inlined: list[Any] = []
     total_bytes = 0

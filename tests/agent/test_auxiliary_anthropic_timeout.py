@@ -7,14 +7,14 @@ import types
 
 import pytest
 
-from agent import auxiliary_client as aux
+from hermes_agent.agent import auxiliary_client as aux
 
 
 def _send(monkeypatch, **kwargs):
     sent: dict = {}
-    monkeypatch.setattr("agent.anthropic_adapter.create_anthropic_message",
+    monkeypatch.setattr("hermes_agent.agent.anthropic_adapter.create_anthropic_message",
                         lambda client, api_kwargs, **_: sent.update(api_kwargs) or types.SimpleNamespace(content=[]))
-    monkeypatch.setattr("agent.transports.get_transport", lambda name: types.SimpleNamespace(
+    monkeypatch.setattr("hermes_agent.agent.transports.get_transport", lambda name: types.SimpleNamespace(
         normalize_response=lambda r, **_: types.SimpleNamespace(content="OK", tool_calls=None, reasoning=None,
                                                                finish_reason="stop")))
     adapter = aux._AnthropicCompletionsAdapter(object(), "claude-x", base_url="http://h")

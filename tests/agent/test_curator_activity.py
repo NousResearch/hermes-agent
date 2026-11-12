@@ -24,7 +24,7 @@ def curator_modules(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
     from hermes_agent.tools import skill_usage
-    from agent import curator
+    from hermes_agent.agent import curator
 
     importlib.reload(skill_usage)
     importlib.reload(curator)

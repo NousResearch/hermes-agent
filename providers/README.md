@@ -44,14 +44,14 @@ layer reads from it:
   `OPTIONAL_ENV_VARS` so the setup wizard knows about it.
 - `hermes_cli/runtime_provider.py` reads `profile.api_mode` as a fallback
   when URL detection finds nothing.
-- `agent/model_metadata.py` maps hostname → provider via
+- `hermes_agent/agent/model_metadata.py` maps hostname → provider via
   `profile.get_hostname()`.
-- `agent/auxiliary_client.py` reads `profile.default_aux_model` first
+- `hermes_agent/agent/auxiliary_client.py` reads `profile.default_aux_model` first
   before falling back to the legacy hardcoded dict.
-- `agent/transports/chat_completions.py::_build_kwargs_from_profile()`
+- `hermes_agent/agent/transports/chat_completions.py::_build_kwargs_from_profile()`
   invokes `profile.prepare_messages()`, `profile.build_extra_body()`,
   and `profile.build_api_kwargs_extras()` on every call.
-- `run_agent.py` passes `provider_profile=<ProviderProfile>` so the
+- `hermes_agent/run_agent.py` passes `provider_profile=<ProviderProfile>` so the
   transport takes the profile path instead of the legacy flag path.
 
 ---

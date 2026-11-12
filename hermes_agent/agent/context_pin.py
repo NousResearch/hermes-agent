@@ -34,12 +34,12 @@ def context_pin_suffix(context_length, config_context_length) -> str:
 def is_fallback_context_length(context_length, *, model: str, provider: str = "", base_url: str = "") -> bool:
     """True when ``context_length`` is a default the resolver fell back to for ``model`` on this route (Bedrock's
     static 128K, or the generic 256K), not a known or detected limit. The resolver records that itself
-    (agent.context_default_record), so this agrees with every source it consults; ``provider`` is accepted for
+    (hermes_agent.agent.context_default_record), so this agrees with every source it consults; ``provider`` is accepted for
     call-site symmetry. Fail-open: False on any error."""
     if type(context_length) is not int or context_length <= 0 or not isinstance(model, str) or not model:
         return False
     try:
-        from agent.context_default_record import was_context_defaulted
+        from hermes_agent.agent.context_default_record import was_context_defaulted
         return was_context_defaulted(context_length, model, base_url)
     except Exception:
         logger.debug("context fallback check failed for %s", model, exc_info=True)
@@ -85,7 +85,7 @@ def advertised_context_length(model: str, base_url: str = "") -> Optional[int]:
     endpoint, models.dev disk cache, hardcoded catalog). Never a network probe: users pin
     precisely when the endpoint cannot report its window, so the check must not add startup
     latency or a failing request."""
-    from agent.model_metadata import (
+    from hermes_agent.agent.model_metadata import (
         DEFAULT_CONTEXT_LENGTHS, _load_model_metadata_disk_cache, _longest_key_match,
         _strip_provider_prefix, get_cached_context_length,
     )

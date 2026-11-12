@@ -112,7 +112,7 @@ class TestResolution:
     def test_base_url_follows_the_profile_secret_scope(self, monkeypatch):
         """Under multiplexing os.environ is the launch profile's: a routed profile's key must go to
         ITS base URL, and a profile without an override gets the default — never the launch URL."""
-        from agent.secret_scope import reset_secret_scope, set_multiplex_active, set_secret_scope
+        from hermes_agent.agent.secret_scope import reset_secret_scope, set_multiplex_active, set_secret_scope
 
         monkeypatch.setenv("META_BASE_URL", "https://launch.example/v1")
         set_multiplex_active(True)

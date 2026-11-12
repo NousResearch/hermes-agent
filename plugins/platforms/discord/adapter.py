@@ -30,10 +30,10 @@ from contextlib import nullcontext, suppress
 from typing import Callable, Dict, List, Optional, Any, Tuple
 from urllib.parse import quote, urljoin
 
-from agent.async_utils import (consume_detached_task_result as _consume_background_task_result)
-from agent.display import ToolPreview
-from agent.i18n import get_language, t
-from agent.retry_utils import parse_retry_after_seconds
+from hermes_agent.agent.async_utils import (consume_detached_task_result as _consume_background_task_result)
+from hermes_agent.agent.display import ToolPreview
+from hermes_agent.agent.i18n import get_language, t
+from hermes_agent.agent.retry_utils import parse_retry_after_seconds
 
 logger = logging.getLogger(__name__)
 
@@ -564,7 +564,7 @@ _GATE_ENV_KEYS = (
 def _multiplex_active() -> bool:
     """True when the gateway is running in multiplex_profiles mode."""
     try:
-        from agent.secret_scope import is_multiplex_active
+        from hermes_agent.agent.secret_scope import is_multiplex_active
         return bool(is_multiplex_active())
     except Exception:
         return False
@@ -7024,7 +7024,7 @@ async def _standalone_send(
     token = (getattr(pconfig, "token", None) or "").strip()
     if not token:
         # Profile-scoped read: under multiplex the env may hold another profile's token.
-        from agent.secret_scope import get_secret
+        from hermes_agent.agent.secret_scope import get_secret
         token = (get_secret("DISCORD_BOT_TOKEN", "") or "").strip()
     if not token:
         return send_error("Discord standalone send: DISCORD_BOT_TOKEN is not set")

@@ -47,7 +47,7 @@ def _make_codex_agent(
     for name in ("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", "HERMES_CODEX_TTFB_MAX_SECONDS",
                  "HERMES_CODEX_TTFB_DISABLE_ABOVE_TOKENS", "HERMES_CODEX_TTFB_STRICT"):
         monkeypatch.delenv(name, raising=False)
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     agent = AIAgent(
         model="gpt-5.5",
@@ -111,7 +111,7 @@ def test_local_endpoint_ttfb_default_uses_local_stale_ceiling(tmp_path, monkeypa
     """#92302: a local Responses endpoint gets the local stale ceiling as its implicit
     no-event TTFB cutoff (the chat-completions siblings already grant local servers that
     prefill grace); hosted endpoints keep the 120s default."""
-    from agent import chat_completion_helpers as h
+    from hermes_agent.agent import chat_completion_helpers as h
 
     monkeypatch.setenv("HERMES_LOCAL_STREAM_STALE_TIMEOUT", "600")
     local = _make_codex_agent(tmp_path, monkeypatch, provider="custom", base_url="http://127.0.0.1:11434/v1")
@@ -124,7 +124,7 @@ def test_local_endpoint_ttfb_default_uses_local_stale_ceiling(tmp_path, monkeypa
 
 def test_local_endpoint_ttfb_explicit_env_still_wins(tmp_path, monkeypatch):
     """An operator-set HERMES_CODEX_TTFB_TIMEOUT_SECONDS is honoured verbatim on local endpoints."""
-    from agent import chat_completion_helpers as h
+    from hermes_agent.agent import chat_completion_helpers as h
 
     monkeypatch.setenv("HERMES_LOCAL_STREAM_STALE_TIMEOUT", "600")
     local = _make_codex_agent(tmp_path, monkeypatch, provider="custom", base_url="http://127.0.0.1:11434/v1")
@@ -136,7 +136,7 @@ def test_local_endpoint_ttfb_explicit_env_still_wins(tmp_path, monkeypatch):
 def test_ttfb_includes_silent_hang_hint_for_gpt_5_5(tmp_path, monkeypatch):
     """The no-first-event watchdog should surface the same actionable hint as the
     stale-call timeout path when the model matches the silent-hang heuristic."""
-    from agent import chat_completion_helpers as h
+    from hermes_agent.agent import chat_completion_helpers as h
 
     agent = _make_codex_agent(tmp_path, monkeypatch)
     monkeypatch.setenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", "0.4")
@@ -192,7 +192,7 @@ def test_ttfb_installs_and_retires_the_codex_request_token(tmp_path, monkeypatch
     The worker also unwinds with its own local error after the force-close;
     that error must not replace the watchdog's retryable ``TimeoutError``.
     """
-    from agent import chat_completion_helpers as h
+    from hermes_agent.agent import chat_completion_helpers as h
 
     agent = _make_codex_agent(tmp_path, monkeypatch)
     monkeypatch.setenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", "1")
@@ -245,7 +245,7 @@ def test_ttfb_installs_and_retires_the_codex_request_token(tmp_path, monkeypatch
 def test_ttfb_does_not_kill_when_events_flow(tmp_path, monkeypatch):
     """Once a stream event has arrived, a generation that runs past the TTFB
     cutoff is NOT killed by the watchdog — it completes normally."""
-    from agent import chat_completion_helpers as h
+    from hermes_agent.agent import chat_completion_helpers as h
 
     agent = _make_codex_agent(tmp_path, monkeypatch)
     monkeypatch.setenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", "0.4")
@@ -267,7 +267,7 @@ def test_ttfb_does_not_kill_when_events_flow(tmp_path, monkeypatch):
     def fake_stream(api_kwargs, client=None, on_first_delta=None):
         # A parsed event marks stream activity right away; then keep generating
         # past the 0.4s TTFB cutoff before returning a real response.
-        from agent.codex_runtime import _codex_watchdog_state_var
+        from hermes_agent.agent.codex_runtime import _codex_watchdog_state_var
 
         now = time.time()
         state = _codex_watchdog_state_var.get()
@@ -308,7 +308,7 @@ def test_idle_phase_policy_is_narrow_and_preserves_operator_overrides(
     requires_progress,
 ):
     """Only an implicit, large, official request uses progress-phase arming."""
-    from agent import chat_completion_helpers as h
+    from hermes_agent.agent import chat_completion_helpers as h
 
     agent = _make_codex_agent(
         tmp_path, monkeypatch, provider=provider, base_url=base_url
@@ -330,7 +330,7 @@ def test_idle_phase_policy_is_narrow_and_preserves_operator_overrides(
 
 def test_lifecycle_event_does_not_restart_first_progress_deadline():
     """The budget belongs to the physical attempt, not to the first lifecycle frame."""
-    from agent import chat_completion_wait_notice as wn
+    from hermes_agent.agent import chat_completion_wait_notice as wn
 
     deadline = wn.codex_watchdog_deadline(
         stale_timeout=900.0, ttfb_enabled=True, ttfb_timeout=300.0,
@@ -344,7 +344,7 @@ def test_lifecycle_event_does_not_restart_first_progress_deadline():
 
 def test_large_codex_lifecycle_only_stream_hits_attempt_progress_budget(tmp_path, monkeypatch):
     """Lifecycle events may change phase diagnostics, but cannot buy another full grace period."""
-    from agent import chat_completion_helpers as h
+    from hermes_agent.agent import chat_completion_helpers as h
 
     agent = _make_codex_agent(tmp_path, monkeypatch)
     _shorten_implicit_idle_watchdog(monkeypatch, h, ttfb_timeout=0.9, progress_timeout=0.9)
@@ -373,7 +373,7 @@ def test_event_stale_phase_is_scoped_to_physical_stream_attempt(
     tmp_path, monkeypatch, mode
 ):
     """Retry lifecycle resets phase without hiding a zero-event reconnect hang."""
-    from agent import chat_completion_helpers as h
+    from hermes_agent.agent import chat_completion_helpers as h
 
     agent = _make_codex_agent(tmp_path, monkeypatch)
     _shorten_implicit_idle_watchdog(monkeypatch, h)
@@ -453,7 +453,7 @@ def test_wait_notice_omits_reconnect_when_all_deadlines_are_non_finite(
     stale_timeout,
 ):
     """A disabled watchdog must not be advertised as a future reconnect."""
-    from agent import chat_completion_wait_notice as wn
+    from hermes_agent.agent import chat_completion_wait_notice as wn
 
     recovery = wn.codex_watchdog_deadline(
         stale_timeout=stale_timeout,
@@ -478,7 +478,7 @@ def test_wait_notice_omits_reconnect_when_all_deadlines_are_non_finite(
 
 def test_moa_heartbeat_survives_infinite_stale_timeout(monkeypatch):
     """A MoA silence notice must leave an unbounded healthy call running."""
-    from agent import chat_completion_helpers as h
+    from hermes_agent.agent import chat_completion_helpers as h
 
     notices: list[str] = []
     response = SimpleNamespace(ok=True)
@@ -533,7 +533,7 @@ def test_moa_heartbeat_survives_infinite_stale_timeout(monkeypatch):
 
 def test_wait_notice_formatting_error_does_not_abort_request(monkeypatch):
     """Status construction is fail-open even if its formatter breaks."""
-    from agent import chat_completion_helpers as h
+    from hermes_agent.agent import chat_completion_helpers as h
 
     response = SimpleNamespace(ok=True)
     agent = SimpleNamespace(
@@ -574,7 +574,7 @@ def test_wait_notice_formatting_error_does_not_abort_request(monkeypatch):
         "_dispatch_nonstreaming_api_request",
         lambda *_args, **_kwargs: response,
     )
-    from agent import chat_completion_wait_notice as wn
+    from hermes_agent.agent import chat_completion_wait_notice as wn
 
     monkeypatch.setattr(
         wn,
@@ -604,7 +604,7 @@ def test_large_codex_request_hard_ceiling_reclaims_silent_stall(tmp_path, monkey
     Uses the real default TTFB threshold (120s) and asserts the request dies at
     the hard ceiling regardless of the size-based TTFB disable.
     """
-    from agent import chat_completion_helpers as h
+    from hermes_agent.agent import chat_completion_helpers as h
 
     agent = _make_codex_agent(tmp_path, monkeypatch)
     # Real default TTFB threshold (no HERMES_CODEX_TTFB_* override) → for a
@@ -653,7 +653,7 @@ def test_large_request_keeps_scaled_ttfb_instead_of_recapping(tmp_path, monkeypa
     """#91621 regression: with no TTFB env overrides, a >100k-token openai-codex
     request scales the no-byte cutoff up to the 180s idle default — the cap must
     not immediately claw it back to 120s and kill a healthy prefill."""
-    from agent import chat_completion_helpers as h
+    from hermes_agent.agent import chat_completion_helpers as h
 
     agent = _make_codex_agent(tmp_path, monkeypatch)
     agent.reasoning_config = {"enabled": False}  # no effort floor: isolate the cap interaction
@@ -669,7 +669,7 @@ def test_large_request_keeps_scaled_ttfb_instead_of_recapping(tmp_path, monkeypa
 def test_explicit_ttfb_max_seconds_still_caps(tmp_path, monkeypatch):
     """An explicit HERMES_CODEX_TTFB_MAX_SECONDS override still bounds the
     scaled cutoff."""
-    from agent import chat_completion_helpers as h
+    from hermes_agent.agent import chat_completion_helpers as h
 
     agent = _make_codex_agent(tmp_path, monkeypatch)
     agent.reasoning_config = {"enabled": False}

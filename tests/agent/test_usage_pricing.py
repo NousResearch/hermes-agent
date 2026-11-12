@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.usage_pricing import (
+from hermes_agent.agent.usage_pricing import (
     _OFFICIAL_DOCS_PRICING,
     CanonicalUsage,
     format_cost_label,
@@ -48,10 +48,10 @@ _USAGE = CanonicalUsage(input_tokens=1_000_000, output_tokens=1_000_000, cache_r
 @pytest.fixture
 def models_dev_registry(monkeypatch):
     """A models.dev cache holding the vendors' rate cards; the providers' own /models carry no prices."""
-    from agent import models_dev
+    from hermes_agent.agent import models_dev
 
     monkeypatch.setattr(models_dev, "_models_dev_cache", _MODELS_DEV_REGISTRY)
-    monkeypatch.setattr("agent.usage_pricing.fetch_endpoint_model_metadata", lambda *_a, **_k: {})
+    monkeypatch.setattr("hermes_agent.agent.usage_pricing.fetch_endpoint_model_metadata", lambda *_a, **_k: {})
 
 
 @pytest.mark.parametrize(("provider", "base_url", "model", "expected"), [
@@ -144,7 +144,7 @@ def test_normalize_usage_openai_reads_top_level_anthropic_cache_fields():
 def test_bundled_pricing_skips_endpoint_metadata(monkeypatch):
     """An exact bundled price must not block on the provider's /models API."""
     monkeypatch.setattr(
-        "agent.usage_pricing.fetch_endpoint_model_metadata",
+        "hermes_agent.agent.usage_pricing.fetch_endpoint_model_metadata",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("endpoint metadata should not be fetched")
         ),
@@ -163,7 +163,7 @@ def test_bundled_pricing_skips_endpoint_metadata(monkeypatch):
 def test_unknown_model_falls_back_to_endpoint_metadata(monkeypatch):
     """Models absent from the bundled table still use endpoint pricing."""
     monkeypatch.setattr(
-        "agent.usage_pricing.fetch_endpoint_model_metadata",
+        "hermes_agent.agent.usage_pricing.fetch_endpoint_model_metadata",
         lambda *_args, **_kwargs: {
             "deepseek-future": {
                 "pricing": {"prompt": "0.000001", "completion": "0.000002"}
@@ -211,7 +211,7 @@ def test_bedrock_claude_rows_all_carry_cache_pricing():
     cache_control, so cached tokens are always reported — the pricing layer
     must be able to value them.  See #50295.
     """
-    from agent.usage_pricing import _OFFICIAL_DOCS_PRICING
+    from hermes_agent.agent.usage_pricing import _OFFICIAL_DOCS_PRICING
 
     claude_rows = [
         (prov, model)
@@ -365,7 +365,7 @@ def test_vertex_default_model_estimates_cached_usage(monkeypatch):
     from providers import get_provider_profile
 
     monkeypatch.setattr(
-        "agent.usage_pricing.fetch_endpoint_model_metadata",
+        "hermes_agent.agent.usage_pricing.fetch_endpoint_model_metadata",
         lambda *_args, **_kwargs: {},
     )
     vertex = get_provider_profile("vertex")
@@ -389,7 +389,7 @@ def test_curated_google_flash_models_resolve_official_snapshot_pricing(monkeypat
     from hermes_cli.models_catalog_static import OPENROUTER_MODELS, _PROVIDER_MODELS
 
     monkeypatch.setattr(
-        "agent.usage_pricing.fetch_endpoint_model_metadata",
+        "hermes_agent.agent.usage_pricing.fetch_endpoint_model_metadata",
         lambda *_args, **_kwargs: {},
     )
     curated = {m for m, _desc in OPENROUTER_MODELS} | set(_PROVIDER_MODELS["nous"])
@@ -411,7 +411,7 @@ def test_curated_google_flash_models_resolve_official_snapshot_pricing(monkeypat
 def test_gemini_4_carbon_is_pickable_and_prices_like_argon(monkeypatch):
     from hermes_cli.models_catalog_static import _PROVIDER_MODELS
 
-    monkeypatch.setattr("agent.usage_pricing.fetch_endpoint_model_metadata", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr("hermes_agent.agent.usage_pricing.fetch_endpoint_model_metadata", lambda *_args, **_kwargs: {})
     usage = CanonicalUsage(input_tokens=1_000_000, output_tokens=1_000_000, cache_read_tokens=1_000_000)
     carbon = estimate_usage_cost("gemini-4-carbon", usage, provider="gemini")
     argon = estimate_usage_cost("gemini-4-argon", usage, provider="gemini")
@@ -911,8 +911,8 @@ def _anthropic_usage(speed=None):
 
 
 def test_anthropic_fast_mode_responses_price_from_the_fast_rate_row():
-    from agent.model_metadata import _ANTHROPIC_FAST_MODE_MODELS
-    from agent.usage_pricing import _ANTHROPIC_FAST_MODE_PRICING
+    from hermes_agent.agent.model_metadata import _ANTHROPIC_FAST_MODE_MODELS
+    from hermes_agent.agent.usage_pricing import _ANTHROPIC_FAST_MODE_PRICING
 
     # Every model the fast-mode gate sends ``speed`` to has a fast rate and a standard rate.
     assert set(_ANTHROPIC_FAST_MODE_PRICING) == set(_ANTHROPIC_FAST_MODE_MODELS)

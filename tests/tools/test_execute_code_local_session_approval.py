@@ -211,7 +211,7 @@ def test_viewer_turn_with_no_approver_attached_keeps_whole_script_gate(child_env
 def test_delegated_child_keeps_whole_script_gate(child_env, turn, notifier, source):
     """Sync and async delegate_task children carry the parent's launch policy but are not the
     session's foreground turn: the script is approved as a whole, and with no notifier it is refused."""
-    from agent.delegation_context import delegated_child_context
+    from hermes_agent.agent.delegation_context import delegated_child_context
     victim = child_env / "victim"
     victim.mkdir()
     prompts = turn(source=source)  # every prompt is denied
@@ -244,7 +244,7 @@ def test_side_task_keeps_whole_script_gate(child_env, turn, source):
 def test_no_notifier_refuses_terminal_inside_permitted_script(child_env, turn, case, source):
     """With the whole-script gate permitted independently (execute_code approved for the key), a dangerous
     terminal() the script issues with no notifier is still refused by the command guard and never runs."""
-    from agent.delegation_context import delegated_child_context
+    from hermes_agent.agent.delegation_context import delegated_child_context
     victim = child_env / "victim"
     victim.mkdir()
     command, code = _rm_script(victim)

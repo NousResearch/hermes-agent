@@ -1,6 +1,6 @@
-"""Reasoning summary-part boundary repair (agent/reasoning_summaries.py)."""
+"""Reasoning summary-part boundary repair (hermes_agent/agent/reasoning_summaries.py)."""
 
-from agent.reasoning_summaries import separate_glued_reasoning_blocks
+from hermes_agent.agent.reasoning_summaries import separate_glued_reasoning_blocks
 
 
 def _stream(deltas):

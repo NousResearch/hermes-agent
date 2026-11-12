@@ -86,7 +86,7 @@ async def test_tui_context_is_main_live_context(owner):
 @pytest.mark.asyncio
 async def test_tui_context_with_a_live_agent_renders_the_category_table(owner, monkeypatch):
     sid = (await owner.call('session.create', request_id='t', source='tui', cwd=str(owner.workdir)))['session_id']
-    from agent import context_breakdown
+    from hermes_agent.agent import context_breakdown
     agent = SimpleNamespace(model='fake-model', provider='custom')
     owner.authority.runner._cached_agent_for = lambda route: agent
     monkeypatch.setattr(context_breakdown, 'compute_session_context_breakdown', lambda a, m: {
@@ -229,7 +229,7 @@ async def test_context_breakdown_verb_serves_the_owner_agents_categories(owner, 
     sid = (await owner.call('session.create', request_id='c', source='cli', cwd=str(owner.workdir)))['session_id']
     empty = await owner.call('session.context_breakdown', session_id=sid)
     assert empty['categories'] == [] and empty['estimated_total'] == 0
-    from agent import context_breakdown, context_file_sources
+    from hermes_agent.agent import context_breakdown, context_file_sources
     agent = SimpleNamespace(model='fake-model', provider='custom')
     owner.authority.runner._cached_agent_for = lambda route: agent
     monkeypatch.setattr(context_breakdown, 'compute_session_context_breakdown', lambda a, m: {
@@ -248,7 +248,7 @@ async def test_context_breakdown_is_reused_until_the_transcript_moves(owner, mon
     session). The owner reuses the payload while the transcript revision is unchanged and
     recomputes once a row lands."""
     sid = (await owner.call('session.create', request_id='r', source='cli', cwd=str(owner.workdir)))['session_id']
-    from agent import context_breakdown, context_file_sources
+    from hermes_agent.agent import context_breakdown, context_file_sources
     agent = SimpleNamespace(model='fake-model', provider='custom')
     owner.authority.runner._cached_agent_for = lambda route: agent
     computed = []
@@ -279,7 +279,7 @@ async def test_context_breakdown_follows_an_in_place_row_rewrite(owner, monkeypa
     an @-file expansion, multimodal context), which moves neither the row count nor the highest id.
     A breakdown cached before the rewrite must not keep the old size (probe by @dokterdok)."""
     sid = (await owner.call('session.create', request_id='r', source='cli', cwd=str(owner.workdir)))['session_id']
-    from agent import context_breakdown, context_file_sources
+    from hermes_agent.agent import context_breakdown, context_file_sources
     agent = SimpleNamespace(model='fake-model', provider='custom')
     owner.authority.runner._cached_agent_for = lambda route: agent
 

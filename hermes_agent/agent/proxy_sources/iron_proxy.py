@@ -843,7 +843,7 @@ def _refresh_secrets_from_bitwarden(env: dict[str, str], needed: set, bitwarden_
     """Overwrite ``env[needed]`` with fresh (uncached) BWS values; only mapped names are injected so unrelated BWS secrets never leak."""
     try:
         # Lazy: the bitwarden module isn't importable in every install.
-        from agent.secret_sources import bitwarden as bw
+        from hermes_agent.agent.secret_sources import bitwarden as bw
         access_token = os.environ.get(bitwarden_config.get("access_token_env", "BWS_ACCESS_TOKEN"), "").strip()
         project_id = bitwarden_config.get("project_id", "")
         if not (access_token and project_id):

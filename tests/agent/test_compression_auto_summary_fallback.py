@@ -7,7 +7,7 @@ user-visible warning names it instead of only appearing in errors.log.
 
 from unittest.mock import MagicMock, patch
 
-from agent.context_compressor import ContextCompressor
+from hermes_agent.agent.context_compressor import ContextCompressor
 
 
 def _msgs():
@@ -33,10 +33,10 @@ def test_auto_resolved_summary_model_falls_back_to_main_on_empty_content():
         ok.choices[0].message.content = "summary via main model"
         return ok
 
-    with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+    with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000):
         c = ContextCompressor(model="main-model", quiet_mode=True)  # no override → provider: auto
 
-    with patch("agent.context_compressor.call_llm", side_effect=_route) as mock_call:
+    with patch("hermes_agent.agent.context_compressor.call_llm", side_effect=_route) as mock_call:
         result = c._generate_summary(_msgs())
 
     assert mock_call.call_count == 2  # first auto route failed → retried on main
@@ -47,7 +47,7 @@ def test_auto_resolved_summary_model_falls_back_to_main_on_empty_content():
 
 
 def test_fallback_records_the_explicit_failed_model():
-    with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+    with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000):
         c = ContextCompressor(model="main-model", quiet_mode=True)
 
     c._fallback_to_main_for_compression(Exception("boom"), "failed", failed_model="bad/route")

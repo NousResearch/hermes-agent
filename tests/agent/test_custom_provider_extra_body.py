@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from agent.agent_init import _merge_custom_provider_extra_body
+from hermes_agent.agent.agent_init import _merge_custom_provider_extra_body
 
 
 

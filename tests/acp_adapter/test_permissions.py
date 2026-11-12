@@ -42,7 +42,7 @@ def _invoke_callback(
         scheduled["loop"] = passed_loop
         return future
 
-    with patch("agent.async_utils.asyncio.run_coroutine_threadsafe", side_effect=_schedule):
+    with patch("hermes_agent.agent.async_utils.asyncio.run_coroutine_threadsafe", side_effect=_schedule):
         cb = make_approval_callback(request_permission, loop, session_id="s1", timeout=timeout)
         if use_prompt_path:
             result = prompt_dangerous_approval(
@@ -151,7 +151,7 @@ class TestApprovalBridge:
             scheduled["loop"] = passed_loop
             return future
 
-        with patch("agent.async_utils.asyncio.run_coroutine_threadsafe", side_effect=_schedule):
+        with patch("hermes_agent.agent.async_utils.asyncio.run_coroutine_threadsafe", side_effect=_schedule):
             cb = make_approval_callback(request_permission, loop, session_id="s1", timeout=0.01)
             result = cb("rm -rf /", "dangerous command")
 
@@ -189,7 +189,7 @@ class TestSchedulerFailure:
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             with patch(
-                "agent.async_utils.asyncio.run_coroutine_threadsafe",
+                "hermes_agent.agent.async_utils.asyncio.run_coroutine_threadsafe",
                 side_effect=RuntimeError("scheduler down"),
             ):
                 cb = make_approval_callback(_request_permission, loop, session_id="s1", timeout=0.01)
@@ -218,7 +218,7 @@ class TestPermissionRequestToolCallReachesATerminalStatus:
         future = MagicMock(spec=Future)
         future.result.return_value = _make_response(outcome)
         sent = []
-        with patch("agent.async_utils.asyncio.run_coroutine_threadsafe", return_value=future):
+        with patch("hermes_agent.agent.async_utils.asyncio.run_coroutine_threadsafe", return_value=future):
             cb = factory(request_permission, MagicMock(spec=asyncio.AbstractEventLoop), "s1", send_update=sent.append)
             call(cb)
         requested = request_permission.call_args.kwargs["tool_call"]
@@ -253,7 +253,7 @@ class TestPermissionRequestToolCallReachesATerminalStatus:
         future = MagicMock(spec=Future)
         future.result.return_value = response
         sent = []
-        with patch("agent.async_utils.asyncio.run_coroutine_threadsafe", return_value=future):
+        with patch("hermes_agent.agent.async_utils.asyncio.run_coroutine_threadsafe", return_value=future):
             requester = make_acp_edit_approval_requester(
                 request_permission, MagicMock(spec=asyncio.AbstractEventLoop), "s1", send_update=sent.append,
             )

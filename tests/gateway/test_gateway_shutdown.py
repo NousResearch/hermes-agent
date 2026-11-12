@@ -79,7 +79,7 @@ async def test_gateway_stop_interrupts_running_agents_and_cancels_adapter_tasks(
     with (
         patch("hermes_agent.gateway.status.remove_pid_file"),
         patch("hermes_agent.gateway.status.publish_runtime_status"),
-        patch("agent.auxiliary_client.shutdown_cached_clients") as shutdown_cached_clients,
+        patch("hermes_agent.agent.auxiliary_client.shutdown_cached_clients") as shutdown_cached_clients,
     ):
         await runner.stop()
 

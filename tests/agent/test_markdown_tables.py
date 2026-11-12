@@ -1,4 +1,4 @@
-"""Tests for `agent.markdown_tables.realign_markdown_tables`.
+"""Tests for `hermes_agent.agent.markdown_tables.realign_markdown_tables`.
 
 These cover the alignment guarantee on CJK / wide-character tables and
 the conservative no-op behaviour on non-table input.
@@ -10,7 +10,7 @@ from textwrap import dedent
 
 from wcwidth import wcswidth
 
-from agent.markdown_tables import (
+from hermes_agent.agent.markdown_tables import (
     is_table_divider,
     looks_like_table_row,
     realign_markdown_tables,

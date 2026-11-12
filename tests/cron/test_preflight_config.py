@@ -94,7 +94,7 @@ def _run_job_patched(job, tmp_path, *, resolve=None, skill_view=None):
     if skill_view is not None:
         patches.append(patch("hermes_agent.tools.skills_tool.skill_view", side_effect=skill_view))
 
-    with patch("run_agent.AIAgent") as mock_agent_cls:
+    with patch("hermes_agent.run_agent.AIAgent") as mock_agent_cls:
         mock_agent = MagicMock()
         mock_agent.run_conversation.return_value = {"final_response": "ok"}
         mock_agent_cls.return_value = mock_agent
@@ -146,7 +146,7 @@ class TestMissingProviderKeyBlocks:
                      patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                            side_effect=_AuthErrorFactory()), \
                      patch("hermes_agent.cron.delivery_queue.enqueue", side_effect=fake_deliver), \
-                     patch("run_agent.AIAgent") as mock_agent_cls:
+                     patch("hermes_agent.run_agent.AIAgent") as mock_agent_cls:
                     ok = sched.run_one_job(fresh)
                     assert ok is True
                     assert mock_agent_cls.called is False
@@ -278,7 +278,7 @@ class TestOptOut:
                      patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                            side_effect=_AuthErrorFactory()), \
                      patch("hermes_agent.cron.delivery_queue.enqueue", side_effect=fake_deliver), \
-                     patch("run_agent.AIAgent") as mock_agent_cls:
+                     patch("hermes_agent.run_agent.AIAgent") as mock_agent_cls:
                     sched.run_one_job(fresh)
                     assert mock_agent_cls.called is False
 

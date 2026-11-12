@@ -2,14 +2,14 @@
 
 Entitlement-failure detection, xAI subscription decoration, structured-detail coercion, and log-safe
 redaction of provider error payloads.
-Extracted from ``run_agent.py``; every method resolves through ``AIAgent``'s MRO unchanged.
+Extracted from ``hermes_agent/run_agent.py``; every method resolves through ``AIAgent``'s MRO unchanged.
 """
 import functools
 import json
 import re
 from typing import Any, Dict, Optional
 
-from agent.redact import redact_sensitive_text
+from hermes_agent.agent.redact import redact_sensitive_text
 
 # Substrings of the plain ``ValueError`` jiter (the openai/anthropic SDKs' SSE JSON parser)
 # raises for a truncated/corrupted event-stream frame — wire trouble, not local validation
@@ -188,7 +188,7 @@ class ApiErrorSummaryMixin:
                 )
             current = current.__cause__ or current.__context__
 
-        from agent.timeout_error_summary import summarize_timeout_error
+        from hermes_agent.agent.timeout_error_summary import summarize_timeout_error
         timeout_summary = summarize_timeout_error(error, provider)
         if timeout_summary is not None:
             return timeout_summary

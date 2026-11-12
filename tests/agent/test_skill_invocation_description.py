@@ -12,10 +12,10 @@ parses.
 
 import pytest
 
-from agent import skill_bundles
-from agent import skill_commands
+from hermes_agent.agent import skill_bundles
+from hermes_agent.agent import skill_commands
 from hermes_agent.tools import skills_tool
-from agent.skill_commands import (
+from hermes_agent.agent.skill_commands import (
     SKILL_EXCERPT_JOINT,
     SKILL_SCAFFOLD_SQL_LIKE,
     describe_skill_invocation,
@@ -180,7 +180,7 @@ class TestGatewayAutoLoadScaffold:
 
     def test_sql_like_matches_the_auto_load_header(self, skills):
         message = self._auto_load_scaffold(skills, ["work"], user_text="hi")
-        from agent.skill_commands import AUTO_LOAD_SCAFFOLD_SQL_LIKE
+        from hermes_agent.agent.skill_commands import AUTO_LOAD_SCAFFOLD_SQL_LIKE
         assert message.startswith(AUTO_LOAD_SCAFFOLD_SQL_LIKE.rstrip("%"))
         # Interpolated without an ESCAPE clause: no wildcards in the literal part.
         assert "%" not in AUTO_LOAD_SCAFFOLD_SQL_LIKE[:-1]

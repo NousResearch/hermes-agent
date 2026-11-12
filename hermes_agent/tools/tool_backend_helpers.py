@@ -94,9 +94,9 @@ def resolve_modal_backend_state(modal_mode: object | None, *, has_direct: bool,
 
 def _scoped_credential(name: str) -> str:
     """Read a credential env var under the active profile secret scope; raw env fallback only
-    if ``agent.secret_scope`` cannot import (a packaging edge must never lose the key)."""
+    if ``hermes_agent.agent.secret_scope`` cannot import (a packaging edge must never lose the key)."""
     try:
-        from agent.secret_scope import get_secret
+        from hermes_agent.agent.secret_scope import get_secret
         return (get_secret(name, "") or "").strip()
     except Exception:  # pragma: no cover — secret_scope is in-repo
         return (os.getenv(name, "") or "").strip()
@@ -143,7 +143,7 @@ def resolve_provider_secret(env_var: str, provider_id: str, config_value: str = 
     if not env_suppressed and (key := _scoped_credential(env_var)):
         return key
     try:
-        from agent.secret_scope import is_multiplex_active
+        from hermes_agent.agent.secret_scope import is_multiplex_active
         if is_multiplex_active():
             return ""
     except Exception:  # pragma: no cover — secret_scope is in-repo
@@ -153,7 +153,7 @@ def resolve_provider_secret(env_var: str, provider_id: str, config_value: str = 
     if key or not provider_id:
         return key
     try:
-        from agent.credential_pool import load_pool
+        from hermes_agent.agent.credential_pool import load_pool
         # config.yaml ``providers.<name>`` entries are pooled under ``custom:<name>``.
         for pool_key in (provider_id, f"custom:{provider_id}"):
             pool = load_pool(pool_key)

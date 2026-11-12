@@ -8,7 +8,7 @@ Most capabilities should NOT be core tools. Long-form: `website/docs/developer-g
 
 `hermes_agent/tools/registry.py` has no deps and is imported by every tool file; each `hermes_agent/tools/*.py` calls
 `registry.register()` at import time; `hermes_agent/model_tools.py` imports the registry and triggers discovery
-(`discover_builtin_tools()`), then `run_agent.py`, `cli.py`, `hermes_agent/batch_runner.py`, `environments/`
+(`discover_builtin_tools()`), then `hermes_agent/run_agent.py`, `cli.py`, `hermes_agent/batch_runner.py`, `environments/`
 consume it. Any `hermes_agent/tools/*.py` with a top-level `registry.register()` is imported automatically — no
 manual import list. A tool that is a whole package (`hermes_agent/tools/connectors/`) registers from
 `hermes_agent/tools/<pkg>/tool.py`, the only file discovery scans inside a package; every sibling in the package
@@ -28,7 +28,7 @@ toggled without touching `hermes_agent/tools/` or `hermes_agent/toolsets.py` (`p
 
 1. `hermes_agent/tools/your_tool.py`:
    ```python
-   from agent.secret_scope import get_secret
+   from hermes_agent.agent.secret_scope import get_secret
    from hermes_agent.tools.registry import registry
    def check_requirements() -> bool: return bool(get_secret("EXAMPLE_API_KEY"))
    def example_tool(param: str, task_id: str = None) -> str: return json.dumps({"success": True, ...})
@@ -55,13 +55,13 @@ Rules for tool code:
 - **`check_fn` answers reachability/opt-in for the profile it runs under, never surface.** Results
   are TTL-cached in `registry.py::_check_fn_cache` keyed by `hermes_home_key()`, and one process
   serves many sessions AND many profiles: a probe reads credentials through
-  `agent.secret_scope.get_secret`, never bare `os.getenv` (that answers with the launch profile's
+  `hermes_agent.agent.secret_scope.get_secret`, never bare `os.getenv` (that answers with the launch profile's
   `.env` for everyone). The registry classifies an `UnscopedSecretError` from
   `current_secret_scope()` at the catch site — a boot-time probe with no scope is DEBUG, not a
   traceback. GUI-only tools go in a named toolset (`desktop_ui`, `project`) folded in by
   `_load_enabled_toolsets(platform)` (root: capability is a property of the SESSION).
 - **Agent-level tools** (`todo`, `memory`) are intercepted before `handle_function_call()` via the
-  `INLINE_TOOL_EXECUTORS` table (`agent/inline_tool_executors.py`; `agent/AGENTS.md`).
+  `INLINE_TOOL_EXECUTORS` table (`hermes_agent/agent/inline_tool_executors.py`; `hermes_agent/agent/AGENTS.md`).
 - **`_last_resolved_tool_names`** is a process-global in `hermes_agent/model_tools.py`; `_run_single_child()` in
   `delegate_tool.py` saves/restores it around child runs — readers may see it stale mid-delegation.
 - New tools integrate with existing setup UX (`hermes tools`, `hermes setup`, auto-install) rather
@@ -113,7 +113,7 @@ fixed at the mount, not by adding a tool.
 into a tool result that is re-sent on every later API call. Size and repeat policy live in
 `vision_tools_history_budget.py` (config section `vision`: `embed_target_bytes`, `max_calls_per_image`);
 the repeat counter is keyed on (session id, resolved source) so region crops share their file's count,
-and its default cap applies only inside `agent.delegation_context.is_delegated_child_process_context()`.
+and its default cap applies only inside `hermes_agent.agent.delegation_context.is_delegated_child_process_context()`.
 Put new embed-cost rules there, never a second counter in a tool.
 
 **Every spawn goes through one env builder.** `environments/local.py::build_subprocess_env` (+
@@ -126,7 +126,7 @@ served_profile_child_env(target_home=, inherit_credentials=)`: launch-profile `.
 target's own secrets overlaid. `os.environ.copy()` / `dict(os.environ)` pins the launch profile;
 contextvars do not cross process boundaries, so resolve before `Popen`. A child's
 `UnscopedSecretError` is a spawn-site bug, never a reason to add environ fallthrough. New threads
-from scoped code use `agent.memory_provider.spawn_context_thread` (a bare `threading.Thread`
+from scoped code use `hermes_agent.agent.memory_provider.spawn_context_thread` (a bare `threading.Thread`
 drops the scope). **MCP trust is a per-profile record:** `mcp_tool_registration.py::
 _record_scope_trust` keys trust on the home; a secondary never adopts the launch profile's trust
 for a same-named server, and `mcp_tool_handlers.py::_trust_gate_check` consults the calling
@@ -160,13 +160,13 @@ no `delegate_task`, `clarify`, `memory`, `send_message`, `cronjob`; keeps `execu
 `delegation.max_spawn_depth`, default 2). Config knobs under `delegation:`:
 `max_concurrent_children, independent_completions, gateway_mode, max_spawn_depth, child_timeout_seconds, orchestrator_enabled,
 subagent_auto_approve, inherit_mcp_toolsets, max_iterations, backend, backends`. **Routes:** `delegation.backend` picks a
-delegation provider (`agent/delegation_provider.py`, `ctx.register_delegation_provider`; its settings live in
+delegation provider (`hermes_agent/agent/delegation_provider.py`, `ctx.register_delegation_provider`; its settings live in
 `delegation.backends.<name>`) that answers each task's route (`hermes_agent/tools/delegate_tool_routes.py`: model/provider fields
 resolved like the `delegation` section, `service_tier` checked like `/fast` in `delegate_tool_tuning.py`, or `profile` →
 the child is built, leases and converses inside that profile's scope) and may add enum-checked per-task schema params; it
 never owns lifecycle. The `default` strategy is the bundled `plugins/delegation/default` plugin (no core special case
 beyond selecting it). Fails closed: an unusable backend is a tool error naming it (never a silent `default`), an
-unroutable task is refused alone (`TaskRoute.error`), as is a task sending a parameter its backend lacks. A session routes on the backend its `delegate_task` was built from (`agent._delegation_backend`, pinned with its tools), so a save applies at `/new` or `--now` (`agent/delegation_backends.py`). Internal `credentials_cfg` callers (/review) and the lifecycle API bypass it. **Child processes:** a child's background
+unroutable task is refused alone (`TaskRoute.error`), as is a task sending a parameter its backend lacks. A session routes on the backend its `delegate_task` was built from (`agent._delegation_backend`, pinned with its tools), so a save applies at `/new` or `--now` (`hermes_agent/agent/delegation_backends.py`). Internal `credentials_cfg` callers (/review) and the lifecycle API bypass it. **Child processes:** a child's background
 processes are killed at its teardown and their notices are suppressed in the parent; `process_manage(action="handoff")`
 (children only) flips `ProcessSession.owner_task_id` to the parent under the registry lock
 (`process_registry.transfer_ownership`) so the completion routes and reaps by the new owner; un-handed leftovers land on

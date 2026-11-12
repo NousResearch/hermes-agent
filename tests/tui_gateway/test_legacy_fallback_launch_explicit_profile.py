@@ -17,7 +17,7 @@ BEE_PORTAL = "https://bee-portal.invalid"
 
 @pytest.fixture
 def homes(tmp_path, monkeypatch):
-    from agent import secret_scope
+    from hermes_agent.agent import secret_scope
     from hermes_agent.tui_gateway import launch_profile_policy, server
     launch = tmp_path / "root"
     bee = launch / "profiles" / "bee"
@@ -37,7 +37,7 @@ def homes(tmp_path, monkeypatch):
     seen = []
 
     def unwrapped_secret_read(rid, params):
-        from agent.secret_scope import get_secret
+        from hermes_agent.agent.secret_scope import get_secret
         from hermes_constants import get_hermes_home
         seen.append((get_hermes_home().resolve(), get_secret("HERMES_PORTAL_BASE_URL")))
         return server._ok(rid, {})
@@ -88,7 +88,7 @@ def test_a_secondary_socket_naming_the_launch_profile_runs_in_the_launch_scope(h
     env_only = []
 
     def probe(rid, params):
-        from agent.secret_scope import get_secret
+        from hermes_agent.agent.secret_scope import get_secret
         env_only.append(get_secret("LAUNCH_ENV_ONLY_KEY"))
         return server._methods["probe.portal"](rid, params)
     monkeypatch.setitem(server._methods, "probe.env", probe)

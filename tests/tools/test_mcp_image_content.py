@@ -160,9 +160,9 @@ class TestNativeImageAttach:
              patch.dict(mcp_tool._servers, {"srv": server}), \
              patch("hermes_agent.tools.mcp_tool_loop._run_on_mcp_loop", side_effect=run), \
              patch("hermes_cli.config.load_config", return_value=cfg), \
-             patch("agent.auxiliary_client._read_main_provider", return_value="anthropic"), \
-             patch("agent.auxiliary_client._read_main_model", return_value="claude-opus-4-5"), \
-             patch("agent.image_routing._lookup_supports_vision", return_value=True):
+             patch("hermes_agent.agent.auxiliary_client._read_main_provider", return_value="anthropic"), \
+             patch("hermes_agent.agent.auxiliary_client._read_main_model", return_value="claude-opus-4-5"), \
+             patch("hermes_agent.agent.image_routing._lookup_supports_vision", return_value=True):
             assert "mcp__srv__snap" in _register_server_tools("srv", server, {})
             return registry.dispatch("mcp__srv__snap", {})
 
@@ -180,7 +180,7 @@ class TestNativeImageAttach:
     def test_scale_note_survives_spilling_an_oversized_tool_text(self, tmp_path, monkeypatch):
         """The agent loop spills an over-limit text part to a file and keeps only its head. The coordinate map
         is its own part, so it stays next to the resized screenshot (else the model clicks the wrong pixel)."""
-        from agent.tool_executor import _persist_multimodal_text_parts
+        from hermes_agent.agent.tool_executor import _persist_multimodal_text_parts
         from hermes_agent.tools.budget_config import BudgetConfig
         out = self._call(monkeypatch, tmp_path, {})
         first_text = next(p for p in out["content"] if p.get("type") == "text")
@@ -203,7 +203,7 @@ class TestNativeImageAttach:
         calling session converts a small WebP instead of attaching bytes its server silently cannot decode."""
         import io
         from PIL import Image
-        from agent.auxiliary_client import reset_runtime_main, set_runtime_main
+        from hermes_agent.agent.auxiliary_client import reset_runtime_main, set_runtime_main
         buf = io.BytesIO()
         Image.new("RGB", (64, 64), (200, 30, 30)).save(buf, "WEBP")
         token = set_runtime_main("llamacpp", "local-vlm")

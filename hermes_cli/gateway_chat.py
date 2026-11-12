@@ -49,10 +49,10 @@ def env_launch_flags() -> dict:
 
 
 def shell_client_env() -> dict:
-    """This shell's allowlisted environment (``agent.session_client_env``) with the extra names of the
+    """This shell's allowlisted environment (``hermes_agent.agent.session_client_env``) with the extra names of the
     profile's effective config (managed layer included), as the gateway reads them. A bypass launch's
     owner freezes code defaults, so it reads no profile."""
-    from agent.session_client_env import collect_client_env
+    from hermes_agent.agent.session_client_env import collect_client_env
     if {'safe_mode', 'ignore_user_config'} & set(env_launch_flags()):
         return collect_client_env()
     from hermes_cli.config import get_config_path
@@ -199,7 +199,7 @@ async def run_gateway_chat(args, emitter=None):
             # Finite runs are stored as ``oneshot`` (hidden from human pickers, still CLI history);
             # an explicit ``--source`` always wins. A remote gateway predating the label stores ``cli``.
             sources = contract.get("sources", [])
-            from agent.session_source import create_surface
+            from hermes_agent.agent.session_source import create_surface
             source = create_surface(getattr(args, "source", None) or ("oneshot" if oneshot and "oneshot" in sources else "cli"))
             if source not in sources:
                 raise GatewayClientError(f"Gateway does not support source {source!r}")
@@ -236,7 +236,7 @@ async def run_gateway_chat(args, emitter=None):
         view.unattended = isinstance(oneshot_prompt, str)
         view.resume_footer = oneshot and not quiet
         if (getattr(args, "resume", None) or title or latest) and not quiet:
-            from agent.context_compressor import MODEL_ONLY_DISPLAY_METADATA_KEY
+            from hermes_agent.agent.context_compressor import MODEL_ONLY_DISPLAY_METADATA_KEY
             for row in snapshot.get("messages", []):
                 # A micro-compaction merge (model_only) is not printed: its original prompts are.
                 metadata = row.get("display_metadata")
@@ -291,7 +291,7 @@ def _requested_policy(args):
         if not policy["skills"]:
             policy.pop("skills")
     if getattr(args, "source", None):
-        from agent.session_source import create_surface
+        from hermes_agent.agent.session_source import create_surface
         policy["source"] = create_surface(args.source)
     return policy
 

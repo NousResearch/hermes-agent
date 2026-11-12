@@ -1,11 +1,11 @@
-"""Tests for agent.retry_utils jittered backoff."""
+"""Tests for hermes_agent.agent.retry_utils jittered backoff."""
 
 import threading
 
-from agent import retry_utils
+from hermes_agent.agent import retry_utils
 from types import SimpleNamespace
 
-from agent.retry_utils import adaptive_rate_limit_backoff, jittered_backoff
+from hermes_agent.agent.retry_utils import adaptive_rate_limit_backoff, jittered_backoff
 from datetime import UTC
 
 
@@ -81,7 +81,7 @@ def test_zai_overload_retry_ceiling_exceeds_short_attempts():
     """Invariant: the ceiling must sit above the short-retry threshold, or the
     long-backoff tier is unreachable and the whole schedule is dead code
     (the original bug: default api_max_retries == short_attempts == 3)."""
-    from agent.retry_utils import (
+    from hermes_agent.agent.retry_utils import (
         zai_coding_overload_retry_ceiling,
         _ZAI_CODING_OVERLOAD_LONG_BACKOFF,
     )
@@ -103,7 +103,7 @@ def test_zai_overload_ceiling_makes_long_tier_reachable(monkeypatch):
     extended ceiling, at least one attempt reaches the long-backoff tier and the
     full 30/60/90/120s schedule is exercised."""
     monkeypatch.setattr(retry_utils, "jittered_backoff", lambda *a, **kw: kw["base_delay"])
-    from agent.retry_utils import zai_coding_overload_retry_ceiling
+    from hermes_agent.agent.retry_utils import zai_coding_overload_retry_ceiling
 
     err = _zai_overload_error()
     ceiling = zai_coding_overload_retry_ceiling()
@@ -122,7 +122,7 @@ def test_zai_overload_ceiling_makes_long_tier_reachable(monkeypatch):
             long_waits.append(_wait)
 
     assert long_waits, "long-backoff tier never reached within the retry ceiling"
-    from agent.retry_utils import _ZAI_CODING_OVERLOAD_LONG_BACKOFF
+    from hermes_agent.agent.retry_utils import _ZAI_CODING_OVERLOAD_LONG_BACKOFF
     assert long_waits == list(_ZAI_CODING_OVERLOAD_LONG_BACKOFF)
 
 
@@ -133,12 +133,12 @@ def test_zai_overload_ceiling_makes_long_tier_reachable(monkeypatch):
 
 class TestParseRetryAfterSeconds:
     def test_numeric_string(self):
-        from agent.retry_utils import parse_retry_after_seconds
+        from hermes_agent.agent.retry_utils import parse_retry_after_seconds
         assert parse_retry_after_seconds("120") == 120.0
         assert parse_retry_after_seconds(" 4.5 ") == 4.5
 
     def test_numeric_value(self):
-        from agent.retry_utils import parse_retry_after_seconds
+        from hermes_agent.agent.retry_utils import parse_retry_after_seconds
         assert parse_retry_after_seconds(45) == 45.0
         assert parse_retry_after_seconds(3.25) == 3.25
 
@@ -146,7 +146,7 @@ class TestParseRetryAfterSeconds:
     def test_http_date(self):
         from datetime import datetime, timedelta, timezone
         from email.utils import format_datetime
-        from agent.retry_utils import parse_retry_after_seconds
+        from hermes_agent.agent.retry_utils import parse_retry_after_seconds
 
         future = datetime.now(UTC) + timedelta(seconds=90)
         seconds = parse_retry_after_seconds(format_datetime(future, usegmt=True))
@@ -158,7 +158,7 @@ class TestParseRetryAfterSeconds:
 
 
     def test_headers_get_raises(self):
-        from agent.retry_utils import parse_retry_after_seconds
+        from hermes_agent.agent.retry_utils import parse_retry_after_seconds
 
         class Explosive:
             def get(self, _key):

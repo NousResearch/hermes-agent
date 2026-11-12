@@ -147,7 +147,7 @@ class TestRuntimeProvider:
         """Bedrock's OpenAI models (GPT-5.5 / GPT-5.6 family) are not Converse
         models — they only answer on the Mantle /openai/v1 Responses surface.
         Every allowlisted ID must route there, with the aws-sdk IAM sentinel."""
-        from agent.bedrock_adapter import BEDROCK_OPENAI_RESPONSES_MODEL_IDS
+        from hermes_agent.agent.bedrock_adapter import BEDROCK_OPENAI_RESPONSES_MODEL_IDS
         from hermes_cli.runtime_provider import resolve_runtime_provider
 
         monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE")
@@ -174,7 +174,7 @@ class TestRuntimeProvider:
         """``us.``/``global.`` OpenAI IDs are bedrock-runtime cross-Region profiles; Mantle rejects
         them ("Geo/Global inference ID: Not supported" on every OpenAI card). They ride the
         Converse wire on bedrock-runtime, never the Mantle Responses base URL."""
-        from agent.bedrock_adapter import BEDROCK_OPENAI_RESPONSES_MODEL_IDS
+        from hermes_agent.agent.bedrock_adapter import BEDROCK_OPENAI_RESPONSES_MODEL_IDS
         from hermes_cli.runtime_provider import resolve_runtime_provider
 
         monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE")
@@ -196,7 +196,7 @@ class TestRuntimeProvider:
     def test_bedrock_openai_models_do_not_fall_back_to_default_context(self):
         """The Mantle OpenAI models have a larger window than the generic
         default; make sure they never fall back to it."""
-        from agent.bedrock_adapter import (
+        from hermes_agent.agent.bedrock_adapter import (
             BEDROCK_DEFAULT_CONTEXT_LENGTH,
             BEDROCK_OPENAI_RESPONSES_MODEL_IDS,
             get_bedrock_context_length,
@@ -230,7 +230,7 @@ class TestErrorClassifierBedrock:
     """Verify Bedrock error patterns are in the global error classifier."""
 
     def test_bedrock_throttling_classified_as_rate_limit(self):
-        from agent.error_classifier import FailoverReason, classify_api_error
+        from hermes_agent.agent.error_classifier import FailoverReason, classify_api_error
         err = Exception(
             "An error occurred (ThrottlingException) when calling the ConverseStream "
             "operation: Too many requests, please wait before trying again."
@@ -238,7 +238,7 @@ class TestErrorClassifierBedrock:
         assert classify_api_error(err, provider="bedrock").reason == FailoverReason.rate_limit
 
     def test_bedrock_input_too_long_classified_as_context_overflow(self):
-        from agent.error_classifier import FailoverReason, classify_api_error
+        from hermes_agent.agent.error_classifier import FailoverReason, classify_api_error
         err = Exception(
             "An error occurred (ValidationException) when calling the ConverseStream "
             "operation: Input is too long for requested model."
@@ -280,7 +280,7 @@ class TestPackaging:
 #   us.anthropic.claude-sonnet-4-5-20250929-v1:0
 #   apac.anthropic.claude-haiku-4-5
 #
-# ``agent.anthropic_message_convert.normalize_model_name`` converts dots to hyphens
+# ``hermes_agent.agent.anthropic_message_convert.normalize_model_name`` converts dots to hyphens
 # unless the caller opts in via ``preserve_dots=True``.  Before this fix,
 # ``AIAgent._anthropic_preserve_dots`` returned False for the ``bedrock``
 # provider, so Claude-on-Bedrock requests went out with
@@ -302,7 +302,7 @@ class TestBedrockPreserveDotsFlag:
     def test_bedrock_provider_preserves_dots(self):
         from types import SimpleNamespace
         agent = SimpleNamespace(provider="bedrock", base_url="")
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         assert AIAgent._anthropic_preserve_dots(agent) is True
 
 
@@ -317,7 +317,7 @@ class TestBedrockPreserveDotsFlag:
             provider="custom",
             base_url="https://s3.us-east-1.amazonaws.com",
         )
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         assert AIAgent._anthropic_preserve_dots(agent) is False
 
 
@@ -335,7 +335,7 @@ class TestBedrockModelNameNormalization:
         always returned unmangled -- ``preserve_dots`` is irrelevant for
         these IDs because the dots are namespace separators, not version
         separators.  Regression for #12295."""
-        from agent.anthropic_message_convert import normalize_model_name
+        from hermes_agent.agent.anthropic_message_convert import normalize_model_name
         assert normalize_model_name(
             "global.anthropic.claude-opus-4-7", preserve_dots=False
         ) == "global.anthropic.claude-opus-4-7"
@@ -355,7 +355,7 @@ class TestBedrockBuildAnthropicKwargsEndToEnd:
         even without ``preserve_dots=True`` -- the prefix auto-detection
         in ``normalize_model_name`` is the load-bearing piece.
         Regression for #12295."""
-        from agent.anthropic_adapter import build_anthropic_kwargs
+        from hermes_agent.agent.anthropic_adapter import build_anthropic_kwargs
         kwargs = build_anthropic_kwargs(
             model="global.anthropic.claude-opus-4-7",
             messages=[{"role": "user", "content": "hi"}],
@@ -382,7 +382,7 @@ class TestBedrockModelIdDetection:
         """The primary bug from #12295: ``anthropic.claude-opus-4-7``
         sent to bedrock-mantle via auxiliary clients that don't pass
         ``preserve_dots=True``."""
-        from agent.anthropic_message_convert import normalize_model_name
+        from hermes_agent.agent.anthropic_message_convert import normalize_model_name
         assert normalize_model_name(
             "anthropic.claude-opus-4-7", preserve_dots=False
         ) == "anthropic.claude-opus-4-7"
@@ -408,9 +408,9 @@ class TestAuxiliaryClientBedrockResolution:
         monkeypatch.setenv("AWS_REGION", "us-west-2")
 
         mock_anthropic_bedrock = MagicMock()
-        with patch("agent.anthropic_adapter.build_anthropic_bedrock_client",
+        with patch("hermes_agent.agent.anthropic_adapter.build_anthropic_bedrock_client",
                    return_value=mock_anthropic_bedrock):
-            from agent.auxiliary_client import resolve_provider_client, AnthropicAuxiliaryClient
+            from hermes_agent.agent.auxiliary_client import resolve_provider_client, AnthropicAuxiliaryClient
             client, model = resolve_provider_client("bedrock", None)
 
         assert client is not None, (
@@ -424,8 +424,8 @@ class TestAuxiliaryClientBedrockResolution:
 
     def test_bedrock_returns_none_without_credentials(self, monkeypatch):
         """Without AWS credentials, Bedrock should return (None, None) gracefully."""
-        with patch("agent.bedrock_adapter.has_aws_credentials", return_value=False):
-            from agent.auxiliary_client import resolve_provider_client
+        with patch("hermes_agent.agent.bedrock_adapter.has_aws_credentials", return_value=False):
+            from hermes_agent.agent.auxiliary_client import resolve_provider_client
             client, model = resolve_provider_client("bedrock", None)
 
         assert client is None
@@ -451,13 +451,13 @@ class TestAuxiliaryClientBedrockResolution:
         monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAIO...MPLE")
         monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
 
-        from agent.auxiliary_client import BedrockAuxiliaryClient
+        from hermes_agent.agent.auxiliary_client import BedrockAuxiliaryClient
 
         client = BedrockAuxiliaryClient("us-east-1", "openai.gpt-oss-20b-1:0")
         boto3_client = MagicMock()
-        with patch("agent.bedrock_adapter._get_bedrock_runtime_client",
+        with patch("hermes_agent.agent.bedrock_adapter._get_bedrock_runtime_client",
                    return_value=boto3_client), \
-             patch("agent.bedrock_adapter.normalize_converse_response"):
+             patch("hermes_agent.agent.bedrock_adapter.normalize_converse_response"):
             # Aux vision-style call: no max_tokens key at all.
             client.chat.completions.create(
                 model="openai.gpt-oss-20b-1:0",
@@ -499,8 +499,8 @@ class TestAuxiliaryClientBedrockResolution:
 
         with patch("hermes_cli.config.load_config_readonly",
                    return_value={"bedrock": {"region": "us-west-2"}}), \
-             patch("agent.auxiliary_client.OpenAI", _FakeOpenAI):
-            from agent.auxiliary_client import resolve_provider_client
+             patch("hermes_agent.agent.auxiliary_client.OpenAI", _FakeOpenAI):
+            from hermes_agent.agent.auxiliary_client import resolve_provider_client
             client, model = resolve_provider_client("bedrock", "openai.gpt-5.6-sol")
 
         assert client is not None
@@ -516,9 +516,9 @@ class TestAuxiliaryClientBedrockResolution:
         monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
         monkeypatch.setenv("AWS_REGION", "us-east-2")
 
-        with patch("agent.auxiliary_client.OpenAI", return_value=MagicMock()) as mock_openai, \
-             patch("agent.bedrock_adapter.build_bedrock_openai_http_client", return_value=MagicMock()):
-            from agent.auxiliary_client import resolve_provider_client, CodexAuxiliaryClient
+        with patch("hermes_agent.agent.auxiliary_client.OpenAI", return_value=MagicMock()) as mock_openai, \
+             patch("hermes_agent.agent.bedrock_adapter.build_bedrock_openai_http_client", return_value=MagicMock()):
+            from hermes_agent.agent.auxiliary_client import resolve_provider_client, CodexAuxiliaryClient
             client, model = resolve_provider_client("bedrock", "openai.gpt-5.5")
 
         assert model == "openai.gpt-5.5"
@@ -537,8 +537,8 @@ class TestAuxiliaryClientBedrockResolution:
         monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
         monkeypatch.setenv("AWS_REGION", "us-east-2")
 
-        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
-            from agent.auxiliary_client import resolve_provider_client, BedrockAuxiliaryClient
+        with patch("hermes_agent.agent.auxiliary_client.OpenAI") as mock_openai:
+            from hermes_agent.agent.auxiliary_client import resolve_provider_client, BedrockAuxiliaryClient
             client, model = resolve_provider_client("bedrock", profile_id)
 
         assert model == profile_id

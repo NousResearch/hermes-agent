@@ -14,10 +14,10 @@ import logging
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit
 
-from agent.codex_headers import is_official_codex_base_url
-from agent.context_compressor import is_compaction_summary_message
-from agent.message_content import flatten_message_text
-from agent.reasoning_effort import is_astra_model
+from hermes_agent.agent.codex_headers import is_official_codex_base_url
+from hermes_agent.agent.context_compressor import is_compaction_summary_message
+from hermes_agent.agent.message_content import flatten_message_text
+from hermes_agent.agent.reasoning_effort import is_astra_model
 
 logger = logging.getLogger(__name__)
 
@@ -150,14 +150,14 @@ RETAINED_SUMMARY_TOKEN_BUDGET = 32_000
 
 def _approx_tokens(text: str) -> int:
     """Retention cost of one carried-over text; never 0 so an empty item still consumes budget."""
-    from agent.model_metadata import estimate_tokens_rough
+    from hermes_agent.agent.model_metadata import estimate_tokens_rough
     return max(1, estimate_tokens_rough(text))
 
 
 def _head_within_budget(text: str, budget: int) -> str:
     """Longest prefix of ``text`` whose ``_approx_tokens`` fits ``budget``. A plain ``budget * CHARS_PER_TOKEN``
     char slice would keep ~2x the budget of Cyrillic and ~4x of CJK; ASCII still gets that many chars."""
-    from agent.model_metadata import CHARS_PER_TOKEN
+    from hermes_agent.agent.model_metadata import CHARS_PER_TOKEN
     head = text[:max(0, budget) * CHARS_PER_TOKEN]  # every char costs >= 1/CHARS_PER_TOKEN token
     if head.isascii():  # ASCII costs exactly ceil(len / CHARS_PER_TOKEN): the cap already fits
         return head

@@ -17,17 +17,17 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from agent.delegation_context import owned_kanban_task
-from agent.prompt_cache_scope import conversation_id
-from agent.prompt_builder import (
+from hermes_agent.agent.delegation_context import owned_kanban_task
+from hermes_agent.agent.prompt_cache_scope import conversation_id
+from hermes_agent.agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, EXECUTION_GUIDANCE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
     HERMES_AGENT_HELP_GUIDANCE, HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS, KANBAN_GUIDANCE,
     PARALLEL_TOOL_CALL_GUIDANCE, PLATFORM_HINTS, SESSION_SEARCH_GUIDANCE,
     SKILLS_GUIDANCE, STEER_CHANNEL_NOTE, TASK_COMPLETION_GUIDANCE, TELEGRAM_RICH_MESSAGES_HINT,
     TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, drain_truncation_warnings,
 )
-from agent import prompt_builder as _pb
-from agent.runtime_cwd import resolve_agent_cwd, resolve_context_cwd
+from hermes_agent.agent import prompt_builder as _pb
+from hermes_agent.agent.runtime_cwd import resolve_agent_cwd, resolve_context_cwd
 from hermes_constants import get_default_hermes_root, get_hermes_home
 from utils import is_truthy_value
 
@@ -312,7 +312,7 @@ def _skills_prompt(agent: Any) -> str:
     from hermes_agent import model_tools
     avail_toolsets = {model_tools.get_toolset_for_tool(tool_name) for tool_name in agent.valid_tool_names} - {None, ""}
     try:
-        from agent.coding_context import coding_compact_skill_categories
+        from hermes_agent.agent.coding_context import coding_compact_skill_categories
         _compact_cats = coding_compact_skill_categories(platform=agent.platform, cwd=resolve_context_cwd())
     except Exception:
         _compact_cats = frozenset()
@@ -335,7 +335,7 @@ def _auto_load_parts(agent: Any) -> list[str]:
         result: tuple[str, list[str], list[str]] = ("", [], [])
         try:
             if not is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")):
-                from agent.skill_commands import build_auto_load_prompt
+                from hermes_agent.agent.skill_commands import build_auto_load_prompt
                 result = build_auto_load_prompt(task_id=getattr(agent, "session_id", None), home_override=_agent_home(agent))
             if result[2]:
                 logger.warning("skills.auto_load: skill(s) not found or disabled, skipped: %s", ", ".join(result[2]))
@@ -372,7 +372,7 @@ def _bot_mode_parts(agent: Any) -> list[str]:
 
 
 def _ambient_file_safety_profile_name() -> str:
-    from agent.file_safety import _resolve_active_profile_name
+    from hermes_agent.agent.file_safety import _resolve_active_profile_name
     return _resolve_active_profile_name()
 
 
@@ -547,7 +547,7 @@ def _memory_parts(agent: Any) -> list[str]:
     # configuration has already gated off (#81014).
     if agent._memory_manager:
         try:
-            from agent.memory_manager_tools import memory_provider_tools_exposed as _mem_exposed
+            from hermes_agent.agent.memory_manager_tools import memory_provider_tools_exposed as _mem_exposed
         except Exception:
             _mem_exposed = None
         if _mem_exposed is None or _mem_exposed(agent):
@@ -583,7 +583,7 @@ def _guidance_parts(agent: Any) -> list[str]:
     if not agent.valid_tool_names:
         return parts
     # Steering only lands inside tool results, so only reachable with tools; a one-shot has nobody to steer it.
-    from agent.oneshot_footprint import agent_is_oneshot
+    from hermes_agent.agent.oneshot_footprint import agent_is_oneshot
     if not agent_is_oneshot(agent):
         parts.append(STEER_CHANNEL_NOTE)
     # agent.tool_use_enforcement / agent.execution_guidance: "auto" (default)
@@ -595,7 +595,7 @@ def _guidance_parts(agent: Any) -> list[str]:
         if any(g in (agent.model or "").lower() for g in ("gemini", "gemma")):
             parts.append(GOOGLE_MODEL_OPERATIONAL_GUIDANCE)
     if _model_gate(getattr(agent, "_execution_guidance", "auto"), agent.model, EXECUTION_GUIDANCE_MODELS):
-        from agent.prompt_builder import execution_guidance_text
+        from hermes_agent.agent.prompt_builder import execution_guidance_text
         parts.append(execution_guidance_text(agent.valid_tool_names))
     return parts
 
@@ -627,7 +627,7 @@ def _workspace_pin_key() -> str:
 def _persisted_workspace_block(prompt: str, key: str) -> Optional[str]:
     """The workspace snapshot inside ``prompt`` taken for ``key`` (its ``- Root:`` is ``key`` or an
     ancestor); "" when the prompt has none; None when it has one for another root."""
-    from agent.coding_context import WORKSPACE_BLOCK_HEADER
+    from hermes_agent.agent.coding_context import WORKSPACE_BLOCK_HEADER
     head = f"\n\n{WORKSPACE_BLOCK_HEADER}\n- Root: "
     start = prompt.find(head)
     if start < 0:
@@ -664,7 +664,7 @@ def _seed_workspace_pin(agent: Any, key: str) -> None:
     build those bytes (resumed, or a fresh gateway/TUI agent whose first act is ``/compress``)
     would otherwise re-probe git at its first rebuild and rewrite the prompt for any repo that
     moved since session start.  Only a snapshot provably taken in this cwd is adopted."""
-    from agent.surface_switch import runtime_host_value
+    from hermes_agent.agent.surface_switch import runtime_host_value
     prompt = _session_prompt(agent)
     if not prompt:
         return
@@ -690,7 +690,7 @@ def _coding_parts(agent: Any) -> tuple[list[str], list[str], list[str]]:
     rebuilds; ``reset_session_state`` drops the pin at a session boundary.
     """
     try:
-        from agent.coding_context import coding_system_prompt_parts
+        from hermes_agent.agent.coding_context import coding_system_prompt_parts
         if not agent.valid_tool_names:
             return [], [], []
         cwd = resolve_context_cwd()

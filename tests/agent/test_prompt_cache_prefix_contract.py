@@ -69,7 +69,7 @@ def caching_route():
 
 def _agent(srv, home):
     from hermes_agent.hermes_state import SessionDB
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     agent = AIAgent(provider="custom:cacherelay", base_url=srv.base_url, api_key="sk-fake-e2e", model="fake-model",
                     session_db=SessionDB(db_path=home / "state.db"), session_id="cache-contract", quiet_mode=True,
@@ -93,7 +93,7 @@ def test_tool_rounds_and_follow_up_turns_only_append(caching_route):
 
 
 def test_skill_turn_keeps_its_scaffold_bytes_across_the_tool_loop(caching_route):
-    from agent.skill_commands import build_skill_invocation_message, scan_skill_commands
+    from hermes_agent.agent.skill_commands import build_skill_invocation_message, scan_skill_commands
 
     srv, home = caching_route
     srv.push(ToolCall("terminal", {"command": "echo one"}), ToolCall("terminal", {"command": "echo two"}),

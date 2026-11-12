@@ -14,11 +14,11 @@ def _no_owner(*args, **kwargs):
 
 def _guard_warnings(caplog):
     return [r.getMessage() for r in caplog.records
-            if r.name == 'agent.runtime_session_store' and r.levelno == logging.WARNING]
+            if r.name == 'hermes_agent.agent.runtime_session_store' and r.levelno == logging.WARNING]
 
 
 def test_on_loop_rpc_logs_caller_frames_without_argument_values(tmp_path, monkeypatch, caplog):
-    from agent.runtime_session_store import WorkerPersistenceError, WorkerRPC
+    from hermes_agent.agent.runtime_session_store import WorkerPersistenceError, WorkerRPC
     monkeypatch.setattr('hermes_cli.gateway_runtime.discover_gateway_endpoint', _no_owner)
     rpc = WorkerRPC(tmp_path)
 
@@ -28,7 +28,7 @@ def test_on_loop_rpc_logs_caller_frames_without_argument_values(tmp_path, monkey
     async def on_loop():
         persist_from_callback()
 
-    caplog.set_level(logging.WARNING, logger='agent.runtime_session_store')
+    caplog.set_level(logging.WARNING, logger='hermes_agent.agent.runtime_session_store')
     with pytest.raises(WorkerPersistenceError, match='synchronous_rpc_on_event_loop'):
         asyncio.run(on_loop())
     [message] = _guard_warnings(caplog)
@@ -41,7 +41,7 @@ def test_on_loop_rpc_logs_caller_frames_without_argument_values(tmp_path, monkey
 def test_on_loop_store_write_names_the_caller_not_the_store(tmp_path, monkeypatch, caplog):
     """Through the store, the summary skips its own frames (_apply, retry_pending) so the
     swallowing best-effort caller is what the log names."""
-    from agent.runtime_session_store import RuntimeSessionStore, WorkerPersistenceError, WorkerRPC
+    from hermes_agent.agent.runtime_session_store import RuntimeSessionStore, WorkerPersistenceError, WorkerRPC
     monkeypatch.setattr('hermes_cli.gateway_runtime.discover_gateway_endpoint', _no_owner)
     store = RuntimeSessionStore(WorkerRPC(tmp_path), {'session_id': 's'}, tmp_path / 'outbox')
 
@@ -54,7 +54,7 @@ def test_on_loop_store_write_names_the_caller_not_the_store(tmp_path, monkeypatc
     async def on_loop():
         best_effort_usage()
 
-    caplog.set_level(logging.WARNING, logger='agent.runtime_session_store')
+    caplog.set_level(logging.WARNING, logger='hermes_agent.agent.runtime_session_store')
     try:
         asyncio.run(on_loop())
         [message] = _guard_warnings(caplog)

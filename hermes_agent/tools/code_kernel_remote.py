@@ -292,7 +292,7 @@ def _acquire_remote_kernel(env, env_type: str, owner: str, task_env_id: str,
     if kernel is None:
         kernel = _spawn_remote_kernel(env, env_type, owner, task_env_id, sandbox_tools, idle_exit=idle_exit)
         if kernel is not None:
-            from agent.delegation_context import is_delegated_child_context
+            from hermes_agent.agent.delegation_context import is_delegated_child_context
             kernel.pinned = is_delegated_child_context()
             with _REGISTRY.lock:
                 _REMOTE_KERNELS[key] = kernel

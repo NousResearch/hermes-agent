@@ -76,7 +76,7 @@ class TestCreateSession:
                 self.kwargs = kwargs
                 observed["cwd"] = kwargs.get("cwd")
 
-        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        monkeypatch.setattr("hermes_agent.run_agent.AIAgent", FakeAgent)
         monkeypatch.setattr(
             "hermes_agent.acp_adapter.session.load_config",
             lambda: {
@@ -124,7 +124,7 @@ class TestCreateSession:
                 seen.append(kwargs)
 
         config = {"model": {"default": "m", "provider": "p"}, "mcp_servers": {"cfg-server": {}}}
-        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        monkeypatch.setattr("hermes_agent.run_agent.AIAgent", FakeAgent)
         monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
         monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", lambda **_kw: {})
         monkeypatch.setattr("hermes_cli.mcp_startup.ensure_mcp_discovery_before_agent_build", lambda **_kw: None)
@@ -157,7 +157,7 @@ class TestCreateSession:
             def __init__(self, **kwargs):
                 seen.append(kwargs)
 
-        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        monkeypatch.setattr("hermes_agent.run_agent.AIAgent", FakeAgent)
         monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"model": {"default": "m"}, **config})
         monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", lambda **_kw: {})
         monkeypatch.setattr("hermes_cli.mcp_startup.ensure_mcp_discovery_before_agent_build", lambda **_kw: None)
@@ -192,7 +192,7 @@ class TestCreateSession:
                   "mcp_servers": {"alpha": {"command": "a"}, "beta": {"command": "b"}, "off": {"enabled": False}}}
         if acp_toolsets is not None:
             config["platform_toolsets"] = {"acp": acp_toolsets}
-        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        monkeypatch.setattr("hermes_agent.run_agent.AIAgent", FakeAgent)
         monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
         monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", lambda **_kw: {})
         monkeypatch.setattr("hermes_cli.mcp_startup.ensure_mcp_discovery_before_agent_build", lambda **_kw: None)
@@ -225,12 +225,12 @@ class TestCreateSession:
         monkeypatch.setattr("hermes_agent.acp_adapter.session._register_task_cwd", lambda task_id, cwd: None)
         manager = SessionManager(db=None)
 
-        monkeypatch.setattr("run_agent.AIAgent", BareFails)
+        monkeypatch.setattr("hermes_agent.run_agent.AIAgent", BareFails)
         with pytest.raises(RuntimeError, match="No Codex credentials stored") as exc:
             manager._make_agent(session_id="rebuilt", cwd=".", requested_provider="openai-codex")
         assert "No LLM provider configured" in str(exc.value.__cause__)
 
-        monkeypatch.setattr("run_agent.AIAgent", BareWorks)
+        monkeypatch.setattr("hermes_agent.run_agent.AIAgent", BareWorks)
         assert "provider" not in manager._make_agent(session_id="fresh", cwd=".").kwargs
 
 
@@ -244,7 +244,7 @@ class TestCreateSession:
             def __init__(self, **kwargs):
                 seen.append(kwargs)
 
-        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        monkeypatch.setattr("hermes_agent.run_agent.AIAgent", FakeAgent)
         monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"model": {"default": "m", "provider": "openai-codex"}})
         monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", lambda **_kw: {
             "provider": "openai-codex", "api_mode": "codex_app_server", "api_key": "test-key", "credential_pool": sentinel_pool,
@@ -586,7 +586,7 @@ class TestPersistence:
         )
         db = SessionDB(tmp_path / "state.db")
 
-        with patch("run_agent.AIAgent", side_effect=fake_agent):
+        with patch("hermes_agent.run_agent.AIAgent", side_effect=fake_agent):
             manager = SessionManager(db=db)
             state = manager.create_session(cwd="/work")
 

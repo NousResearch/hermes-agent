@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent import provider_media
+from hermes_agent.agent import provider_media
 
 
 def _save_video(url: str, **kwargs):

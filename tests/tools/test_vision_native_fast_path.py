@@ -100,8 +100,8 @@ class TestSupportsMediaInToolResults:
         """A capability source marking the model vision-capable must not
         re-open the native fast path for a provider that rejects it."""
         from hermes_agent.tools.vision_tools import _should_use_native_vision_fast_path
-        from agent.auxiliary_client import set_runtime_main, clear_runtime_main
-        from agent import image_routing
+        from hermes_agent.agent.auxiliary_client import set_runtime_main, clear_runtime_main
+        from hermes_agent.agent import image_routing
 
         set_runtime_main("xiaomi", "mimo-v2.5")
         try:
@@ -117,8 +117,8 @@ class TestSupportsMediaInToolResults:
     def test_openrouter_xiaomi_route_vetoes_native_fast_path(self):
         """A vision-capable catalog entry cannot override a routed Xiaomi veto."""
         from hermes_agent.tools.vision_tools import _should_use_native_vision_fast_path
-        from agent.auxiliary_client import set_runtime_main, clear_runtime_main
-        from agent import image_routing
+        from hermes_agent.agent.auxiliary_client import set_runtime_main, clear_runtime_main
+        from hermes_agent.agent import image_routing
 
         set_runtime_main("openrouter", "xiaomi/mimo-v2.5")
         try:
@@ -372,13 +372,13 @@ class TestHandleVisionAnalyzeFastPath:
         img.write_bytes(_TINY_PNG)
 
         # Set runtime override so the handler thinks we're on opus@openrouter
-        from agent.auxiliary_client import set_runtime_main, clear_runtime_main
+        from hermes_agent.agent.auxiliary_client import set_runtime_main, clear_runtime_main
         set_runtime_main("openrouter", "anthropic/claude-opus-4.6")
         try:
             # Mock decide_image_input_mode to always return "native" so the
             # fast path fires regardless of model-catalog state in CI.
             with patch(
-                "agent.image_routing.decide_image_input_mode",
+                "hermes_agent.agent.image_routing.decide_image_input_mode",
                 return_value="native",
             ):
                 coro = _handle_vision_analyze({"image_url": str(img), "question": "?"})
@@ -399,7 +399,7 @@ class TestHandleVisionAnalyzeFastPath:
         async def _aux_sentinel(*args, **kwargs):
             return '{"sentinel": "aux-path"}'
 
-        from agent.auxiliary_client import set_runtime_main, clear_runtime_main
+        from hermes_agent.agent.auxiliary_client import set_runtime_main, clear_runtime_main
         set_runtime_main("brand-new-provider", "anthropic/claude-opus-4.6")
         try:
             with patch("hermes_agent.tools.vision_tools.vision_analyze_tool", side_effect=_aux_sentinel):
@@ -419,7 +419,7 @@ class TestHandleVisionAnalyzeFastPath:
         async def _aux_sentinel(*args, **kwargs):
             return '{"sentinel": "aux-path"}'
 
-        from agent.auxiliary_client import set_runtime_main, clear_runtime_main
+        from hermes_agent.agent.auxiliary_client import set_runtime_main, clear_runtime_main
         set_runtime_main("brand-new-provider", "llava-v1.6")
         try:
             with patch(
@@ -444,7 +444,7 @@ class TestHandleVisionAnalyzeFastPath:
         async def _aux_sentinel(*args, **kwargs):
             return '{"sentinel": "aux-path"}'
 
-        from agent.auxiliary_client import set_runtime_main, clear_runtime_main
+        from hermes_agent.agent.auxiliary_client import set_runtime_main, clear_runtime_main
         set_runtime_main("brand-new-provider", "llava-v1.6")
         try:
             with patch(

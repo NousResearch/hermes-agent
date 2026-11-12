@@ -230,7 +230,7 @@ def test_ssh_child_workspace_never_expands_remote_relative_cwd_on_host(
     monkeypatch.setenv("TERMINAL_ENV", "ssh")
     monkeypatch.setenv("TERMINAL_CWD", remote_cwd)
     monkeypatch.chdir(image_home)
-    from agent.subdirectory_hints import SubdirectoryHintTracker
+    from hermes_agent.agent.subdirectory_hints import SubdirectoryHintTracker
     from hermes_agent.tools.delegate_tool_progress import _resolve_workspace_hint
 
     # agent_init builds the tracker from the same cwd; it resolves it on this host.

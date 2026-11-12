@@ -16,7 +16,7 @@ from hermes_cli.web_server_config import (
     _AUX_TASK_SLOTS, _UNSET, _apply_model_assignment_sync, _dashboard_code_skew_guard,
     _plugin_aux_tasks, _prepare_main_assignment,
 )
-from agent.model_metadata import is_local_endpoint
+from agent.model_metadata import is_local_endpoint, resolve_route_provider
 from starlette.concurrency import run_in_threadpool
 from hermes_cli.web_models import ModelAssignment, MoaConfigPayload, MoaModelSlot
 from hermes_cli.config_backend import CONFIG_MUTATION_LOCK
@@ -115,7 +115,9 @@ def get_model_info(profile: Optional[str] = None):
         caps = {}
         try:
             from agent.models_dev import get_model_capabilities
-            mc = get_model_capabilities(provider=provider, model=model_name)
+            # Same route normalization as the resolver: a ``custom:<name>`` picker id is
+            # config, so the endpoint's host decides which catalog owns the model.
+            mc = get_model_capabilities(provider=resolve_route_provider(provider, base_url), model=model_name)
             if mc is not None:
                 caps = {name: getattr(mc, name) for name in _CAPABILITY_FIELDS}
         except Exception:

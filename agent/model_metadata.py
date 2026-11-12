@@ -23,6 +23,10 @@ from agent.context_default_record import mark_context_defaulted, records_context
 from agent.model_metadata_llamacpp import llamacpp_context
 from agent.model_metadata_memo_bounds import MEMO_LOCK, bound_codex_caches, remember_endpoint_models as _remember_endpoint_models
 from agent.model_metadata_memo_keys import endpoint_disk_slot as _endpoint_disk_slot, endpoint_memo_key as _endpoint_memo_key
+# URL -> provider inference (its own topic); ``_URL_TO_PROVIDER`` is read from here by callers.
+from agent.model_metadata_urls import (
+    _URL_TO_PROVIDER, _infer_provider_from_url, _is_known_provider_base_url, resolve_route_provider,
+)
 
 from utils import atomic_json_write, base_url_host_matches, base_url_hostname
 
@@ -443,46 +447,8 @@ def _is_custom_endpoint(base_url: str) -> bool:
     return bool(normalized) and not base_url_host_matches(normalized, "openrouter.ai")
 
 
-# Hostname -> provider: a key matches that host or a subdomain; regional <region>-aiplatform Vertex follows.
-# Profiles claim more hosts via ``hostnames``/``metadata_hostnames`` (``providers.profile_for_host``), per home.
-_URL_TO_PROVIDER: dict[str, str] = {
-    "api.openai.com": "openai", "chatgpt.com": "openai", "api.anthropic.com": "anthropic",
-    "api.z.ai": "zai", "open.bigmodel.cn": "zai",
-    "api.moonshot.ai": "kimi-coding", "api.moonshot.cn": "kimi-coding-cn", "api.kimi.com": "kimi-coding",
-    "api.stepfun.ai": "stepfun", "api.stepfun.com": "stepfun", "api.arcee.ai": "arcee",
-    "api.minimax.io": "minimax", "api.minimaxi.com": "minimax", "api.minimax.chat": "minimax",
-    "dashscope.aliyuncs.com": "alibaba", "dashscope-intl.aliyuncs.com": "alibaba", "portal.qwen.ai": "qwen-oauth",
-    "openrouter.ai": "openrouter", "generativelanguage.googleapis.com": "gemini",
-    "inference-api.nousresearch.com": "nous", "api.deepseek.com": "deepseek",
-    "api.fireworks.ai": "fireworks", "opencode.ai": "opencode-go", "api.x.ai": "xai",
-    "integrate.api.nvidia.com": "nvidia", "api.xiaomimimo.com": "xiaomi", "xiaomimimo.com": "xiaomi",
-    "api.gmi-serving.com": "gmi", "api.novita.ai": "novita",
-    "tokenhub.tencentmaas.com": "tencent-tokenhub", "api.lkeap.cloud.tencent.com": "tencent-tokenplan",
-    "ollama.com": "ollama-cloud",
-}
-
-# Auto-extend with provider-profile hostnames not already mapped.
-try:
-    for _pp in _list_providers():
-        _host = _pp.get_hostname()
-        if _host and _host not in _URL_TO_PROVIDER:
-            _URL_TO_PROVIDER[_host] = _pp.name
-except Exception:
-    pass
-
-
-def _infer_provider_from_url(base_url: str) -> Optional[str]:
-    """models.dev provider name for a base URL (custom endpoints need no explicit provider)."""
-    host = base_url_hostname(base_url)
-    if not host:
-        return None
-    from providers import profile_for_host
-    if (profile := profile_for_host(base_url, metadata=True)) is not None:  # profile claims beat table rows
-        return profile.name
-    for domain, provider in _URL_TO_PROVIDER.items():
-        if base_url_host_matches(host, domain):
-            return provider
-    return "vertex" if host.endswith("-aiplatform.googleapis.com") else None
+# Hostname -> provider inference, the route-label normalization and the profile claims that
+# beat the table live in ``agent/model_metadata_urls.py`` (imported above).
 
 
 def _strip_openrouter_routing_variant(
@@ -522,10 +488,6 @@ def _strip_openrouter_routing_variant(
         model, base,
     )
     return base
-
-
-def _is_known_provider_base_url(base_url: str) -> bool:
-    return _infer_provider_from_url(base_url) is not None
 
 
 def _lmstudio_server_root(base_url: str) -> str:
@@ -2252,8 +2214,12 @@ def get_model_context_length(
         return endpoint_context
     # A profile that qualifies its own bound (external processes have no /models probe) wins
     # over the generic caches below; explicit user/endpoint overrides above still take precedence.
+    # ``custom:<name>`` ids resolve through the host's profile, exactly like plain ``custom``:
+    # the named row is config, never a profile, and without this the live-context seam below is
+    # skipped and the window falls to the hardcoded family defaults.
+    route_provider = resolve_route_provider(provider, base_url)
     from providers import get_provider_profile
-    profile = get_provider_profile(provider)
+    profile = get_provider_profile(route_provider)
     context = profile.get_model_context_length(model) if profile else None
     if type(context) is int and context > 0:
         return context
@@ -2291,7 +2257,7 @@ def get_model_context_length(
             return ctx
     # 5. Provider-aware lookups — before the generic OR cache, since the same model has
     # different limits per provider. Generic providers are inferred from the URL.
-    effective_provider = provider
+    effective_provider = route_provider
     if base_url and (not effective_provider or effective_provider in {"openrouter", "custom"}):
         effective_provider = _infer_provider_from_url(base_url) or effective_provider
     ctx = _resolve_provider_aware_context_length(model, base_url, api_key, provider, effective_provider)

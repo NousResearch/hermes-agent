@@ -1,0 +1,17 @@
+name: hermes-cinema
+repo: https://github.com/Tormen28/hermes-video-editor
+sha: cc473c6d8a29c9b35747b431a35f5bc55767b842
+description: A Hermes Desktop pane that edits and exports real video with your own FFmpeg — timeline, text, colour, speed, seven transitions — and carries a cinematic engine inside that writes the voiceover first and times every camera move to it. No account, no upload, no watermark, no telemetry.
+maintainer: Tormen28
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+version: "0.3.4"
+image: https://raw.githubusercontent.com/Tormen28/hermes-video-editor/cc473c6d8a29c9b35747b431a35f5bc55767b842/docs/banner-catalog.jpg
+readme: true
+title: "Hermes Cinema"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

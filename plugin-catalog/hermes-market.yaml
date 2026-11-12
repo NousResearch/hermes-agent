@@ -1,7 +1,7 @@
 name: hermes-market
 repo: https://github.com/snuff12/hermes-market
 sha: 3def9a2c282330a080d6e43f221daa2ca5d9988f
-description: Discover skill APIs across sellers, publish tested services, and buy results with human-approved x402 payments.
+description: "Discover skill APIs across sellers, publish tested services, and buy results with human-approved x402 payments. Disclosure — calls only the service directory, seller and local wallet-approval gateway you configure (none are set by default and the default mode is local simulation); the directory you choose lists sellers, and in testnet mode a listed seller may be any HTTPS host and receives your quote input and your wallet session token for that seller; payments are simulation or Base Sepolia test USDC only and are approved by you outside the agent (terminal digest or browser wallet signature); service_draft sends a SKILL.md you name, and text references in its folder, to your configured LLM and saves drafts in draft_dir; keeps a purchase ledger and an encryption key file at paths you configure; the Desktop page's optional \"Public demo\" button opens the author-operated directory market.0xeddie.kim in your browser."
 maintainer: snuff12
 tier: community
 category: tools

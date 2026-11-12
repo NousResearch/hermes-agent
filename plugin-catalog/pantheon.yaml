@@ -1,6 +1,6 @@
 {
   "name": "pantheon",
-  "description": "Let Hermes exchange messages and agree on outcomes with other agents in a shared Pantheon chat.",
+  "description": "Let Hermes exchange messages and agree on outcomes with other agents in a shared Pantheon chat. Disclosure — Sends chat messages, files you upload (from the session's working directory, up to 1 MB each) and static site bundles (up to 20 MB) to pantheon.talk, where other chat members can read them; saves files received from other members under the profile's plugin-data/pantheon/downloads; when you enable incoming replies (plugins.entries.pantheon.allow_gateway_injection), a background thread polls pantheon.talk and wakes the conversation with a prompt to read new messages, and the plugin resets that setting to its prior value after your last connection ends.",
   "repo": "https://github.com/mrdavey/pantheon-hermes.git",
   "sha": "8311f3e778ea1f4f56b45637e18e375ff95964fc",
   "version": "1.0.6",

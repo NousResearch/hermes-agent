@@ -106,7 +106,8 @@ def test_violation_budget_trip_holds_until_operator_unblock(kanban_home):
 def test_plain_budget_trip_still_auto_recovers(kanban_home):
     """A unified-budget trip carries no ``sticky`` marker, so the two recovery paths on main
     survive: raising the dispatcher ``failure_limit`` past the counter promotes the card, and
-    ``assign_task`` to a fresh profile (counter reset by design) promotes it too."""
+    ``assign_task(..., reset_breaker=True)`` — the operator's explicit retry — promotes it too.
+    A plain assignment no longer re-arms the breaker (run-658 regression)."""
     with kbc.connect() as conn:
         tids = [kb.create_task(conn, title=t, assignee="a") for t in ("raise-limit", "reassign")]
         for tid in tids:
@@ -127,7 +128,7 @@ def test_plain_budget_trip_still_auto_recovers(kanban_home):
                 release_claim=False, end_run=False,
             )
         assert kb.get_task(conn, tids[1]).status == "blocked"
-        kb.assign_task(conn, tids[1], "other-profile")
+        kb.assign_task(conn, tids[1], "other-profile", reset_breaker=True)
         assert kb.recompute_ready(conn, failure_limit=2) == 1
         assert kb.get_task(conn, tids[1]).status == "ready"
 

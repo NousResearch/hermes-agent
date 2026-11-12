@@ -35,3 +35,49 @@ test.skipIf(process.platform !== 'linux')(
     }
   }
 )
+
+// Crashpad's handler runs from the same release dir with no `--type=` and is reparented to init,
+// and it can outlive the app it served. The update spec signals the app it found as "relaunched":
+// a handler taken for the app gets the SIGTERM and the real app is never asked to quit.
+test.skipIf(process.platform !== 'linux')(
+  "the packaged app's crash handler is not a Desktop main process",
+  async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'update census '))
+    const facts = {
+      hermesHome: path.join(root, 'home', '.hermes'),
+      checkout: path.join(root, 'checkout')
+    } as InstallFacts
+    fs.mkdirSync(releaseDir(facts), { recursive: true })
+    const exe = path.join(releaseDir(facts), 'Hermes')
+    const handlerExe = path.join(releaseDir(facts), 'chrome_crashpad_handler')
+    fs.copyFileSync(process.execPath, exe)
+    fs.copyFileSync(process.execPath, handlerExe)
+
+    const handler = spawn(
+      handlerExe,
+      ['-e', 'setTimeout(() => {}, 60_000)', '--', '--monitor-self-annotation=ptype=crashpad-handler'],
+      {
+        env: {},
+        stdio: 'ignore'
+      }
+    )
+
+    const app = spawn(exe, ['-e', 'setTimeout(() => {}, 60_000)'], { env: {}, stdio: 'ignore' })
+
+    try {
+      await expect
+        .poll(() =>
+          installProcesses(facts)
+            .map(proc => proc.pid)
+            .sort()
+        )
+        .toEqual([handler.pid, app.pid].sort())
+      expect(desktopMainProcesses(facts).map(proc => proc.pid)).toEqual([app.pid])
+    } finally {
+      handler.kill('SIGKILL')
+      app.kill('SIGKILL')
+      await expect.poll(() => installProcesses(facts).length).toBe(0)
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  }
+)

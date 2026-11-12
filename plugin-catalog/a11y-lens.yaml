@@ -1,0 +1,31 @@
+name: a11y-lens
+title: A11Y Lens
+repo: https://github.com/Johnlocke0347/a11y-lens
+sha: 9cf8cf3a7677661a938a0ee114b734e803fc33a7
+description: >-
+  Autonomous website accessibility testing and repair verification. Scans pages in a real headless
+  Chromium with the axe-core engine, stores evidence-backed scans, and compares before/after scans
+  (resolved / remaining / newly introduced) so Hermes can prove its fixes in the rendered page.
+  Disclosure: launches a local headless Chromium (Playwright) in an isolated subprocess; network access is
+  limited to loopback and origins a human authorises with `hermes a11y allow`; `hermes a11y install`
+  downloads Playwright's Chromium from Playwright's official CDN on explicit user command; serves a
+  user-supplied local .html folder on 127.0.0.1 for the duration of a scan; stores scan history and
+  reports locally via plugin storage; never submits forms, collects credentials or sends data off-machine.
+maintainer: Johnlocke0347
+tier: community
+category: web
+requires_hermes: ">=0.23.0"
+version: "0.1.0"
+docs_url: https://github.com/Johnlocke0347/a11y-lens/blob/9cf8cf3a7677661a938a0ee114b734e803fc33a7/README.md
+platforms: []
+screenshots:
+  - https://raw.githubusercontent.com/Johnlocke0347/a11y-lens/9cf8cf3a7677661a938a0ee114b734e803fc33a7/docs/img/report-scan.png
+  - https://raw.githubusercontent.com/Johnlocke0347/a11y-lens/9cf8cf3a7677661a938a0ee114b734e803fc33a7/docs/img/report-compare.png
+capabilities:
+  provides_tools:
+    - a11y_scan
+    - a11y_report
+    - a11y_compare
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

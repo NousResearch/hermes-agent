@@ -170,11 +170,12 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         self._reset_message_state()
 
         # Transports, resolved in run().  Draft: animated frames via adapter.send_draft;
-        # the final still uses first-send; the first failure disables drafts.  Native
+        # the final still uses first-send; a terminal failure disables drafts.  Native
         # (WeCom msgtype "stream"): the ONLY channel — any failure falls back to edit/send.
         self._use_draft_streaming = False
         self._draft_id: Optional[int] = None
         self._draft_failures = 0
+        self._draft_retry_until = 0.0
         # TERMINAL authorization refusal for THIS RUN (see _send_draft_frame).
         # Per-run state, constructed fresh each turn, so a refusal can never
         # mute a healthy destination on a later turn.
@@ -206,6 +207,9 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # Fallback sends only the missing tail after a partial overflow delivery.
         self._fallback_preserve_partial_messages = False
         self._segment_preview_message_ids: set[str] = set()
+        # The preview send timed out after the request left: it may be on screen, but unlike an
+        # acknowledged preview there is no id to edit or delete, so nothing can replace it.
+        self._preview_uncertain = False
         # Tool-progress overlay (native only): shown in the bubble until text arrives.
         self._tool_progress_lines: list[str] = []
         self._tool_progress_active: bool = False
@@ -230,6 +234,8 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # keeps legacy trust in ``delivered_final_matches`` (#95382 tightening) — re-sending there risks a
         # duplicate rather than recovering a loss.
         self._delivery_ambiguous = False
+        # A send of this answer was counted as shown although it timed out (it may be lost).
+        self._delivery_uncertain = False
 
     def _stream_is_message(self) -> bool:
         """Whether THIS chat's transport treats the stream as the message: per-chat probe
@@ -276,6 +282,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
     final_response_sent = property(lambda self: self._final_response_sent)
     message_id = property(lambda self: self._message_id)
     final_content_delivered = property(lambda self: self._final_content_delivered)
+    delivery_uncertain = property(lambda self: self._delivery_uncertain)
 
     async def _notify_before_finalize(self) -> None:
         """Run the pre-finalize hook exactly once, swallowing hook errors."""
@@ -364,21 +371,24 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
 
     def has_delivered_text(self, text: str) -> bool:
         """Return True if *text* was already delivered as visible chat content."""
-        target = self._clean_for_display(text or "").strip()
-        seen = (self._visible_prefix(), *self._delivered_commentary_texts,
-                *self._delivered_segment_texts)
-        return bool(target) and any(sent.strip() == target for sent in seen)
+        return self._shown_as(text, (self._visible_prefix(), *self._delivered_commentary_texts,
+                                     *self._delivered_segment_texts))
+
+    def _shown_as(self, text: str, seen) -> bool:
+        """Whether ``text`` renders exactly as one delivered message. Both sides are compared as
+        displayed: a code fence the display closed is what the user saw, not unseen text."""
+        target = self._display_payload(text)
+        return bool(target) and any(self._display_payload(sent) == target for sent in seen)
 
     def has_durably_delivered_text(self, text: str) -> bool:
         """``has_delivered_text`` restricted to deliveries that outlive the turn: commentary and
         finalized segments always count; the visible prefix only once ``_already_sent`` (a draft frame
         sets ``_last_sent_text`` but is ephemeral — a failed finalize send after it must still fall
         back to the gateway's real final send, same gate as ``delivered_final_matches``)."""
-        target = self._clean_for_display(text or "").strip()
         seen = [*self._delivered_commentary_texts, *self._delivered_segment_texts]
         if self._already_sent:
             seen.append(self._visible_prefix())
-        return bool(target) and any(sent.strip() == target for sent in seen)
+        return self._shown_as(text, seen)
 
     def on_segment_break(self) -> None:
         """Finalize the current stream segment and start a fresh message."""
@@ -454,6 +464,10 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                 flush_event.set()
 
     def _reset_segment_state(self, *, preserve_no_edit: bool = False) -> None:
+        # Text before a boundary is interim, never the final answer: an unsure send of it must
+        # not get the clean final redelivered as "may be a duplicate". Cleared even when the
+        # no-edit sentinel keeps the rest of the segment state.
+        self._delivery_uncertain = False
         if preserve_no_edit and self._message_id == "__no_edit__":
             return
         # Retain the segment's visible text so has_delivered_text still matches.
@@ -779,6 +793,8 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         if self._use_native_streaming:
             # No platform edit-rate limit: push every delta immediately.
             should_edit = bool(self._accumulated) or self._tool_progress_active
+        elif self._use_draft_streaming:
+            should_edit = self._should_push_draft()
         else:
             elapsed = time.monotonic() - self._last_edit_time
             # buffer_threshold is a codepoint debounce heuristic, not a
@@ -811,12 +827,18 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             chunks = self._split_text_chunks(self._accumulated, self._safe_limit, self._len_fn)
         reply_to = self._initial_reply_to_id
         heads_delivered = len(chunks) > 1
-        for chunk in chunks[:-1]:
-            new_id = await self._send_new_chunk(chunk, reply_to, final=tick.got_done)
+        for index, chunk in enumerate(chunks[:-1]):
+            new_id = await self._send_new_chunk(chunk, reply_to, final=tick.got_done, first=index == 0)
+            if new_id == "__partial__":
+                # The first head landed in part: edits are over, got_done sends only the unseen tail.
+                if tick.got_done:
+                    await self._send_fallback_final(self._accumulated)
+                return tick.got_done
             if new_id is None or new_id == reply_to:
                 heads_delivered = False  # keep the full text intact for the gateway fallback
                 break
-            reply_to = new_id
+            # An ack-lost head has no id to thread against; it is still shown.
+            reply_to = None if new_id == "__no_edit__" else new_id
 
         if heads_delivered:
             # truncate_message suffixes multi-chunk output with " (n/n)"; the tail is the LIVE

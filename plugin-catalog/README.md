@@ -169,6 +169,13 @@ meaningful:
    record (never a file inside the plugin). Local-directory, Git URL, `--ref`,
    `--allow-removed`, project and pip installs are refused, and no setting
    relaxes it.
+19. **No plugins built to reach infringing content.** A plugin whose main
+   purpose is to find, stream or download copyrighted films, shows, music, books,
+   games or software from sources that are not licensed to distribute them
+   (piracy aggregators, unofficial mirrors, cracked-release indexes) is declined,
+   however clean its code. A general-purpose tool such as a browser, downloader
+   or media player is fine; one that ships with those sources built in, or whose
+   description points users at them, is not.
 <!-- admission-rules:end -->
 
 The step-by-step submission guide, with the same rules and what reviewers check,
@@ -248,6 +255,10 @@ file removal, users who already installed it are unaffected). It is welcome back
 problem is fixed; a name squatter comes back under a distinct name. When a new rule affects
 entries that are already listed, their authors get an issue on their repository explaining
 the change and time to update before anything is delisted.
+
+Entries whose repository was deleted, or whose pinned commit no longer exists (force-pushed
+away), are delisted automatically: `.github/workflows/catalog-dead-repos.yml` checks every entry
+each week and opens one PR deleting the dead ones, for a maintainer to review.
 
 ## Names
 

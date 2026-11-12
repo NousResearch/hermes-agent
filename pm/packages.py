@@ -13,7 +13,7 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-from pm.filesystem import long_root, native
+from pm.filesystem import long_root, native, remove_tree, retry_held
 from pm.package import (
     DebPackage,
     InstallError,
@@ -265,7 +265,7 @@ class Python(_BionicDebArm, BinaryPackage, DebPackage):
         # recorded over the shipped bytes, so a post-publish deletion (as the
         # old bundle-time drop did) makes doctor's re-hash mismatch.
         if target == "win32-arm64":
-            (staged / "vcruntime140_1.dll").unlink(missing_ok=True)
+            retry_held(lambda: (staged / "vcruntime140_1.dll").unlink(missing_ok=True))
         # python-build-standalone's Windows build ships python.exe only, so `python3` (npm and
         # vitest helpers, POSIX-minded scripts) resolves past the activated PATH to the Microsoft
         # Store's App Execution Alias stub, which installs nothing and fails. python.exe is a
@@ -532,7 +532,7 @@ class Venv(StatePackage):
         """
         import uuid
         from pm.environments import install_state_dir, runtime_facts_path
-        from pm.environment import managed_environment
+        from pm.environment import managed_environment  # noqa: TID251
         from pm.lock import Facts
         from pm.native_build import source_build_environment
         from pm.workspace import build_member_dirs, lock_and_sync
@@ -818,11 +818,11 @@ class Pnpm(BinaryPackage):
         package = staged / "package"
         dist = package / "dist"
         if dist.is_dir():
-            dist.rename(staged / "dist")
+            retry_held(lambda: dist.rename(staged / "dist"))
         else:
             for item in package.iterdir():
-                item.rename(staged / item.name)
-        shutil.rmtree(package)
+                retry_held(lambda: item.rename(staged / item.name))
+        retry_held(lambda: remove_tree(package))
 
     def latest_versions(self, target: str, locked=None) -> list[str]:
         latest = npm_dist_tags("pnpm").get("latest")
@@ -1061,6 +1061,33 @@ class Ripgrep(BinaryPackage):
 
 
 @register
+class Just(BinaryPackage):
+    """The developer command runner. Activation installs it; user installs and desktop bundles never do."""
+
+    name = "just"
+    optional = True
+    binary_rel = {"win32": "just.exe", "posix": "just"}
+
+    def verify(self, entry: Path, target: str) -> str:
+        if target == "linux-arm64-bionic":
+            return Package.verify(self, entry, target)
+        return super().verify(entry, target)
+
+    def fetch_url(self, version: str, target: str) -> str:
+        if target == "linux-arm64-bionic":
+            target = "linux-arm64"  # This upstream artifact is a static musl executable.
+        triple = _RUST_TRIPLE[target].replace("-unknown-linux-gnu", "-unknown-linux-musl")
+        ext = "zip" if target.startswith("win32") else "tar.gz"
+        return f"https://github.com/casey/just/releases/download/{version}/just-{version}-{triple}.{ext}"
+
+    def known_sha256(self, version: str, url: str) -> Optional[str]:
+        return _github_release_digests("casey/just", version).get(url.rsplit("/", 1)[-1])
+
+    def latest_versions(self, target: str, locked=None) -> list[str]:
+        return github_release_tags("casey/just")
+
+
+@register
 class CuaDriver(BinaryPackage):
     name = "cua-driver"
     optional = True
@@ -1199,12 +1226,49 @@ class Chromium(Package):
         return {"PLAYWRIGHT_BROWSERS_PATH": str(entry.parent)}
 
 
+# A fresh Windows has no MSVCP140.dll; it must be at least the newest MSVC toolset of the binaries it serves.
+_VC_RUNTIME = {
+    "win32-x64": "https://download.visualstudio.microsoft.com/download/pr/3984a6ef-2ffc-4c07-962e-bf9e9b862819/"
+                 "24a1c8dba0376d9b008ac2ba430d13c06664fc6f163511fd7866485030e289af/"
+                 "Microsoft.VC.14.51.CRT.Redist.X64.base.vsix",
+    "win32-arm64": "https://download.visualstudio.microsoft.com/download/pr/3984a6ef-2ffc-4c07-962e-bf9e9b862819/"
+                   "4090d939c83e50ba36a3023bd46c7ea622082fadd88a42bd0a9bba445ff710c8/"
+                   "Microsoft.VC.14.51.CRT.Redist.ARM64.base.vsix",
+}
+
+
+def _unpack_vc_runtime(name: str, archive: Path, staged: Path, target: str) -> None:
+    """The target's redistributable CRT DLLs, flat. The payload also carries debug builds that
+    may not be redistributed, and its ARM64 CRT folder an x64 vcruntime140_1.dll."""
+    import re
+    import zipfile
+
+    from pm.package import machine_matches_binary
+
+    shutil.rmtree(staged, ignore_errors=True)
+    staged.mkdir(parents=True, exist_ok=True)
+    arch = re.escape(target.split("-")[1])
+    member = re.compile(rf"Contents/VC/Redist/MSVC/[^/]+/{arch}/Microsoft\.VC\d+\.CRT/([^/\\]+\.dll)", re.IGNORECASE)
+    with zipfile.ZipFile(archive) as zf:
+        for info in zf.infolist():
+            match = member.fullmatch(info.filename)
+            if match is None:
+                continue
+            dll = staged / match[1].lower()
+            dll.write_bytes(zf.read(info))
+            if machine_matches_binary(dll, target) is False:
+                retry_held(dll.unlink)
+    if not (staged / "msvcp140.dll").is_file():
+        raise InstallError(name, f"{archive.name} carries no {target} msvcp140.dll")
+
+
 class LlamaCpp(BinaryPackage):
     """One llama.cpp backend build. Backends are dlopen'd plugins, so a
     usable engine is one archive per (target, backend) — plus, for CUDA, the
-    cudart archive (end users have no CUDA toolkit), and on Linux the libgomp
-    .deb. Every library lands beside llama-server: Windows resolves DLLs from
-    the executable's directory, and the Linux builds' RUNPATH is $ORIGIN.
+    cudart archive (end users have no CUDA toolkit), on Linux the libgomp
+    .deb, and on Windows Microsoft's VC++ runtime. Every library lands beside
+    llama-server: Windows resolves DLLs from the executable's directory, and
+    the Linux builds' RUNPATH is $ORIGIN.
 
     Backend is a HARDWARE choice, not a target, so each backend is its own
     optional package and the runtime asks for the one this machine can
@@ -1249,10 +1313,11 @@ class LlamaCpp(BinaryPackage):
         return [f"llama-b{version}-bin-{self.assets[target]}.{ext}"]
 
     def fetch_urls(self, version: str, target: str) -> list[str]:
+        runtime = [libs[target] for libs in (self._LIBGOMP, _VC_RUNTIME) if target in libs]
         return [
             f"https://github.com/ggml-org/llama.cpp/releases/download/b{version}/{asset}"
             for asset in self._asset_names(version, target)
-        ] + ([self._LIBGOMP[target]] if target in self._LIBGOMP else [])
+        ] + runtime
 
     def fetch_url(self, version: str, target: str) -> str:
         return self.fetch_urls(version, target)[0]
@@ -1280,6 +1345,8 @@ class LlamaCpp(BinaryPackage):
     def unpack(self, archive: Path, staged: Path, target: str) -> None:
         if archive.name.endswith(".deb"):
             unpack_deb(self.name, archive, staged)
+        elif archive.name.endswith(".vsix"):
+            _unpack_vc_runtime(self.name, archive, staged, target)
         else:
             super().unpack(archive, staged, target)
 
@@ -1327,10 +1394,12 @@ _release_digest_cache: dict[tuple, dict] = {}
 
 @register
 class LlamaCppCuda(LlamaCpp):
-    """CUDA 13.4 everywhere upstream builds it: 13.x drivers run any 13.x
-    runtime (minor-version compatibility), and 13.4 is the only line upstream
-    ships for win-arm64. Linux archives first appeared after b10964, and
-    upstream dropped win-cuda-13.3 at the same time.
+    """One CUDA 13 line everywhere upstream builds it, the only line upstream ships for
+    win-arm64: 13.4 through b12167, and 13.5 from b12170, after upstream's release workflow
+    moved (ggml-org/llama.cpp 3ed7284f2). A 13.x driver loads either runtime, but a GPU the
+    build carries no native code for (Turing, A100, Hopper, GB200/GB300) compiles the kernels
+    at load and needs a driver at least as new as the toolkit. Linux archives first appeared
+    after b10964, and upstream dropped win-cuda-13.3 at the same time.
 
     The engine archive carries no CUDA libraries (end users have no toolkit),
     so each target pins a second cudart archive too."""
@@ -1338,22 +1407,27 @@ class LlamaCppCuda(LlamaCpp):
     name = "llamacpp-cuda"
     backend = "cuda"
     assets = {
-        "win32-x64": "win-cuda-13.4-x64",
-        "win32-arm64": "win-cuda-13.4-arm64",
-        "linux-x64": "ubuntu-cuda-13.4-x64",
-        "linux-arm64": "ubuntu-cuda-13.4-arm64",
+        "win32-x64": "win-cuda-{toolkit}-x64",
+        "win32-arm64": "win-cuda-{toolkit}-arm64",
+        "linux-x64": "ubuntu-cuda-{toolkit}-x64",
+        "linux-arm64": "ubuntu-cuda-{toolkit}-arm64",
     }
+    # b12167's release notes name 13.5 files; the archives attached to it are 13.4 builds.
+    _FIRST_CUDA_13_5 = 12170
 
     def _asset_names(self, version: str, target: str) -> list[str]:
-        # Upstream names the Windows cudart zip without the build tag and the
-        # Linux one with it.
-        infix = self.assets[target]
+        # An engine installed before the package manager is adopted by the archive names of its
+        # own tag, so an older version keeps the toolkit upstream built it with. Upstream names
+        # the Windows cudart zip without the build tag and the Linux one with it.
+        toolkit = "13.5" if int(version) >= self._FIRST_CUDA_13_5 else "13.4"
+        infix = self.assets[target].format(toolkit=toolkit)
+        ext = "zip" if target.startswith("win32") else "tar.gz"
         cudart = (
             f"cudart-llama-bin-{infix}.zip"
             if target.startswith("win32")
             else f"cudart-llama-b{version}-bin-{infix}.tar.gz"
         )
-        return super()._asset_names(version, target) + [cudart]
+        return [f"llama-b{version}-bin-{infix}.{ext}", cudart]
 
     def stage(self, store: Store, staged: Path, version: str, target: str) -> None:
         """The Linux cudart tarball unpacks into its own top-level dir, but the
@@ -1422,3 +1496,14 @@ class WhisperCppCpu(BinaryPackage):
     binary_rel = {"win32-arm64": "whisper-cli.exe"}
     probe_args = ["--help"]
     url = "https://github.com/ggml-org/whisper.cpp/releases/download/{version}/whisper-bin-win-cpu-arm64.zip"
+
+    def fetch_urls(self, version: str, target: str) -> list[str]:
+        return [self.fetch_url(version, target), _VC_RUNTIME[target]]
+
+    def unpack(self, archive: Path, staged: Path, target: str) -> None:
+        if archive.name.endswith(".vsix"):
+            _unpack_vc_runtime(self.name, archive, staged, target)
+            return
+        super().unpack(archive, staged, target)
+        # Before the runtime merges in beside Release/, which would leave stage() nothing to hoist.
+        flatten_single_dir(staged)

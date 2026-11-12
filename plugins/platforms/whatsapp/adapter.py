@@ -9,7 +9,7 @@ import platform
 import re
 import signal
 import subprocess
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from functools import wraps
 from pathlib import Path
 from typing import Dict, Optional, Any
@@ -278,8 +278,6 @@ def _terminate_bridge_process(proc, *, force: bool = False) -> None:
                 getattr(child, action)()
         getattr(parent, action)()
 
-import sys
-sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
@@ -289,6 +287,7 @@ from gateway.platforms.base import (
 )
 from gateway.platforms.helpers import cancel_task
 from gateway.platforms.event import MessageEvent, MessageType
+from gateway.platforms.helpers import caption_is_command
 from utils import env_int
 
 
@@ -322,6 +321,132 @@ def _file_content_hash(path: Path) -> str:
         return hashlib.sha256(path.read_bytes()).hexdigest()[:16]
     except OSError:
         return ""
+
+
+def _bridge_source_hash(bridge_path: Path) -> str:
+    """``scriptHash`` as bridge.js computes it: bridge.js + bridge_auth.js (name-delimited), 16 hex chars; "" if unreadable.
+    The auth helper is in the hash so a long-lived bridge with stale auth code is restarted, not adopted."""
+    import hashlib
+    digest = hashlib.sha256()
+    try:
+        for path in (bridge_path, bridge_path.with_name("bridge_auth.js")):
+            digest.update(path.name.encode("utf-8") + b"\0" + path.read_bytes() + b"\0")
+    except OSError:
+        return ""
+    return digest.hexdigest()[:16]
+
+
+_BRIDGE_TOKEN_FILE = ".bridge-token"
+
+
+@contextmanager
+def _bridge_token_lock(lock_path: Path):
+    """Exclusive, crash-released file lock (flock / msvcrt) so concurrent first-use callers mint ONE token."""
+    with open(lock_path, "a+b") as handle:
+        if os.name == "nt":
+            import msvcrt
+            if handle.seek(0, os.SEEK_END) == 0:
+                handle.write(b"\0")
+                handle.flush()
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _load_or_create_bridge_token(session_path: Path, *, rotate: bool = False) -> str:
+    """Per-session secret shared by the adapter, the bridge it spawns and standalone (cron) senders; 0600 beside creds.json.
+
+    Created once under an exclusive lock so two first-use callers (gateway start + a cron delivery) agree on one
+    value; a short or unreadable file is replaced. ``rotate`` mints a fresh one regardless (each new bridge spawn),
+    so a token that leaked to whoever held the port of a dead bridge dies with it. Raises OSError when the session
+    dir cannot be written."""
+    import secrets
+    import tempfile
+    session_path.mkdir(parents=True, exist_ok=True)
+    token_path = session_path / _BRIDGE_TOKEN_FILE
+    with _bridge_token_lock(token_path.with_name(_BRIDGE_TOKEN_FILE + ".lock")):
+        with suppress(OSError):
+            existing = "" if rotate else token_path.read_text(encoding="utf-8-sig").strip()
+            if len(existing) >= 32:
+                return existing
+        token = secrets.token_urlsafe(32)
+        # mkstemp creates the temp file 0600, so the secret is never umask-readable; the rename is atomic.
+        fd, tmp = tempfile.mkstemp(prefix=".bridge-token.", dir=session_path)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(token)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp, token_path)
+        except BaseException:
+            with suppress(OSError):
+                os.unlink(tmp)
+            raise
+        return token
+
+
+def _read_bridge_token(session_path: Path) -> str:
+    """The persisted secret, or "" — standalone senders never mint one (a bridge spawned without it would not know it)."""
+    with suppress(OSError):
+        return (session_path / _BRIDGE_TOKEN_FILE).read_text(encoding="utf-8-sig").strip()
+    return ""
+
+
+def _bridge_auth_headers(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _bridge_auth_proof(token: str, challenge: str) -> str:
+    import hashlib
+    import hmac
+    return hmac.new(token.encode("utf-8"), challenge.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+async def _authenticated_bridge_health(session, base_url: str, token: str, timeout) -> tuple[bool, Any]:
+    """Prove the listener on *base_url* holds *token* BEFORE sending it, then GET /health with the bearer.
+
+    ``GET /auth-proof`` carries only a fresh nonce; the listener answers HMAC(token, nonce). A process that bound the
+    port first (the impersonation in #83395) cannot forge that, and never sees the secret. Returns ``(http_200, json)``
+    exactly like a plain health probe; an unauthenticated or wrong-proof listener is ``(False, None)``.
+    Connection errors and timeouts propagate (no answer is no identity evidence either way)."""
+    import hmac
+    import secrets
+
+    import aiohttp
+    challenge = secrets.token_urlsafe(24)
+    async with session.get(f"{base_url}/auth-proof", headers={"X-Hermes-Bridge-Challenge": challenge}, timeout=timeout) as resp:
+        if resp.status != 200:
+            return False, None
+        try:
+            proof = (await resp.json()).get("authProof")
+        except TimeoutError:
+            raise
+        except (aiohttp.ClientError, ValueError, AttributeError):  # non-JSON / non-object body
+            return False, None
+    # Compared as bytes: str compare_digest raises TypeError on non-ASCII, which would read as "no answer".
+    expected = _bridge_auth_proof(token, challenge).encode("utf-8")
+    if not (isinstance(proof, str) and hmac.compare_digest(proof.encode("utf-8", "surrogatepass"), expected)):
+        return False, None
+    async with session.get(f"{base_url}/health", headers=_bridge_auth_headers(token), timeout=timeout) as resp:
+        if resp.status != 200:
+            return False, None
+        try:
+            return True, await resp.json()
+        except TimeoutError:
+            raise  # a body that never arrives is no answer, the same as headers that never arrive
+        except (aiohttp.ClientError, ValueError):
+            return True, None
 
 
 def check_whatsapp_requirements() -> bool:
@@ -439,6 +564,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._bridge_process: Optional[subprocess.Popen] = None
         self._foreign_bridge_session: Optional[str] = None  # set by _reuse_running_bridge when /health names another profile's session
         self._bridge_probe_timed_out = False  # set by _reuse_running_bridge when the port's holder gave no /health answer
+        self._bridge_holder_unproven = False  # set by _reuse_running_bridge when the port's holder failed the token proof
         from .bridge_ownership import standalone_bridge_port
         try:
             # Same resolution as out-of-process sends, so a profile that recorded a port while serving as a
@@ -463,6 +589,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._mention_patterns = self._compile_mention_patterns()
         self._message_queue: asyncio.Queue = asyncio.Queue()
         self._bridge_log_fh = self._bridge_log = self._poll_task = self._http_session = None
+        self._bridge_token = ""  # loaded in connect(); the session dir may not exist yet
         # Set by disconnect() before SIGTERMing so _check_managed_bridge_exit() can tell an intentional exit (-15/-2/0) from a crash.
         self._shutting_down = False
         # Text debounce batching: rapid bursts (forwards, paste-splits) would otherwise each trigger a separate agent turn.
@@ -478,17 +605,13 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         return getattr(self._http_session, method)(self._bridge_url(path), **kwargs, timeout=aiohttp.ClientTimeout(total=timeout))
 
     async def _probe_bridge_health(self) -> tuple[bool, Any]:
-        """GET /health with a fresh session → ``(http_200, json)``; unparseable 200 body → ``(True, None)``; connection errors and timeouts propagate."""
+        """Challenge the listener, then GET /health with the bearer, on a fresh session → ``(http_200, json)``;
+        a listener that cannot prove it holds this session's token is ``(False, None)``; unparseable 200 body →
+        ``(True, None)``; connection errors and timeouts propagate."""
         import aiohttp
-        async with aiohttp.ClientSession() as session, session.get(self._bridge_url("health"), timeout=aiohttp.ClientTimeout(total=2)) as resp:
-            if resp.status != 200:
-                return False, None
-            try:
-                return True, await resp.json()
-            except TimeoutError:
-                raise  # a body that never arrives is no answer, the same as headers that never arrive
-            except Exception:
-                return True, None
+        async with aiohttp.ClientSession() as session:
+            return await _authenticated_bridge_health(
+                session, f"http://127.0.0.1:{self._bridge_port}", self._bridge_token, aiohttp.ClientTimeout(total=2))
 
     def _ensure_bridge_deps(self, bridge_dir: Path) -> bool:
         """npm install when node_modules is missing OR package.json hash != stamp file. False = fatal error set."""
@@ -532,16 +655,25 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     def _attach_to_bridge(self, managed_process) -> None:
         import aiohttp
         self._bridge_process = managed_process
-        self._http_session = aiohttp.ClientSession()
+        # Default headers: every send/edit/media/typing/read/poll call is authenticated without per-call-site changes.
+        self._http_session = aiohttp.ClientSession(headers=_bridge_auth_headers(self._bridge_token))
         self._poll_task = asyncio.create_task(self._poll_messages())
 
     async def _reuse_running_bridge(self, bridge_path: Path) -> bool:
         """Adopt a connected bridge serving the on-disk bridge.js + same read-receipt config; else say why it restarts."""
+        import aiohttp
         self._foreign_bridge_session = None
         self._bridge_probe_timed_out = False
+        self._bridge_holder_unproven = False
         try:
             ok, data = await self._probe_bridge_health()
-            if not ok or data is None:
+            if not ok:
+                # It answered but cannot prove this session's token: another profile's bridge on the shared port
+                # (each session has its own token), an impostor, or our own pre-auth bridge. Only the last may be
+                # stopped, and only by its pidfile; connect() never kills this holder by port.
+                self._bridge_holder_unproven = True
+                return False
+            if data is None:
                 return False
             # Another profile's bridge (same default port) is neither adopted, which would answer as that
             # profile's phone, nor killed: connect() reports it. Checked before status because a bridge in
@@ -555,7 +687,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             if bridge_status != "connected":
                 print(f"[{self.name}] Bridge found but not connected (status: {bridge_status}), restarting")
                 return False
-            running_hash, disk_hash = data.get("scriptHash", ""), _file_content_hash(bridge_path)
+            running_hash, disk_hash = data.get("scriptHash", ""), _bridge_source_hash(bridge_path)
             if running_hash and disk_hash and running_hash == disk_hash and bool(data.get("sendReadReceipts", False)) == self._send_read_receipts:
                 print(f"[{self.name}] Using existing bridge (status: {bridge_status})")
                 self._mark_connected()
@@ -566,8 +698,12 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             print(f"[{self.name}] Running bridge is stale ({stale_reason}), restarting")
         except TimeoutError:
             self._bridge_probe_timed_out = True  # something holds the port but gave no identity; connect() leaves it
+        except (ConnectionRefusedError, aiohttp.ClientConnectorError):
+            pass  # the connect itself failed: nothing is listening, start a new bridge
         except Exception:
-            pass  # Bridge not running, start a new one
+            # Something answered (dropped the connection, sent garbage) without proving the token: no identity
+            # evidence, so connect() reaps by pidfile only and never kills this holder by port.
+            self._bridge_holder_unproven = True
         return False
 
     def _bridge_env(self) -> dict:
@@ -584,6 +720,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         else:
             bridge_env.pop("WHATSAPP_REPLY_PREFIX", None)
         bridge_env["WHATSAPP_SEND_READ_RECEIPTS"] = "true" if self._send_read_receipts else "false"
+        bridge_env["HERMES_WHATSAPP_BRIDGE_TOKEN"] = self._bridge_token
         for _key, _v in [("WHATSAPP_MODE", _wenv("WHATSAPP_MODE", "self-chat"))] + [(k, _wenv(k)) for k in _BRIDGE_PASSTHROUGH_ENV]:
             if _v:
                 bridge_env[_key] = _v
@@ -724,6 +861,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             if not self._ensure_bridge_deps(bridge_path.parent):
                 return False
             self._session_path.mkdir(parents=True, exist_ok=True)
+            self._bridge_token = _load_or_create_bridge_token(self._session_path)
             # A secondary adopts or reaps only a bridge its own pidfile identifies; the default keeps
             # its historical adopt-or-clear-the-port path. A bridge this version started dies with
             # its gateway (spawn_owned), so what is adopted here is one a pre-update gateway or
@@ -747,30 +885,17 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             if not secondary or prior_bridge_is_ours:
                 await asyncio.to_thread(_kill_stale_bridge_by_pidfile, self._session_path)
             if not secondary:
-                if self._bridge_probe_timed_out:
-                    # No /health answer is no ownership evidence (another profile's busy bridge looks the same), and
-                    # our own stale bridge was just reaped by its pidfile: a holder that remains is left running.
-                    await asyncio.sleep(1)
-                    try:
-                        held = bool(_port_listener_pids(self._bridge_port))
-                    except Exception:
-                        held = True  # listeners could not be listed: still no evidence to kill on
-                    if held:
-                        self._set_fatal_error(
-                            "whatsapp_bridge_unresponsive",
-                            f"Port {self._bridge_port} is held by a process that did not answer /health in time, so "
-                            f"Hermes cannot tell whose WhatsApp bridge it is; nothing on port {self._bridge_port} was "
-                            "stopped. Stop that process, or give this profile its own port via "
-                            "platforms.whatsapp.extra.bridge_port.",
-                            retryable=True,
-                        )
+                if self._bridge_probe_timed_out or self._bridge_holder_unproven:
+                    if await self._unidentified_holder_remains():
                         return False
-                await asyncio.to_thread(_kill_port_process, self._bridge_port)
+                else:
+                    await asyncio.to_thread(_kill_port_process, self._bridge_port)
             # The kills above return after SIGTERM (or SIGKILL past the grace); a slow-exiting bridge could still
             # hold the port, and the blind sleep that used to sit here spawned onto it — EADDRINUSE, retried forever.
             # A secondary that skipped the kills found the port free, so this returns at once on that path.
             if not await self._wait_bridge_port_free():
                 return False
+            self._bridge_token = _load_or_create_bridge_token(self._session_path, rotate=True)
             # Bridge output goes to a log file so QR codes, errors, and reconnection messages survive for troubleshooting.
             self._bridge_log = self._session_path.parent / "bridge.log"
             self._bridge_log_fh = bridge_log_fh = open(self._bridge_log, "a", encoding="utf-8")  # noqa: ASYNC230 -- long-lived log handle handed to the bridge subprocess
@@ -796,6 +921,36 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 if lock_acquired:
                     self._release_platform_lock()
                 self._close_bridge_log()
+
+    async def _unidentified_holder_remains(self) -> bool:
+        """Port holder that gave no identity (no /health answer, or no proof of this session's token): our own stale
+        bridge was just reaped by its pidfile, so a holder that remains is left running → True with a named fatal."""
+        await asyncio.sleep(1)
+        try:
+            held = bool(_port_listener_pids(self._bridge_port))
+        except (OSError, subprocess.SubprocessError, ValueError):  # netstat/lsof missing, timed out, or unparseable
+            held = True  # listeners could not be listed: still no evidence to kill on
+        if not held:
+            return False
+        if self._bridge_probe_timed_out:
+            self._set_fatal_error(
+                "whatsapp_bridge_unresponsive",
+                f"Port {self._bridge_port} is held by a process that did not answer /health in time, so "
+                f"Hermes cannot tell whose WhatsApp bridge it is; nothing on port {self._bridge_port} was "
+                "stopped. Stop that process, or give this profile its own port via "
+                "platforms.whatsapp.extra.bridge_port.",
+                retryable=True,
+            )
+        else:
+            self._set_fatal_error(
+                "whatsapp_bridge_foreign_session",
+                f"Port {self._bridge_port} is held by a WhatsApp bridge (or another process) that cannot prove this "
+                f"session's token, most likely another profile's bridge; nothing on port {self._bridge_port} was "
+                "stopped. Give this profile its own port via platforms.whatsapp.extra.bridge_port "
+                "(one distinct bridge_port per profile).",
+                retryable=False,
+            )
+        return True
 
     def _close_bridge_log(self) -> None:
         if self._bridge_log_fh:
@@ -1185,7 +1340,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     cached_urls.append(path)
                     media_types.append(mime)
             media_text_inlined: list[bool] = []
-            if msg_type == MessageType.DOCUMENT and cached_urls:
+            if msg_type == MessageType.DOCUMENT and cached_urls and not caption_is_command(body):
                 body, media_text_inlined = self._inject_document_text(cached_urls, body)
             native_metadata = data.get("nativeMetadata")
             metadata: dict[str, Any] = {k: v for k, v in (
@@ -1243,7 +1398,15 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
         bridge_port = standalone_bridge_port(
             get_hermes_home(), (getattr(pconfig, "extra", {}) or {}).get("bridge_port")
         )
-        own_session = str(_session_dir(getattr(pconfig, "extra", {}) or {}))
+        own_session_path = _session_dir(getattr(pconfig, "extra", {}) or {})
+        own_session = str(own_session_path)
+        # Only READ the secret: the adapter that spawned the bridge is the sole writer, and a bridge that never got a
+        # token refuses to serve, so minting one here could never authenticate anything.
+        bridge_token = _read_bridge_token(own_session_path)
+        if not bridge_token:
+            return send_error(
+                f"No WhatsApp bridge token at {own_session_path / _BRIDGE_TOKEN_FILE}; start the gateway once so it "
+                "spawns an authenticated bridge. Nothing was sent.")
         normalized_chat_id = to_whatsapp_jid(chat_id)
         media = media_files or []
         # A caption only applies to a single media file — never repeat it across a multi-file send.
@@ -1258,17 +1421,20 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
             return payload
 
         last_message_id = None
+        # 127.0.0.1 exactly as the bridge binds it: ``localhost`` may resolve to ::1 and reach a different listener.
+        bridge_url = f"http://127.0.0.1:{bridge_port}"
+        # No default bearer: aiohttp merges session headers into every request, /auth-proof included, and the
+        # challenge must reach the listener credential-free. Requests made after the proof pass it explicitly.
         async with aiohttp.ClientSession() as session:
             # Whose bridge holds the port is checked before anything is posted: on a shared port another profile's
-            # bridge would deliver from that profile's WhatsApp account. A bridge without ``session`` predates the field.
-            async with session.get(
-                f"http://localhost:{bridge_port}/health",
-                timeout=aiohttp.ClientTimeout(total=5),
-            ) as resp:
-                if resp.status != 200:
-                    return send_error(
-                        f"WhatsApp bridge on port {bridge_port} answered /health with HTTP {resp.status}; nothing was sent.")
-                health = await resp.json()
+            # bridge would deliver from that profile's WhatsApp account. The challenge-first probe also refuses a
+            # listener that does not hold this session's token, so the bearer is never handed to an impostor.
+            ok, health = await _authenticated_bridge_health(session, bridge_url, bridge_token, aiohttp.ClientTimeout(total=5))
+            if not ok:
+                return send_error(
+                    f"WhatsApp bridge on port {bridge_port} failed authentication or answered /health with an error; "
+                    "nothing was sent.")
+            health = health or {}
             reported_session = health.get("session")
             if reported_session and reported_session != own_session:
                 return send_error(
@@ -1282,8 +1448,9 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
 
             async def _post(path, payload, total, error_label=None):
                 """``(messageId, None)`` on 200, else ``(None, error_dict)`` (body read only when labelled)."""
-                url = f"http://localhost:{bridge_port}/{path}"
-                async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=total)) as resp:
+                url = f"{bridge_url}/{path}"
+                async with session.post(url, json=payload, headers=_bridge_auth_headers(bridge_token),
+                                        timeout=aiohttp.ClientTimeout(total=total)) as resp:
                     if resp.status == 200:
                         return (await resp.json()).get("messageId"), None
                     return None, {} if error_label is None else send_error(f"WhatsApp {error_label} error ({resp.status}): {await resp.text()}")

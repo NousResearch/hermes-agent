@@ -221,7 +221,7 @@ When you call `ctx.register_platform()`, the following integration points are ha
 | Webhook cross-platform delivery | Registry checked for known platforms |
 | `/update` command access | `allow_update_command` flag |
 | Channel directory | Plugin platforms included in enumeration |
-| System prompt hints | `platform_hint` injected into LLM context |
+| System prompt hints | `platform_hint` injected into LLM context; `platform_hint_tool_notes` (`{tool: sentence}`) appended only when the session has that tool |
 | Message chunking | `max_message_length` for smart splitting |
 | PII redaction | `pii_safe` flag |
 | `hermes status` | Lists plugin platforms alongside built-ins, one row each, using the gateway's own configured check |
@@ -305,7 +305,9 @@ lists each import of it.
 | SSRF-safe HTTP client: connect-time IP validation, per-redirect re-check, shared keepalive limits | `from gateway.platforms.helpers import platform_http_client` |
 | The pieces of that client, to build your own | `gateway.platforms.base.ssrf_redirect_guard` (httpx `response` hook), `tools.url_safety.create_ssrf_safe_async_client`, `tools.url_safety.is_safe_url`, `gateway.platforms._http_client_limits.platform_httpx_limits` |
 | Own DM/group policy (`dm_policy` / `group_policy` / allowlists) | `from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin` |
-| Resolve an approval from a native button | `from tools.approval import resolve_gateway_approval_card` (pass the card's request id; `resolve_gateway_approval` answers the oldest pending request) |
+| Resolve an approval from a native button | `from tools.approval import resolve_gateway_approval_card` (pass the card's request id; a call without one resolves nothing. Every request starts Deny-only: render through `_send_exec_approval_prompt` so the base `send_exec_approval` can lift the mark once the card shows the whole command. `resolve_gateway_approval` answers the oldest pending request) |
+| Refuse a click from someone who may not answer the approval (not its requester when `approvals.approvers` is narrowed; not allowed `/approve` / `/deny` when the chat sets `allow_admin_from`) | `from gateway.approval_actor import approval_refusal, refusal_text`: call `approval_refusal(session_key, clicker_id, extra=self.config.extra, request_id=..., choice=choice)` before resolving (the `choice` lets the chat's slash admin gate check the answer's own `/approve` or `/deny`); a non-`None` result is the requester's name, reply privately with `refusal_text(name)` and leave the approval pending. Then settle with `resolve_gateway_approval_card(session_key, choice, request_id, actor_id=clicker_id, extra=self.config.extra)`, which rechecks the clicker against the entry it settles in the same critical section. Slash-confirm and clarify taps use `slash_confirm_refusal(session_key, confirm_id, clicker_id, extra=...)` and `clarify_refusal(clarify_id, clicker_id, extra=...)` the same way, before `slash_confirm.resolve` / `resolve_gateway_clarify` / `mark_awaiting_text` |
+| Refuse a picker-card (`send_model_picker` / `send_choice_picker`) or `/update` prompt click from someone other than its opener | `from gateway.approval_actor import picker_refusal, update_prompt_refusal, refusal_text`: `picker_refusal(on_selected, clicker_id, extra=self.config.extra)` with the callback the picker was sent with, or `update_prompt_refusal(clicker_id, extra=self.config.extra)`; a non-`None` result is the opener's name: reply privately with `refusal_text(name)` and leave the card open. The opener and the chat scope's admins always pass |
 | Native clarify buttons | `tools.clarify_gateway`: `get_pending(clarify_id)` (the pending entry or `None`; read `session_key`, `choices`, `multi_select`), `resolve_gateway_clarify(clarify_id, text)`, `mark_awaiting_text(clarify_id)`, `SKIPPED` |
 | `setup_fn` wizard steps | `hermes_cli.gateway_setup_wizard`: `print_setup_header(title)`, `confirm_reconfigure(label, *env_vars)`, `offer_home_channel(home_var, user_id, what)`, `save_env_values(**values)`, `prompt_csv(text, default)`; prompts from `hermes_cli.setup` (`prompt`, `prompt_choice`, `prompt_yes_no`); output from `hermes_cli.cli_output` (`print_info`, `print_success`, `print_warning`, `print_error`); `.env` access through `hermes_cli.config` (`save_env_value`, `get_env_value`) |
 
@@ -320,6 +322,111 @@ async def connect(self) -> bool:
 
 `get_pending()` returns `None` once the clarify was answered, timed out or cleared, so compare the
 result by identity with the entry your card was rendered for before acting on a click.
+
+### Read a conversation's model settings
+
+`BasePlatformAdapter.get_session_model_settings(source)` is a synchronous, read-only
+accessor for native settings sheets. The named consumer is the **Inline platform plugin**:
+its agent settings sheet currently reads the runner's private session-model override map
+and combines it with configured defaults. Together with `list_session_model_picker_providers`
+below, it supports migrating both the settings-sheet model/provider/session-key display and
+picker catalog off that private map read. The raw endpoint stays in core for catalog matching;
+the sanitized display URL is not an operational input. This does not migrate model switching:
+Inline still calls the private `GatewayRunner._handle_model_command` to apply settings-sheet
+model selections. No plugin source or installed copy is changed by these additive seams.
+
+```python
+# In a BasePlatformAdapter subclass, using the SessionSource built for this conversation:
+settings = self.get_session_model_settings(source)
+if settings is not None:
+    current_model = settings["model"]
+    current_provider = settings["provider"]
+    current_base_url = settings["base_url"]
+```
+
+The result is a fresh `SessionModelSettings` dictionary (type import:
+`from gateway.platforms.session_model import SessionModelSettings`) with exactly
+`session_key`, `model`, `provider`, and `base_url`, all strings. It is detached in both
+directions: editing it cannot change the conversation, and later model switches cannot
+change a previously returned result. An unattached adapter or rejected profile route
+returns `None`. An attached adapter with **no session** still returns configured defaults.
+
+For each setting, a nonempty in-memory session override (or, if absent, the persisted pick) wins over the channel default
+(model/provider), then the owning profile's configured model settings. Channel model and
+provider defaults apply independently, including provider-only overrides. The display `base_url`
+falls back independently to the global configured endpoint even when the selected provider changes;
+it can belong to a different provider. Do not present that provider/endpoint pair as routing information.
+Missing model and endpoint are `""`; missing provider is `"openrouter"`, as in Inline's existing display.
+Both a flat `model: name` and the mapping form (`default`, or legacy `model`) are supported.
+The source's existing routing identity, or the adapter's canonical routing resolver on a
+copy of the source, selects the profile; the caller's source is not modified.
+
+This is a **settings display snapshot**, not a credential or live-inference introspection API.
+It does not allocate a session or agent, load a persisted override into memory, resolve
+provider credentials, contact a provider, or change any settings. A persisted `/model` choice
+not yet loaded after a restart is read from the session store; a transient runtime fallback is not reported.
+Only the four named fields are returned: keys, tokens, credential pools and headers are
+never copied. Endpoint userinfo, query and fragment are omitted (unparseable URLs become
+`""`); the endpoint path is retained, so do not put credentials in endpoint paths. Do not
+use this display URL to construct provider requests. This is an in-process platform
+adapter API, not a hosted-plugin RPC. It adds no setters or reasoning API,
+and leaves the legacy override view and all existing model-switch behavior unchanged.
+
+### List a conversation's model picker providers
+
+`BasePlatformAdapter.list_session_model_picker_providers(source, *, max_models=100,
+include_moa=True)` is the synchronous catalog counterpart. It shares the display accessor's
+source canonicalization, owning-profile config scope, session > channel > config precedence,
+and persisted-pick fallback. It returns `None` without a runner or for a rejected route;
+an attached adapter with no session can still list configured providers. It does not create
+a session or agent, rehydrate an override, or change conversation settings.
+
+Core passes the **raw effective endpoint**, current model/provider, configured `providers`,
+custom providers (the same merged view the built-in `/model` picker uses), and
+`model_catalog.excluded_providers` to its picker catalog implementation.
+The owning profile scope remains bound throughout the catalog call, including when this
+method is invoked through `asyncio.to_thread`. Do not feed the display URL into discovery.
+Custom endpoint live probes are disabled: those probes can save discovered models to config.
+Configured and cached custom model lists still participate, including raw endpoint matching.
+Catalogs use the built-in `/model` picker's non-blocking path: remote catalogs come from the disk
+cache and stale ones refresh in the background under the owning profile. File reads and a short
+local LM Studio probe (1.5 s timeout) remain, so **run this method
+off the event loop**. `max_models` is the catalog's per-provider hint, not a hard total cap;
+curated/aggregator providers may be uncapped. `include_moa` includes the synthetic MoA row.
+
+The return value is a detached list of fresh `SessionModelPickerProvider` dictionaries
+(type import: `from gateway.platforms.session_model import SessionModelPickerProvider`),
+with exactly these allowlisted fields:
+
+| Field | Type | Inline use |
+| --- | --- | --- |
+| `slug` | `str` | Model selection identity and provider grouping |
+| `name` | `str` | Provider buttons and model-page heading |
+| `models` | `list[str]` | Model options; list copied independently |
+| `total_models` | `int` | Provider/group counts and pagination text |
+| `is_current` | `bool` | Current-provider marker |
+
+No endpoint fields, API keys, tokens, credential pools, headers, or unlisted future metadata
+are returned. Editing rows or model lists cannot change catalog/config/session objects, and
+later catalog changes cannot change an earlier result. This is presentation data, not runtime
+credentials or a setter. Catalog errors propagate for the adapter to handle.
+
+```python
+import asyncio
+
+# Feature-detect for older Hermes: leave model selection unavailable (or retain an
+# explicitly supported legacy implementation) when the seam is absent. Never replace
+# the raw endpoint with get_session_model_settings()["base_url"].
+list_providers = getattr(self, "list_session_model_picker_providers", None)
+providers = None
+if callable(list_providers):
+    providers = await asyncio.to_thread(list_providers, source, max_models=100, include_moa=True)
+```
+
+The seams enable an Inline migration; they do not deploy it. Updating a catalog entry does
+not upgrade an already-installed plugin. Inline must adopt the methods and users must
+separately update their installed plugin; its private model-switch command remains outside
+this read-only contract.
 
 ## Standalone send-path extensions
 
@@ -507,9 +614,9 @@ ctx.register_platform(
 )
 ```
 
-Why this hook is necessary: built-in platforms (Telegram, Discord, Slack, etc.) ship direct REST helpers in `tools/send_message_tool.py` so cron can deliver without holding the gateway in the same process. Plugin platforms historically depended on `_gateway_runner_ref()`, which returns `None` outside the gateway process, so without `standalone_sender_fn` the cron-side send fails with `No live adapter for platform '<name>'`.
+Why this hook is necessary: the live adapter is only reachable through `_gateway_runner_ref()`, which returns `None` outside the gateway process, so without `standalone_sender_fn` the cron-side send fails with `No live adapter for platform '<name>'`. The bundled platforms use this same hook: Telegram's out-of-process sender (`hermes send`, the `send_message` tool, standalone cron delivery) is `plugins/platforms/telegram/standalone.py::standalone_send` and Signal's is `plugins/platforms/signal/standalone.py`; core reaches them only through the platform registry.
 
-The function receives the same `pconfig` and `chat_id` that the live adapter would, plus optional `thread_id`, `media_files`, and `force_document` keyword arguments. Returning `{"success": True, "message_id": ...}` is treated as a successful delivery; returning `{"error": "..."}` surfaces the message in cron's `delivery_errors`. Exceptions raised inside the function are caught by the dispatcher and reported as `Plugin standalone send failed: <reason>`. Reference implementations live in `plugins/platforms/{irc,teams,google_chat}/adapter.py`.
+The function receives the same `pconfig` and `chat_id` that the live adapter would, plus optional `thread_id`, `media_files`, and `force_document` keyword arguments. Optional keywords added later are forwarded only to a sender that declares them (by name or through `**kwargs`), so a sender written to the signature above keeps working: `notify=True` (cron's `cron.delivery.notify`: this delivery should ring even under a quiet notification mode) is one; Telegram's sender takes it. Returning `{"success": True, "message_id": ...}` is treated as a successful delivery; returning `{"error": "..."}` surfaces the message in cron's `delivery_errors`. Exceptions raised inside the function are caught by the dispatcher and reported as `Plugin standalone send failed: <reason>`. Reference implementations live in `plugins/platforms/{irc,teams,google_chat}/adapter.py`.
 
 ## Surfacing Env Vars in `hermes config`
 

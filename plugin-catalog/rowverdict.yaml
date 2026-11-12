@@ -1,0 +1,31 @@
+name: rowverdict
+repo: https://github.com/demir-sama/rowverdict
+sha: 49403a22b090a1a5b9dbcd5a8b85d907dfcd3442
+version: "0.2.0"
+title: RowVerdict
+maintainer: demir-sama
+tier: community
+category: tools
+requires_hermes: ">=0.23.1"
+platforms: [linux]
+description: "Review drafted CSV/XLSX/JSON contracts, fix quarantined rows through replay, and export source-bound receipts plus self-contained HTML audits locally."
+docs_url: https://github.com/demir-sama/rowverdict#readme
+readme: true
+known_issues:
+  - "Verified on Linux only; not a sandbox or a guard for other shell/import tools."
+  - "Raw rejected cells and correction patches remain in private artifacts/SQLite; no encryption at rest."
+  - "XLSX supports bounded standard OOXML values, not arbitrary Excel display/calculation fidelity; declared defusedxml dependency required."
+  - "Slash review/export use a native-tool approval handoff on stable Hermes; the dashboard has no export endpoint."
+capabilities:
+  provides_tools:
+    - rowverdict_inspect
+    - rowverdict_plan
+    - rowverdict_export
+    - rowverdict_history
+    - rowverdict_draft
+    - rowverdict_review
+    - rowverdict_replay
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

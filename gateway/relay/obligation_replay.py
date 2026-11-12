@@ -1,8 +1,11 @@
-"""Route the primary gateway's persisted relay replies and wake replay on handshake."""
+"""Resolve transports for delivery obligations and wake relay replay on handshake."""
 
 import asyncio
+import logging
 
 from gateway.config import Platform
+
+logger = logging.getLogger("gateway.run")
 
 
 def relay_obligation_adapter(runner, platform, profile=None):
@@ -23,6 +26,53 @@ def relay_obligation_adapter(runner, platform, profile=None):
 def relay_platform_ready(adapter, platform):
     ready = getattr(getattr(adapter, "_transport", None), "is_platform_ready", None)
     return not callable(ready) or ready(platform.value)
+
+
+async def resolve_obligation_adapter(runner, row: dict, *, relay_adapter=None):
+    """Resolve the adapter for a claimed ledger row, or None when it cannot be delivered now."""
+    try:
+        platform = Platform(row["platform"])
+    except (KeyError, ValueError):
+        logger.debug(
+            "obligation %s: unknown platform %r",
+            row["obligation_id"],
+            row.get("platform"),
+        )
+        return None
+    if "profile" in row:
+        adapter = runner._authorization_adapter(platform, row.get("profile"))
+    else:
+        # Startup rows preserve the historical default-adapter route.
+        adapter = runner.adapters.get(platform)
+    if adapter is None:
+        adapter = relay_obligation_adapter(runner, platform, row.get("profile"))
+    if relay_adapter is not None and adapter is not relay_adapter:
+        adapter = None
+    relay_unready = (
+        getattr(adapter, "platform", None) is Platform.RELAY
+        and platform is not Platform.RELAY
+        and not relay_platform_ready(adapter, platform)
+    )
+    # A claim (runtime or boot) whose adapter vanished before dispatch was never sent: release it
+    # without spending an attempt so the reconnect sweep, which only takes 'failed' rows, delivers it
+    # instead of it waiting 'attempting' for the next restart.
+    # Only a flood row keeps its error (the platform's wait must be honoured); any other row
+    # becomes reconnect-only, or the redelivery timer would claim and release it until the
+    # adapter is back.
+    if adapter is None or relay_unready:
+        from gateway.delivery_ledger import is_flood_error
+
+        last_error = str(row.get("last_error") or "")
+        reconnect_error = (
+            "relay transport not connected" if relay_unready else "send_path_degraded"
+        )
+        await runner._release_runtime_claim_quiet(
+            row["obligation_id"],
+            "failed to release undispatched runtime obligation %s",
+            error=last_error if is_flood_error(last_error) else reconnect_error,
+        )
+        return None
+    return adapter
 
 
 async def send_relay_obligation(runner, adapter, row, content, metadata):

@@ -144,6 +144,12 @@ class SubdirectoryHintTracker:
         # ``enabled=False`` mirrors ``skip_context_files``: a session that opted out of
         # AGENTS.md/CLAUDE.md injection at startup must not get the same files spliced into
         # tool results later — cron jobs relaying exact stdout leaked them to chat (#9441).
+        from tools.hosted_tool_policy import host_feature_enabled
+        if not host_feature_enabled("subdirectory_hints"):
+            # Hosted: the working dir names the agent's sandbox. Nothing is resolved or read here.
+            self.enabled, self.working_dir, self._home_is_working_dir = False, Path(working_dir or "/"), True
+            self._loaded_dirs, self._loaded_digests = {self.working_dir}, set()
+            return
         self.enabled = enabled
         self.working_dir = Path(working_dir or os.getcwd()).resolve()
         # $HOME is not a project (#76902): the packaged Desktop app with no default project
@@ -165,6 +171,9 @@ class SubdirectoryHintTracker:
 
     def rebind_working_dir(self, working_dir: str) -> None:
         """Re-anchor hint discovery to *working_dir* (a session workspace adoption)."""
+        from tools.hosted_tool_policy import host_feature_enabled
+        if not host_feature_enabled("subdirectory_hints"):
+            return
         try:
             new_dir = Path(working_dir).expanduser().resolve()
             if not new_dir.is_dir() or _is_home_like_working_dir(new_dir):
@@ -187,9 +196,10 @@ class SubdirectoryHintTracker:
     def check_tool_call(self, tool_name: str, tool_args: dict[str, Any]) -> Optional[str]:
         """Return formatted hint text for newly visited directories, or None."""
         from agent.safe_worker_policy import safe_worker_enabled
+        from tools.hosted_tool_policy import host_feature_enabled
 
-        if not self.enabled or safe_worker_enabled():
-            return None
+        if not self.enabled or safe_worker_enabled() or not host_feature_enabled("subdirectory_hints"):
+            return None  # hosted: the paths name the agent's sandbox; nothing is resolved here
         if self._home_is_working_dir:
             return None
         all_hints = [h for d in self._extract_directories(tool_name, tool_args) if (h := self._load_hints_for_directory(d))]

@@ -965,7 +965,6 @@ DEFAULT_CONFIG = {
         "status_bar": {
             "fields": [],
         },
-        "copy_shortcut": "auto",  # "auto" (platform default) | ctrl_c | ctrl_shift_c | disabled
         # Petdex animated mascot (github.com/crafter-station/petdex): cosmetic sprite across
         # CLI/TUI/desktop, managed with `hermes pets`. No effect on prompt caching.
         "pet": {
@@ -1338,8 +1337,7 @@ DEFAULT_CONFIG = {
         # and every compaction is a chance to lose detail, so the default stays off. A token count >= 16000 enables it;
         # other values (true, "200k") are config errors: warned and ignored.
         "compression_threshold_tokens": 0,
-        # When delegate_task narrows child toolsets, keep the parent's enabled MCP toolsets (so
-        # toolsets=["web"] doesn't strip MCP). false = strict intersection.
+        # Narrowed child toolsets keep the parent's MCP toolsets (toolsets=["web"] keeps MCP); false = strict
         "inherit_mcp_toolsets": True,
         # Per-subagent iteration cap (own budget, independent of the parent's).
         "max_iterations": 250,
@@ -1376,6 +1374,7 @@ DEFAULT_CONFIG = {
         # notifications to the PARENT; false suppresses them (the child's result is the
         # deliverable). Async-delegation results are NEVER suppressed.
         "surface_child_process_notifications": False,
+        "resumable_ttl_hours": 48, "max_resumable": 32, "auto_resume": False,  # stopped-child records; auto: opt-in
     },
     # Ephemeral prefill messages file — JSON list of {role, content} dicts injected at the start of
     # every API call for few-shot priming. Never saved to sessions/logs/trajectories.
@@ -1504,9 +1503,6 @@ DEFAULT_CONFIG = {
             "keep": 2,  # retain last N regular snapshots
         },
     },
-    # Honcho memory plugin (plugin catalog) — ~/.honcho/config.json is the source of truth (apiKey,
-    # workspace, peerName, sessions, enabled); the plugin reads hermes-specific overrides from here.
-    "honcho": {},
     # IANA timezone (e.g. "Asia/Kolkata", "America/New_York"). Empty = server-local time.
     "timezone": "",
 
@@ -1616,8 +1612,8 @@ DEFAULT_CONFIG = {
             # Bot API 10.1 native rich messages (tables/task lists/math). Off = legacy MarkdownV2,
             # since rich messages are hard to copy as plain text.
             "rich_messages": False,
-            # Experimental rich DM stream previews; off: Telegram Desktop/macOS overlays draft frames.
-            "rich_drafts": False,
+            # rich_drafts (experimental): rich DM previews; off: Desktop/macOS overlays draft frames.
+            "rich_drafts": False, "plain_drafts": False,  # plain: raw previews that only grow
             # CJK stays on legacy MarkdownV2 (Telegram Desktop/macOS garbles rich CJK, #47653);
             # set True on an unaffected client to get native rich tables for CJK.
             "allow_cjk_rich_messages": False,
@@ -1669,12 +1665,12 @@ DEFAULT_CONFIG = {
         # After this many consecutive guardian DENYs in a session, the deny message escalates to a
         # hard-stop (report to user / ask for /approve). Approval resets; 0 off.
         "denial_breaker_threshold": 3,
-        # Case-insensitive fnmatch globs against terminal commands; a match blocks even under --yolo
-        # / mode=off. Quote in YAML when starting with * or containing {}/!/: e.g. "git push
-        # --force*".
+        # Case-insensitive fnmatch globs against terminal commands; a match blocks even under --yolo / mode=off.
+        # Quote in YAML when starting with * or containing {}/!/: e.g. "git push --force*".
         "deny": [],
-        # /reload-mcp confirms before rebuilding the MCP tool set (it invalidates the prompt cache,
-        # so the next message re-sends full input). "Always Approve" → false.
+        # Who may answer a chat approval/slash confirm/clarify: ["*"] any admitted member; [] requester + admins (+ ids).
+        "approvers": ["*"],
+        # /reload-mcp confirms before rebuilding the MCP tool set (it invalidates the prompt cache). "Always Approve" → false.
         "mcp_reload_confirm": True,
         # /clear, /new, /reset, /undo confirm before discarding state (Approve Once / Always Approve
         # / Cancel via tools.slash_confirm; native buttons on Telegram/ Discord/Slack). "Always
@@ -1999,7 +1995,7 @@ DEFAULT_CONFIG = {
             # tool eager. The runtime fallback in tools/tool_search.py derives from this value.
             "defer": [
                 "computer_use", "session_search", "image_generate",
-                "todo_list", "process_manage", "cronjob_manage", "browser_vault",
+                "todo_list", "process_manage", "cronjob_manage", "browser_vault", "text_to_speech", "manage_connections",
                 # Desktop GUI surface (desktop_ui, project and catalog toolsets)
                 "drive_preview", "gui_tour", "desktop_preview", "annotate_preview", "manage_catalog",
                 "show_tip", "desktop_project", "close_terminal",
@@ -2192,8 +2188,8 @@ DEFAULT_CONFIG = {
         "message_timestamps": {"enabled": False},
         # Max bytes of inbound image/audio/video the gateway buffers into RAM and caches to disk.
         # Media is read fully into memory first, so unbounded uploads (Discord Nitro: 500 MB) or
-        # huge remote URLs can OOM-kill constrained deployments. Enforced in
-        # gateway/platforms/base.py for every adapter. 0 = no cap. Default 128 MiB.
+        # huge remote URLs (incl. image URLs in agent replies) can OOM-kill constrained deployments.
+        # Enforced in gateway/platforms/base.py for every adapter. 0 = no cap. Default 128 MiB.
         "max_inbound_media_bytes": 134217728,
         # Let adapters read HTTP_PROXY/HTTPS_PROXY/NO_PROXY/SSL_CERT_FILE from the environment and
         # auto-detect generic/macOS system proxies. False when the gateway inherits a proxy it must

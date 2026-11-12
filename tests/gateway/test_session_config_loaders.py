@@ -98,7 +98,7 @@ def test_each_new_session_reads_its_profiles_prefill_once_and_workers_match(tmp_
     monkeypatch.delenv('HERMES_PREFILL_MESSAGES_FILE', raising=False)
     _prefill(tmp_path, 'prefill.json', 'FIRST')
     runner = SimpleNamespace(config=None, _prefill_messages=STALE, _refresh_fallback_model=lambda: None,
-                             _get_system_prompt_for_channel=lambda *a: None)
+                             _get_system_prompt_for_channel=lambda *a, **k: None)
     authority = SimpleNamespace(runner=runner, profile_id=str(tmp_path))
     launch = {'cwd': str(tmp_path), **LAUNCH}
     first = build_policy(launch, {'prefill_messages_file': 'prefill.json'})
@@ -143,7 +143,7 @@ def test_an_open_sessions_prefill_survives_cache_pressure_and_file_edits(tmp_pat
     monkeypatch.delenv('HERMES_PREFILL_MESSAGES_FILE', raising=False)
     _prefill(tmp_path, 'prefill.json', 'ORIGINAL')
     runner = SimpleNamespace(config=None, _prefill_messages=STALE, _refresh_fallback_model=lambda: None,
-                             _get_system_prompt_for_channel=lambda *a: None)
+                             _get_system_prompt_for_channel=lambda *a, **k: None)
     authority = SimpleNamespace(runner=runner, profile_id=str(tmp_path))
     policy = build_policy({'cwd': str(tmp_path), **LAUNCH}, {'prefill_messages_file': 'prefill.json'})
     assert session_prefill(authority, policy, 'open')[0]['content'] == 'ORIGINAL'

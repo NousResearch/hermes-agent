@@ -566,7 +566,7 @@ A resumable child's worktree (where its terminal was when it stopped, plus any w
 
 ### Automatic resume (`delegation.auto_resume`, opt-in)
 
-With `delegation.auto_resume: true` the gateway continues stopped background children on its own, through the same claim and `continue` path as `action='continue'`, on the child's own conversation and worktree, with the message "Your run was stopped by <cause>; continue where you left off." Its result arrives in the parent's conversation as a normal completion. A gateway checks every profile it serves every 15 seconds, each under that profile's own configuration, credentials and `state.db`.
+With `delegation.auto_resume: true` the gateway continues stopped background children on its own, through the same claim and `continue` path as `action='continue'`, on the child's own conversation and worktree, with a message naming the real cause ("Your run was stopped by a provider limit; continue where you left off."). Its result arrives in the parent's conversation as a normal completion. A gateway checks every profile it serves every 15 seconds, each under that profile's own configuration, credentials and `state.db`.
 
 - **What resumes:** `AUTO_AT` children once their limit's reset time has passed, and `AUTO_ON_BOOT` children (gateway shutdown, crash, hard kill) once the gateway is back up.
 - **What never resumes:** `ON_FIX`, `REPAIR_THEN_CONTINUE` and `HANDOFF` children (credits, auth, model not found, refusals, deterministic request errors), children you or the parent stopped, expired records, records whose worktree pin was dropped by `max_resumable`, and nested children (an orchestrator subagent's own workers; that orchestrator resumes instead).

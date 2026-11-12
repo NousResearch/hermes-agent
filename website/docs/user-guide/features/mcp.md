@@ -938,6 +938,12 @@ Because Hermes now only registers those wrappers when both are true:
 
 This is intentional and keeps the tool list honest.
 
+### A provider rejects an MCP tool's schema
+
+Anthropic's schema validator is stricter than JSON Schema's own rules, so a schema can pass every local check and still fail the whole request with `tools.N.custom.input_schema: JSON schema is invalid`. This only applies to tools sent in the request's `tools` array, such as with `tools.tool_search.enabled: off`; deferred tools don't go there.
+
+Hermes removes that one MCP tool, warns you which one it was, and retries, so the other tools keep working. The tool stays removed until the agent is rebuilt (a restart or `--resume`), which costs one more rejection if the schema is still bad. `agent.log` has the rejected schema, which is what the server's maintainer needs. Built-in Hermes tools are never removed this way: the request fails and names the tool, so please report it.
+
 ## Parallel Tool Calls
 
 By default, MCP tools run sequentially — one at a time. If your MCP server exposes tools that are safe to run concurrently (e.g. read-only queries, independent API calls), you can opt-in to parallel execution:

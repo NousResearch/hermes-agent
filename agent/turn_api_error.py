@@ -19,6 +19,7 @@ from agent.api_error_summary import is_provider_stream_parse_error
 from agent.error_classifier import RETRYABLE_CLIENT_REASONS, FailoverReason, classify_api_error
 from agent.route_verdicts import route_visit
 from agent.turn_overflow import recover_from_overflow
+from agent.turn_recovery_tool_prune import recover_rejected_tool_schema
 from agent.turn_recovery import (
     _NONRETRYABLE_LABELS, abort_turn_on_interrupt, compute_error_backoff, free_tier_cooldown_ends_turn,
     interruptible_backoff_sleep, log_api_error_attempt,
@@ -142,6 +143,9 @@ def handle_api_error(
         retry_count=retry_count, max_retries=max_retries, retryable=classified.retryable,
         reason=classified.reason.value,
     )
+
+    if recover_rejected_tool_schema(agent, api_error, classified, _retry, api_kwargs):
+        return _verdict("continue")
 
     _recovered, recovered_with_pool = recover_after_classification(
         agent, api_error, classified, _retry, status_code=status_code, error_context=error_context,

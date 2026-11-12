@@ -244,7 +244,13 @@ export function createBackendOwnership(deps: BackendOwnershipDeps) {
         // renderer's backend-boot budget is 45s and the spawn itself needs
         // most of it.
         if (Date.now() >= deadline) {
-          survivors.push(...entries.slice(i))
+          // Rotate the unprocessed records AHEAD of this sweep's survivors:
+          // otherwise entries whose probe alone can eat the whole budget (the
+          // slow Windows PowerShell liveness checks, #87169) sit at the head
+          // of the file and starve every record behind them — the trailing
+          // orphans are never reached on any launch and leak forever
+          // (#123545: orphaned serve backends accumulated on Windows).
+          survivors.unshift(...entries.slice(i))
 
           break
         }

@@ -24,15 +24,35 @@ function storedQueuedLaunchPick(scope: string): null | QueuedLaunchPick {
   }
 }
 
+// The newest pick (ledger order) that answered for each owner's session in this run: replies can arrive out of
+// order, and another owner can hold a session with the same id (imports).
+const newestAnswerBySession = new Map<string, number>()
+
 /** A primary pick the gateway queues for its session's next turn is saved as the launch pick at once. Record which
  *  session queued which route, next to that pick in its owner's storage (across reloads), so only that session's
- *  refusal or decline can release it; any later pick on the session retires the record. */
+ *  refusal or decline can release it; any later pick on the session retires the record, an older one's late reply
+ *  never does. */
 export const noteQueuedLaunchPick = (
   sessionId: string,
   route: { model: string; provider: string } | null,
-  scope: null | string
+  scope: null | string,
+  pickOrder?: number
 ) => {
-  if (scope !== null && (route || storedQueuedLaunchPick(scope)?.sessionId === sessionId)) {
+  if (scope === null) {
+    return
+  }
+
+  if (pickOrder !== undefined) {
+    const answered = `${scope}\n${sessionId}`
+
+    if (pickOrder < (newestAnswerBySession.get(answered) ?? 0)) {
+      return
+    }
+
+    newestAnswerBySession.set(answered, pickOrder)
+  }
+
+  if (route || storedQueuedLaunchPick(scope)?.sessionId === sessionId) {
     persistString(
       `${QUEUED_PICK_KEY}${scope}`,
       route ? JSON.stringify({ model: route.model, provider: route.provider, sessionId }) : null

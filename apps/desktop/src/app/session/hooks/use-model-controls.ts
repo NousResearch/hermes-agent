@@ -340,11 +340,13 @@ export function useModelControls({
       // switch while config.set is in flight means nothing is repainted. The
       // composer selection generation is deliberately not consulted: effort
       // steps and preset edits bump it without touching the model.
-      const pickToken = beginModelPick(liveSessionId, before, readSnapshot())
+      // Per owner: another owner can hold a session with the same id (imports).
+      const pickKey = `${composerScope}\n${liveSessionId}`
+      const pickToken = beginModelPick(pickKey, before, readSnapshot())
 
       // The snapshot to repaint after this pick failed to apply, or null to leave the paint alone.
       const settleUnapplied = () => {
-        const repaint = settleModelPick(liveSessionId, pickToken, false)
+        const repaint = settleModelPick(pickKey, pickToken, false)
 
         if (repaint && touchesPrimary && $activeSessionId.get() !== liveSessionId) {
           // Its chat is no longer on screen to repaint, but the failed pick is still the saved one.
@@ -380,8 +382,8 @@ export function useModelControls({
           ...(confirmExpensiveModel ? { confirm_expensive_model: true } : {})
         })
 
-      const finishSwitch = (result: ModelSwitchResponse | undefined) => {
-        noteQueuedLaunchPick(liveSessionId, touchesPrimary && result?.deferred ? selection : null, composerScope)
+      const finishSwitch = (result: ModelSwitchResponse | undefined, token: number) => {
+        noteQueuedLaunchPick(liveSessionId, touchesPrimary && result?.deferred ? selection : null, composerScope, token)
 
         // A pick made DURING a turn is queued by the gateway and applied at the
         // next turn start (`deferred`). Re-fetching now would answer with the
@@ -443,18 +445,18 @@ export function useModelControls({
               const retryBefore = readSnapshot()
               paintSelection()
               cacheSelection(selection.provider, selection.model)
-              retryToken = beginModelPick(liveSessionId, retryBefore, readSnapshot())
+              retryToken = beginModelPick(pickKey, retryBefore, readSnapshot())
             },
             requestConfirmed: () => requestSwitch(true),
             finish: result => {
               if (retryToken !== null) {
-                settleModelPick(liveSessionId, retryToken, true)
+                settleModelPick(pickKey, retryToken, true)
               }
 
-              finishSwitch(result)
+              finishSwitch(result, retryToken ?? pickToken)
             },
             rollback: () => {
-              const repaint = retryToken === null ? restored : settleModelPick(liveSessionId, retryToken, false)
+              const repaint = retryToken === null ? restored : settleModelPick(pickKey, retryToken, false)
 
               if (repaint && !(touchesPrimary && $activeSessionId.get() !== liveSessionId)) {
                 restoreSnapshot(repaint)
@@ -465,8 +467,8 @@ export function useModelControls({
           return false
         }
 
-        settleModelPick(liveSessionId, pickToken, true)
-        finishSwitch(result)
+        settleModelPick(pickKey, pickToken, true)
+        finishSwitch(result, pickToken)
 
         return true
       } catch (err) {
@@ -476,7 +478,7 @@ export function useModelControls({
         // what the NEXT turn runs anyway. Current gateways never take this
         // path — they answer `deferred`.
         if (isBusySessionModelSwitch(err)) {
-          settleModelPick(liveSessionId, pickToken, true)
+          settleModelPick(pickKey, pickToken, true)
 
           return true
         }
@@ -484,7 +486,7 @@ export function useModelControls({
         // An abandoned pick (a newer one was made, or the user left the chat)
         // is not the user's current choice; its failure is not worth a toast.
         const abandoned =
-          isPickSuperseded(liveSessionId, pickToken) || (touchesPrimary && $activeSessionId.get() !== liveSessionId)
+          isPickSuperseded(pickKey, pickToken) || (touchesPrimary && $activeSessionId.get() !== liveSessionId)
 
         const restored = settleUnapplied()
 

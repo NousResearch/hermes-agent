@@ -17,6 +17,7 @@ interface Owner {
 }
 
 const SESSION = { info: { cwd: '/w', model: 'test', skills: {}, tools: {} }, messages: [], session_id: 's1' }
+const mounted: ReturnType<typeof renderSync>[] = []
 
 // `hermes --tui` attaches to the profile's shared gateway, which mints no session for a blank install:
 // the TUI asks it whether a provider is configured before creating one.
@@ -67,12 +68,14 @@ function mountCanonicalLifecycle({ providerConfigured, resume = 'resumes', runti
 
   const stream = () => Object.assign(new PassThrough(), { columns: 80, isTTY: false, rows: 24 })
 
-  renderSync(React.createElement(Probe), {
-    patchConsole: false,
-    stderr: stream() as unknown as NodeJS.WriteStream,
-    stdin: stream() as unknown as NodeJS.ReadStream,
-    stdout: stream() as unknown as NodeJS.WriteStream
-  })
+  mounted.push(
+    renderSync(React.createElement(Probe), {
+      patchConsole: false,
+      stderr: stream() as unknown as NodeJS.WriteStream,
+      stdin: stream() as unknown as NodeJS.ReadStream,
+      stdout: stream() as unknown as NodeJS.WriteStream
+    })
+  )
 
   const methods = () => request.mock.calls.map(([method]) => method)
   const created = () => request.mock.calls.find(([method]) => method === 'session.create')?.[1]
@@ -92,6 +95,11 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllEnvs()
+
+  for (const view of mounted.splice(0)) {
+    view.unmount()
+    view.cleanup()
+  }
 })
 
 describe('a blank install on the shared gateway', () => {

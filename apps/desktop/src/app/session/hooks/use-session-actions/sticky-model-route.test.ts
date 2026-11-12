@@ -43,7 +43,7 @@ const pick = (reply: unknown, model = 'queued', sessionId = 'busy') =>
     .result.current.selectModel({ model, provider: 'p', sessionId })
 
 // The owner's verdict on a pick queued for the next turn.
-function verdict(payload: Record<string, unknown>, session = 'busy', viewing = 'busy') {
+function verdict(payload: Record<string, unknown>, session = 'busy', viewing = 'busy', source?: Record<string, string>) {
   const full = { operation: 'model', session_id: session, target_model: 'queued', ...payload }
   handleDeferredPickEvent({
     deps: {
@@ -52,14 +52,24 @@ function verdict(payload: Record<string, unknown>, session = 'busy', viewing = '
       queryClient: { invalidateQueries: vi.fn(async () => undefined) },
       updateSessionState: vi.fn()
     },
-    event: { payload: full, session_id: session, type: 'session.updated' },
-    fromActiveSource: () => true,
+    event: { payload: full, session_id: session, type: 'session.updated', ...source },
+    fromActiveSource: () => !source,
     payload: full,
     sessionId: session
   } as unknown as GatewayEventContext)
 }
 
 const refuse = (session?: string, viewing?: string) => verdict({ ...picked, status: 'refused' }, session, viewing)
+
+// Owner B, with its own manual pick of the same route; `backToA` returns to the local owner the tests start on.
+function switchToOwnerB() {
+  setComposerSelectionOwner('other-backend', 'other')
+  setCurrentModel('queued')
+  setCurrentProvider('p')
+  markComposerSelectionManual()
+}
+
+const backToA = () => setConnection({ mode: 'local', baseUrl: '' } as never)
 
 beforeEach(() => {
   setConnection({ mode: 'local', baseUrl: '' } as never)
@@ -105,15 +115,18 @@ describe('new chats launch on the picked route', () => {
     $activeSessionId.set('elsewhere')
 
     if (switched) {
-      setComposerSelectionOwner('other-backend', 'other')
-      setCurrentModel('queued')
-      setCurrentProvider('p')
-      markComposerSelectionManual()
+      switchToOwnerB()
     }
 
     failed.reject(new Error('refused'))
     await expect(switching).resolves.toBe(false)
     expect(await launched()).toBe(launches)
+
+    if (switched) {
+      // The failed pick was the first owner's: it is released there, not left to launch its new chats.
+      backToA()
+      expect(await launched()).toBeUndefined()
+    }
   })
 
   it('which a fresh draft repaints without the outgoing route\'s effort label', () => {
@@ -163,15 +176,48 @@ describe('a pick queued for the next turn', () => {
       status: 'confirmation_required' }, session, session)
 
     if (switched) {
-      setComposerSelectionOwner('other-backend', 'other')
-      setCurrentModel('queued')
-      setCurrentProvider('p')
-      markComposerSelectionManual()
+      switchToOwnerB()
     }
 
     answer.resolve(false)
     await answer.promise
     await Promise.resolve()
     expect(await launched()).toBe(launches)
+
+    if (switched) {
+      backToA()
+      expect(await launched()).toBeUndefined()
+    }
+  })
+
+  it.each([
+    { from: 'its owner', source: { connectionId: 'conn-a', profile: 'work' }, launches: undefined },
+    // Another owner's session that shares the id (an import) never queued this pick.
+    { from: 'another owner', source: { connectionId: 'conn-c', profile: 'work' }, launches: 'queued' }
+  ])('that is refused on $from\'s connection while another owner is active', async ({ source, launches }) => {
+    setComposerSelectionOwner('conn-a', 'work')
+    setCurrentModel(picked.model)
+    setCurrentProvider(picked.provider)
+    markComposerSelectionManual()
+    await pick({ deferred: true })
+    switchToOwnerB()
+    verdict({ ...picked, status: 'refused' }, 'busy', 'elsewhere', source)
+    expect(await launched()).toBe('queued')
+    setComposerSelectionOwner('conn-a', 'work')
+    expect(await launched()).toBe(launches)
+  })
+
+  it('that settles after an owner switch is recorded for its own owner, and released there when refused', async () => {
+    const reply = deferred<unknown>()
+    const switching = pick(reply.promise)
+    switchToOwnerB()
+    reply.resolve({ deferred: true })
+    await switching
+    // Another chat on owner B, with the same route, is refused: the late result left B's pick alone.
+    refuse()
+    expect(await launched()).toBe('queued')
+    backToA()
+    refuse()
+    expect(await launched()).toBeUndefined()
   })
 })

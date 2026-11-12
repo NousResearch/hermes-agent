@@ -79,7 +79,7 @@ function composerScopeForConnection(connection: HermesConnection | null): string
   return connectionScopeSuffix(connection)
 }
 
-export function composerSelectionKey(base: string): string | null {
+function composerSelectionKey(base: string): string | null {
   return composerSelectionScope === null ? null : `${base}${composerSelectionScope}`
 }
 
@@ -1489,10 +1489,12 @@ function rescopeComposerSelection(nextScope: string | null): void {
 /** Publish an exact registry route before active-profile effects can persist a
  * forced default. A registry id is authority even while its descriptive
  * HermesConnection lookup is unavailable. */
+/** The composer storage scope of the (connection, profile) owner. */
+export const composerScopeForOwner = (connectionId: string, profile: string): string =>
+  `.registry.${encodeURIComponent(connectionId)}.${encodeURIComponent(profile.trim() || 'default')}`
+
 export function setComposerSelectionOwner(connectionId: string, profile: string): void {
-  rescopeComposerSelection(
-    `.registry.${encodeURIComponent(connectionId)}.${encodeURIComponent(profile.trim() || 'default')}`
-  )
+  rescopeComposerSelection(composerScopeForOwner(connectionId, profile))
 }
 
 /** Fail closed while a successful legacy profile activation has no descriptor. */
@@ -1769,18 +1771,22 @@ export const restoreComposerModelSelection = (): void => {
 }
 
 /** A saved pick that turned out not to apply hands new chats back to the Settings default, rather than
- *  guess which earlier pick to restore. Only for the owner `scope` that saved it (the answer can arrive
- *  after an owner switch), and only while that exact route is still the saved pick. */
+ *  guess which earlier pick to restore. In the storage of the owner `scope` that saved it, which the answer
+ *  can outlive, and only while that exact route is still its saved pick. */
 export const releaseComposerModelSelection = (route: { model: string; provider: string }, scope: null | string) => {
-  const saved = getComposerModelSelection()
-
   if (
-    composerSelectionScope === scope &&
-    saved.source === 'manual' &&
-    saved.model === route.model &&
-    saved.provider === route.provider
+    scope === null ||
+    storedString(`${COMPOSER_MODEL_SOURCE_KEY}${scope}`) !== 'manual' ||
+    storedString(`${COMPOSER_MODEL_KEY}${scope}`) !== route.model ||
+    (storedString(`${COMPOSER_PROVIDER_KEY}${scope}`) ?? '') !== route.provider
   ) {
+    return
+  }
+
+  if (scope === composerSelectionScope) {
     setCurrentModelSource('default')
+  } else {
+    persistString(`${COMPOSER_MODEL_SOURCE_KEY}${scope}`, 'default')
   }
 }
 

@@ -7,6 +7,7 @@ import { notifyError } from '@/store/notifications'
 import {
   $currentModel,
   $currentProvider,
+  composerScopeForOwner,
   getComposerSelectionScope,
   setCurrentModelTransient,
   setCurrentProviderTransient
@@ -40,6 +41,15 @@ function repaintCommitted(
   }
 }
 
+// The queued-pick record lives with the owner whose composer saved it: another owner's event names its own.
+function queuedPickScope(ownSource: boolean, event: GatewayEventContext['event']): null | string {
+  if (ownSource) {
+    return getComposerSelectionScope()
+  }
+
+  return event.connectionId ? composerScopeForOwner(event.connectionId, event.profile ?? '') : null
+}
+
 export function handleDeferredPickEvent(ctx: GatewayEventContext): boolean {
   const { deps, event, payload, sessionId, fromActiveSource } = ctx
   const update = payload as Record<string, unknown> | undefined
@@ -53,14 +63,13 @@ export function handleDeferredPickEvent(ctx: GatewayEventContext): boolean {
   const ownSource = fromActiveSource()
   const profile = event.profile ?? deps.activeGatewayProfile
   const invalidate = () => void deps.queryClient.invalidateQueries({ queryKey: modelOptionsQueryKey(profile, sessionId) })
-  const scope = getComposerSelectionScope()
+
+  const scope = queuedPickScope(ownSource, event)
 
   if (update.status === 'refused') {
     const model = typeof update.model === 'string' ? update.model : ''
 
-    if (ownSource) {
-      releaseQueuedLaunchPick(sessionId, update.target_model, scope)
-    }
+    releaseQueuedLaunchPick(sessionId, update.target_model, scope)
 
     if (model && ownSource) {
       repaintCommitted(ctx, update.target_model, model, typeof update.provider === 'string' ? update.provider : '')
@@ -92,7 +101,7 @@ export function handleDeferredPickEvent(ctx: GatewayEventContext): boolean {
         requestGatewayForAgent(connectionId, profile, 'session.model', { confirm: update.confirm, payload: pick, session_id: sessionId }),
       finish: invalidate
     }).then(applied => {
-      if (!applied && ownSource) {
+      if (!applied) {
         releaseQueuedLaunchPick(sessionId, target, scope)
       }
 

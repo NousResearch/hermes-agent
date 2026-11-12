@@ -94,6 +94,22 @@ class TestValidatePostLoginTarget:
         assert _validate_post_login_target("") == ""
 
 
+class TestExternalizedTargetIsValidatedComposed:
+    """The prefix is joined AFTER ``next`` is validated; the browser gets the composed string,
+    so a prefix that would move the authority must never reach it, whatever its source."""
+
+    @pytest.mark.parametrize("prefix", ["/\\evil.example", "/\tx", "\\evil.example"])
+    def test_authority_moving_prefix_is_dropped(self, prefix: str):
+        from hermes_cli.dashboard_auth.routes import _externalize_post_login_target
+
+        assert _externalize_post_login_target("/sessions", prefix) == "/sessions"
+
+    def test_ordinary_prefix_still_applies(self):
+        from hermes_cli.dashboard_auth.routes import _externalize_post_login_target
+
+        assert _externalize_post_login_target("/sessions", "/hermes") == "/hermes/sessions"
+
+
 class TestPasswordLoginNextTainted:
     @pytest.fixture
     def authed_client(self):

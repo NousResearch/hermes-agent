@@ -93,6 +93,14 @@ def cookie_origin_is_allowed(request: Request) -> bool:
     return origin == _http_origin(f"{target.scheme}://{target.netloc}")
 
 
+def is_same_origin_path(path: str) -> bool:
+    """Root-relative path a browser cannot resolve off-origin: no ``//`` lead, no backslash, no
+    control character (WHATWG collapses ``\\`` to ``/`` and strips tab/CR/LF before parsing)."""
+    if not path.startswith("/") or path.startswith("//"):
+        return False
+    return "\\" not in path and not any(ord(ch) < 0x20 or ch == "\x7f" for ch in path)
+
+
 def is_safe_next_path(path: str) -> bool:
     """Same-origin post-login target: rejects non-relative and protocol-relative (``//evil``)
     values, the backslash/control/space forms browsers normalise into them, the auth routes
@@ -104,9 +112,7 @@ def is_safe_next_path(path: str) -> bool:
     character is rejected fail-closed. A space never moves the authority, so it stays allowed
     (deep links carry decoded ``%20`` queries).
     """
-    if not path.startswith("/") or path.startswith("//"):
-        return False
-    if "\\" in path or any(ord(ch) < 0x20 or ch == "\x7f" for ch in path):
+    if not is_same_origin_path(path):
         return False
     if any(path == p or path.startswith(p) for p in _NEXT_DENY_PREFIXES):
         return False

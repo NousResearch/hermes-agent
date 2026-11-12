@@ -161,8 +161,8 @@ async def test_config_get_reports_the_reasoning_display_the_session_streams(tmp_
         await connection.close()
 
 
-@pytest.mark.parametrize(('source', 'projected'), [('acp', True), ('gui', False)])
-def test_only_acp_keeps_the_reasoning_block_in_its_reply_text(monkeypatch, source, projected):
+@pytest.mark.parametrize('source', ['acp', 'gui'])
+def test_local_viewers_do_not_embed_reasoning_in_reply_text(monkeypatch, source):
     import gateway.run as gateway_run
     from gateway import session_setting_commands
     from gateway.run_turn_persistence import GatewayTurnPersistenceMixin
@@ -170,5 +170,63 @@ def test_only_acp_keeps_the_reasoning_block_in_its_reply_text(monkeypatch, sourc
     monkeypatch.setattr(session_setting_commands, 'local_policy', lambda runner, src: SimpleNamespace(source=source))
     reply = GatewayTurnPersistenceMixin()._hmwa_prepend_reasoning(
         {'last_reasoning': 'weigh it'}, 'final answer', SimpleNamespace(platform=Platform.LOCAL), False)
-    assert ('weigh it' in reply) is projected
-    assert reply.endswith('final answer')
+    assert reply == 'final answer'
+
+
+@pytest.mark.parametrize(('chunks', 'flag', 'expected'), [
+    (['live thought'], True, ['live thought']),
+    ([], True, ['final thought']),
+    ([], False, []),
+])
+def test_acp_reasoning_falls_back_to_final_only_when_not_streamed(tmp_path, chunks, flag, expected):
+    from gateway import local_viewer_events
+    from gateway.session_policy import build_policy, policy_scope
+    published = []
+    turn = _turn(Platform.LOCAL, published, live=SimpleNamespace(tool_progress_mode=None, show_reasoning=flag))
+    agent = SimpleNamespace(tool_gen_callback=None, _print_fn=None, thinking_callback=None,
+                            reaction_callback=None, reasoning_callback=None)
+    with policy_scope(build_policy({'source': 'acp', 'cwd': str(tmp_path), 'model': 'fixture'}, {})):
+        local_viewer_events.wire(turn, agent)
+        for chunk in chunks:
+            agent.reasoning_callback(chunk)
+        local_viewer_events.finish_reasoning(turn, {'last_reasoning': 'final thought'})
+    assert [payload['text'] for kind, payload in published if kind == 'reasoning.delta'] == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(('stream_answer', 'stream_thought', 'reasoning'), [
+    (True, True, 'thought'), (True, False, 'thought'), (False, False, 'thought'), (True, False, None),
+])
+async def test_acp_projects_the_answer_and_reasoning_once(tmp_path, monkeypatch, stream_answer, stream_thought, reasoning):
+    from unittest.mock import AsyncMock
+    import gateway.run as gateway_run
+    from acp_adapter.gateway_server import GatewayACPAgent
+    from gateway import local_viewer_events
+    from gateway.run_turn_persistence import GatewayTurnPersistenceMixin
+    from gateway.session_policy import build_policy, policy_scope
+
+    monkeypatch.setattr(gateway_run, '_load_gateway_config', lambda: {'display': {'show_reasoning': True}})
+    published = []
+    turn = _turn(Platform.LOCAL, published, live=SimpleNamespace(tool_progress_mode=None, show_reasoning=True))
+    agent = SimpleNamespace(tool_gen_callback=None, _print_fn=None, thinking_callback=None,
+                            reaction_callback=None, reasoning_callback=None)
+    result = {'last_reasoning': reasoning}
+    with policy_scope(build_policy({'source': 'acp', 'cwd': str(tmp_path), 'model': 'fixture'}, {})):
+        local_viewer_events.wire(turn, agent)
+        if stream_thought:
+            agent.reasoning_callback(reasoning)
+        local_viewer_events.finish_reasoning(turn, result)
+        final = GatewayTurnPersistenceMixin()._hmwa_prepend_reasoning(
+            result, 'answer', SimpleNamespace(platform=Platform.LOCAL), False)
+
+    editor = GatewayACPAgent()
+    editor._snapshots['s'] = {}
+    editor._gateway = AsyncMock()
+    editor._conn = AsyncMock()
+    events = published + ([('message.delta', {'text': 'answer'})] if stream_answer else [])
+    events.append(('message.complete', {'text': final, 'outcome': 'completed'}))
+    for kind, payload in events:
+        await editor._project({'session_id': 's', 'type': kind, 'admission_id': 'a', 'payload': payload})
+    updates = [call.kwargs['update'] for call in editor._conn.session_update.await_args_list]
+    assert ''.join(u.content.text for u in updates if u.session_update == 'agent_message_chunk') == 'answer'
+    assert ''.join(u.content.text for u in updates if u.session_update == 'agent_thought_chunk') == (reasoning or '')

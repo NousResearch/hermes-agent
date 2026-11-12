@@ -22,6 +22,7 @@ from hermes_state_common import (
     FTS_TRIGRAM_EXCLUDED_SOURCES, FTS_TRIGRAM_SQL,
     MAX_FTS5_QUERY_CHARS, SCHEMA_VERSION,
     escape_like as _escape_like, fts_rebuild_admission, fts_trigram_session_sql, routed_sessions_setting,
+    strip_channel_context,
 )
 from hermes_state_fts import fts_layout_current, fts_layout_drift
 
@@ -910,9 +911,10 @@ class SessionSearchMixin:
             if ContextCompressor._is_context_summary_content(decoded):
                 continue  # compaction handoff — never a user-originated turn
             if isinstance(decoded, str):  # a /skill turn embeds the whole skill body; show what was typed
-                preview = describe_skill_invocation(decoded) or decoded
+                typed = strip_channel_context(decoded)
+                preview = describe_skill_invocation(typed) or typed
             else:
-                preview = _flatten_text(decoded)
+                preview = strip_channel_context(_flatten_text(decoded))
             preview = " ".join(preview.split())
             if len(preview) > 80:
                 preview = preview[:77] + "..."

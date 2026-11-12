@@ -1,0 +1,24 @@
+name: signet-drive
+repo: https://github.com/prsnex/signet-drive-hermes
+sha: e064feed8ce0e8be995c92c6dc7c5410cf002014
+version: "0.2.1"
+title: Signet Drive
+description: "Your agent's own encrypted drive, with dated restore points of its memory, which only you and your agent can open unless you invite someone. Disclosure — Automatically uploads the agent's MEMORY.md and USER.md as encrypted restore points to your Signet Drive (drive.mysignet.ca by default) through the vendor's signed `signet` macOS app, about 30 minutes after a memory change and at each session start; the save tool uploads files from one save folder you choose (default: the plugin's own to-save folder), fetched files land in the plugin's own folder, and once per app version it downloads the published app archive from that server and hashes from raw.githubusercontent.com/prsnex to verify the installed app. Anyone you invite to write to the drive can place files the agent fetches, or restore points it can apply to memory only after you approve them in Hermes."
+maintainer: prsnex
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/prsnex/signet-drive-hermes/blob/e064feed8ce0e8be995c92c6dc7c5410cf002014/README.md
+platforms: [macos]
+screenshots:
+  - https://raw.githubusercontent.com/prsnex/signet-drive-hermes/e064feed8ce0e8be995c92c6dc7c5410cf002014/docs/screenshots/files.png
+  - https://raw.githubusercontent.com/prsnex/signet-drive-hermes/e064feed8ce0e8be995c92c6dc7c5410cf002014/docs/screenshots/desktop-view.png
+  - https://raw.githubusercontent.com/prsnex/signet-drive-hermes/e064feed8ce0e8be995c92c6dc7c5410cf002014/docs/screenshots/memory-restore.png
+known_issues:
+  - "Needs a Signet Drive account and the signed Signet app on an Apple-silicon Mac. The README's Install section has the three steps."
+  - "A new agent's key reads as waiting until the public transparency log's next publish, which runs twice a day."
+capabilities:
+  provides_tools: [signet_drive_save, signet_drive_fetch, signet_drive_list, signet_drive_restore]
+  provides_hooks: [on_session_start, on_session_end, post_tool_call, pre_tool_call]
+  provides_middleware: []
+  requires_env: []

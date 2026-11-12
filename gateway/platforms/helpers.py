@@ -227,6 +227,13 @@ def typing_metadata_for_turn(adapter: Any, chat_id: Any, anchor: Any, metadata: 
     return hook(adapter, str(chat_id), str(anchor), metadata)
 
 
+def typing_pause_key(chat_id: Any, metadata: Optional[dict]) -> tuple:
+    """``_typing_paused`` entry that pauses ONE turn's keep-alive: the chat plus the thread its
+    typing metadata (``typing_metadata_for_turn``) targets. A bare ``chat_id`` entry still pauses
+    every loop in the chat (approval waits); this one leaves a concurrent topic's typing alone."""
+    return chat_id, (metadata or {}).get("thread_id")
+
+
 # Inline markdown-stripping rules, applied in order: bold, italic, bold/italic
 # underscore, code fence markers, inline code, headings. Links and the newline
 # squeeze run after these, in that order (see ``strip_markdown``).
@@ -643,6 +650,68 @@ def balance_fences_across_chunks(chunks: list[str]) -> list[str]:
         carry_lang = lang if in_code else None
         out.append(body + "\n```" if in_code else body)
     return out
+
+
+def _table_header_above(lines: list[str], i: int) -> int:
+    """Index of the header row of the pipe table containing ``lines[i]``, else -1. Same rules as
+    :func:`convert_table_to_bullets`: a header with a ``|`` over a separator row, then rows with a
+    ``|`` (outer pipes optional)."""
+    while i >= 1 and is_table_row(lines[i]):
+        if TABLE_SEPARATOR_RE.match(lines[i]) and is_table_row(lines[i - 1]):
+            return i - 1
+        i -= 1
+    return -1
+
+
+def _split_inside_table(head: str, tail: str) -> bool:
+    return (is_table_row(head.rstrip('\n').rsplit('\n', 1)[-1])
+            and is_table_row(tail.lstrip().split('\n', 1)[0]))
+
+
+def table_row_start(text: str, split_at: int) -> int:
+    """The newline before the table row a mid-line *split_at* falls in, so a row that fits a fresh
+    chunk is never cut inside a cell; *split_at* unchanged when the line is not a table row (or is
+    the first line, which only an oversized row reaches)."""
+    newline = text.rfind('\n', 0, split_at)
+    if newline < 1 or text[split_at:split_at + 1] in ('\n', ''):
+        return split_at
+    line_end = text.find('\n', split_at)
+    lines = text[:line_end if line_end >= 0 else len(text)].split('\n')
+    return newline if _table_header_above(lines, len(lines) - 1) >= 0 else split_at
+
+
+def table_rollback_point(text: str, split_at: int, fits) -> int:
+    """When ``text[:split_at]`` ends inside a pipe table that *fits* whole in a fresh chunk,
+    return the offset of its header line so the table moves intact; else *split_at*."""
+    if not _split_inside_table(text[:split_at], text[split_at:]):
+        return split_at
+    head_lines = text[:split_at].split('\n')
+    lines = head_lines + [text[split_at:].lstrip().split('\n', 1)[0]]  # sees a separator just past the cut
+    header = _table_header_above(lines, len(lines) - 1)
+    if header <= 0:
+        return split_at
+    start = len('\n'.join(lines[:header])) + 1
+    if header >= len(head_lines) - 2:  # header (+ separator) with no rows never ends a chunk
+        return start
+    end = start
+    for line in text[start:].split('\n'):
+        if not is_table_row(line):
+            break
+        end += len(line) + 1
+    return start if fits(text[start:end].rstrip('\n')) else split_at
+
+
+def table_header_to_repeat(chunk: str, rest: str, max_units: int, len_fn=len):
+    """Header + separator lines to prepend to *rest* when *chunk* ended mid-table, else None
+    (also None when the header alone exceeds *max_units*, so a huge header can't stall)."""
+    if not _split_inside_table(chunk, rest):
+        return None
+    lines = chunk.rstrip('\n').split('\n')
+    header = _table_header_above(lines, len(lines) - 1)
+    if header < 0:
+        return None
+    block = f"{lines[header]}\n{lines[header + 1]}"
+    return block if len_fn(block) <= max_units else None
 
 
 def fence_state_after(text: str, in_code: bool = False, lang: str = "") -> tuple[bool, str]:

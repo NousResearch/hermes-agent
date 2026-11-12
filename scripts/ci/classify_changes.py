@@ -303,6 +303,8 @@ _UPDATE_PIPELINE = (
     "hermes_cli/gateway_launchd.py",
     "hermes_cli/gateway_migrate",
     "hermes_cli/gateway_supervised_restart.py",
+    "hermes_cli/gateway_restart_env.py",  # the fleet restart watcher's env
+    "hermes_cli/gateway_runtime_start.py",  # supervisor-marker strip for the watcher and the pause replay
     "hermes_cli/git_pack_tidy.py",  # partial-clone pack tidy: every update's pre-fetch runs it
     "hermes_bootstrap.py",  # every launch's prepare_launch
     "hermes_constants.py",  # root home = update marker location
@@ -449,6 +451,7 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         "tests/gateway/test_native_role_reauthorization.py",
         "tests/gateway/test_native_telegram_startup_recovery.py",
         "tests/gateway/test_native_pause_notice.py",
+        "tests/gateway/test_reset_paused_queue_notice.py",
         "tests/gateway/test_native_reply_crash_recovery.py",
     ),
     "e2e_upgrade": (

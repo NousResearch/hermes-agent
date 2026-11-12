@@ -4550,34 +4550,6 @@ Write only the summary body. Do not include any preamble or prefix."""
             idx += 1
         return idx
 
-    def _restart_handoff_probe_bounds(self, messages: list[dict[str, Any]]) -> tuple[int, int]:
-        """Return the bounded transcript region that can indicate restart decay."""
-        if not messages or self.protect_first_n <= 0:
-            return 0, 0
-        first_non_system = 1 if messages[0].get("role") == "system" else 0
-        return first_non_system, min(len(messages), first_non_system + self.protect_first_n + _RESTART_HANDOFF_PROBE_EXTRA_MESSAGES)
-
-    def _effective_protect_first_n(self, messages: Optional[list[dict[str, Any]]] = None) -> int:
-        """``protect_first_n``, decayed to 0 once the session has been compressed so early turns don't fossilize.
-        After a restart the decayed state is inferred from handoff summaries in the resumed head."""
-        if self.compression_count >= 1 or self._previous_summary:
-            return 0
-        if messages and self.protect_first_n > 0:
-            # Probe only the early resumed-handoff shape; summary-like tail content must not decay protection.
-            probe_start, probe_end = self._restart_handoff_probe_bounds(messages)
-            if any(map(self._is_context_summary_message, messages[probe_start:probe_end])):
-                return 0
-        return self.protect_first_n
-
-    def _protect_head_size(self, messages: list[dict[str, Any]]) -> int:
-        """Head messages to protect: the system prompt (if present) plus the decaying ``protect_first_n`` extra rows.
-
-        The ``protect_first_n`` portion DECAYS after the first compression (see _effective_protect_first_n)
-        so early user turns don't fossilize across repeated compactions (#11996).
-        """
-        head = 1 if messages and messages[0].get("role") == "system" else 0
-        return head + self._effective_protect_first_n(messages)
-
     def _align_boundary_backward(self, messages: list[dict[str, Any]], idx: int) -> int:
         """Pull a compress-end boundary back so a tool group is not split (orphaned tail results would be dropped)."""
         if idx <= 0 or idx >= len(messages):

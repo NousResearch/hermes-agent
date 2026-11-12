@@ -332,6 +332,7 @@ gateway:
     title_error_untitled: "\n⚠️ {error} — sessão iniciada sem título."
     title_empty_untitled: "\n⚠️ O título fica vazio após a limpeza — sessão iniciada sem título."
     tip: "\n✦ Dica: {tip}"
+    paused_left: "\n⚠️ {count} mensagem(ns) enviada(s) enquanto a conversa anterior estava pausada continuam salvas na conversa anterior, sem resposta. Para executá-las: /resume {session_id} e depois {discard}."
   restart:
     in_progress: "⏳ O reinício do gateway já está em curso..."
     restarting: "♻ A reiniciar o gateway. Se não fores notificado em 60 segundos, reinicia a partir da consola com `hermes gateway restart`."

@@ -56,6 +56,11 @@ class PrepareStallTracker:
             streak = self._rooms.get(room_id)
             return bool(streak and streak.stalled)
 
+    def states(self) -> dict[str, tuple[bool, str | None]]:
+        """``{room_id: (stalled, last_error)}``: what ``status`` reads per room, for its change signature."""
+        with self._lock:
+            return {room_id: (streak.stalled, streak.error) for room_id, streak in self._rooms.items()}
+
     def last_error(self, room_id: str) -> str | None:
         with self._lock:
             streak = self._rooms.get(room_id)

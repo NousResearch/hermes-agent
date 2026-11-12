@@ -186,19 +186,6 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
             return adapter._post_delivery_callbacks.pop(key, None)
         return None
 
-    async def _hmwa_stop_typing_for_turn(self, event, source):
-        """Stop the typing indicator (never raises), with the delivery path's thread/workspace routing
-        metadata (Slack AI status is thread-scoped), on this turn's own message, not the chat's latest."""
-        from gateway.platforms.helpers import typing_metadata_for_turn
-        with suppress(Exception):
-            _typing_adapter = self._delivery_adapter_for(source)
-            _kind = type(_typing_adapter)
-            if _typing_adapter and callable(getattr(_kind, "_stop_typing_with_metadata", None)):
-                await _typing_adapter._stop_typing_with_metadata(source.chat_id, typing_metadata_for_turn(_typing_adapter,
-                    source.chat_id, self._reply_anchor_for_event(event), self._event_thread_metadata(event, source)))
-            elif _typing_adapter and callable(getattr(_kind, "stop_typing", None)):
-                await _typing_adapter.stop_typing(source.chat_id)
-
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
         _msg_start_time = time.time()
@@ -295,6 +282,8 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
                 persist_user_display_kind=prepared.persist_user_display_kind,
                 reply_expected=event.reply_expected,
             )
+            if _intentional_silence:
+                self._hmwa_pause_typing_after_silence(event, source)
             response = self._usage_window_chat_wording(agent_result, self._hmwa_prepend_reasoning(agent_result, response, source, _intentional_silence))
             _footer_line = self._hmwa_runtime_footer_line(agent_result, source, _turn_seconds)
             # Streaming already delivered the body: the footer goes out as a trailing send instead.
@@ -1509,10 +1498,10 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         if getattr(_agent, "_provider_fallback_active", False) is not True:
             # A LOCAL session runs its frozen launch policy's model, not the gateway's configured one.
             from gateway.session_authorities import active_authority
-            from gateway.session_policy import policy_for_source
+            from gateway.session_policy import policy_for_source, turn_model
             policy = policy_for_source(self, turn_ctx.source)
             _cfg_model = self._fallback_baseline_model(
-                session_key, turn_ctx.source, _agent, policy_model=policy.current_model(active_authority(self)) if policy and policy.model else None)
+                session_key, turn_ctx.source, _agent, policy_model=turn_model(policy, active_authority(self)) if policy and policy.model else None)
             if _agent.model == _cfg_model or self._is_intentional_model_switch(session_key, _agent, _cfg_model):
                 return
         _agent._evicted_on_fallback = session_key or True
@@ -1896,32 +1885,13 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
                     # A background task that died of a real error must not abort the cleanup path.
                     logger.debug("background turn task failed during cleanup", exc_info=True)
 
-    async def _run_agent_edit_streamed_message(
-        self, _sc, source, response, content, *, _sk, ok, fail_result: str, fail_exc: str,
-    ) -> None:
-        """Edit the stream consumer's message in place with ``content``; on success mark
-        ``response["already_sent"]`` and log ``ok``. A returned failure logs ``fail_result`` as
-        ``(session, error)`` and an exception logs ``fail_exc`` as ``(session, exc)``; either way
-        ``already_sent`` stays unset so the normal final send delivers the content."""
-        try:
-            _res = await _sc.adapter.edit_message(
-                chat_id=source.chat_id, message_id=_sc.message_id, content=content, finalize=True,
-            )
-        except Exception as _edit_err:
-            logger.warning(fail_exc, _sk, _edit_err)
-            return
-        if not getattr(_res, "success", True):
-            logger.warning(fail_result, _sk, getattr(_res, "error", None))
-            return
-        response["already_sent"] = True
-        logger.info(*ok)
-
     async def _run_agent_mark_streamed_delivery(self, response: Any, turn_ctx: TurnContext) -> None:
         """Set ``response["already_sent"]`` when streaming already delivered the final reply.
 
         Never when the agent failed (unseen error), on "(empty)", or on a finite (`-z`, `chat -q`) turn:
         its viewer prints only the completion text, never the deltas (#139666). Both flags reflect call
         success, not content: a mismatch with the recorded turn-final payload never suppresses."""
+        from gateway.run_turn_final_reconcile import edit_streamed_message, owns_reconcilable_preview
         from gateway.session_finite import finite_turn_required
         _sc, source, session_key = turn_ctx.stream_consumer_holder[0], turn_ctx.source, turn_ctx.session_key
         if not isinstance(response, dict) or response.get("failed") or finite_turn_required() is True:
@@ -1969,8 +1939,8 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
                     _sk,
                 )
             elif _sc_msg_id and _sc_msg_id != "__no_edit__" and getattr(_sc, "adapter", None) is not None:
-                await self._run_agent_edit_streamed_message(
-                    _sc, source, response, _final, _sk=_sk,
+                await edit_streamed_message(
+                    _sc, source, response, _final, sk=_sk,
                     ok=("Reconciled stale streamed finalize for session %s: edited message %s with the complete response (#71643).", _sk, _sc_msg_id),
                     fail_result="Stale-finalize reconciliation edit failed for session %s (%s); sending complete response via normal final send.",
                     fail_exc="Stale-finalize reconciliation edit failed for session %s: %s; sending complete response via normal final send.",
@@ -1983,12 +1953,20 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         elif _transformed and _sc is not None:
             # Transformed after streaming: edit the streamed message instead of sending a duplicate.
             if _sc.message_id:
-                await self._run_agent_edit_streamed_message(
-                    _sc, source, response, response["final_response"], _sk=_sk,
+                await edit_streamed_message(
+                    _sc, source, response, response["final_response"], sk=_sk,
                     ok=("Edited streamed message %s for session %s to include plugin-transformed content.", _sc.message_id, _sk),
                     fail_result="Transformed-final edit failed for session %s (%s); sending transformed response via normal final send.",
                     fail_exc="Failed to edit streamed message for session %s: %s",
                 )
+        elif not _transformed and owns_reconcilable_preview(_sc, getattr(source, "chat_id", ""), _final):
+            # Unconfirmed final, one real preview on screen (a flood-frozen bubble, a cancelled
+            # consumer): finish it in place; a plain final send would post the answer twice.
+            await edit_streamed_message(
+                _sc, source, response, _sc._clean_for_display(_final), sk=_sk,
+                ok=("Finished streamed preview %s in place for session %s (final not confirmed).", _sc.message_id, _sk),
+                fail_result="Unconfirmed-final preview edit failed for session %s (%s); sending normally.",
+                fail_exc="Unconfirmed-final preview edit failed for session %s: %s; sending normally.")
         elif _sc is not None and getattr(_sc, "stream_deltas_enabled", True):
             # DUPLICATE-RISK DIAGNOSTIC: a stream consumer existed but suppression did NOT fire; log
             # the decision inputs ("signal never set" vs "ack-pending race"). Skipped for consumers
@@ -2017,7 +1995,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         turn_ctx._step_callback_sync = turn_runner._step_callback_sync
         turn_ctx._event_callback_sync = turn_runner._event_callback_sync
         turn_ctx._status_callback_sync = turn_runner._status_callback_sync
-        turn_ctx._status_adapter = self._delivery_adapter_for(source)
+        turn_ctx.bind_status_adapter(lambda: self._delivery_adapter_for(source))
         turn_ctx._status_chat_id = source.chat_id
         turn_ctx._status_thread_metadata = _status_thread_metadata
         return _status_thread_metadata
@@ -2039,8 +2017,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
             return
         source, session_key, agent_holder = turn_ctx.source, turn_ctx.session_key, turn_ctx.agent_holder
         _status_thread_metadata = turn_ctx._status_thread_metadata
-        _notify_adapter = self._delivery_adapter_for(source)
-        if not _notify_adapter:
+        if not (_notify_adapter := self._delivery_adapter_for(source)):
             return
         _heartbeat_msg_id: Optional[str] = None
         while True:
@@ -2049,6 +2026,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
                 session_key, agent_holder[0], _executor_task_holder[0]
             ):
                 break
+            _notify_adapter = self._delivery_adapter_for(source) or _notify_adapter  # reconnects retire it (#138133)
             _elapsed_mins = int((time.time() - _notify_start) // 60)
             # Terse heartbeat by default; the iteration counter is gated on busy_ack_detail.
             _status_detail = ""

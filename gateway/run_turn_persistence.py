@@ -518,9 +518,10 @@ class GatewayTurnPersistenceMixin:
         # the DB write here to prevent the duplicate-write bug (#860 / #42039). This holds for the codex
         # app-server runtime too: although it early-returns and bypasses conversation_loop's per-step
         # flushes, it flushes its own projected assistant/tool messages before returning and reports
-        # agent_persisted=True (see agent/codex_runtime.py). Reading the flag (default = self._session_db is
-        # not None) keeps the persistence contract explicit and lets any future non-persisting runtime opt
-        # into a gateway-side write by returning False.
+        # agent_persisted=True (see agent/codex_runtime.py). The turn runner now always sets the flag from
+        # the handle the turn's agent actually holds; the fallback below (runner's CURRENT handle) only
+        # serves direct callers — reading it here let a mid-turn recovery mask a no-handle turn whose
+        # agent flush silently no-ops, dropping the turn from state.db entirely (#140823).
         agent_persisted = agent_result.get("agent_persisted", self._session_db is not None)
         _user_row = self._hmwa_user_transcript_entry(event, prepared, ts)
 
@@ -685,6 +686,35 @@ class GatewayTurnPersistenceMixin:
             return
         await adapter.ledger_attempted_final(
             event, session_key, response, error="Timed out: the streamed send may not have landed")
+
+    async def _hmwa_stop_typing_for_turn(self, event, source):
+        """Stop the typing indicator (never raises), with the delivery path's thread/workspace routing
+        metadata (Slack AI status is thread-scoped), on this turn's own message, not the chat's latest."""
+        from gateway.platforms.helpers import typing_metadata_for_turn
+        with suppress(Exception):
+            _typing_adapter = self._delivery_adapter_for(source)
+            _kind = type(_typing_adapter)
+            if _typing_adapter and callable(getattr(_kind, "_stop_typing_with_metadata", None)):
+                await _typing_adapter._stop_typing_with_metadata(source.chat_id, typing_metadata_for_turn(_typing_adapter,
+                    source.chat_id, self._reply_anchor_for_event(event), self._event_thread_metadata(event, source)))
+            elif _typing_adapter and callable(getattr(_kind, "stop_typing", None)):
+                await _typing_adapter.stop_typing(source.chat_id)
+
+    def _hmwa_pause_typing_after_silence(self, event, source) -> None:
+        """A turn that ends in intentional silence has nothing left to show: pause the adapter's typing
+        keep-alive now. It refreshes until the handler returns, so hooks and transcript persistence
+        after the agent finished kept "typing" on for a reply that never comes (#149948). Only inside
+        the adapter's turn bracket (``_turn_marker_handoff``), whose ``finally`` lifts the pause; a turn
+        run outside it has no keep-alive, and a pause there would mute the chat's next turn. Keyed on
+        this turn's typing thread, as the adapter's loop computes it: another topic of the same chat
+        is still working and keeps its own "typing"."""
+        from gateway.platforms.helpers import typing_metadata_for_turn, typing_pause_key
+        adapter = self._delivery_adapter_for(source)
+        paused = getattr(adapter, "_typing_paused", None)
+        if getattr(event, "_turn_marker_handoff", False) is True and isinstance(paused, set):
+            metadata = typing_metadata_for_turn(adapter, source.chat_id, self._reply_anchor_for_event(event),
+                                                self._event_thread_metadata(event, event.source))
+            paused.add(typing_pause_key(source.chat_id, metadata))
 
     async def _hmwa_deliver_turn_response(
         self, event, source, session_entry, session_key, run_generation,

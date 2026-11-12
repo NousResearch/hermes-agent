@@ -568,12 +568,17 @@ class GatewayBusySessionMixin:
         return (enriched_text or text).strip() if successful_transcripts else text
 
     def _steer_text_with_origin(self, text: str, event: MessageEvent) -> str:
-        """Keep event origin in this injection, never in the cached system prompt."""
+        """Keep event origin in this injection, never in the cached system prompt. In a shared
+        session the text carries the same ``[Name]`` sender label a turn-opening message gets."""
         if not text.strip():
             return text
         import json
+        from gateway.session import label_shared_sender
 
         source = event.source
+        text = label_shared_sender(
+            source, text, group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
+            thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False))
         origin = {
             "platform": source.platform.value,
             **{key: getattr(source, key) for key in (
@@ -582,6 +587,7 @@ class GatewayBusySessionMixin:
             )},
             "message_id": event.message_id,
             "source_message_id": source.message_id,
+            "from_bot": True if source.is_bot else None,  # a bot/integration post, not the person helped
         }
         origin = {key: value for key, value in origin.items() if value not in (None, "")}
         from gateway.run import _load_gateway_config
@@ -597,7 +603,7 @@ class GatewayBusySessionMixin:
                 "chat_id": _hash_chat_id, "chat_id_alt": _hash_chat_id,
                 "parent_chat_id": _hash_chat_id,
             }
-            origin = {key: (value if key in ("platform", "chat_type") else
+            origin = {key: (value if key in ("platform", "chat_type", "from_bot") else
                             hashers.get(key, _hash_id)(value)) for key, value in origin.items()}
         # JSON preserves identifiers exactly (including colons/whitespace) instead of
         # normalizing them into another destination. Escape marker delimiters too.
@@ -1234,6 +1240,12 @@ class GatewayBusySessionMixin:
         # /steer lands BETWEEN tool-call iterations of the same run (appended to the last tool
         # result) — no interrupt, no new user turn, no role-alternation violation.
         from gateway.run import _AGENT_PENDING_SENTINEL
+
+        # A steer carries text only; media cannot ride one. The plain-message busy gate already
+        # demotes non-text input to queue for exactly this reason (#70253) — a /steer caption must
+        # not be the one path that still drops the photo: queue the whole event instead (#132371).
+        if getattr(event, "media_urls", None) or getattr(event, "media_types", None):
+            return await self._busy_queue_command(event, quick_key, source)
         steer_text = event.get_command_args().strip()
         if not steer_text:
             return t("gateway.steer.usage")
@@ -1485,9 +1497,10 @@ class GatewayBusySessionMixin:
     def _is_stale_restart_redelivery(self, event: MessageEvent) -> bool:
         """True if this /restart is a Telegram re-delivery we already handled.
 
-        The previous gateway wrote ``.restart_last_processed.json`` (platform + update_id). A
-        /restart with update_id <= that value is a redelivery when this process booted from that
-        restart; otherwise the marker must be < 5 minutes old. Telegram only (numeric ordering).
+        The previous gateway wrote ``.restart_last_processed.json`` (platform + transport +
+        update_id). Within that bot's stream, update_id <= that value is a redelivery when this
+        process booted from that restart; otherwise the marker must be < 5 minutes old.
+        Telegram only (numeric ordering); legacy markers retain their unscoped behavior.
         """
         from gateway.run import _hermes_home
         if event is None or event.source is None or event.platform_update_id is None:
@@ -1517,6 +1530,14 @@ class GatewayBusySessionMixin:
                 return False
             data = json.loads(marker_path.read_text(encoding="utf-8-sig"))
         except Exception:
+            return False
+
+        from gateway.session_identity import transport_profile_of
+
+        # Telegram update IDs are ordered per bot, not across the multiplexed process.
+        # Runtime profiles may be shared by several bots, so use the receiving transport.
+        recorded_profile = data.get("transport_profile")
+        if recorded_profile is not None and recorded_profile != transport_profile_of(event.source):
             return False
 
         recorded_uid = data.get("update_id")

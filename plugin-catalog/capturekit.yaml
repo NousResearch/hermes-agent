@@ -1,0 +1,19 @@
+name: capturekit
+title: CaptureKit
+repo: https://github.com/capturekitdev/hermes-plugin-capturekit
+sha: 4b74a56acbad8ac8b9881d48d4378d8915e7f1db
+version: "1.0.0"
+description: "Page content as clean Markdown for the built-in web_extract tool, through the CaptureKit Content API. Extract only; pair it with a search backend for web_search. Disclosure — sends each URL to api.capturekit.dev with your CAPTUREKIT_API_KEY, and calls can use CaptureKit credits. Reads the key only through Hermes's secret scope. Registers no tools, no hooks or middleware, writes no files, starts no processes, has no telemetry or self-updater, and uses only the Python standard library."
+maintainer: capturekitdev
+tier: community
+category: web
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/capturekitdev/hermes-plugin-capturekit#readme
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - CAPTUREKIT_API_KEY

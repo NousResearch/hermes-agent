@@ -433,7 +433,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable
 if (_checkout_root := str(Path(__file__).resolve().parents[2])) not in sys.path:
     sys.path.append(_checkout_root)  # append, never prepend: never shadow same-named installed packages
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.helpers import fence_state_after, typing_metadata_for_turn
+from gateway.platforms.helpers import fence_state_after, typing_metadata_for_turn, typing_pause_key
 from gateway.platforms.base_post_delivery import run_post_delivery_callback
 from gateway.platforms.base_delivery_ledger import finalize_final_obligation, ledger_bracket, record_final_obligation
 from gateway.platforms.base_exec_approval import (
@@ -1055,8 +1055,8 @@ def validate_media_delivery_path(path: str, session_key: str = "") -> Optional[s
     (``HERMES_MEDIA_DELIVERY_STRICT=1``, public bots where prompt injection must not exfiltrate
     host secrets): MUST be under a Hermes cache, an operator root (``HERMES_MEDIA_ALLOW_DIRS``),
     or freshly produced within the recency window. Symlinks are resolved before any check."""
-    candidate = _normalize_media_tag_path(path)
-    if not candidate:
+    from tools.hosted_tool_policy import host_feature_enabled
+    if not host_feature_enabled("media_delivery") or not (candidate := _normalize_media_tag_path(path)):
         return None
     try:
         expanded = Path(os.path.expanduser(candidate))
@@ -1347,11 +1347,13 @@ def _deliverable_tag_spans(text: str) -> list:
 
 
 def _extensionless_media_matches(masked: str):
-    """Yield ``(match, safe_path, end_offset)`` for every extension-less / unknown-extension
-    MEDIA tag in ``masked`` that ``validate_media_delivery_path`` accepts."""
+    """Yield ``(match, safe_path, end_offset)`` for every extension-less / unknown-extension MEDIA tag in
+    ``masked`` that validates, skipping one inside a REAL known-extension file's tag (spaced path, #78383)."""
+    known = [m.span() for m in MEDIA_TAG_CLEANUP_RE.finditer(masked) if "MEDIA:" not in m.group("path")
+             and _existing_regular_file(_normalize_media_tag_path(m.group("path")))]
     for match in MEDIA_EXTENSIONLESS_TAG_RE.finditer(masked):
         path = _normalize_media_tag_path(match.group("path"))
-        if path and _path_lacks_deliverable_extension(path):
+        if path and _path_lacks_deliverable_extension(path) and not any(s <= match.start() < e for s, e in known):
             resolved = _match_extensionless_path(masked, match)
             if resolved is not None:
                 yield match, resolved[0], resolved[1]
@@ -3199,11 +3201,9 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         has_voice_tag = "[[audio_as_voice]]" in content
         cleaned = content.replace("[[audio_as_voice]]", "").replace("[[as_document]]", "")
         # Scan a masked copy so example/stored MEDIA paths (code, quotes, JSON values) are never
-        # delivered; dedupe on the expanded path so a file referenced twice uploads once.
+        # delivered: code blocks / inline code / blockquotes hold prose examples (#35695), serialized
+        # JSON string values hold stored tool-result text (#34375); both maskers preserve offsets.
         scan_content = _mask_media_scan_text(content)
-        # - code blocks / inline code / blockquotes hold prose examples (#35695) - serialized JSON string
-        #   values hold stored tool-result text (#34375) Both maskers are offset-preserving (chars ->
-        #   spaces) so match offsets stay valid; chaining them masks the union of both protected regions.
         # Dedupe on the expanded path (first occurrence wins) so the same file referenced twice in one
         # response — e.g. a MEDIA tag inline AND in a summary footer — is uploaded once, not twice (#29131).
         seen_paths: set = set()
@@ -3282,7 +3282,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             while True:
                 if stop_event is not None and stop_event.is_set():
                     return
-                if chat_id not in self._typing_paused:
+                if chat_id not in self._typing_paused and typing_pause_key(chat_id, metadata) not in self._typing_paused:
                     try:  # asyncio.timeout: 3.11's wait_for swallows a same-tick cancel (stuck "typing")
                         async with asyncio.timeout(_send_typing_timeout):
                             await self.send_typing(chat_id, metadata=metadata)
@@ -3307,7 +3307,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         finally:
             # A send_typing after an outer stop_typing() may have recreated the platform loop.
             await self._stop_typing_quietly(chat_id, metadata)
-            self._typing_paused.discard(chat_id)
+            self._typing_paused.difference_update((chat_id, typing_pause_key(chat_id, metadata)))
             # getattr-guard: tests build adapters via object.__new__ without _status_text.
             getattr(self, "_status_text", {}).pop(str(chat_id), None)
 
@@ -3327,7 +3327,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
                     await asyncio.sleep(0)
                 await self._stop_typing_quietly(chat_id, metadata)
         finally:
-            self._typing_paused.discard(chat_id)
+            self._typing_paused.difference_update((chat_id, typing_pause_key(chat_id, metadata)))
 
     async def _stop_typing_quietly(self, chat_id: str, metadata=None) -> None:
         """Best-effort platform stop_typing; adapter errors are swallowed."""
@@ -4722,62 +4722,8 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
     @staticmethod
     def truncate_message(content: str, max_length: int = 4096,
                          len_fn: Optional[Callable[[str], int]] = None) -> list[str]:
-        """Split a long message into chunks preserving code blocks: a split inside a fence closes it
-        at the chunk end and reopens it (same language tag) in the next; multi-chunk output gets
-        ``(1/3)`` indicators. ``len_fn`` overrides ``len`` (``utf16_len`` for Telegram)."""
-        _len = len_fn or len
-        if _len(content) <= max_length:
-            return [content]
-        INDICATOR_RESERVE = 12   # room for " (XXX/XXX)" once MarkdownV2-escaped to " \(XXX/XXX\)"
-        FENCE_CLOSE = "\n```"
-        chunks: list[str] = []
-        remaining = content
-        carry_lang: Optional[str] = None  # language tag ("" ok) when previous chunk ended mid-fence
-        while remaining:
-            prefix = f"```{carry_lang}\n" if carry_lang is not None else ""
-            # Body budget after prefix/fence/indicator; floored so a tiny max_length can't stall.
-            headroom = max_length - INDICATOR_RESERVE - _len(prefix) - _len(FENCE_CLOSE)
-            if headroom < 1:
-                headroom = max(1, max_length // 2)
-            # Remainder fits in one final chunk; close a reopened fence if still open.
-            if _len(prefix) + _len(remaining) <= max_length - INDICATOR_RESERVE:
-                final_chunk = prefix + remaining
-                if carry_lang is not None and fence_state_after(remaining, True, carry_lang)[0]:
-                    final_chunk += FENCE_CLOSE
-                chunks.append(final_chunk)
-                break
-            # Natural split (newline, then space); a custom _len budget maps to a codepoint offset.
-            _cp_limit = (
-                _custom_unit_to_cp(remaining, headroom, _len) if _len is not len else headroom)
-            region = remaining[:_cp_limit]
-            split_at = region.rfind("\n")
-            if split_at < _cp_limit // 2:
-                split_at = region.rfind(" ")
-            if split_at < 1:
-                # Floor at one codepoint: a zero _cp_limit (max_length 0/1, or a surrogate pair
-                # wider than the utf16 budget) would never shrink ``remaining``; overshooting beats
-                # a hang.
-                split_at = max(1, _cp_limit)
-            # Don't split inside an inline code span: an unpaired backtick breaks MarkdownV2.
-            candidate = remaining[:split_at]
-            backtick_count = candidate.count("`") - candidate.count("\\`")
-            if backtick_count % 2 == 1:
-                last_bt = candidate.rfind("`")
-                while last_bt > 0 and candidate[last_bt - 1] == "\\":
-                    last_bt = candidate.rfind("`", 0, last_bt)
-                if last_bt > 0:
-                    safe_split = max(
-                        candidate.rfind(" ", 0, last_bt), candidate.rfind("\n", 0, last_bt))
-                    if safe_split > _cp_limit // 4:
-                        split_at = safe_split
-            chunk_body = remaining[:split_at]
-            remaining = remaining[split_at:].lstrip()
-            full_chunk = prefix + chunk_body
-            # Walk only chunk_body (not the prepended prefix) for the fence state.
-            in_code, lang = fence_state_after(chunk_body, carry_lang is not None, carry_lang or "")
-            carry_lang = lang if in_code else None
-            # Close the orphaned fence so the chunk stands alone.
-            chunks.append(full_chunk + FENCE_CLOSE if in_code else full_chunk)
-        if len(chunks) > 1:
-            chunks = [f"{chunk} ({i + 1}/{len(chunks)})" for i, chunk in enumerate(chunks)]
-        return chunks
+        """Split a long message into Markdown-safe chunks with ``(1/3)`` indicators: fences
+        close/reopen, inline code and links stay whole, pipe tables repeat their header.
+        ``len_fn`` overrides ``len`` (``utf16_len`` for Telegram). See ``base_chunking``."""
+        from gateway.platforms.base_chunking import chunk_markdown_message
+        return chunk_markdown_message(content, max_length, len_fn)

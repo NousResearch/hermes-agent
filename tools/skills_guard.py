@@ -242,7 +242,9 @@ THREAT_PATTERNS = [
     # ── Exfiltration: markdown/link based ──
     (r'!\[.*\]\(https?://[^\)]*\$\{?',
      "md_image_exfil", "high", "exfiltration", "markdown image URL with variable interpolation (image-based exfil)"),
-    (r'\[.*\]\(https?://[^\)]*\$\{?', "md_link_exfil", "high", "exfiltration", "markdown link with variable interpolation"),
+    # `[^\[]*`, not `.*`: a match exists iff the LAST `[` before `](` matches, so this is the same
+    # set of lines in one pass. `.*` retried every `]` from every `[` (quadratic on minified JSON).
+    (r'\[[^\[]*\]\(https?://[^\)]*\$\{?', "md_link_exfil", "high", "exfiltration", "markdown link with variable interpolation"),
     # ── Prompt injection ──
     (r'ignore\s+(?:\w+\s+)*(previous|all|above|prior)\s+instructions',
      "prompt_injection_ignore", "critical", "injection", "prompt injection: ignore previous instructions"),

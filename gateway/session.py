@@ -676,6 +676,25 @@ def is_shared_multi_user_session(
     return not (thread_sessions_per_user if source.thread_id else group_sessions_per_user)
 
 
+def label_shared_sender(
+    source: SessionSource, text: str, *, group_sessions_per_user: bool = True,
+    thread_sessions_per_user: bool = False,
+) -> str:
+    """``[Name] text`` in a session shared across participants, so the agent can tell who spoke; the
+    same label whether the message opens a turn or lands mid-turn (steer / redirect). Display names
+    are attacker-influenceable: newlines and control characters are neutralized, or a hostile name
+    masquerades as a markdown section. On Slack the speaker's verifiable ``<@U…>`` id rides along, a
+    trusted target for "mention me" (#17916)."""
+    if not (source.user_name and is_shared_multi_user_session(
+            source, group_sessions_per_user=group_sessions_per_user,
+            thread_sessions_per_user=thread_sessions_per_user)):
+        return text
+    name = neutralize_untrusted_inline_text(source.user_name)
+    if source.platform == Platform.SLACK and source.user_id:
+        name = f"{name} | Slack user <@{source.user_id}>"
+    return f"[{name}] {text}"
+
+
 def _session_key_namespace(profile: Optional[str]) -> str:
     """``agent:<ns>`` prefix for a session key: default/None profile → ``agent:main``
     (BYTE-IDENTICAL to every historical key); named profile → ``agent:<name>`` so two
@@ -1343,25 +1362,32 @@ class SessionStore(
         """
         with self._lock:
             old_entry = self._entry_locked(session_key)
-            if old_entry is None:
-                return None
-            if expected_session_id is not None and old_entry.session_id != expected_session_id:
+            refused = old_entry is None or (
+                expected_session_id is not None and old_entry.session_id != expected_session_id)
+            if refused and old_entry is not None:
                 logger.info(
                     "Session switch for %s refused: route moved from %s to %s after the caller's snapshot",
                     session_key, expected_session_id, old_entry.session_id,
                 )
-                return None
-            if old_entry.session_id == target_session_id:
-                return old_entry
-            new_entry = self._replace_route_locked(
-                session_key, old_entry, target_session_id, _now(),
-                display_name=old_entry.display_name, model_override=old_entry.model_override,
-                yolo=old_entry.yolo,
-                prompt_pin=(
-                    dict(old_entry.prompt_pin)
-                    if preserve_prompt_pin and old_entry.prompt_pin is not None else None
-                ),
-            )
+            # Adopt a delegate target under the route lock, after the CAS and BEFORE the route moves: a
+            # failed marker write leaves the old route intact, and a refused switch never adopts, so it
+            # has nothing to undo that an overlapping successful switch onto the same row relies on.
+            if not refused and self._db_for_key(session_key):
+                self._adopt_delegate_row(session_key, target_session_id)
+            if not refused and old_entry.session_id != target_session_id:
+                new_entry = self._replace_route_locked(
+                    session_key, old_entry, target_session_id, _now(),
+                    display_name=old_entry.display_name, model_override=old_entry.model_override,
+                    yolo=old_entry.yolo,
+                    prompt_pin=(
+                        dict(old_entry.prompt_pin)
+                        if preserve_prompt_pin and old_entry.prompt_pin is not None else None
+                    ),
+                )
+        if refused:
+            return None
+        if old_entry.session_id == target_session_id:
+            return old_entry
 
         try:
             if self._db_for_key(session_key) and old_entry.session_id:

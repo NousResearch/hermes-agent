@@ -28,6 +28,7 @@ from tools.environments.base_session_env import (
     _SHELL_ENV_NAME_RE, _SNAP_TMP_SUFFIX, _cwd_marker, _pipe_marker, _snapshot_bootstrap_script, _split_cwd_marker,
     _wrap_command_script,
 )
+from tools.environments.base_processes import LongLivedProcessMixin
 from tools.environments.base_wait import _WaitTrace
 from utils import atomic_json_write, env_var_enabled, file_signature
 
@@ -260,10 +261,12 @@ def env_uses_host_filesystem(env: object) -> bool:
 # ---------------------------------------------------------------------------
 
 
-class BaseEnvironment(ABC):
+class BaseEnvironment(LongLivedProcessMixin, ABC):
     """Common interface and unified execution flow for all Hermes backends. Subclasses
     implement ``_run_bash()`` and ``cleanup()``; the base provides ``execute()`` with
-    snapshot sourcing, CWD tracking, interrupt handling and timeout enforcement."""
+    snapshot sourcing, CWD tracking, interrupt handling and timeout enforcement, and the
+    long-lived process surface (``start_process`` / ``attach_process`` / ``stop_process``,
+    ``base_processes``)."""
 
     # How execute() hands stdin to _run_bash: "pipe" (process stdin, default),
     # "payload" (passed through as stdin_data; the backend transports it via its

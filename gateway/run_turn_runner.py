@@ -101,6 +101,30 @@ def _persisted_turn(agent, agent_history, result, compressions) -> dict | None:
         prefix_row_matches=lambda before, after: before is after)
 
 
+def _agent_persisted_flag(result, agent) -> bool:
+    """Whether the runtime that ran this turn already wrote its rows to SQLite. An explicit
+    ``agent_persisted`` in *result* (codex app-server) wins; otherwise the agent must actually
+    hold the session DB handle the gateway injected at turn START. Defaulting to the runner's
+    CURRENT ``_session_db`` instead let a handle that recovered mid-turn (retry-backoff window
+    closing, a pinned handle re-resolved) claim a turn that was built with none: the agent's
+    flush no-ops without a handle, the gateway then skips its own transcript write, and the
+    turn never reaches state.db while sessions.json keeps touching (#140823)."""
+    explicit = result.get("agent_persisted")
+    if explicit is not None:
+        return bool(explicit)
+    if agent is None or getattr(agent, "_session_db", None) is None:
+        return False
+    # A DB handle is not evidence of a successful flush: on a persistence failure the gateway owns the
+    # retryable user row only when the agent never wrote it. The turn-start flush stamps the row it wrote
+    # (``_db_persisted``), and a later tool-round failure must not get a second copy of that row.
+    if str(result.get("failure_reason") or "").startswith("session_persistence_failed:"):
+        from agent.context_compressor import _DB_PERSISTED_MARKER
+        idx, messages = getattr(agent, "_persist_user_message_idx", None), result.get("messages") or []
+        user_row = messages[idx] if isinstance(idx, int) and 0 <= idx < len(messages) else None
+        return isinstance(user_row, dict) and bool(user_row.get(_DB_PERSISTED_MARKER))
+    return True
+
+
 class _NoStreamConsumer(RuntimeError):
     """Raised by the delta callback when nothing consumed the text; ``_call_quietly`` turns it into
     'not delivered' so the agent's partial-delivery accounting matches what the user saw."""
@@ -353,7 +377,14 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             if unseen:
                 return
             if stream_consumer is not None:
-                stream_consumer.on_segment_break() if already_streamed else stream_consumer.on_commentary(text)
+                # The agent's own streaming may be feeding an execution observer rather than this
+                # adapter, so ``already_streamed`` alone does not mean the consumer saw the deltas.
+                # Deduplicate only against deltas this consumer actually accepted; otherwise the
+                # commentary would be dropped (``on_segment_break`` carries no text).
+                if already_streamed and stream_consumer.stream_deltas_enabled:
+                    stream_consumer.on_segment_break()
+                else:
+                    stream_consumer.on_commentary(text)
             elif not already_streamed and ctx._status_adapter and str(text or "").strip():
                 self._send_status_text(text, ctx._status_thread_metadata, "interim_assistant_callback scheduling error")
 
@@ -531,6 +562,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             mem_notif = "on" if mem_notif else "off"
         agent.memory_notifications = str(mem_notif).lower() if mem_notif else "on"
         agent.clarify_callback = self._clarify_callback_sync
+        from gateway.run_turn_runner_clarify_delivery import clarify_context_sink
+        agent.clarify_context_callback = None if want_interim_messages else clarify_context_sink(self)
         # Thinking between tool calls is independent of tool_progress mode (Mattermost opts in
         # per platform so global scratch-text doesn't leak into threads).
         agent.thinking_progress = ctx._thinking_enabled
@@ -543,6 +576,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             # Keep diagnostic observers installed; concrete sinks veto display.
             agent.stream_delta_callback = None
             agent.interim_assistant_callback = None
+            agent.clarify_context_callback = None
             agent.thinking_progress = False
         ctx.agent_holder[0] = agent  # interrupt support
         if self._approval_owner is not None:
@@ -586,6 +620,11 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             return False
 
     async def _send_shared_clarify(self, entry, **kwargs):
+        from gateway.run_turn_runner_clarify_delivery import (
+            await_clarify_context, clarify_card_still_wanted, withdrawn_result)
+        await await_clarify_context(self)
+        if not clarify_card_still_wanted(self, entry):
+            return withdrawn_result()  # cancelled or reset while the explanation was sending
         result = await self._ctx._status_adapter.send_clarify(**kwargs)
         if self._approval_owner is not None and result.success:
             authority, session_id, generation = self._approval_owner
@@ -1469,21 +1508,29 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 **({"billing_block": result["billing_block"]} if isinstance(result.get("billing_block"), dict) else {}),
                 **({"warning": result["warning"]} if isinstance(result.get("warning"), str) and result["warning"] else {}),
             }
-        if not final_response:
+        from gateway.response_filters import is_intentional_silence_agent_result
+        # A machinery turn the model chose to leave unanswered (``notification_no_reply``) stays
+        # empty: the delivery seam gates that silence by turn kind, and a "no response" notice
+        # filled in here would reach the chat for a turn no human started (#135816).
+        if not final_response and not is_intentional_silence_agent_result(result, final_response):
             final_response = _normalize_empty_agent_response(result, final_response or "", history_len=len(agent_history))
             final_response = _sanitize_gateway_final_response(ctx.source.platform, final_response)
             if not final_response:
                 final_response = t("gateway.shared.warn_passthrough", error=result["error"]) if result.get("error") else ""
-            # NOTE: deliberately omits agent_persisted/response_reused (and last_reasoning outside a local
-            # viewer's turn); the caller defaults agent_persisted differently when the key is absent.
+            # NOTE: deliberately omits response_reused (and last_reasoning outside a local
+            # viewer's turn). agent_persisted rides along explicitly: the caller's absent-key
+            # default reads the runner's CURRENT handle, which can disagree with the one this
+            # turn's agent was built with (#140823).
             if local_sinks is not None:
                 return {
                     "final_response": final_response, **common, **viewer_meta,
                     "last_reasoning": result.get("last_reasoning"),
                     "response_previewed": previewed,
                     "response_transformed": bool(result.get("response_transformed")),
+                    "agent_persisted": _agent_persisted_flag(result, agent),
                 }
-            return {"final_response": final_response, **common}
+            return {"final_response": final_response, **common,
+                    "agent_persisted": _agent_persisted_flag(result, agent)}
         final_response = self._append_auto_media_tags(final_response, result, agent_history, history_media_paths)
         # Auto-titling runs at TURN START (agent/turn_context.py) from the user's message alone, so a
         # failed/interrupted turn is still titled.
@@ -1493,6 +1540,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             "response_transformed": result.get("response_transformed", False),
             "response_reused": result.get("response_reused", False),
             # Lets the persistence block tell whether the codex app-server path self-persisted (it
-            # didn't — see codex_runtime.py); default True keeps skip-db for the standard runtime.
-            "agent_persisted": result.get("agent_persisted", True),
+            # didn't — see codex_runtime.py); default keeps skip-db for a standard runtime that
+            # actually holds a session DB handle.
+            "agent_persisted": _agent_persisted_flag(result, agent),
         }

@@ -329,9 +329,11 @@ def check_telegram_requirements() -> bool:
     return True
 
 
-from plugins.platforms.telegram.telegram_markdown import degrade_unrenderable_links, escape_rich_currency_dollars, to_markdown_v2
+from plugins.platforms.telegram.telegram_markdown import (
+    degrade_unrenderable_links, escape_rich_currency_dollars, normalize_rich_latex, to_markdown_v2)
 from plugins.platforms.telegram.rich_markdown import (
     RICH_EMAIL_TOKEN_RE, escape_literal_hash_prefixes, rich_normalize_linebreaks)
+from plugins.platforms.telegram.rich_parts import edit_rich_parts, resume_rich_parts, send_rich_parts
 
 
 def _strip_mdv2(text: str) -> str:
@@ -345,13 +347,8 @@ def _strip_mdv2(text: str) -> str:
     return cleaned
 
 
-_CHUNK_INDICATOR_ON_FENCE_RE = re.compile(r'(?m)^``` (?P<indicator>(?:\\)?\(\d+/\d+(?:\\)?\))$')
-
-
-def _separate_chunk_indicator_from_fence(text: str) -> str:
-    """Move a ``(N/M)`` chunk marker that ``truncate_message()`` appended to a synthesized closing
-    fence onto its own line — Telegram rejects ````` \\(1/2\\)`` as a fence."""
-    return _CHUNK_INDICATOR_ON_FENCE_RE.sub(r'```\n\g<indicator>', text)
+from plugins.platforms.telegram.telegram_chunking import (
+    separate_chunk_indicator_from_fence as _separate_chunk_indicator_from_fence, split_formatted_mdv2, split_raw_carrying_emphasis)
 
 
 # MarkdownV2 has no table syntax, so pipe tables become bullet groups via convert_table_to_bullets().
@@ -469,9 +466,9 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
     _IMG_COMPRESS_THRESHOLD_BYTES = 1_048_576  # 1MB
 
     # edit_message applies MarkdownV2 only on finalize=True; without this flag stream_consumer skips
-    # the final edit when raw text is unchanged.
-    # Fixes #25710.
+    # the final edit when raw text is unchanged (#25710).
     REQUIRES_EDIT_FINALIZE: bool = True
+    SPLITS_OVERSIZED_FINAL_EDIT: bool = True  # edit_message(finalize=True) posts the overflow as continuations
     FALLBACK_ON_FINAL_EDIT_FLOOD: bool = True  # retrying a final edit burns the same flood budget
     RESEND_FINAL_ON_EMPTY_STREAM_FALLBACK: bool = True  # a failed final edit may leave a partial preview
 
@@ -712,6 +709,12 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         if normalized == "supergroup":
             return "forum" if is_forum else "group"
         return normalized
+
+    @classmethod
+    def _gateway_chat_type(cls, chat: Any, *, is_forum: bool) -> str:
+        """``_normalize_chat_type`` of a chat object; a type not a known group/channel is a DM."""
+        chat_type = cls._normalize_chat_type(cls._chat_type_str(chat), is_forum=is_forum)
+        return chat_type if chat_type in {"group", "forum", "channel"} else "dm"
 
     def _legacy_runner_auth_fn(self):
         """``runner._is_user_authorized`` resolved off the bound handler (bare-adapter tests, direct
@@ -1185,8 +1188,9 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
     # RAW agent markdown so tables, task lists, <details>, math render natively; legacy MarkdownV2 send()
     # is the fallback. Streaming edits stay on the MarkdownV2 edit path.
     def _content_fits_rich_limits(self, content: str) -> bool:
-        """Pre-check the 32,768-char cap only; other rich limits surface as BadRequest (permanent)."""
-        return len(content) <= self.RICH_MESSAGE_MAX_CHARS
+        """Pre-check the 32,768-char cap on the markdown actually sent (normalization adds hard breaks,
+        spacer rows and escapes); other rich limits surface as BadRequest (permanent)."""
+        return len(self._rich_message_payload(content)["markdown"]) <= self.RICH_MESSAGE_MAX_CHARS
 
     def _bot_supports_rich(self) -> bool:
         """True when ``do_api_request`` is an *async* callable (real Bot or AsyncMock); plain MagicMock
@@ -1240,9 +1244,9 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         """Whether rich delivery is allowed (``rich_messages`` opt-in)."""
         return bool(getattr(self, "_rich_messages_enabled", True))
 
-    def _rich_content_ok(self, content: str) -> bool:
+    def _rich_content_ok(self, content: str, *, check_size: bool = True) -> bool:
         """Shape checks shared by rich sends and rich drafts (non-blank, no Desktop crash/garble
-        shapes, under the cap, async-capable bot)."""
+        shapes, async-capable bot; ``check_size=False`` applies the cap per part — ``rich_parts``)."""
         return bool(
             content and content.strip()
             and not self._has_telegram_desktop_details_math_crash_shape(content)
@@ -1250,7 +1254,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
                 getattr(self, "_allow_cjk_rich_messages", False)
                 or not self._has_telegram_desktop_cjk_rich_garble_shape(content)
             )
-            and self._content_fits_rich_limits(content)
+            and (not check_size or self._content_fits_rich_limits(content))
             and self._bot_supports_rich())
 
     def _rich_eligible(self, content: str) -> bool:
@@ -1294,7 +1298,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         """``InputRichMessage`` from RAW markdown — never ``format_message(content)``, whose MarkdownV2
         escaping destroys table pipes. Currency ``$`` is escaped so two amounts never pair as inline math."""
         payload: dict[str, Any] = {"markdown": degrade_unrenderable_links(
-            escape_rich_currency_dollars(rich_normalize_linebreaks(escape_literal_hash_prefixes(content))))}
+            escape_rich_currency_dollars(rich_normalize_linebreaks(escape_literal_hash_prefixes(normalize_rich_latex(content)))))}
         if skip_entity_detection or RICH_EMAIL_TOKEN_RE.search(content):
             payload["skip_entity_detection"] = True
         return payload
@@ -3450,19 +3454,13 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         try:
             # Bot API 10.1 rich fast-path; falls through to legacy MarkdownV2 on permanent/capability
             # errors or DM-topic skips; returns directly on success or transient failure (no legacy resend).
-            if self._should_attempt_rich(content, metadata=metadata):
-                rich_result = await self._try_send_rich(chat_id, content, reply_to, metadata)
-                if rich_result is not None:
-                    if rich_result.success:
-                        await self._retrigger_typing(chat_id, metadata)
-                    return rich_result
-            chunks = self.truncate_message(self.format_message(content), self.MAX_MESSAGE_LENGTH, len_fn=utf16_len)
-            if len(chunks) > 1:
-                # truncate_message appends a raw " (1/2)" suffix; escape the MarkdownV2-special parentheses.
-                chunks = [
-                    _separate_chunk_indicator_from_fence(re.sub(r" \((\d+)/(\d+)\)$", r" \\(\1/\2\\)", chunk))
-                    for chunk in chunks
-               ]
+            rich_result = await send_rich_parts(self, chat_id, content, reply_to, metadata)
+            if rich_result is not None:
+                if rich_result.success:
+                    await self._retrigger_typing(chat_id, metadata)
+                return rich_result
+            # Entities cut by a split are closed and reopened; the (N/M) markers come back MarkdownV2-escaped.
+            chunks = split_formatted_mdv2(self.format_message(content), self.MAX_MESSAGE_LENGTH, self.truncate_message, utf16_len)
             return await self._send_chunks(chat_id, chunks, delivered, reply_to, metadata, error_types)
         except Exception as e:
             classified = self._classify_send_exception(e, error_types)
@@ -3531,6 +3529,8 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         """Send only the chunks a partial ``send()`` could not deliver (``undelivered_chunks``, or the never-attempted
         ``unattempted_chunks``), continuing the message-id sequence; ``None`` when no tail is certain-undelivered."""
         raw = result.raw_response if isinstance(result.raw_response, dict) else {}
+        if raw.get("undelivered_rich_parts") and self._bot:  # a rich part that never left: resend it rich
+            return await resume_rich_parts(self, chat_id, result, metadata)
         undelivered = raw.get("undelivered_chunks") or raw.get("unattempted_chunks")
         if not undelivered or not self._bot:
             return None
@@ -3612,12 +3612,10 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         # 4,096 overflow pre-flight because the rich text cap is 32,768 — a rich table that exceeds the
         # MarkdownV2 limit must not be split into legacy chunks. Falls back to the legacy edit path
         # (overflow split included) on capability/permanent rejection.
-        if finalize and self._rich_eligible(content):
-            rich_result = await self._try_edit_rich(chat_id, message_id, content, metadata=metadata)
+        if finalize:
+            rich_result = await edit_rich_parts(self, chat_id, message_id, content, metadata)
             if rich_result is not None:
                 return rich_result
-        # Pre-flight: over-limit content is split-and-delivered on finalize; mid-stream we truncate instead
-        # (splitting moves the edit target to a continuation → infinite duplication loop).
         # Pre-flight: if content already exceeds the limit, split-and-deliver without round-tripping a
         # doomed edit. During streaming (finalize=False) we truncate instead of splitting — splitting
         # creates continuation messages whose IDs become the new edit target, and on the next token chunk
@@ -3763,7 +3761,9 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         """Split an oversized edit across the existing message + continuations: edit ``message_id`` with
         chunk 1, send the rest as replies to the previous chunk, return ``message_id=<last-chunk-id>`` so
         the consumer keeps editing the newest message. ``success=False`` only if the first-chunk edit fails."""
-        chunks = self.truncate_message(content, self.MAX_MESSAGE_LENGTH, len_fn=utf16_len)
+        raw_chunks, chunks = split_raw_carrying_emphasis(
+            content, self.MAX_MESSAGE_LENGTH, self.truncate_message, utf16_len,
+            formatted_len=(lambda chunk: utf16_len(self.format_message(chunk))) if finalize else None)
         if len(chunks) <= 1:
             chunks = [content]  # defensive: a single chunk just edits normally
         first_chunk = chunks[0]
@@ -3791,7 +3791,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             if sent_msg is None or flood:
                 # Partial delivery: do NOT report success — the consumer would treat it as final delivery.
                 logger.warning("[%s] Overflow split: stopped at %d/%d chunks delivered", self.name, 1 + len(continuation_ids), len(chunks))
-                delivered_prefix = "".join(re.sub(r" \(\d+/\d+\)$", "", delivered) for delivered in delivered_chunks)
+                delivered_prefix = "".join(re.sub(r" \(\d+/\d+\)$", "", delivered) for delivered in raw_chunks[:len(delivered_chunks)])
                 raw = {
                     "partial_overflow": True, "delivered_chunks": 1 + len(continuation_ids),
                     "total_chunks": len(chunks), "last_message_id": prev_id, "delivered_prefix": delivered_prefix,
@@ -5258,16 +5258,9 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             return {"name": "Unknown", "type": "dm"}
         try:
             chat = await self._bot.get_chat(normalize_telegram_chat_id(chat_id))
-            chat_type = "dm"
-            if chat.type == ChatType.GROUP:
-                chat_type = "group"
-            elif chat.type == ChatType.SUPERGROUP:
-                chat_type = "forum" if chat.is_forum else "group"
-            elif chat.type == ChatType.CHANNEL:
-                chat_type = "channel"
-            return {
-                "name": chat.title or chat.full_name or str(chat_id), "type": chat_type, "username": chat.username,
-                "is_forum": getattr(chat, "is_forum", False)}
+            is_forum = getattr(chat, "is_forum", False)
+            return {"name": chat.title or chat.full_name or str(chat_id), "username": chat.username, "is_forum": is_forum,
+                    "type": self._gateway_chat_type(chat, is_forum=is_forum is True)}
         except Exception as e:
             logger.error("[%s] Failed to get Telegram chat info for %s: %s", self.name, chat_id, _redact_telegram_error_text(
                 e), exc_info=True)
@@ -6514,8 +6507,8 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         triggering offset so the new gateway process advances past it."""
         chat = message.chat
         user = message.from_user
-        telegram_chat_type = self._chat_type_str(chat)  # str() so PTB enums and plain-string mocks both work
-        chat_type = "group" if telegram_chat_type in {"group", "supergroup"} else ("channel" if telegram_chat_type == "channel" else "dm")
+        # Session keys carry a forum topic as thread_id, so an inbound supergroup is "group", never "forum".
+        chat_type = self._gateway_chat_type(chat, is_forum=False)
         # Shared normalizer so gating and session routing agree (reply-UI anchors dropped, General → "1").
         # Resolve routable thread id for DM topics and forum group topics via the shared normalizer, so
         # gating and session routing agree on one value. Only real topic/forum messages keep a thread id;

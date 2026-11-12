@@ -470,10 +470,10 @@ class GatewayModelCommandsMixin:
         """Send the interactive /model picker; False when nothing was sent (text fallback). *source*
         is session-key-normalized so the picker's thread metadata lands where the next turn reads."""
         from hermes_cli.model_switch_providers import list_picker_providers
+        # Uncapped: each adapter bounds its own rendering (Telegram pages, Discord 75, Slack 100) and
+        # shows "N more" past it; a shared cap below those hid every model past #50 (#129260).
         try:  # off-loop: listing still reads config/disk cache synchronously (#41289)
-            providers = await asyncio.to_thread(
-                list_picker_providers, max_models=50, include_moa=True, **listing_kwargs
-            )
+            providers = await asyncio.to_thread(list_picker_providers, include_moa=True, **listing_kwargs)
         except Exception:
             providers = []
         if not providers:
@@ -966,6 +966,9 @@ class GatewayModelCommandsMixin:
 
         raw_args = event.get_command_args().strip()
         args, persist_global = self._parse_reasoning_command_args(raw_args)
+        profile_home = None
+        if getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            profile_home = self._resolve_profile_home_for_source(event.source)
         # Normalize (Telegram DM topic recovery) so the override key matches the next turn's.
         # See #30479.
         _reasoning_source = await asyncio.to_thread(self._normalize_source_for_session_key, event.source)
@@ -982,7 +985,7 @@ class GatewayModelCommandsMixin:
             source=event.source, session_key=session_key, model=_session_model,
         )
         platform_key = _platform_config_key(event.source.platform)
-        if raw_args:  # typed path — same applier the picker uses
+        if args:  # typed path — same applier the picker uses
             return self._apply_reasoning_selection(session_key, platform_key, args, persist_global=persist_global)
         rc = self._reasoning_config
         # Labels tell the truth about the route: a Hermes-internal step (``ultra``) that the wire
@@ -1012,7 +1015,17 @@ class GatewayModelCommandsMixin:
         scope = t("gateway.reasoning.scope_session") if has_session_override else t("gateway.reasoning.scope_global")
 
         async def _on_reasoning_choice(_chat_id: str, value: str) -> str:
-            return self._apply_reasoning_selection(session_key, platform_key, value)
+            def _apply() -> str:
+                return self._apply_reasoning_selection(
+                    session_key, platform_key, value, persist_global=persist_global,
+                )
+
+            if profile_home is None:
+                return _apply()
+            # Picker taps arrive after the command's profile scope has exited.
+            from gateway.run import _profile_runtime_scope
+            with _profile_runtime_scope(profile_home):
+                return _apply()
 
         picker_sent = await self._try_send_choice_picker(
             event,
@@ -1023,7 +1036,8 @@ class GatewayModelCommandsMixin:
                 *({"value": lv, "label": effort_display_label(lv, *_route), "is_current": lv == current_effort}
                   for lv in VALID_REASONING_EFFORTS),
                 *({"value": v, "label": t(f"gateway.reasoning.choice_{v}"), "is_current": False}
-                  for v in ("reset", "show", "hide")),
+                  # `reset` clears the session override, which --global refuses as unsupported.
+                  for v in (("show", "hide") if persist_global else ("reset", "show", "hide"))),
             ],
             on_choice_selected=_on_reasoning_choice,
         )

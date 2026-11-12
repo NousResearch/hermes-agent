@@ -261,6 +261,15 @@ class TestAbsoluteExpiry:
         _, ttl = _mint(f"printf '%s' '{{\"access_token\":\"t\",\"expiresOn\":\"{deadline}\"}}'", "p")
         assert ttl is not None and 1700 < ttl <= 1800
 
+    def test_azure_cli_json_shape(self):
+        """`az account get-access-token -o json`: camelCase token, epoch ``expires_on`` beats the
+        zone-less local ``expiresOn``."""
+        epoch = int(time.time()) + 1800
+        payload = f'{{"accessToken":"tok-az","expiresOn":"2000-01-01 00:00:00.000000","expires_on":{epoch},"tokenType":"Bearer"}}'
+        token, ttl = _mint(f"printf '%s' '{payload}'", "p")
+        assert token == "tok-az"
+        assert ttl is not None and 1790 < ttl <= 1800
+
     def test_expires_in_still_wins_when_both_present(self):
         """The RFC 6749 field is authoritative where a helper sends both."""
         deadline = self._iso(3600)

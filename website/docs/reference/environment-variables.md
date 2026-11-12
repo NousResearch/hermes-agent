@@ -107,6 +107,8 @@ Hermes reads environment variables from the process environment and, for user-ma
 | `MISTRAL_API_KEY` | Mistral API key for Voxtral TTS and Voxtral STT ([console.mistral.ai](https://console.mistral.ai)) |
 | `AWS_REGION` | AWS region for Bedrock inference (e.g. `us-east-1`, `eu-central-1`). Read by boto3. |
 | `AWS_PROFILE` | AWS named profile for Bedrock authentication (reads `~/.aws/credentials`). Leave unset to use default boto3 credential chain. |
+| `AWS_BEARER_TOKEN_BEDROCK` | Bearer token for a Bedrock-compatible gateway with no IAM keys or named profile. Checked before `AWS_ACCESS_KEY_ID`/`AWS_PROFILE`. Set `providers.bedrock.key_cmd` in `config.yaml` to refresh it. Hermes does not re-mint a static value, so it stops working when it expires. |
+| `AWS_ENDPOINT_URL_BEDROCK_RUNTIME` | Override the Bedrock runtime endpoint boto3 connects to. Required on a custom Bedrock-compatible gateway: `model.base_url` alone does not change where boto3 routes requests. |
 | `BEDROCK_BASE_URL` | Override Bedrock runtime base URL (default: `https://bedrock-runtime.us-east-1.amazonaws.com`; usually leave unset and use `AWS_REGION` instead) |
 | `HERMES_QWEN_BASE_URL` | Qwen Portal base URL override (default: `https://portal.qwen.ai/v1`) |
 | `OPENCODE_ZEN_API_KEY` | OpenCode Zen API key — pay-as-you-go access to curated models ([opencode.ai](https://opencode.ai/auth)) |

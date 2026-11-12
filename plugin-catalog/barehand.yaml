@@ -1,7 +1,7 @@
 name: barehand
 title: Barehand
 repo: https://github.com/mrv777/barehand
-sha: 7e62bc9419afbe70f175de0515abca3ede66dd38
+sha: 20b74e03a085a67d59f4287d0e61b5fed6bbb217
 subdir: barehand
 description: Lets an agent operate a machine with no OS, network or agent on it (firmware menus, boot loaders, installers,
   rescue shells such as grub>) through the screen and keyboard alone. It provides a computer_use provider for QEMU
@@ -16,19 +16,19 @@ tier: community
 category: tools
 requires_hermes: '>=0.23.0'
 version: 0.1.0
-docs_url: https://github.com/mrv777/barehand/blob/7e62bc9419afbe70f175de0515abca3ede66dd38/barehand/README.md
+docs_url: https://github.com/mrv777/barehand/blob/20b74e03a085a67d59f4287d0e61b5fed6bbb217/barehand/README.md
 platforms:
 - linux
 - macos
 readme: true
-image: https://raw.githubusercontent.com/mrv777/barehand/7e62bc9419afbe70f175de0515abca3ede66dd38/barehand/docs/img/banner.png
+image: https://raw.githubusercontent.com/mrv777/barehand/20b74e03a085a67d59f4287d0e61b5fed6bbb217/barehand/docs/img/banner.png
 screenshots:
-- https://raw.githubusercontent.com/mrv777/barehand/7e62bc9419afbe70f175de0515abca3ede66dd38/barehand/docs/img/walk-1-firmware.png
-- https://raw.githubusercontent.com/mrv777/barehand/7e62bc9419afbe70f175de0515abca3ede66dd38/barehand/docs/img/walk-2-grub.png
-- https://raw.githubusercontent.com/mrv777/barehand/7e62bc9419afbe70f175de0515abca3ede66dd38/barehand/docs/img/walk-3-screen-text.png
-- https://raw.githubusercontent.com/mrv777/barehand/7e62bc9419afbe70f175de0515abca3ede66dd38/barehand/docs/img/walk-4-proof.png
-- https://raw.githubusercontent.com/mrv777/barehand/7e62bc9419afbe70f175de0515abca3ede66dd38/barehand/docs/img/flight-recorder.png
-- https://raw.githubusercontent.com/mrv777/barehand/7e62bc9419afbe70f175de0515abca3ede66dd38/barehand/docs/img/debian-installed-login.png
+- https://raw.githubusercontent.com/mrv777/barehand/20b74e03a085a67d59f4287d0e61b5fed6bbb217/barehand/docs/img/walk-1-firmware.png
+- https://raw.githubusercontent.com/mrv777/barehand/20b74e03a085a67d59f4287d0e61b5fed6bbb217/barehand/docs/img/walk-2-grub.png
+- https://raw.githubusercontent.com/mrv777/barehand/20b74e03a085a67d59f4287d0e61b5fed6bbb217/barehand/docs/img/walk-3-screen-text.png
+- https://raw.githubusercontent.com/mrv777/barehand/20b74e03a085a67d59f4287d0e61b5fed6bbb217/barehand/docs/img/walk-4-proof.png
+- https://raw.githubusercontent.com/mrv777/barehand/20b74e03a085a67d59f4287d0e61b5fed6bbb217/barehand/docs/img/flight-recorder.png
+- https://raw.githubusercontent.com/mrv777/barehand/20b74e03a085a67d59f4287d0e61b5fed6bbb217/barehand/docs/img/debian-installed-login.png
 known_issues:
 - 'With `plugins.isolation: host`, Hermes skips register_cli_command, so the `hermes barehand ...` commands are
   unavailable. The default mode (`in_process`) registers them. The plugin was not run in host mode, so whether the

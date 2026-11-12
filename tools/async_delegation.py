@@ -1156,7 +1156,11 @@ def _push_completion_event(record: dict[str, Any], result: dict[str, Any], statu
         "goal": record.get("goal", ""), **({"goals": record.get("goals")} if is_batch else {}),
         "context": record.get("context"), "toolsets": record.get("toolsets"), "role": record.get("role"),
         "model": record.get("model") if is_batch else (result.get("model") or record.get("model")),
-        "status": status, **payload, "dispatched_at": dispatched_at, "completed_at": completed_at,
+        "status": status,
+        # Why an interrupt ended the unit: ``stop_command`` means the user cancelled it, so
+        # delivery must not start a fresh turn that resumes the work (#146807).
+        **({"interrupt_reason": record["interrupt_reason"]} if record.get("interrupt_reason") else {}),
+        **payload, "dispatched_at": dispatched_at, "completed_at": completed_at,
         **({} if is_batch else {"exit_reason": result.get("exit_reason")}),
         **{k: record[k] for k in _ROUTING_KEYS if record.get(k)},
         **{k: result[k] for k in _STALL_META_KEYS if k in result}}
@@ -1396,10 +1400,20 @@ def list_async_delegations() -> list[dict[str, Any]]:
 
 
 def _interrupt_records(targets: list[dict[str, Any]], caller: str, reason: str, msg: str) -> int:
-    """Call ``interrupt_fn`` on each record; log ``msg`` once; returns how many succeeded."""
-    count = sum(
-        _call_interrupt(r.get("interrupt_fn"), "%s: %s interrupt failed: %s", caller, r.get("delegation_id"))
-        for r in targets)
+    """Call ``interrupt_fn`` on each record; log ``msg`` once; returns how many succeeded.
+
+    A successful interrupt stamps its ``reason`` on the record, so the terminating completion
+    event can say WHY the unit stopped. Consumers need it: a unit the user cancelled with
+    ``/stop`` must not wake the parent as an ordinary completion and restart the work (#146807)."""
+    count = 0
+    for r in targets:
+        if not _call_interrupt(r.get("interrupt_fn"), "%s: %s interrupt failed: %s", caller, r.get("delegation_id")):
+            continue
+        count += 1
+        with _records_lock:
+            live = _records.get(r.get("delegation_id"))
+            if live is not None and live.get("status") in _ACTIVE_STATES:
+                live["interrupt_reason"] = reason
     if count:
         logger.info(msg, count, reason)
     return count

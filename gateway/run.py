@@ -1808,9 +1808,19 @@ def _profile_runtime_scope(
 
 @_asynccontextmanager
 async def _async_profile_runtime_scope(profile_home: Path):
-    """Enter a profile scope without loading secret files on the event loop."""
-    secrets = await asyncio.to_thread(_load_profile_secret_scope, Path(profile_home))
-    with _profile_runtime_scope(Path(profile_home), secrets):
+    """Enter a profile scope without reading the profile's files on the event loop.
+
+    The terminal policy is file-backed like the secrets (``.env`` + ``config.yaml``), so both are
+    prepared in a worker; only the ContextVar writes stay on the loop (#144883).
+    """
+    from tools.terminal_scope import prepare_profile_terminal_scope
+
+    home = Path(profile_home)
+    secrets, terminal = await asyncio.gather(
+        asyncio.to_thread(_load_profile_secret_scope, home),
+        asyncio.to_thread(prepare_profile_terminal_scope, home),
+    )
+    with _profile_runtime_scope(home, secrets, prepared_terminal_scope=terminal):
         yield
 
 

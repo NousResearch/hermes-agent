@@ -39,14 +39,14 @@ def _flat(call) -> str:
 def _deliver_platform_and_mirror(job: dict, content: str) -> tuple[str, str]:
     """Drive ``_deliver_result`` with the mirror on; stub only the outermost sinks (the platform
     send and the session write) so the real assembly — including the job-name splice — runs."""
-    from cron.scheduler_delivery import _deliver_result
+    from hermes_agent.cron.scheduler_delivery import _deliver_result
 
     send = AsyncMock(return_value={"success": True})
     sink = MagicMock(return_value=True)
     with patch("gateway.config.load_gateway_config", return_value=_telegram_cfg()), \
          patch("tools.send_message_tool._send_to_platform", new=send), \
-         patch("cron.scheduler_delivery._cron_mirror_delivery_enabled", return_value=True), \
-         patch("cron.scheduler_delivery._target_matches_origin", return_value=True), \
+         patch("hermes_agent.cron.scheduler_delivery._cron_mirror_delivery_enabled", return_value=True), \
+         patch("hermes_agent.cron.scheduler_delivery._target_matches_origin", return_value=True), \
          patch("gateway.mirror.mirror_to_session", new=sink), \
          patch("sys.is_finalizing", return_value=False):
         _deliver_result(job, content)
@@ -56,7 +56,7 @@ def _deliver_platform_and_mirror(job: dict, content: str) -> tuple[str, str]:
 
 def _deliver_bot_chat(job: dict, content: str) -> str:
     """Drive ``_deliver_to_bot_chat`` down to the live-owner admission and capture the inbound turn."""
-    from cron.scheduler_delivery import _deliver_to_bot_chat
+    from hermes_agent.cron.scheduler_delivery import _deliver_to_bot_chat
 
     captured = {}
 
@@ -96,7 +96,7 @@ def test_delivery_redaction_is_forced_and_fails_closed(mode, monkeypatch):
     """Egress redaction is independent of ``security.redact_secrets`` (force=True) and a raising
     redactor replaces the payload instead of passing the unscanned text through."""
     import agent.redact
-    from cron.scheduler_delivery import _deliver_result
+    from hermes_agent.cron.scheduler_delivery import _deliver_result
 
     send = AsyncMock(return_value={"success": True})
     try:

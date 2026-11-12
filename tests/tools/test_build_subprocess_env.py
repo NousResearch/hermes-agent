@@ -47,7 +47,7 @@ def test_e2e_scrubbed_env_resolves_bare_hermes_under_minimal_parent_path(monkeyp
     children an env whose PATH resolves bare ``hermes``.
 
     Exercises the REAL factory and the REAL bin-dir resolver — no mocks of the
-    helpers. cron/scheduler._run_job_script builds its child env via exactly
+    helpers. hermes_agent/cron/scheduler._run_job_script builds its child env via exactly
     this call (``build_subprocess_env()`` with scrub on).
     """
     import shutil

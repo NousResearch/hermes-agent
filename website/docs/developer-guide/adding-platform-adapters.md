@@ -161,7 +161,7 @@ def register(ctx):
         # Configuration" section below.
         env_enablement_fn=_env_enablement,
         # Cron home-channel delivery support. Lets deliver=my_platform cron
-        # jobs route without editing cron/scheduler.py. See "Cron Delivery"
+        # jobs route without editing hermes_agent/cron/scheduler.py. See "Cron Delivery"
         # section below.
         cron_deliver_env_var="MY_PLATFORM_HOME_CHANNEL",
         # Per-platform user authorization env vars
@@ -846,7 +846,7 @@ Six touchpoints:
 ### 5. Cross-Platform Delivery
 
 1. **`gateway/platforms/webhook.py`** — Add `"newplat"` to the delivery type tuple
-2. **`cron/scheduler_delivery.py`** — Add to `_KNOWN_DELIVERY_PLATFORMS` frozenset and `_deliver_result()` platform map
+2. **`hermes_agent/cron/scheduler_delivery.py`** — Add to `_KNOWN_DELIVERY_PLATFORMS` frozenset and `_deliver_result()` platform map
 
 ### 6. CLI Integration
 

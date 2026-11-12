@@ -21,7 +21,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 # Prompt-injection caps: unified diff, and new-output block (mirrors the 8k context_from truncation
-# in cron/scheduler.py). Then bounded-GET limits for monitor_url sources.
+# in hermes_agent/cron/scheduler.py). Then bounded-GET limits for monitor_url sources.
 MAX_DIFF_CHARS = 4000
 MAX_OUTPUT_CHARS = 8000
 URL_TIMEOUT_SECONDS = 30
@@ -59,7 +59,7 @@ def build_monitor_diff(old: str, new: str) -> str:
 
 
 def _snapshot_path(job_id: str):
-    from cron.jobs import _job_output_dir
+    from hermes_agent.cron.jobs import _job_output_dir
 
     return _job_output_dir(job_id) / _SNAPSHOT_FILENAME
 
@@ -76,7 +76,7 @@ def _read_last_output(job_id: str) -> str:
 
 def _write_last_output(job_id: str, output: str) -> None:
     try:
-        from cron.jobs import _ensure_cron_dir
+        from hermes_agent.cron.jobs import _ensure_cron_dir
 
         path = _snapshot_path(job_id)
         _ensure_cron_dir(path.parent)
@@ -109,7 +109,7 @@ def _run_monitor_source(job: dict) -> tuple[bool, str]:
     monitor_script = _field(job, "monitor_script")
     if monitor_script:
         # Same containment + interpreter rules as the existing `script` field.
-        from cron.scheduler_script import _run_job_script
+        from hermes_agent.cron.scheduler_script import _run_job_script
 
         return _run_job_script(monitor_script, workdir=_field(job, "workdir") or None,
                                interpreter=job.get("interpreter"))
@@ -169,7 +169,7 @@ def check_monitor(job: dict) -> MonitorOutcome:
 
 
 def _persist_monitor_state(job_id: str, new_hash: str, output: str) -> None:
-    from cron.jobs import _hermes_now, update_job
+    from hermes_agent.cron.jobs import _hermes_now, update_job
 
     _write_last_output(job_id, output)
     try:

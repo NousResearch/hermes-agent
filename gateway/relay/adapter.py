@@ -886,7 +886,7 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
         self.descriptor = descriptor
         self.MAX_MESSAGE_LENGTH = descriptor.max_message_length
         self.supports_code_blocks = descriptor.markdown_dialect not in ("", "plain")
-        # Cron in_channel continuable surface (D6 gate in cron/scheduler.py);
+        # Cron in_channel continuable surface (D6 gate in hermes_agent/cron/scheduler.py);
         # class default is False, so only an explicit descriptor bit turns it on.
         self.supports_inchannel_continuable = bool(getattr(descriptor, "supports_inchannel_continuable", False))
 

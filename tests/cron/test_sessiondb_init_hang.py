@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from cron import scheduler
+from hermes_agent.cron import scheduler
 from gateway import session_cron
 
 
@@ -111,7 +111,7 @@ def test_owner_store_failure_never_runs_unpersisted_agent(owner_run, failure):
 def test_guard_is_released_and_job_refires_after_sessiondb_hang(owner_run, monkeypatch):
     owner, _job, _, agent_cls = owner_run
     monkeypatch.setenv("HERMES_CRON_SESSION_DB_TIMEOUT", "0.02")
-    from cron import jobs
+    from hermes_agent.cron import jobs
 
     release = threading.Event()
     closed = threading.Event()
@@ -137,8 +137,8 @@ def test_guard_is_released_and_job_refires_after_sessiondb_hang(owner_run, monke
         saved = jobs.create_job(prompt="hello", schedule="every 5m", deliver="local")
         try:
             with patch("hermes_agent.hermes_state_registry.acquire", side_effect=acquire), \
-                 patch("cron.scheduler_authority.run_canonical_job", side_effect=admitted), \
-                 patch("cron.scheduler_authority.reconcile_pending"), \
+                 patch("hermes_agent.cron.scheduler_authority.run_canonical_job", side_effect=admitted), \
+                 patch("hermes_agent.cron.scheduler_authority.reconcile_pending"), \
                  patch.object(scheduler, "get_due_jobs", return_value=[saved]):
                 assert scheduler.tick() == 1
                 assert saved["id"] not in scheduler.get_running_job_ids()
@@ -159,7 +159,7 @@ def test_wake_gate_false_never_opens_session_db(owner_run):
     _, job, execution_id, agent_cls = owner_run
     job["script"] = "gate.py"
     with patch("hermes_agent.hermes_state_registry.acquire") as acquire, \
-         patch("cron.scheduler._run_job_script_with_claim_heartbeat", return_value=(True, '{"wakeAgent": false}')):
+         patch("hermes_agent.cron.scheduler._run_job_script_with_claim_heartbeat", return_value=(True, '{"wakeAgent": false}')):
         success, _, _, error = scheduler.run_job(job, execution_id=execution_id)
     assert success and error is None
     acquire.assert_not_called()

@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 @pytest.fixture
 def notepad(monkeypatch, tmp_path):
-    import cron.notepad as notepad_mod
+    import hermes_agent.cron.notepad as notepad_mod
 
     monkeypatch.setattr(
         notepad_mod, "NOTEPAD_FILE", tmp_path / "cron" / "notepad.db"
@@ -36,7 +36,7 @@ def cron_env(tmp_path, monkeypatch, notepad):
     (hermes_home / "cron" / "output").mkdir()
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
-    import cron.jobs as jobs_mod
+    import hermes_agent.cron.jobs as jobs_mod
 
     monkeypatch.setattr(jobs_mod, "HERMES_DIR", hermes_home)
     monkeypatch.setattr(jobs_mod, "CRON_DIR", hermes_home / "cron")
@@ -103,7 +103,7 @@ class TestNotepadProfileIsolation:
             reset_hermes_home_override,
             set_hermes_home_override,
         )
-        import cron.notepad as notepad_mod
+        import hermes_agent.cron.notepad as notepad_mod
 
         profile_a = tmp_path / "profile-a"
         profile_b = tmp_path / "profile-b"
@@ -129,7 +129,7 @@ class TestJobRemovalCleanup:
         """remove_job must clear the job's notepad rows — without this,
         deleted jobs orphan their KV state in notepad.db forever
         (post-merge audit of #81139: clear_notepad was dead code)."""
-        from cron.jobs import create_job, remove_job
+        from hermes_agent.cron.jobs import create_job, remove_job
 
         job = create_job(prompt="Check the feed", schedule="every 1h")
         other = create_job(prompt="Other job", schedule="every 2h")
@@ -144,7 +144,7 @@ class TestJobRemovalCleanup:
     def test_remove_job_survives_notepad_failure(self, cron_env, notepad, monkeypatch):
         """Notepad cleanup is best effort — a notepad error must never block
         job removal itself."""
-        from cron.jobs import create_job, get_job, remove_job
+        from hermes_agent.cron.jobs import create_job, get_job, remove_job
 
         job = create_job(prompt="Check the feed", schedule="every 1h")
 
@@ -194,8 +194,8 @@ class TestNotepadCaps:
 
 class TestPromptInjection:
     def test_nonempty_notepad_rendered_into_prompt(self, cron_env, notepad):
-        from cron.jobs import create_job
-        from cron.scheduler import _build_job_prompt
+        from hermes_agent.cron.jobs import create_job
+        from hermes_agent.cron.scheduler import _build_job_prompt
 
         job = create_job(prompt="Check the feed", schedule="every 1h")
         notepad.set_note(job["id"], "last_seen_id", "8842")
@@ -207,8 +207,8 @@ class TestPromptInjection:
         assert "watchlist" in prompt
 
     def test_empty_notepad_prompt_byte_stable(self, cron_env, notepad):
-        from cron.jobs import create_job
-        from cron.scheduler import _build_job_prompt
+        from hermes_agent.cron.jobs import create_job
+        from hermes_agent.cron.scheduler import _build_job_prompt
 
         job = create_job(prompt="Check the feed", schedule="every 1h")
         baseline = _build_job_prompt(job)
@@ -223,8 +223,8 @@ class TestPromptInjection:
         assert "notepad" not in baseline.lower()
 
     def test_notepad_read_failure_does_not_break_prompt(self, cron_env, notepad, monkeypatch):
-        from cron.jobs import create_job
-        from cron.scheduler import _build_job_prompt
+        from hermes_agent.cron.jobs import create_job
+        from hermes_agent.cron.scheduler import _build_job_prompt
 
         job = create_job(prompt="Check the feed", schedule="every 1h")
 

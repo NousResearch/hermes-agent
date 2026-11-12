@@ -35,7 +35,7 @@ def cron_env(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
     # Clear cached module-level paths
-    import cron.jobs as jobs_mod
+    import hermes_agent.cron.jobs as jobs_mod
     monkeypatch.setattr(jobs_mod, "HERMES_DIR", hermes_home)
     monkeypatch.setattr(jobs_mod, "CRON_DIR", hermes_home / "cron")
     monkeypatch.setattr(jobs_mod, "JOBS_FILE", hermes_home / "cron" / "jobs.json")
@@ -48,7 +48,7 @@ class TestJobScriptField:
     """Test that the script field is stored and retrieved correctly."""
 
     def test_create_job_with_script(self, cron_env):
-        from cron.jobs import create_job, get_job
+        from hermes_agent.cron.jobs import create_job, get_job
 
         job = create_job(
             prompt="Analyze the data",
@@ -62,7 +62,7 @@ class TestJobScriptField:
 
 
     def test_update_job_add_script(self, cron_env):
-        from cron.jobs import create_job, update_job
+        from hermes_agent.cron.jobs import create_job, update_job
 
         job = create_job(prompt="Hello", schedule="every 1h")
         assert job.get("script") is None
@@ -75,7 +75,7 @@ def test_cronjob_tool_rejects_stale_past_one_shot(cron_env, monkeypatch):
     from tools.cronjob_tools import cronjob
 
     now = datetime(2026, 3, 18, 4, 30, 0, tzinfo=UTC)
-    monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+    monkeypatch.setattr("hermes_agent.cron.jobs._hermes_now", lambda: now)
     stale = (now - timedelta(minutes=5)).isoformat()
 
     result = json.loads(cronjob(action="create", prompt="Too late", schedule=stale))
@@ -88,7 +88,7 @@ class TestRunJobScript:
     """Test the _run_job_script() function."""
 
     def test_successful_script(self, cron_env):
-        from cron.scheduler_script import _run_job_script
+        from hermes_agent.cron.scheduler_script import _run_job_script
 
         script = cron_env / "scripts" / "test.py"
         script.write_text('print("hello from script")\n')
@@ -116,7 +116,7 @@ class TestRunJobScript:
         """#70500: a bad job ``interpreter`` fails the run with a clear message instead of
         raising — and never runs a ``.py`` body under a non-Python image, which would let an
         unscanned script execute as shell."""
-        from cron.scheduler_script import _run_job_script
+        from hermes_agent.cron.scheduler_script import _run_job_script
 
         script = cron_env / "scripts" / "job.py"
         script.write_text('print("ran")\n')
@@ -133,7 +133,7 @@ class TestRunJobScript:
         with "Script execution failed: 'utf-8' codec can't decode ...", discarding the
         output. The Windows branch already decoded lossily (#45099).
         """
-        from cron.scheduler_script import _run_job_script
+        from hermes_agent.cron.scheduler_script import _run_job_script
 
         script = cron_env / "scripts" / "binary_stdout.py"
         script.write_text(
@@ -147,7 +147,7 @@ class TestRunJobScript:
         assert "\ufffd" in output
 
     def test_script_relative_path(self, cron_env):
-        from cron.scheduler_script import _run_job_script
+        from hermes_agent.cron.scheduler_script import _run_job_script
 
         script = cron_env / "scripts" / "relative.py"
         script.write_text('print("relative works")\n')
@@ -158,7 +158,7 @@ class TestRunJobScript:
 
     def test_missing_script_names_the_profile_folder(self, cron_env):
         """Scripts resolve per profile (#4707); the runtime error must say so (#94821)."""
-        from cron.scheduler_script import _run_job_script
+        from hermes_agent.cron.scheduler_script import _run_job_script
 
         success, output = _run_job_script("copied-from-other-profile.py")
         assert success is False
@@ -169,7 +169,7 @@ class TestRunJobScript:
     def test_script_subprocess_env_sanitized(self, cron_env, monkeypatch):
         """Cron scripts must not inherit Hermes provider env (SECURITY.md §2.3)."""
         from tools.environments.local_env_policy import _HERMES_PROVIDER_ENV_BLOCKLIST
-        from cron.scheduler_script import _run_job_script
+        from hermes_agent.cron.scheduler_script import _run_job_script
 
         # sorted() so the probed var is deterministic across runs
         # (frozenset iteration order varies with PYTHONHASHSEED).
@@ -196,9 +196,9 @@ class TestRunJobScript:
         # Windows-only: the fake ``sys.platform`` could not reproduce the
         # ``Scripts/python.exe`` launcher layout or the CREATE_NO_WINDOW
         # creationflags this branch exists for.
-        from cron import scheduler as sched_mod
-        from cron import scheduler_script as sched_script
-        from cron.scheduler_script import _run_job_script
+        from hermes_agent.cron import scheduler as sched_mod
+        from hermes_agent.cron import scheduler_script as sched_script
+        from hermes_agent.cron.scheduler_script import _run_job_script
 
         script = cron_env / "scripts" / "probe.py"
         script.write_text('print("ok")\n')
@@ -268,7 +268,7 @@ class TestRunJobScript:
         overlay mode exists is that PYTHONPATH alone cannot (editable
         installs would raise ModuleNotFoundError in cron scripts)."""
 
-        from cron.scheduler_script import _windows_cron_bootstrap_argv
+        from hermes_agent.cron.scheduler_script import _windows_cron_bootstrap_argv
 
         venv = tmp_path / "venv"
         site_packages = venv / "Lib" / "site-packages"
@@ -298,7 +298,7 @@ class TestRunJobScript:
         script may import a sibling module. The bootstrap must preserve that
         (runpy.run_path alone does not add it)."""
 
-        from cron.scheduler_script import _windows_cron_bootstrap_argv
+        from hermes_agent.cron.scheduler_script import _windows_cron_bootstrap_argv
 
         venv = tmp_path / "venv"
         site_packages = venv / "Lib" / "site-packages"
@@ -323,7 +323,7 @@ class TestRunJobScript:
     def test_bootstrap_argv_falls_back_without_site_packages(self, cron_env, tmp_path):
         """Unresolvable venv layout must not break the run — fall back to a
         plain invocation (pre-existing PYTHONPATH behaviour)."""
-        from cron.scheduler_script import _windows_cron_bootstrap_argv
+        from hermes_agent.cron.scheduler_script import _windows_cron_bootstrap_argv
 
         script = cron_env / "scripts" / "probe.py"
         script.write_text('print("ok")\n', encoding="utf-8")
@@ -341,7 +341,7 @@ class TestRunJobScript:
         selected venv's packages, resolves Hermes from the LIVE checkout ahead of the venv's
         workspace snapshot, keeps ``python script.py`` path and ``__main__`` semantics, and
         leaves no ``PYTHONPATH`` for its own children to inherit."""
-        from cron import scheduler_script
+        from hermes_agent.cron import scheduler_script
         from pm.environments import site_packages
 
         venv = tmp_path / "selected-venv"
@@ -395,7 +395,7 @@ class TestRunJobScript:
         """An unusable PM selection (broken record, or a venv whose interpreter is gone) is
         reported as a failed run naming the cause: never a silent run on the bare store Python,
         and never an exception escaping ``_run_job_script`` to strand the execution row."""
-        from cron.scheduler_script import _run_job_script
+        from hermes_agent.cron.scheduler_script import _run_job_script
 
         def _broken(repo):
             raise RuntimeError("dependency environment is missing or outside this install")
@@ -421,7 +421,7 @@ class TestRunJobScript:
         carry emoji through. Either way the delivery content is the real
         text, never an exception.
         """
-        from cron.scheduler_script import _run_job_script
+        from hermes_agent.cron.scheduler_script import _run_job_script
 
         script = cron_env / "scripts" / "emoji.py"
         script.write_text(
@@ -441,7 +441,7 @@ class TestBuildJobPromptWithScript:
     """Test that script output is injected into the prompt."""
 
     def test_script_output_injected(self, cron_env):
-        from cron.scheduler import _build_job_prompt
+        from hermes_agent.cron.scheduler import _build_job_prompt
 
         script = cron_env / "scripts" / "data.py"
         script.write_text('print("new PR: #123 fix typo")\n')
@@ -456,7 +456,7 @@ class TestBuildJobPromptWithScript:
         assert "Report any notable changes." in prompt
 
     def test_script_error_injected(self, cron_env):
-        from cron.scheduler import _build_job_prompt
+        from hermes_agent.cron.scheduler import _build_job_prompt
 
         job = {
             "prompt": "Report status.",
@@ -468,7 +468,7 @@ class TestBuildJobPromptWithScript:
         assert "Report status." in prompt
 
     def test_no_script_unchanged(self, cron_env):
-        from cron.scheduler import _build_job_prompt
+        from hermes_agent.cron.scheduler import _build_job_prompt
 
         job = {"prompt": "Simple job."}
         prompt = _build_job_prompt(job)
@@ -529,7 +529,7 @@ class TestScriptPathContainment:
 
     def test_absolute_path_outside_scripts_dir_blocked(self, cron_env):
         """Absolute paths outside ~/.hermes/scripts/ must be rejected."""
-        from cron.scheduler_script import _run_job_script
+        from hermes_agent.cron.scheduler_script import _run_job_script
 
         # Create a script outside the scripts dir
         outside_script = cron_env / "outside.py"
@@ -542,7 +542,7 @@ class TestScriptPathContainment:
 
     def test_tilde_path_blocked(self, cron_env):
         """~ prefixed paths must be rejected (expanduser bypasses check)."""
-        from cron.scheduler_script import _run_job_script
+        from hermes_agent.cron.scheduler_script import _run_job_script
 
         success, output = _run_job_script("~/evil.py")
         assert success is False
@@ -550,7 +550,7 @@ class TestScriptPathContainment:
 
     def test_tilde_traversal_blocked(self, cron_env):
         """~/../../../tmp/evil.py must be rejected."""
-        from cron.scheduler_script import _run_job_script
+        from hermes_agent.cron.scheduler_script import _run_job_script
 
         success, output = _run_job_script("~/../../../tmp/evil.py")
         assert success is False
@@ -558,7 +558,7 @@ class TestScriptPathContainment:
 
     def test_relative_traversal_still_blocked(self, cron_env):
         """../../etc/passwd style traversal must still be blocked."""
-        from cron.scheduler_script import _run_job_script
+        from hermes_agent.cron.scheduler_script import _run_job_script
 
         success, output = _run_job_script("../../etc/passwd")
         assert success is False
@@ -566,7 +566,7 @@ class TestScriptPathContainment:
 
     def test_relative_path_inside_scripts_dir_allowed(self, cron_env):
         """Relative paths within the scripts dir should still work."""
-        from cron.scheduler_script import _run_job_script
+        from hermes_agent.cron.scheduler_script import _run_job_script
 
         script = cron_env / "scripts" / "good.py"
         script.write_text('print("ok")\n')
@@ -577,7 +577,7 @@ class TestScriptPathContainment:
 
     def test_subdirectory_inside_scripts_dir_allowed(self, cron_env):
         """Relative paths to subdirectories within scripts/ should work."""
-        from cron.scheduler_script import _run_job_script
+        from hermes_agent.cron.scheduler_script import _run_job_script
 
         subdir = cron_env / "scripts" / "monitors"
         subdir.mkdir()
@@ -595,7 +595,7 @@ class TestScriptPathContainment:
     )
     def test_symlink_escape_blocked(self, cron_env, tmp_path):
         """Symlinks pointing outside scripts/ must be rejected."""
-        from cron.scheduler_script import _run_job_script
+        from hermes_agent.cron.scheduler_script import _run_job_script
 
         # Create a script outside the scripts dir
         outside = tmp_path / "outside_evil.py"
@@ -655,7 +655,7 @@ class TestRunJobEnvVarCleanup:
             },
         }
 
-        from cron.scheduler import run_job
+        from hermes_agent.cron.scheduler import run_job
 
         # Expect it to fail (no model/API key), but env vars must be cleaned
         try:
@@ -676,7 +676,7 @@ class TestScriptTimeoutTreeKill:
     def _stub_kills(monkeypatch, tree_kill_result):
         """Record both OS-signalling paths instead of sending real signals."""
         from agent import deadline
-        from cron import scheduler_script as sched_script
+        from hermes_agent.cron import scheduler_script as sched_script
 
         tree_kill_calls, fallback_calls = [], []
         monkeypatch.setattr(
@@ -689,7 +689,7 @@ class TestScriptTimeoutTreeKill:
     def test_unified_tree_kill_failure_falls_back(self, monkeypatch):
         """A tree-kill that signals nothing must not leave the timed-out script
         running: the process-group termination still runs."""
-        from cron import scheduler_script as sched_script
+        from hermes_agent.cron import scheduler_script as sched_script
 
         proc = SimpleNamespace(pid=12345, poll=lambda: None)
         tree_kill_calls, fallback_calls = self._stub_kills(monkeypatch, False)
@@ -702,7 +702,7 @@ class TestScriptTimeoutTreeKill:
     def test_invalid_pid_never_reaches_unified_tree_kill(self, monkeypatch):
         """pid 0 must never reach kill_process_tree: on POSIX its final
         ``os.kill(0, SIGKILL)`` signals the scheduler's own process group."""
-        from cron import scheduler_script as sched_script
+        from hermes_agent.cron import scheduler_script as sched_script
 
         proc = SimpleNamespace(pid=0, poll=lambda: None)
         tree_kill_calls, fallback_calls = self._stub_kills(monkeypatch, True)
@@ -715,7 +715,7 @@ class TestScriptTimeoutTreeKill:
     def test_already_exited_proc_is_left_alone(self, monkeypatch):
         """A script that finished right at the deadline is already reaped: its
         pid may be recycled, so neither kill path may signal it."""
-        from cron import scheduler_script as sched_script
+        from hermes_agent.cron import scheduler_script as sched_script
 
         proc = SimpleNamespace(pid=12345, poll=lambda: 0)
         tree_kill_calls, fallback_calls = self._stub_kills(monkeypatch, True)
@@ -728,7 +728,7 @@ class TestScriptTimeoutTreeKill:
     def test_cancel_path_also_tree_kills(self, monkeypatch, cron_env):
         """The ownership-lost/cancel kill site is the timeout site's sibling:
         it must go through the same tree-kill (#71148 class)."""
-        from cron import scheduler_script as sched_script
+        from hermes_agent.cron import scheduler_script as sched_script
 
         tree_calls = []
 
@@ -772,8 +772,8 @@ class TestScriptTimeoutTreeKill:
             reason="kill_process_tree needs psutil to reach own-session descendants",
         )
 
-        from cron import scheduler as sched
-        from cron import scheduler_script as sched_script
+        from hermes_agent.cron import scheduler as sched
+        from hermes_agent.cron import scheduler_script as sched_script
 
         def is_live(pid):
             try:

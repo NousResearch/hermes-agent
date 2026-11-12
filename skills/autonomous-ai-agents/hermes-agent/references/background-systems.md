@@ -25,7 +25,7 @@ Config: `delegation.*` in `config.yaml`.
 
 ### Cron (scheduled jobs)
 
-Durable scheduler — `cron/jobs.py` + `cron/scheduler.py`. Drive it via
+Durable scheduler — `hermes_agent/cron/jobs.py` + `hermes_agent/cron/scheduler.py`. Drive it via
 the `cronjob` tool, the `hermes cron` CLI (`list`, `add`, `edit`,
 `pause`, `resume`, `run`, `remove`), or the `/cron` slash command.
 

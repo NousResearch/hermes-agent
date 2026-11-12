@@ -1,7 +1,7 @@
 """Fire-claim timing bounds shared by the job store and its siblings.
 
 Import-free on purpose: a sibling loaded fresh from a newer on-disk tree must resolve
-these without going through the ``cron.jobs`` object a long-lived process cached at boot.
+these without going through the ``hermes_agent.cron.jobs`` object a long-lived process cached at boot.
 """
 
 # A fire_claim younger than this is a live run (heartbeat cadence is 60 s). One value

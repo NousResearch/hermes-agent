@@ -1,10 +1,10 @@
-"""Tests for cron/jobs.py — schedule parsing, job CRUD, and due-job detection."""
+"""Tests for hermes_agent/cron/jobs.py — schedule parsing, job CRUD, and due-job detection."""
 
 import threading
 import pytest
 from datetime import datetime, timedelta, timezone, UTC
 
-from cron.jobs import (
+from hermes_agent.cron.jobs import (
     parse_duration,
     parse_schedule,
     compute_next_run,
@@ -254,7 +254,7 @@ class TestParseSchedule:
         instant on the same clock the scheduler checks against.
         """
         configured_now = datetime(2026, 6, 22, 20, 0, 0, tzinfo=timezone(timedelta(hours=5, minutes=30)))
-        monkeypatch.setattr("cron.jobs._hermes_now", lambda: configured_now)
+        monkeypatch.setattr("hermes_agent.cron.jobs._hermes_now", lambda: configured_now)
 
         result = parse_schedule("2026-06-22T20:07:00")  # naive, user wall-clock
 
@@ -280,7 +280,7 @@ class TestNaiveScheduleTimezoneDivergence:
         # zone is irrelevant to the parse now — that is the whole point.
         configured = timezone(timedelta(hours=5, minutes=30))
         now = datetime(2026, 6, 22, 20, 7, 30, tzinfo=configured)
-        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        monkeypatch.setattr("hermes_agent.cron.jobs._hermes_now", lambda: now)
 
         # 30s ago in the configured wall clock, supplied as a NAIVE string.
         naive_str = (now - timedelta(seconds=30)).replace(tzinfo=None).isoformat()
@@ -305,7 +305,7 @@ class TestComputeNextRun:
     def test_once_recent_past_within_grace_returns_time(self, monkeypatch):
         now = datetime(2026, 3, 18, 4, 22, 3, tzinfo=UTC)
         run_at = "2026-03-18T04:22:00+00:00"
-        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        monkeypatch.setattr("hermes_agent.cron.jobs._hermes_now", lambda: now)
 
         schedule = {"kind": "once", "run_at": run_at}
 
@@ -315,7 +315,7 @@ class TestComputeNextRun:
     def test_once_with_last_run_returns_none_even_within_grace(self, monkeypatch):
         now = datetime(2026, 3, 18, 4, 22, 3, tzinfo=UTC)
         run_at = "2026-03-18T04:22:00+00:00"
-        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        monkeypatch.setattr("hermes_agent.cron.jobs._hermes_now", lambda: now)
 
         schedule = {"kind": "once", "run_at": run_at}
 
@@ -336,9 +336,9 @@ class TestComputeNextRun:
 @pytest.fixture()
 def tmp_cron_dir(tmp_path, monkeypatch):
     """Redirect cron storage to a temp directory."""
-    monkeypatch.setattr("cron.jobs.CRON_DIR", tmp_path / "cron")
-    monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
-    monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
+    monkeypatch.setattr("hermes_agent.cron.jobs.CRON_DIR", tmp_path / "cron")
+    monkeypatch.setattr("hermes_agent.cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
+    monkeypatch.setattr("hermes_agent.cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
     return tmp_path
 
 
@@ -361,7 +361,7 @@ class TestJobCRUD:
         assert name in fetched["prompt"]
 
         # On-disk representation is literal UTF-8, not \uXXXX escapes.
-        from cron.jobs import JOBS_FILE
+        from hermes_agent.cron.jobs import JOBS_FILE
         raw = JOBS_FILE.read_text(encoding="utf-8")
         assert "日次レポート" in raw
         assert "🎉" in raw
@@ -421,7 +421,7 @@ class TestJobCRUD:
         TypeError (#66824/#64520/#7142/#71987/#95706) — the bare-value and
         dict shapes both route through normalize_repeat_value now.
         """
-        from cron.jobs import mark_job_run, update_job
+        from hermes_agent.cron.jobs import mark_job_run, update_job
 
         job = create_job(prompt="t", schedule="every 1h", repeat=2)
         mark_job_run(job["id"], success=True)  # completed=1
@@ -442,7 +442,7 @@ class TestJobCRUD:
         """A hand-edited "completed" (null, string, float, negative, Infinity) must not kill
         mark_job_run or the whole store, and must not be carried forward by update_job."""
         import json
-        from cron.jobs import JOBS_FILE, get_job, mark_job_run, update_job
+        from hermes_agent.cron.jobs import JOBS_FILE, get_job, mark_job_run, update_job
 
         job = create_job(prompt="t", schedule="every 1h", repeat=3)
 
@@ -473,7 +473,7 @@ class TestJobCRUD:
         one-shot to `every 15m` keeps times=1 and retires after its first fire.
         An explicit repeat in the same update still wins over the re-derived default.
         """
-        from cron.jobs import update_job
+        from hermes_agent.cron.jobs import update_job
 
         job = create_job(prompt="poll", schedule="in 15m")
         assert job["repeat"]["times"] == 1
@@ -487,7 +487,7 @@ class TestJobCRUD:
 
     def test_recurring_turned_oneshot_becomes_once(self, tmp_cron_dir):
         """The reverse flip must gain the one-shot default instead of staying forever."""
-        from cron.jobs import update_job
+        from hermes_agent.cron.jobs import update_job
 
         job = create_job(prompt="poll", schedule="every 15m")
         assert job["repeat"]["times"] is None
@@ -498,7 +498,7 @@ class TestJobCRUD:
 
     def test_rejects_stale_past_one_shot_at_creation(self, tmp_cron_dir, monkeypatch):
         now = datetime(2026, 3, 18, 4, 30, 0, tzinfo=UTC)
-        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        monkeypatch.setattr("hermes_agent.cron.jobs._hermes_now", lambda: now)
         stale = (now - timedelta(minutes=5)).isoformat()
 
         with pytest.raises(ValueError, match="past and cannot be scheduled"):
@@ -600,7 +600,7 @@ class TestPauseResumeJob:
         save_jobs([job])
 
         # Display must NOT say paused while enabled (honest list).
-        from cron.jobs import effective_job_state, list_jobs
+        from hermes_agent.cron.jobs import effective_job_state, list_jobs
 
         assert effective_job_state(job) == "scheduled"
         listed = {j["id"]: j for j in list_jobs(include_disabled=True)}
@@ -624,7 +624,7 @@ class TestPauseResumeJob:
         """Resuming a paused one-shot whose time is now in the past must raise
         ValueError — the revived job would silently never fire."""
         now = datetime(2026, 7, 6, 12, 0, 0, tzinfo=UTC)
-        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        monkeypatch.setattr("hermes_agent.cron.jobs._hermes_now", lambda: now)
         # Create directly — bypass create_job's past-oneshot guard so we can
         # test the resume path independently.
         job = {
@@ -654,7 +654,7 @@ class TestPauseResumeJob:
         still due — the due scan then fires it (late/catch-up) or logs the skip. Re-anchoring
         from now consumed the occurrence with no run, no ledger row and no log line (#113603)."""
         now = datetime(2026, 9, 16, 17, 0, 0, tzinfo=UTC)
-        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        monkeypatch.setattr("hermes_agent.cron.jobs._hermes_now", lambda: now)
         job = create_job(prompt="daily pipeline", schedule="30 1 * * *", deliver="local")
         stored = load_jobs()
         row = next(r for r in stored if r["id"] == job["id"])
@@ -673,7 +673,7 @@ class TestPauseResumeJob:
         """Control: a paused job whose stored slot is still ahead, or created ``--paused`` with no
         slot, resumes onto the next future occurrence as before."""
         now = datetime(2026, 9, 16, 17, 0, 0, tzinfo=UTC)
-        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        monkeypatch.setattr("hermes_agent.cron.jobs._hermes_now", lambda: now)
         ahead = create_job(prompt="daily", schedule="30 1 * * *", deliver="local")
         pause_job(ahead["id"])
         canary = create_job(prompt="canary", schedule="0 9 * * *", deliver="local", paused=True)
@@ -689,7 +689,7 @@ class TestResolveJobRef:
     """Name-based job lookup for CLI/tool callers (PR #2627, @buntingszn)."""
 
     def test_resolve_by_exact_id(self, tmp_cron_dir):
-        from cron.jobs import resolve_job_ref
+        from hermes_agent.cron.jobs import resolve_job_ref
 
         job = create_job(prompt="A", schedule="1h", name="alpha")
         assert resolve_job_ref(job["id"])["id"] == job["id"]
@@ -697,7 +697,7 @@ class TestResolveJobRef:
 
     def test_mutations_refuse_ambiguous_name(self, tmp_cron_dir):
         """pause/resume/trigger/remove must refuse to act on an ambiguous name."""
-        from cron.jobs import AmbiguousJobReference, trigger_job
+        from hermes_agent.cron.jobs import AmbiguousJobReference, trigger_job
 
         create_job(prompt="A", schedule="1h", name="dup")
         create_job(prompt="B", schedule="1h", name="dup")
@@ -860,7 +860,7 @@ class TestMarkJobRun:
 
         # Simulate the runtime env having lost croniter between job creation
         # and this run.
-        monkeypatch.setattr("cron.jobs.HAS_CRONITER", False)
+        monkeypatch.setattr("hermes_agent.cron.jobs.HAS_CRONITER", False)
 
         mark_job_run(job["id"], success=True)
 
@@ -888,7 +888,7 @@ class TestMarkJobRun:
         pytest.importorskip("croniter")  # need it to make the import succeed again
         import builtins
 
-        import cron.jobs as jobs_mod
+        import hermes_agent.cron.jobs as jobs_mod
 
         job = create_job(prompt="Recurring", schedule="0 7,15,23 * * *")
         assert job["schedule"]["kind"] == "cron"
@@ -908,7 +908,7 @@ class TestMarkJobRun:
         assert jobs_mod._ensure_croniter() is False
         assert jobs_mod.compute_next_run(job["schedule"]) is None
         # The in-flight guard's cadence cache must not pin the import-failure None either.
-        import cron.scheduler as sched_mod
+        import hermes_agent.cron.scheduler as sched_mod
         expr = job["schedule"]["expr"]
         sched_mod._cron_interval_cache.pop(expr, None)
         assert sched_mod._cron_interval_minutes(expr) is None
@@ -946,7 +946,7 @@ class TestAdvanceNextRun:
         assert result is True
 
         updated = get_job(job["id"])
-        from cron.jobs import _ensure_aware, _hermes_now
+        from hermes_agent.cron.jobs import _ensure_aware, _hermes_now
         new_next_dt = _ensure_aware(datetime.fromisoformat(updated["next_run_at"]))
         assert new_next_dt > _hermes_now(), "next_run_at should be in the future after advance"
 
@@ -1020,7 +1020,7 @@ class TestGetDueJobs:
         assert due[0]["id"] == job["id"]
         # next_run_at should be fast-forwarded to the future (accumulated slots skipped)
         updated = get_job(job["id"])
-        from cron.jobs import _ensure_aware, _hermes_now
+        from hermes_agent.cron.jobs import _ensure_aware, _hermes_now
         next_dt = _ensure_aware(datetime.fromisoformat(updated["next_run_at"]))
         assert next_dt > _hermes_now()
 
@@ -1069,7 +1069,7 @@ class TestGetDueJobs:
         the 150s grace for a 5m interval. The job must be returned as due (run
         once) AND have next_run_at fast-forwarded (so accumulated missed slots
         don't all fire)."""
-        from cron.jobs import _ensure_aware, _hermes_now
+        from hermes_agent.cron.jobs import _ensure_aware, _hermes_now
         job = create_job(prompt="Long job", schedule="every 5m")
         jobs = load_jobs()
         # 11 minutes ago: > grace (150s for a 5m interval) — the "still running" miss.
@@ -1087,7 +1087,7 @@ class TestGetDueJobs:
 
     def test_broken_recent_one_shot_without_next_run_is_recovered(self, tmp_cron_dir, monkeypatch):
         now = datetime(2026, 3, 18, 4, 22, 30, tzinfo=UTC)
-        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        monkeypatch.setattr("hermes_agent.cron.jobs._hermes_now", lambda: now)
 
         run_at = "2026-03-18T04:22:00+00:00"
         save_jobs(
@@ -1133,7 +1133,7 @@ class TestGetDueJobs:
         (process B, or A's own next tick) must see the fresh claim and skip —
         not just for one tick window but for the whole run.
         """
-        from cron.jobs import _hermes_now
+        from hermes_agent.cron.jobs import _hermes_now
         t0 = _hermes_now()
         run_at = (t0 - timedelta(seconds=5)).isoformat()
         save_jobs([{
@@ -1151,7 +1151,7 @@ class TestGetDueJobs:
         # 28s later (the exact gap in the report) AND 61s later (past any
         # fixed +60s window) — both must skip.
         for gap in (28, 61, 130):
-            monkeypatch.setattr("cron.jobs._hermes_now",
+            monkeypatch.setattr("hermes_agent.cron.jobs._hermes_now",
                                 lambda t0=t0, g=gap: t0 + timedelta(seconds=g))
             assert get_due_jobs() == [], f"double-dispatched at +{gap}s"
 
@@ -1163,7 +1163,7 @@ class TestGetDueJobs:
         while the run is alive, so no other tick re-dispatches or stale-removes
         the job even when the run outlives the original TTL horizon."""
         monkeypatch.delenv("HERMES_CRON_TIMEOUT", raising=False)
-        from cron.jobs import _hermes_now, _oneshot_run_claim_ttl_seconds
+        from hermes_agent.cron.jobs import _hermes_now, _oneshot_run_claim_ttl_seconds
         ttl = _oneshot_run_claim_ttl_seconds()
         t0 = _hermes_now()
         run_at = (t0 - timedelta(seconds=5)).isoformat()
@@ -1179,7 +1179,7 @@ class TestGetDueJobs:
         assert claim_dispatch("slowrun") is True
 
         # Mid-run heartbeat before the TTL horizon refreshes the claim.
-        monkeypatch.setattr("cron.jobs._hermes_now",
+        monkeypatch.setattr("hermes_agent.cron.jobs._hermes_now",
                             lambda: t0 + timedelta(seconds=ttl - 60))
         owner = get_job("slowrun")["run_claim"]["by"]
         assert heartbeat_run_claim("slowrun", expected_owner=owner) is True
@@ -1187,7 +1187,7 @@ class TestGetDueJobs:
         # Past the ORIGINAL claim's TTL horizon: without the heartbeat this
         # tick would stale-remove the maxed one-shot; with it the claim is
         # fresh, so the job is skipped and the record survives.
-        monkeypatch.setattr("cron.jobs._hermes_now",
+        monkeypatch.setattr("hermes_agent.cron.jobs._hermes_now",
                             lambda: t0 + timedelta(seconds=ttl + 10))
         assert get_due_jobs() == []
         assert get_job("slowrun") is not None
@@ -1372,7 +1372,7 @@ class TestPerJobScanContainment:
         }
         save_jobs([poison, good])
 
-        import cron.jobs as jobs_mod
+        import hermes_agent.cron.jobs as jobs_mod
         real_grace = jobs_mod._compute_grace_seconds
 
         def selective_grace(schedule, grace_minutes=None):
@@ -1413,7 +1413,7 @@ class TestCronOutputRetention:
         return names
 
     def test_prune_keeps_newest_n(self, tmp_path):
-        from cron.jobs import _prune_job_output
+        from hermes_agent.cron.jobs import _prune_job_output
         d = tmp_path / "job"
         names = self._seed(d, 10)
         assert _prune_job_output(d, keep=3) == 7
@@ -1486,12 +1486,12 @@ class TestClaimDispatch:
 
 
 class TestLateEnvRepointScopesStore:
-    """A HERMES_HOME set AFTER cron.jobs import must scope the store even
+    """A HERMES_HOME set AFTER hermes_agent.cron.jobs import must scope the store even
     without use_cron_store(): fixtures that patch the environment too late
     previously read/wrote the import-time jobs.json — the user's real file."""
 
     def test_late_env_repoint_scopes_store(self, tmp_path, monkeypatch):
-        from cron import jobs
+        from hermes_agent.cron import jobs
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         store = jobs._current_cron_store()
@@ -1504,7 +1504,7 @@ class TestLateEnvRepointScopesStore:
 
 
     def test_use_cron_store_override_still_wins(self, tmp_path, monkeypatch):
-        from cron import jobs
+        from hermes_agent.cron import jobs
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "env-home"))
         with jobs.use_cron_store(tmp_path / "override-home"):
@@ -1512,7 +1512,7 @@ class TestLateEnvRepointScopesStore:
             assert store.jobs_file == (tmp_path / "override-home").resolve() / "cron" / "jobs.json"
 
     def test_heartbeat_does_not_recreate_deleted_named_profile(self, tmp_path):
-        from cron import jobs
+        from hermes_agent.cron import jobs
 
         profiles_dir = tmp_path / "profiles"
         profiles_dir.mkdir()
@@ -1524,7 +1524,7 @@ class TestLateEnvRepointScopesStore:
         assert not deleted_home.exists()
 
     def test_heartbeat_initializes_existing_named_profile(self, tmp_path):
-        from cron import jobs
+        from hermes_agent.cron import jobs
 
         profile_home = tmp_path / "profiles" / "active"
         profile_home.mkdir(parents=True)
@@ -1549,7 +1549,7 @@ class TestLateEnvRepointScopesStore:
         was first imported before the suite's env isolation applied, that
         path IS the developer's live file — writing a sentinel there is
         exactly the incident this PR exists to prevent."""
-        from cron import jobs
+        from hermes_agent.cron import jobs
 
         sim_old_home = tmp_path / "import-time-home"
         sim_cron = sim_old_home / "cron"
@@ -1607,7 +1607,7 @@ class TestJobsJsonUtf8Bom:
     def test_load_jobs_accepts_utf8_bom(self, tmp_cron_dir):
         """BOM'd jobs.json loads — the pre-fix crash repro."""
         import json
-        from cron.jobs import JOBS_FILE, load_jobs
+        from hermes_agent.cron.jobs import JOBS_FILE, load_jobs
 
         payload = {
             "jobs": [
@@ -1673,7 +1673,7 @@ class TestJobsJsonIdKeyedMap:
     def test_load_jobs_flattens_id_keyed_map(self, tmp_cron_dir):
         """The pre-fix repro: load_jobs() returns a list, not the raw dict."""
         import json
-        from cron.jobs import JOBS_FILE, load_jobs
+        from hermes_agent.cron.jobs import JOBS_FILE, load_jobs
 
         JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
         JOBS_FILE.write_text(json.dumps(self._ID_KEYED), encoding="utf-8")
@@ -1686,7 +1686,7 @@ class TestJobsJsonIdKeyedMap:
     def test_list_jobs_survives_id_keyed_map(self, tmp_cron_dir):
         """The reported traceback path (hermes cron list / cronjob list tool)."""
         import json
-        from cron.jobs import JOBS_FILE, list_jobs
+        from hermes_agent.cron.jobs import JOBS_FILE, list_jobs
 
         JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
         JOBS_FILE.write_text(json.dumps(self._ID_KEYED), encoding="utf-8")
@@ -1698,7 +1698,7 @@ class TestJobsJsonIdKeyedMap:
     def test_id_keyed_map_repaired_to_list_on_disk(self, tmp_cron_dir):
         """Loading rewrites the store into the canonical {"jobs": [...]} form."""
         import json
-        from cron.jobs import JOBS_FILE, load_jobs
+        from hermes_agent.cron.jobs import JOBS_FILE, load_jobs
 
         JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
         JOBS_FILE.write_text(json.dumps(self._ID_KEYED), encoding="utf-8")
@@ -1716,7 +1716,7 @@ class TestJobsJsonIdKeyedMap:
     def test_empty_id_keyed_map_returns_empty_list(self, tmp_cron_dir):
         """An empty ``jobs`` map must not crash and yields no jobs."""
         import json
-        from cron.jobs import JOBS_FILE, load_jobs
+        from hermes_agent.cron.jobs import JOBS_FILE, load_jobs
 
         JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
         JOBS_FILE.write_text(json.dumps({"jobs": {}}), encoding="utf-8")
@@ -1726,7 +1726,7 @@ class TestJobsJsonIdKeyedMap:
     def test_map_value_without_inline_id_adopts_key(self, tmp_cron_dir):
         """A value lacking an inline "id" gets the map key as its id."""
         import json
-        from cron.jobs import JOBS_FILE, load_jobs
+        from hermes_agent.cron.jobs import JOBS_FILE, load_jobs
 
         payload = {
             "jobs": {
@@ -1765,7 +1765,7 @@ class TestJobsJsonIdKeyedMap:
         """Junk (non-dict) values in the map are skipped, never crash."""
         import json
         import logging
-        from cron.jobs import JOBS_FILE, list_jobs, load_jobs
+        from hermes_agent.cron.jobs import JOBS_FILE, list_jobs, load_jobs
 
         payload = {
             "jobs": {
@@ -1783,7 +1783,7 @@ class TestJobsJsonIdKeyedMap:
         JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
         JOBS_FILE.write_text(json.dumps(payload), encoding="utf-8")
 
-        with caplog.at_level(logging.WARNING, logger="cron.jobs"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.cron.jobs"):
             loaded = load_jobs()
         assert [j["id"] for j in loaded] == ["goodjob1"]
         assert any("non-dict" in rec.getMessage() for rec in caplog.records)
@@ -1806,8 +1806,8 @@ class TestJobsJsonIdKeyedMap:
         parsed the file; an all-junk list or a scalar jobs field must be repaired on disk too,
         without logging raw values."""
         import json
-        import cron.jobs as jobs_mod
-        from cron.jobs import JOBS_FILE, load_jobs, update_job
+        import hermes_agent.cron.jobs as jobs_mod
+        from hermes_agent.cron.jobs import JOBS_FILE, load_jobs, update_job
 
         job = create_job(prompt="keep me", schedule="every 1h", name="survivor")
 
@@ -1843,7 +1843,7 @@ class TestJobsJsonIdKeyedMap:
                             (None, "Replacing invalid"), ("not-a-list", "Replacing invalid")):
             JOBS_FILE.write_text(json.dumps({"jobs": bad}), encoding="utf-8")
             caplog.clear()
-            with caplog.at_level("WARNING", logger="cron.jobs"):
+            with caplog.at_level("WARNING", logger="hermes_agent.cron.jobs"):
                 assert load_jobs() == []  # unlocked: re-runs under the lock, which logs
             assert json.loads(JOBS_FILE.read_text(encoding="utf-8"))["jobs"] == []
             msgs = [r.getMessage() for r in caplog.records]
@@ -1878,11 +1878,11 @@ class TestAdvanceNextRuns:
         return [j["id"] for j in rec], [j["id"] for j in one]
 
     def test_batch_advances_recurring_skips_oneshots(self, tmp_cron_dir):
-        from cron.jobs import advance_next_runs
+        from hermes_agent.cron.jobs import advance_next_runs
         rec_ids, one_ids = self._make_due(tmp_cron_dir)
         advanced = advance_next_runs(rec_ids + one_ids)
         assert advanced == len(rec_ids)
-        from cron.jobs import _ensure_aware, _hermes_now
+        from hermes_agent.cron.jobs import _ensure_aware, _hermes_now
         for jid in rec_ids:
             nxt = _ensure_aware(datetime.fromisoformat(get_job(jid)["next_run_at"]))
             assert nxt > _hermes_now()
@@ -1944,7 +1944,7 @@ class TestCompletedOneshotRetentionSweep:
 
     def test_sweep_disabled_by_nonpositive_retention(self, tmp_cron_dir, monkeypatch):
         monkeypatch.setattr(
-            "cron.jobs._completed_oneshot_retention_days", lambda: 0.0
+            "hermes_agent.cron.jobs._completed_oneshot_retention_days", lambda: 0.0
         )
         old_id = self._completed_oneshot(age_days=30)
         get_due_jobs()
@@ -1966,7 +1966,7 @@ class TestEnsureCronDirWidened:
 
     def test_ensure_cron_dir_named_profile_subdir_fails_closed(self, tmp_path):
         """A subdir under a deleted named profile's cron/ must not recreate it."""
-        from cron import jobs
+        from hermes_agent.cron import jobs
 
         profiles_dir = tmp_path / "profiles"
         profiles_dir.mkdir()
@@ -1981,7 +1981,7 @@ class TestEnsureCronDirWidened:
 
     def test_ensure_cron_dir_default_home_creates_subdir(self, tmp_path):
         """A subdir under a default home's cron/ should be created normally."""
-        from cron import jobs
+        from hermes_agent.cron import jobs
 
         default_home = tmp_path / "default_home"
         default_home.mkdir()
@@ -1992,7 +1992,7 @@ class TestEnsureCronDirWidened:
 
     def test_ensure_cron_dir_named_profile_cron_dir_fails_closed(self, tmp_path):
         """The cron dir of a deleted named profile must not be recreated."""
-        from cron import jobs
+        from hermes_agent.cron import jobs
 
         profiles_dir = tmp_path / "profiles"
         profiles_dir.mkdir()
@@ -2006,7 +2006,7 @@ class TestEnsureCronDirWidened:
 
     def test_ensure_cron_dir_existing_named_profile_cron_dir_works(self, tmp_path):
         """An existing named profile's cron dir should be created normally."""
-        from cron import jobs
+        from hermes_agent.cron import jobs
 
         profiles_dir = tmp_path / "profiles"
         active_home = profiles_dir / "active"
@@ -2018,7 +2018,7 @@ class TestEnsureCronDirWidened:
 
     def test_ensure_cron_dir_scripts_dir_under_named_profile_fails_closed(self, tmp_path):
         """A scripts dir under a deleted named profile must not be recreated."""
-        from cron import jobs
+        from hermes_agent.cron import jobs
 
         profiles_dir = tmp_path / "profiles"
         profiles_dir.mkdir()

@@ -11,7 +11,7 @@ import re
 # The profile scheduler's principal admits every cron fire under ``cron:<job>:<execution>``
 # (``gateway/session_cron.py``). That request id is the pre-image of the run's ``local-*`` session
 # id, so its admission row is the run's durable job/execution association. Runs from before the
-# unified runtime were named ``cron_{job_id}_{YYYYmmdd_HHMMSS}`` (``cron/scheduler.py::run_job``).
+# unified runtime were named ``cron_{job_id}_{YYYYmmdd_HHMMSS}`` (``hermes_agent/cron/scheduler.py::run_job``).
 CRON_PRINCIPAL_ID = 'cron-owner'
 CRON_REQUEST_PREFIX = 'cron:'
 _LEGACY_CRON_RUN_ID = re.compile(r'^cron_(.+)_\d{8}_\d{6}$')

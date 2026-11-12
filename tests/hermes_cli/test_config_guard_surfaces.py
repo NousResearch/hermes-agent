@@ -96,7 +96,7 @@ class TestCronRunJobGuard:
         assert final_response == ""
 
     def test_run_job_no_agent_exempt(self, tmp_path):
-        from cron.scheduler import run_job
+        from hermes_agent.cron.scheduler import run_job
 
         _write_corrupt_config(tmp_path)
 

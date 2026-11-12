@@ -16,7 +16,7 @@ with tempfile.TemporaryDirectory(prefix="markdown-producer-") as temporary:
         if key.startswith("HERMES_") or key.endswith(("_API_KEY", "_TOKEN")):
             os.environ.pop(key, None)
     os.environ.update(HOME=str(home), HERMES_HOME=str(home / ".hermes"))
-    from cron.jobs import create_job, save_job_output
+    from hermes_agent.cron.jobs import create_job, save_job_output
     from gateway.wake import persist_delegation_delivery
     from hermes_agent.hermes_state import SessionDB
     from tools.cronjob_tools import _manual_run_completion

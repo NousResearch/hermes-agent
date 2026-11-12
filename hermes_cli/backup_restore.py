@@ -681,7 +681,7 @@ def _set_config_path_value(data: dict[str, Any], dotted: tuple[str, ...], value:
 def _count_cron_jobs(path: Path) -> Optional[int]:
     """Return the number of cron jobs stored in ``path``.
 
-    The canonical on-disk shape is ``{"jobs": [...]}`` (see ``cron/jobs.py``).
+    The canonical on-disk shape is ``{"jobs": [...]}`` (see ``hermes_agent/cron/jobs.py``).
     A legacy bare-list shape (``[...]``) is also honoured.
 
     Returns:
@@ -693,7 +693,7 @@ def _count_cron_jobs(path: Path) -> Optional[int]:
     if not path.is_file():
         return None
     try:
-        # utf-8-sig: same dialect as cron/jobs.load_jobs — Windows editors
+        # utf-8-sig: same dialect as hermes_agent/cron/jobs.load_jobs — Windows editors
         # may leave a UTF-8 BOM that plain utf-8 json.load rejects. Without
         # it a BOM'd jobs.json counts as "unreadable" (None) and the
         # post-update cron-loss auto-restore safety net silently disables.

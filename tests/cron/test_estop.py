@@ -93,7 +93,7 @@ def test_paused_reply_surfaces_reason_and_resume_hint(hermes_home):
 
 
 def test_cron_tick_skips_dispatch_when_engaged(hermes_home, monkeypatch):
-    from cron import scheduler
+    from hermes_agent.cron import scheduler
 
     calls = []
 
@@ -109,7 +109,7 @@ def test_cron_tick_skips_dispatch_when_engaged(hermes_home, monkeypatch):
 
 
 def test_cron_tick_resumes_after_disengage(hermes_home, monkeypatch):
-    from cron import scheduler
+    from hermes_agent.cron import scheduler
 
     calls = []
 

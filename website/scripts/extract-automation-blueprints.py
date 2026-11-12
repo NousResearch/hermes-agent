@@ -2,7 +2,7 @@
 """Generate the Automation Blueprints catalog JSON for the docs site.
 
 Mirrors ``extract-skills.py``: imports the single-source-of-truth blueprint
-definitions from ``cron/blueprint_catalog.py`` and emits a flat JSON array the
+definitions from ``hermes_agent/cron/blueprint_catalog.py`` and emits a flat JSON array the
 docs page renders into cards (description, schedule, copy-paste slash command,
 and a ``hermes://`` "Send to App" deep-link).
 
@@ -25,7 +25,7 @@ OUTPUT = REPO_ROOT / "website" / "static" / "api" / "automation-blueprints-index
 
 
 def build_index() -> list:
-    from cron.blueprint_catalog import CATALOG, blueprint_catalog_entry
+    from hermes_agent.cron.blueprint_catalog import CATALOG, blueprint_catalog_entry
 
     return [blueprint_catalog_entry(r) for r in CATALOG]
 

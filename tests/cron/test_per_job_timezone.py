@@ -22,7 +22,7 @@ import pytest
 pytest.importorskip("croniter")
 
 import hermes_time
-from cron import jobs
+from hermes_agent.cron import jobs
 
 LA = ZoneInfo("America/Los_Angeles")
 NY = ZoneInfo("America/New_York")
@@ -85,7 +85,7 @@ class TestPinnedTimezoneIsDue:
         nine_am = datetime(2026, 10, 22, 9, 0, tzinfo=ZoneInfo(job_zone))
         cron_store.set(nine_am)
         job_id = _add_job(WEEKDAY_9AM, timezone=job_zone, next_run_at=nine_am)
-        caplog.set_level(logging.INFO, logger="cron.scheduler")
+        caplog.set_level(logging.INFO, logger="hermes_agent.cron.scheduler")
 
         due = [j["id"] for j in jobs.get_due_jobs()]
 
@@ -273,7 +273,7 @@ class TestSlotMovesFollowThePin:
     def test_manual_run_settle_recomputes_in_the_job_zone(self, la_profile, cron_store):
         """A finished extra fire whose slot passed takes the next natural occurrence: in the
         JOB's zone, or the stale-lattice guard later re-anchors past it (one lost run)."""
-        from cron import extra_fire
+        from hermes_agent.cron import extra_fire
 
         cron_store.set(datetime(2026, 10, 22, 12, 0, tzinfo=NY))
         job = {"schedule": jobs.parse_schedule(DAILY_9AM), "timezone": "Asia/Hong_Kong",
@@ -282,7 +282,7 @@ class TestSlotMovesFollowThePin:
         assert datetime.fromisoformat(job["next_run_at"]) == datetime(2026, 10, 23, 9, 0, tzinfo=HK)
 
     def test_distribution_zone_change_recomputes_the_instant(self, la_profile, cron_store):
-        from cron.job_definition import merge_job_definition
+        from hermes_agent.cron.job_definition import merge_job_definition
 
         cron_store.set(datetime(2026, 10, 22, 12, 0, tzinfo=NY))
         local = jobs.create_job(prompt="p", schedule=DAILY_9AM, model="fixture",

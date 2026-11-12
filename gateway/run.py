@@ -1532,7 +1532,7 @@ def _collect_history_media_paths(agent_history: list[dict[str, Any]]) -> set:
 def _home_target_env_var(platform_name: str) -> str:
     """Home-target env var: the plugin's ``cron_deliver_env_var``, then
     ``<PLATFORM>_HOME_CHANNEL``."""
-    from cron.scheduler_delivery import _resolve_home_env_var
+    from hermes_agent.cron.scheduler_delivery import _resolve_home_env_var
     return _resolve_home_env_var(platform_name) or f"{platform_name.upper()}_HOME_CHANNEL"
 
 
@@ -4311,7 +4311,7 @@ def _housekeeping_paste_sweep() -> None:
 def _housekeeping_misfire_catch_up(cron_provider, adapters, loop) -> None:
     """External cron providers only: fire jobs whose time passed with no external fire delivered (dead
     loopback hop). No-op for the built-in ticker; enforces misfire_grace_minutes; CAS claim de-dupes."""
-    from cron.scheduler_provider import fire_overdue_jobs
+    from hermes_agent.cron.scheduler_provider import fire_overdue_jobs
     caught_up = fire_overdue_jobs(cron_provider, adapters=adapters, loop=loop)
     if caught_up:
         logger.info("Misfire catch-up: fired %d overdue job(s)", caught_up)
@@ -4425,8 +4425,8 @@ def _housekeeping_checkpoint_prune() -> None:
 def _drain_restart_safe_cron_deliveries(adapters, loop, runner=None) -> None:
     """Drain each profile's worker queue through its matching live adapters. A credential-less satellite
     profile (no bot of its own) drains through the primary's adapters routed by its own profile routes."""
-    from cron import scheduler as cron_scheduler
-    from cron import scheduler_preflight as sched_preflight
+    from hermes_agent.cron import scheduler as cron_scheduler
+    from hermes_agent.cron import scheduler_preflight as sched_preflight
 
     if runner is None:
         if adapters is not None:
@@ -4522,7 +4522,7 @@ def _start_gateway_housekeeping(
 def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, interval: int = 60):
     """DEPRECATED shim — runs ONLY the built-in in-process cron tick loop; the trigger now lives behind
     the ``CronScheduler`` provider and housekeeping in ``_start_gateway_housekeeping``."""
-    from cron.scheduler_provider import InProcessCronScheduler
+    from hermes_agent.cron.scheduler_provider import InProcessCronScheduler
     InProcessCronScheduler().start(stop_event, adapters=adapters, loop=loop, interval=interval)
 
 
@@ -4537,7 +4537,7 @@ def _stop_cron_provider(provider) -> None:
         logger.debug("Cron provider stop() error: %s", exc)
 
 
-# Cron thread blocks on future.result(timeout=60) (cron/scheduler.py::_deliver_result) + margin.
+# Cron thread blocks on future.result(timeout=60) (hermes_agent/cron/scheduler.py::_deliver_result) + margin.
 _CRON_SHUTDOWN_DRAIN_TIMEOUT = 65.0
 
 # Housekeeping's channel-directory refresh blocks on fut.result(timeout=30); cover that + margin.

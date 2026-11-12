@@ -269,7 +269,7 @@ class TestCronTimezone:
     def test_parse_schedule_one_shot_duration_uses_tz_aware_now(self):
         """parse_schedule('in 30m') should produce a tz-aware run_at."""
         os.environ["HERMES_TIMEZONE"] = "Asia/Kolkata"
-        from cron.jobs import parse_schedule
+        from hermes_agent.cron.jobs import parse_schedule
         result = parse_schedule("in 30m")
         run_at = datetime.fromisoformat(result["run_at"])
         # The stored timestamp should be tz-aware
@@ -284,7 +284,7 @@ class TestCronTimezone:
         absolute time when system-local tz != Hermes tz.  The fix interprets
         naive values as system-local wall time, then converts.
         """
-        from cron.jobs import _ensure_aware
+        from hermes_agent.cron.jobs import _ensure_aware
 
         os.environ["HERMES_TIMEZONE"] = "Asia/Kolkata"
         _reset_hermes_time_cache()
@@ -311,7 +311,7 @@ class TestCronTimezone:
     def test_get_due_jobs_naive_cross_timezone(self, tmp_path, monkeypatch):
         """Naive past timestamps must be detected as due even when Hermes tz
         is behind system local tz — the scenario that triggered #806."""
-        import cron.jobs as jobs_module
+        import hermes_agent.cron.jobs as jobs_module
         monkeypatch.setattr(jobs_module, "CRON_DIR", tmp_path / "cron")
         monkeypatch.setattr(jobs_module, "JOBS_FILE", tmp_path / "cron" / "jobs.json")
         monkeypatch.setattr(jobs_module, "OUTPUT_DIR", tmp_path / "cron" / "output")
@@ -322,7 +322,7 @@ class TestCronTimezone:
         os.environ["HERMES_TIMEZONE"] = "Pacific/Midway"  # UTC-11
         _reset_hermes_time_cache()
 
-        from cron.jobs import create_job, load_jobs, save_jobs, get_due_jobs
+        from hermes_agent.cron.jobs import create_job, load_jobs, save_jobs, get_due_jobs
         create_job(prompt="Cross-tz job", schedule="every 1h")
         jobs = load_jobs()
 
@@ -338,7 +338,7 @@ class TestCronTimezone:
 
     def test_create_job_stores_tz_aware_timestamps(self, tmp_path, monkeypatch):
         """New jobs store timezone-aware created_at and next_run_at."""
-        import cron.jobs as jobs_module
+        import hermes_agent.cron.jobs as jobs_module
         monkeypatch.setattr(jobs_module, "CRON_DIR", tmp_path / "cron")
         monkeypatch.setattr(jobs_module, "JOBS_FILE", tmp_path / "cron" / "jobs.json")
         monkeypatch.setattr(jobs_module, "OUTPUT_DIR", tmp_path / "cron" / "output")
@@ -346,7 +346,7 @@ class TestCronTimezone:
         os.environ["HERMES_TIMEZONE"] = "US/Eastern"
         _reset_hermes_time_cache()
 
-        from cron.jobs import create_job
+        from hermes_agent.cron.jobs import create_job
         job = create_job(prompt="TZ test", schedule="every 2h")
 
         created = datetime.fromisoformat(job["created_at"])

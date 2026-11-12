@@ -5071,7 +5071,7 @@ class TestDesktopCronTicker:
         return TestClient(app)
 
     def test_ticker_runs_when_desktop(self, monkeypatch, _isolate_hermes_home):
-        import cron.scheduler as sched
+        import hermes_agent.cron.scheduler as sched
 
         called = threading.Event()
         monkeypatch.setattr(sched, "tick", lambda *a, **k: called.set())

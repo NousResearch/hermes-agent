@@ -557,11 +557,11 @@ async def test_request_restart_skips_wait_for_cron_run_past_inflight_allowance(m
     full ``restart_after_turn_timeout`` because ``_wedged_agent_count`` only ever looked at chat agents,
     so the cron unit was structurally un-skippable ("0 wedged and excluded").
     """
-    import cron.scheduler as sched
+    import hermes_agent.cron.scheduler as sched
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.delenv("HERMES_AGENT_TIMEOUT", raising=False)
-    monkeypatch.setattr("cron.jobs.load_jobs", list)
+    monkeypatch.setattr("hermes_agent.cron.jobs.load_jobs", list)
     runner, _adapter = make_restart_runner()
     runner.stop = AsyncMock()
     runner._restart_after_turn_timeout = 300.0  # would hang the test without the wedge bypass
@@ -582,10 +582,10 @@ async def test_request_restart_skips_wait_for_cron_run_past_inflight_allowance(m
 
 def test_wedged_cron_allowance_honours_young_runs_and_job_interval(monkeypatch, tmp_path):
     """Control: a run inside ``max(2 * interval, cron.inflight_max_minutes)`` is live work, not wedged."""
-    import cron.scheduler as sched
+    import hermes_agent.cron.scheduler as sched
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setattr("cron.jobs.load_jobs", lambda: [{"id": "six-hourly-job", "schedule": {"kind": "interval", "minutes": 360}}])
+    monkeypatch.setattr("hermes_agent.cron.jobs.load_jobs", lambda: [{"id": "six-hourly-job", "schedule": {"kind": "interval", "minutes": 360}}])
     runner, _adapter = make_restart_runner()
     assert sched.try_register_running_job("six-hourly-job")
     try:
@@ -603,11 +603,11 @@ def test_wedged_cron_allowance_honours_young_runs_and_job_interval(monkeypatch, 
 def test_wedged_cron_check_parses_jobs_once_per_run(monkeypatch, tmp_path):
     """The restart drain polls the wedged count every 0.1 s on the event loop; the job interval
     must be resolved once per in-flight run, not by a full jobs.json parse per job per tick."""
-    import cron.scheduler as sched
+    import hermes_agent.cron.scheduler as sched
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     loads = []
-    monkeypatch.setattr("cron.jobs.load_jobs", lambda: loads.append(1) or [
+    monkeypatch.setattr("hermes_agent.cron.jobs.load_jobs", lambda: loads.append(1) or [
         {"id": jid, "schedule": {"kind": "interval", "minutes": 360}} for jid in ("job-a", "job-b", "job-c")])
     for jid in ("job-a", "job-b", "job-c"):
         assert sched.try_register_running_job(jid)
@@ -635,10 +635,10 @@ async def test_request_restart_skips_wait_for_scope_isolated_cron_worker(monkeyp
     "draining" — refusing new turns for up to the whole ``agent.restart_after_turn_timeout`` — while
     the worker kept running (observed live: a 100-minute job held the gateway ~30 minutes).
     """
-    import cron.scheduler as sched
+    import hermes_agent.cron.scheduler as sched
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setattr("cron.jobs.load_jobs", list)
+    monkeypatch.setattr("hermes_agent.cron.jobs.load_jobs", list)
     runner, _adapter = make_restart_runner()
     runner.stop = AsyncMock()
     runner._restart_after_turn_timeout = 300.0  # would hang the test without the scope bypass
@@ -669,10 +669,10 @@ async def test_request_restart_still_waits_for_worker_without_its_own_scope(monk
     the gateway cgroup — a systemd stop kills it mid-run. The fix must not degrade into "never wait
     for a cron worker".
     """
-    import cron.scheduler as sched
+    import hermes_agent.cron.scheduler as sched
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setattr("cron.jobs.load_jobs", list)
+    monkeypatch.setattr("hermes_agent.cron.jobs.load_jobs", list)
     runner, _adapter = make_restart_runner()
     runner._restart_after_turn_timeout = 300.0
     runner._scale_to_zero_status = MagicMock()
@@ -704,9 +704,9 @@ def test_same_job_id_scoped_in_one_profile_does_not_hide_degraded_in_another(mon
     gateway cgroup, dies with a systemd stop). The wait must still hold for B: counting by bare job
     ID let A's exclusion cancel the single collapsed ``daily-brief`` and restart killed B mid-run.
     """
-    import cron.scheduler as sched
+    import hermes_agent.cron.scheduler as sched
 
-    monkeypatch.setattr("cron.jobs.load_jobs", list)
+    monkeypatch.setattr("hermes_agent.cron.jobs.load_jobs", list)
     runner, _adapter = make_restart_runner()
     home_a, home_b = tmp_path / "profile-a", tmp_path / "profile-b"
     try:
@@ -732,10 +732,10 @@ def test_same_job_id_wedged_in_one_profile_does_not_hide_live_run_in_another(mon
     """Sibling of the scoped case for the wedged exclusion: profile A's ``daily-brief`` is past its
     in-flight allowance, profile B's is a young live run. Only A may be skipped.
     """
-    import cron.scheduler as sched
+    import hermes_agent.cron.scheduler as sched
 
     monkeypatch.delenv("HERMES_AGENT_TIMEOUT", raising=False)
-    monkeypatch.setattr("cron.jobs.load_jobs", list)
+    monkeypatch.setattr("hermes_agent.cron.jobs.load_jobs", list)
     runner, _adapter = make_restart_runner()
     home_a, home_b = tmp_path / "profile-a", tmp_path / "profile-b"
     try:

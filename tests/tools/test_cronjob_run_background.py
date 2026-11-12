@@ -64,7 +64,7 @@ class TestBackgroundDispatch:
 
         with _bound_session_key():
             with patch("tools.cronjob_tools.claim_job_for_fire", side_effect=lambda jid, **kw: {**_job(jid), "fire_claim": {"by": "bg-owner"}}), \
-                 patch("cron.scheduler.run_one_job", side_effect=slow_run_one_job), \
+                 patch("hermes_agent.cron.scheduler.run_one_job", side_effect=slow_run_one_job), \
                  patch("tools.cronjob_tools.get_job",
                        return_value={"last_status": "ok", "last_error": None}):
                 res = _try_dispatch_background_run(_job('job-bg-01'))
@@ -91,7 +91,7 @@ class TestBackgroundDispatch:
         # active until the completion event lands, so poll INSIDE the blocks.
         with _bound_session_key("agent:main:telegram:dm:777"):
             with patch("tools.cronjob_tools.claim_job_for_fire", side_effect=lambda jid, **kw: {**_job(jid), "fire_claim": {"by": "bg-owner"}}), \
-                 patch("cron.scheduler.run_one_job", return_value=True), \
+                 patch("hermes_agent.cron.scheduler.run_one_job", return_value=True), \
                  patch("tools.cronjob_tools.get_job",
                        return_value={"last_status": "ok", "last_error": None,
                                      "next_run_at": "2026-08-07T09:00:00"}):
@@ -123,7 +123,7 @@ class TestBackgroundDispatch:
 
         with _bound_session_key("agent:main:telegram:dm:778"):
             with patch("tools.cronjob_tools.claim_job_for_fire", side_effect=lambda jid, **kw: {**_job(jid), "fire_claim": {"by": "bg-owner"}}), \
-                 patch("cron.scheduler.run_one_job", return_value=True), \
+                 patch("hermes_agent.cron.scheduler.run_one_job", return_value=True), \
                  patch("tools.cronjob_tools.get_job",
                        return_value={"last_status": "error",
                                      "last_error": "provider exploded"}):
@@ -179,7 +179,7 @@ class TestSyncFallbacks:
             with patch("tools.cronjob_tools.claim_job_for_fire", side_effect=lambda jid, **kw: {**_job(jid), "fire_claim": {"by": "bg-owner"}}), \
                  patch("tools.async_delegation.dispatch_async_delegation",
                        return_value={"status": "rejected", "error": "capacity"}), \
-                 patch("cron.scheduler.run_one_job", return_value=True) as m_run, \
+                 patch("hermes_agent.cron.scheduler.run_one_job", return_value=True) as m_run, \
                  patch("tools.cronjob_tools.get_job",
                        return_value={"last_status": "ok", "last_error": None}):
                 res = _try_dispatch_background_run(_job('job-bg-07'))
@@ -195,12 +195,12 @@ class TestInFlightDedupe:
     def test_run_claimed_job_skips_when_already_running(self):
         """The authoritative guard: _run_claimed_job refuses to fire a job
         whose id is already registered in the scheduler running set."""
-        from cron import scheduler as sched
+        from hermes_agent.cron import scheduler as sched
         from tools.cronjob_tools import _run_claimed_job
 
         assert sched.try_register_running_job("job-bg-08")   # simulate ticker mid-run
         try:
-            with patch("cron.scheduler.run_one_job") as m_run:
+            with patch("hermes_agent.cron.scheduler.run_one_job") as m_run:
                 res = _run_claimed_job(_job('job-bg-08'))
             assert res["success"] is False
             assert "already running" in res["error"]
@@ -211,7 +211,7 @@ class TestInFlightDedupe:
     def test_run_claimed_job_registers_and_releases(self):
         """A normal run holds the registration for run_one_job's duration and
         releases it after — visible to get_running_job_ids mid-run."""
-        from cron import scheduler as sched
+        from hermes_agent.cron import scheduler as sched
         from tools.cronjob_tools import _run_claimed_job
 
         seen_during_run = {}
@@ -220,7 +220,7 @@ class TestInFlightDedupe:
             seen_during_run["registered"] = "job-bg-09" in sched.get_running_job_ids()
             return True
 
-        with patch("cron.scheduler.run_one_job", side_effect=probe_run), \
+        with patch("hermes_agent.cron.scheduler.run_one_job", side_effect=probe_run), \
              patch("tools.cronjob_tools.get_job",
                    return_value={"last_status": "ok", "last_error": None}):
             res = _run_claimed_job(_job('job-bg-09'))
@@ -236,8 +236,8 @@ class TestInFlightDedupe:
             job["execution_id"] = "exec-unknown"
             return True
 
-        with patch("cron.scheduler.run_one_job", side_effect=probe_run), \
-             patch("cron.executions.get_execution", return_value={
+        with patch("hermes_agent.cron.scheduler.run_one_job", side_effect=probe_run), \
+             patch("hermes_agent.cron.executions.get_execution", return_value={
                  "id": "exec-unknown",
                  "status": "unknown",
                  "error": "worker owner exited",
@@ -254,7 +254,7 @@ class TestInFlightDedupe:
     def test_background_dispatch_reports_running_job_immediately(self):
         """The dispatch path pre-checks the running set so a mid-run job
         reports in the tool response, not as a delayed completion event."""
-        from cron import scheduler as sched
+        from hermes_agent.cron import scheduler as sched
 
         assert sched.try_register_running_job("job-bg-10")
         try:
@@ -275,7 +275,7 @@ class TestCronjobRunToolIntegration:
         with _bound_session_key():
             with patch("tools.cronjob_tools.resolve_job_ref", return_value=_job('job-bg-12')), \
                  patch("tools.cronjob_tools.claim_job_for_fire", side_effect=lambda jid, **kw: {**_job(jid), "fire_claim": {"by": "bg-owner"}}), \
-                 patch("cron.scheduler.run_one_job", return_value=True), \
+                 patch("hermes_agent.cron.scheduler.run_one_job", return_value=True), \
                  patch("tools.cronjob_tools.get_job",
                        return_value={"id": "job-bg-12", "name": "bg run",
                                      "last_status": "ok", "last_error": None}):

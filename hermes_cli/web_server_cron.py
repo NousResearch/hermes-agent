@@ -141,12 +141,12 @@ def _annotate_cron_job(
 
 @contextlib.contextmanager
 def _cron_store_scope(home: Path):
-    """Point HERMES_HOME and the cron.jobs store at one profile's home for the block.
+    """Point HERMES_HOME and the hermes_agent.cron.jobs store at one profile's home for the block.
 
-    The dashboard is a single process inspecting many profiles; cron.jobs' execution-context
+    The dashboard is a single process inspecting many profiles; hermes_agent.cron.jobs' execution-context
     override keeps these calls from retargeting a concurrent desktop ticker's load/save.
     """
-    from cron import jobs as cron_jobs
+    from hermes_agent.cron import jobs as cron_jobs
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     token = set_hermes_home_override(str(home))
     try:
@@ -157,11 +157,11 @@ def _cron_store_scope(home: Path):
 
 
 def _call_cron_for_profile(target_profile: Optional[str], func_name: str, *args, **kwargs):
-    """Run a cron.jobs helper against the selected profile's cron directory."""
+    """Run a hermes_agent.cron.jobs helper against the selected profile's cron directory."""
     profile_name, home = _cron_profile_home(target_profile)
     with _cron_store_scope(home) as cron_jobs:
         if func_name == "create_job":
-            from cron.scheduler import create_job_with_scheduler_registration
+            from hermes_agent.cron.scheduler import create_job_with_scheduler_registration
             result = create_job_with_scheduler_registration(*args, **kwargs)
         else:
             result = getattr(cron_jobs, func_name)(*args, **kwargs)
@@ -185,7 +185,7 @@ def _notify_cron_provider_for_profile(target_profile: Optional[str]) -> None:
     """
     try:
         _profile_name, home = _cron_profile_home(target_profile)
-        from cron.scheduler_provider import InProcessCronScheduler, resolve_cron_scheduler
+        from hermes_agent.cron.scheduler_provider import InProcessCronScheduler, resolve_cron_scheduler
         with _cron_store_scope(home):
             provider = resolve_cron_scheduler()
             external = not isinstance(provider, InProcessCronScheduler)
@@ -236,7 +236,7 @@ async def _run_cron_dashboard_io(func, *args, **kwargs):
 def _raise_if_cron_registration_error(e: Exception) -> None:
     """Re-raise a cron partial failure (job saved, external scheduler registration failed) as
     HTTP 424 with the structured envelope. Shared by every dashboard cron-create surface."""
-    from cron.scheduler import CronSchedulerRegistrationError
+    from hermes_agent.cron.scheduler import CronSchedulerRegistrationError
     if isinstance(e, CronSchedulerRegistrationError):
         raise HTTPException(status_code=424, detail=e.to_dict()) from e
 
@@ -258,7 +258,7 @@ def _create_cron_job_sync(body: CronJobCreate, profile: Optional[str] = None):
             if isinstance(repeat, int) and not isinstance(repeat, bool) and repeat < 1:
                 raise HTTPException(
                     status_code=400, detail="repeat must be a positive integer")
-            from cron.jobs import normalize_repeat_value
+            from hermes_agent.cron.jobs import normalize_repeat_value
             repeat = normalize_repeat_value(repeat)
         _validate_dashboard_cron_effective_job(
             {"prompt": body.prompt, "skills": skills, "script": script, "no_agent": no_agent})
@@ -300,7 +300,7 @@ def _fire_cron_job_for_profile(profile: str, job_id: str, *, force: bool = False
     and external callers on the web_deps late-binding seam; do not add new uses.
     """
     _profile_name, home = _cron_profile_home(profile)
-    from cron.scheduler_provider import provider_fire_due_accepts, provider_supports_force_fire, resolve_cron_scheduler
+    from hermes_agent.cron.scheduler_provider import provider_fire_due_accepts, provider_supports_force_fire, resolve_cron_scheduler
     with _cron_store_scope(home):
         provider = resolve_cron_scheduler()
         if force:

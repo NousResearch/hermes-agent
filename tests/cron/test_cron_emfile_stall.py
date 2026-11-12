@@ -27,7 +27,7 @@ from unittest.mock import patch
 
 import pytest
 
-import cron.scheduler as scheduler_mod
+import hermes_agent.cron.scheduler as scheduler_mod
 
 try:
     import fcntl
@@ -88,7 +88,7 @@ class TestTickerEmfileBackoff:
         """An EMFILE tick must be recorded as a FAILED tick (not success) and
         the loop must keep running — the pre-fix state where the scheduler
         stalled silently while the heartbeat kept reporting healthy."""
-        from cron.scheduler_provider import InProcessCronScheduler
+        from hermes_agent.cron.scheduler_provider import InProcessCronScheduler
 
         beats = []
         errors = []
@@ -96,15 +96,15 @@ class TestTickerEmfileBackoff:
         prov = InProcessCronScheduler()
 
         with patch(
-            "cron.scheduler.tick",
+            "hermes_agent.cron.scheduler.tick",
             side_effect=OSError(errno.EMFILE, "Too many open files"),
         ), patch(
-            "cron.jobs.record_ticker_heartbeat",
+            "hermes_agent.cron.jobs.record_ticker_heartbeat",
             side_effect=lambda success=False: beats.append(success),
         ), patch(
-            "cron.jobs.record_ticker_error",
+            "hermes_agent.cron.jobs.record_ticker_error",
             side_effect=lambda msg: errors.append(msg),
-        ), patch("cron.jobs.clear_ticker_error") as clear:
+        ), patch("hermes_agent.cron.jobs.clear_ticker_error") as clear:
             t = threading.Thread(target=prov.start, args=(stop,), kwargs={"interval": 0}, daemon=True)
             t.start()
             assert _wait_until(lambda: len(beats) >= 3), "ticker did not keep beating"
@@ -121,19 +121,19 @@ class TestTickerEmfileBackoff:
     def test_emfile_triggers_fd_reclamation(self, monkeypatch):
         """The ticker must attempt best-effort fd reclamation on EMFILE so the
         next tick can succeed once descriptors free up."""
-        from cron.scheduler_provider import InProcessCronScheduler
+        from hermes_agent.cron.scheduler_provider import InProcessCronScheduler
 
         reclaimed = []
         stop = threading.Event()
         prov = InProcessCronScheduler()
 
         with patch(
-            "cron.scheduler.tick",
+            "hermes_agent.cron.scheduler.tick",
             side_effect=OSError(errno.EMFILE, "Too many open files"),
         ), patch(
-            "cron.scheduler._reclaim_fds_best_effort",
+            "hermes_agent.cron.scheduler._reclaim_fds_best_effort",
             side_effect=lambda: reclaimed.append(1),
-        ), patch("cron.jobs.record_ticker_heartbeat"), patch("cron.jobs.record_ticker_error"):
+        ), patch("hermes_agent.cron.jobs.record_ticker_heartbeat"), patch("hermes_agent.cron.jobs.record_ticker_error"):
             t = threading.Thread(target=prov.start, args=(stop,), kwargs={"interval": 0}, daemon=True)
             t.start()
             assert _wait_until(lambda: len(reclaimed) >= 1), "fd reclamation never ran"
@@ -146,7 +146,7 @@ class TestTickerEmfileBackoff:
         """Once ticks stop raising EMFILE, the next tick succeeds, the error is
         cleared and the success marker is bumped again — self-healing without a
         gateway restart."""
-        from cron.scheduler_provider import InProcessCronScheduler
+        from hermes_agent.cron.scheduler_provider import InProcessCronScheduler
 
         attempts = {"n": 0}
         beats = []
@@ -160,14 +160,14 @@ class TestTickerEmfileBackoff:
                 raise OSError(errno.EMFILE, "Too many open files")
             return 0
 
-        with patch("cron.scheduler.tick", side_effect=flaky_tick), patch(
-            "cron.jobs.record_ticker_heartbeat",
+        with patch("hermes_agent.cron.scheduler.tick", side_effect=flaky_tick), patch(
+            "hermes_agent.cron.jobs.record_ticker_heartbeat",
             side_effect=lambda success=False: beats.append(success),
         ), patch(
-            "cron.jobs.record_ticker_error",
+            "hermes_agent.cron.jobs.record_ticker_error",
             side_effect=lambda msg: errors.append(msg),
-        ), patch("cron.jobs.clear_ticker_error") as clear, patch(
-            "cron.scheduler._reclaim_fds_best_effort"
+        ), patch("hermes_agent.cron.jobs.clear_ticker_error") as clear, patch(
+            "hermes_agent.cron.scheduler._reclaim_fds_best_effort"
         ):
             t = threading.Thread(target=prov.start, args=(stop,), kwargs={"interval": 0}, daemon=True)
             t.start()

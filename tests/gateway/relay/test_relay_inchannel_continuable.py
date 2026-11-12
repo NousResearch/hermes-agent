@@ -20,7 +20,7 @@ from types import SimpleNamespace
 
 
 from gateway.relay.descriptor import CapabilityDescriptor
-from cron.scheduler_delivery import _resolve_cron_surface_mode
+from hermes_agent.cron.scheduler_delivery import _resolve_cron_surface_mode
 
 
 def _descriptor(**overrides):

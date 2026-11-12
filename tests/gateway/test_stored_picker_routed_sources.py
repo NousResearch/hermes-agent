@@ -30,7 +30,7 @@ async def _owner(tmp_path, monkeypatch):
 
 async def _finished_cron_run(authority, db, tmp_path):
     """A cron fire through the owner's own path, then settled the way a finished run books it."""
-    from cron import jobs
+    from hermes_agent.cron import jobs
     from gateway import session_cron
     from hermes_agent.hermes_state_runtime import cancel_session_input
     with jobs.use_cron_store(tmp_path / 'cron'):

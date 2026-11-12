@@ -6,7 +6,7 @@ and one-shots keep the 120s grace rule (#93526: a stale reminder is skipped unle
 in). Either way the skipped or collapsed slots are booked as one ``missed ×N`` row in the
 execution ledger, so run history shows the gap instead of nothing.
 
-Called from the due scan in ``cron/jobs.py`` under the store lock; ledger writes ride the
+Called from the due scan in ``hermes_agent/cron/jobs.py`` under the store lock; ledger writes ride the
 scan's ``on_saved`` hooks so an unwritable store cannot book the same miss every tick.
 """
 
@@ -16,7 +16,7 @@ import logging
 from datetime import datetime
 from typing import Any, Optional
 
-logger = logging.getLogger("cron.jobs")
+logger = logging.getLogger("hermes_agent.cron.jobs")
 
 # Counting walks the schedule slot by slot; a once-a-minute job off for a month stops here.
 _MAX_COUNTED_SLOTS = 1000
@@ -30,8 +30,8 @@ def job_catches_up(job: dict[str, Any]) -> bool:
         return value
     if (job.get("schedule") or {}).get("kind") == "once":
         return False
-    from cron import jobs_time
-    from cron.jobs import _cron_config_number
+    from hermes_agent.cron import jobs_time
+    from hermes_agent.cron.jobs import _cron_config_number
 
     # An explicit grace_minutes is the user's catch-up limit for THIS job: past it the miss is
     # skipped even while the global cron.catch_up_missed default still runs it once.
@@ -47,7 +47,7 @@ def count_missed_slots(
     """Occurrences from ``first`` up to ``now`` inclusive, capped at ``_MAX_COUNTED_SLOTS``.
 
     *timezone* is the job's pin (job record or zone name), as for ``compute_next_run``."""
-    from cron.jobs import _instant_after, _parse_aware, compute_next_run
+    from hermes_agent.cron.jobs import _instant_after, _parse_aware, compute_next_run
 
     count, cursor = 0, first
     while cursor and count < _MAX_COUNTED_SLOTS:
@@ -65,7 +65,7 @@ def _book_missed(
 ) -> None:
     """``capped``: counting hit ``_MAX_COUNTED_SLOTS``, so ``count`` is a floor, not exact. Passed
     separately because the collapse branch books one fewer than it counted."""
-    from cron.executions import record_missed_occurrences
+    from hermes_agent.cron.executions import record_missed_occurrences
 
     if capped:
         detail = f"{detail}; counting stopped at {_MAX_COUNTED_SLOTS}"
@@ -83,7 +83,7 @@ def fast_forward_missed_recurring(d: Any, grace: int) -> bool:
     never calls advance_next_run. mark_job_run re-anchors on completion, so the value is
     provisional.
     """
-    from cron.jobs import _elapsed_seconds, _ensure_aware, _instant_after, record_cron_missed
+    from hermes_agent.cron.jobs import _elapsed_seconds, _ensure_aware, _instant_after, record_cron_missed
 
     if _elapsed_seconds(d.scan.now, d.next_run_dt) <= grace:
         return False
@@ -107,7 +107,7 @@ def fast_forward_missed_recurring(d: Any, grace: int) -> bool:
         "Job '%s' missed its scheduled time (%s, grace=%ds). "
         "Running now; next run provisionally set to: %s (re-anchored on completion)",
         d.label, d.next_run, grace, new_next)
-    from cron.occurrences import record_catch_up_occurrence
+    from hermes_agent.cron.occurrences import record_catch_up_occurrence
     d.scan.on_saved.append(record_catch_up_occurrence)
     if missed > 1:
         d.scan.on_saved.append(lambda job=d.job, first=d.next_run: _book_missed(
@@ -123,11 +123,11 @@ def retire_expired_oneshot(d: Any) -> bool:
     recovery never revives them). With no claim stamped, retire it with a diagnostic and a
     ``missed ×1`` ledger row (never silently delete). A claim may mean a run is still in flight
     elsewhere — skip but keep the record so its mark_job_run can land."""
-    from cron import store_health
-    from cron.jobs import (
+    from hermes_agent.cron import store_health
+    from hermes_agent.cron.jobs import (
         ONESHOT_GRACE_SECONDS, _current_cron_store, _elapsed_seconds, record_cron_missed)
-    from cron.dispatch_hold import grace_starts_at
-    from cron.jobs_oneshot_diagnostics import write_missed
+    from hermes_agent.cron.dispatch_hold import grace_starts_at
+    from hermes_agent.cron.jobs_oneshot_diagnostics import write_missed
 
     if _elapsed_seconds(d.scan.now, d.next_run_dt) <= ONESHOT_GRACE_SECONDS:
         return False

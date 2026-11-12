@@ -3,14 +3,14 @@
 A cron job may pin its own reasoning effort, independent of global config.
 Contract under test:
 
-- Job store (cron/jobs.py): the field is validated at the storage choke
+- Job store (hermes_agent/cron/jobs.py): the field is validated at the storage choke
   point against the canonical Hermes effort grammar (parse_reasoning_effort
   in hermes_constants — the SAME parser every other effort surface uses).
   Garbage never persists; absent field keeps the job record byte-identical
   to pre-feature behavior. Capability clamping (xhigh on a model that caps
   at high, etc.) is intentionally NOT validated here — that is owned by the
   provider transports at send time, same as config-set effort.
-- Scheduler resolution (cron/scheduler.py::_resolve_job_reasoning_config):
+- Scheduler resolution (hermes_agent/cron/scheduler.py::_resolve_job_reasoning_config):
   a job-pinned effort wins outright over BOTH the global
   agent.reasoning_effort and per-model agent.reasoning_overrides; an absent
   field yields a result byte-identical to resolve_reasoning_config(cfg,
@@ -20,15 +20,15 @@ Contract under test:
 
 import pytest
 
-from cron.jobs import create_job, load_jobs, update_job
+from hermes_agent.cron.jobs import create_job, load_jobs, update_job
 
 
 @pytest.fixture()
 def tmp_cron_dir(tmp_path, monkeypatch):
     """Isolate the cron store (same pattern as tests/cron/test_jobs.py)."""
-    monkeypatch.setattr("cron.jobs.CRON_DIR", tmp_path / "cron")
-    monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
-    monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
+    monkeypatch.setattr("hermes_agent.cron.jobs.CRON_DIR", tmp_path / "cron")
+    monkeypatch.setattr("hermes_agent.cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
+    monkeypatch.setattr("hermes_agent.cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
     return tmp_path / "cron"
 
 
@@ -86,7 +86,7 @@ class TestJobStoreReasoningEffort:
 
 
 class TestSchedulerJobReasoningPrecedence:
-    """Contract for cron/scheduler.py::_resolve_job_reasoning_config."""
+    """Contract for hermes_agent/cron/scheduler.py::_resolve_job_reasoning_config."""
 
     CFG = {
         "model": {"default": "anthropic/claude-opus-4.5"},
@@ -97,14 +97,14 @@ class TestSchedulerJobReasoningPrecedence:
     }
 
     def test_job_effort_beats_global_and_per_model_override(self):
-        from cron.scheduler import _resolve_job_reasoning_config
+        from hermes_agent.cron.scheduler import _resolve_job_reasoning_config
 
         job = {"reasoning_effort": "high"}
         result = _resolve_job_reasoning_config(job, self.CFG, "anthropic/claude-opus-4.5")
         assert result == {"enabled": True, "effort": "high"}
 
     def test_job_none_disables_thinking_never_reenabled_by_config(self):
-        from cron.scheduler import _resolve_job_reasoning_config
+        from hermes_agent.cron.scheduler import _resolve_job_reasoning_config
 
         job = {"reasoning_effort": "none"}
         result = _resolve_job_reasoning_config(job, self.CFG, "anthropic/claude-opus-4.5")
@@ -112,7 +112,7 @@ class TestSchedulerJobReasoningPrecedence:
 
     def test_absent_field_byte_identical_to_config_resolution(self):
         from hermes_constants import resolve_reasoning_config
-        from cron.scheduler import _resolve_job_reasoning_config
+        from hermes_agent.cron.scheduler import _resolve_job_reasoning_config
 
         for model in ("anthropic/claude-opus-4.5", "gpt-5", ""):
             expected = resolve_reasoning_config(self.CFG, model)
@@ -125,10 +125,10 @@ class TestSchedulerJobReasoningPrecedence:
         import logging
 
         from hermes_constants import resolve_reasoning_config
-        from cron.scheduler import _resolve_job_reasoning_config
+        from hermes_agent.cron.scheduler import _resolve_job_reasoning_config
 
         job = {"id": "abc123", "reasoning_effort": "turbo"}
-        with caplog.at_level(logging.WARNING, logger="cron.scheduler"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.cron.scheduler"):
             result = _resolve_job_reasoning_config(job, self.CFG, "gpt-5")
         assert result == resolve_reasoning_config(self.CFG, "gpt-5")
         assert any("turbo" in r.message for r in caplog.records)
@@ -137,7 +137,7 @@ class TestSchedulerJobReasoningPrecedence:
         """Pinned effort governs whichever model actually runs (auth fallback
         can swap the model after resolution) — the job pins intent, the
         transport clamps capability."""
-        from cron.scheduler import _resolve_job_reasoning_config
+        from hermes_agent.cron.scheduler import _resolve_job_reasoning_config
 
         job = {"reasoning_effort": "ultra"}
         for model in ("gpt-5.6-sol", "x-ai/grok-4", "gemini-3-pro", ""):

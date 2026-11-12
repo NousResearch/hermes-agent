@@ -27,7 +27,7 @@ def temp_home(tmp_path, monkeypatch):
 
 def _write_cron_job(schedule_expr: str, next_run_at: datetime) -> str:
     """Persist a cron job with a pinned next_run_at (the stale-edit shape)."""
-    from cron.jobs import create_job, save_jobs, load_jobs
+    from hermes_agent.cron.jobs import create_job, save_jobs, load_jobs
 
     job = create_job(prompt="x", schedule="every 5m", name="t")
     jobs = load_jobs()
@@ -47,10 +47,10 @@ _MONDAY_0700 = datetime.fromisoformat("2026-08-24T07:00:00+00:00")
 def test_stale_next_run_on_excluded_dow_does_not_fire(temp_home, monkeypatch):
     """next_run_at computed under the old daily expr must not fire the new
     Mon-Fri schedule on a Saturday — the job re-anchors to Monday instead."""
-    from cron.jobs import get_due_jobs, get_job
+    from hermes_agent.cron.jobs import get_due_jobs, get_job
 
     monkeypatch.setattr(
-        "cron.jobs._hermes_now", lambda: _SATURDAY_0700 + timedelta(seconds=30)
+        "hermes_agent.cron.jobs._hermes_now", lambda: _SATURDAY_0700 + timedelta(seconds=30)
     )
     jid = _write_cron_job("0 7 * * 1-5", _SATURDAY_0700)
 
@@ -64,10 +64,10 @@ def test_stale_next_run_on_excluded_dow_does_not_fire(temp_home, monkeypatch):
 def test_matching_next_run_still_fires(temp_home, monkeypatch):
     """Control: the same stored instant under an expression it matches (daily)
     still fires — the guard only blocks schedule-drifted instants."""
-    from cron.jobs import get_due_jobs
+    from hermes_agent.cron.jobs import get_due_jobs
 
     monkeypatch.setattr(
-        "cron.jobs._hermes_now", lambda: _SATURDAY_0700 + timedelta(seconds=30)
+        "hermes_agent.cron.jobs._hermes_now", lambda: _SATURDAY_0700 + timedelta(seconds=30)
     )
     jid = _write_cron_job("0 7 * * *", _SATURDAY_0700)
 
@@ -78,10 +78,10 @@ def test_matching_next_run_still_fires(temp_home, monkeypatch):
 
 def test_manual_trigger_bypasses_stale_schedule_guard(temp_home, monkeypatch):
     """An explicit run-now instant need not occur in the cron expression."""
-    from cron.jobs import create_job, get_due_jobs, get_job, mark_job_run, trigger_job
+    from hermes_agent.cron.jobs import create_job, get_due_jobs, get_job, mark_job_run, trigger_job
 
     now = _SATURDAY_0700 + timedelta(seconds=30)
-    monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+    monkeypatch.setattr("hermes_agent.cron.jobs._hermes_now", lambda: now)
     job = create_job(prompt="x", schedule="0 7 * * 1-5", name="manual")
 
     triggered = trigger_job(job["id"])
@@ -98,15 +98,15 @@ def test_manual_trigger_bypasses_stale_schedule_guard(temp_home, monkeypatch):
 
 def test_delayed_manual_trigger_is_not_counted_as_catch_up(temp_home, monkeypatch):
     """Run-now intent remains explicit even when the next scan is hours later."""
-    from cron.jobs import create_job, get_due_jobs, trigger_job
-    from cron.occurrences import get_catch_up_occurrence_count
+    from hermes_agent.cron.jobs import create_job, get_due_jobs, trigger_job
+    from hermes_agent.cron.occurrences import get_catch_up_occurrence_count
 
     trigger_time = _SATURDAY_0700 + timedelta(seconds=30)
-    monkeypatch.setattr("cron.jobs._hermes_now", lambda: trigger_time)
+    monkeypatch.setattr("hermes_agent.cron.jobs._hermes_now", lambda: trigger_time)
     job = create_job(prompt="x", schedule="0 7 * * 1-5", name="delayed")
     trigger_job(job["id"])
     monkeypatch.setattr(
-        "cron.jobs._hermes_now", lambda: trigger_time + timedelta(hours=5)
+        "hermes_agent.cron.jobs._hermes_now", lambda: trigger_time + timedelta(hours=5)
     )
 
     due = get_due_jobs()
@@ -117,14 +117,14 @@ def test_delayed_manual_trigger_is_not_counted_as_catch_up(temp_home, monkeypatc
 
 def test_manual_trigger_survives_timezone_change_before_tick(temp_home, monkeypatch):
     """TZ migration repair must not replace an explicit run-now instant."""
-    from cron.jobs import create_job, get_due_jobs, trigger_job
+    from hermes_agent.cron.jobs import create_job, get_due_jobs, trigger_job
 
     trigger_time = datetime.fromisoformat("2026-08-22T21:00:00+10:00")
     scan_time = datetime.fromisoformat("2026-08-22T13:00:00+02:00")
-    monkeypatch.setattr("cron.jobs._hermes_now", lambda: trigger_time)
+    monkeypatch.setattr("hermes_agent.cron.jobs._hermes_now", lambda: trigger_time)
     job = create_job(prompt="x", schedule="0 7 * * 1-5", name="tz-manual")
     trigger_job(job["id"])
-    monkeypatch.setattr("cron.jobs._hermes_now", lambda: scan_time)
+    monkeypatch.setattr("hermes_agent.cron.jobs._hermes_now", lambda: scan_time)
 
     due = get_due_jobs()
 
@@ -134,10 +134,10 @@ def test_manual_trigger_survives_timezone_change_before_tick(temp_home, monkeypa
 def test_stale_next_run_skips_even_inside_catchup_window(temp_home, monkeypatch):
     """The catch-up 'run once now' policy must not resurrect a stale instant:
     hours after the stored time, the drifted job re-anchors without firing."""
-    from cron.jobs import get_due_jobs, get_job
+    from hermes_agent.cron.jobs import get_due_jobs, get_job
 
     monkeypatch.setattr(
-        "cron.jobs._hermes_now", lambda: _SATURDAY_0700 + timedelta(hours=5)
+        "hermes_agent.cron.jobs._hermes_now", lambda: _SATURDAY_0700 + timedelta(hours=5)
     )
     jid = _write_cron_job("0 7 * * 1-5", _SATURDAY_0700)
 
@@ -150,7 +150,7 @@ def test_stale_next_run_skips_even_inside_catchup_window(temp_home, monkeypatch)
 def test_helper_reports_match_for_non_cron_and_unvalidatable(temp_home):
     """Best-effort validation: non-cron kinds, missing expr, and croniter
     unavailable all report a match so the fire path is unchanged there."""
-    from cron.jobs import _cron_next_run_matches_expr
+    from hermes_agent.cron.jobs import _cron_next_run_matches_expr
 
     assert _cron_next_run_matches_expr({"kind": "interval"}, _SATURDAY_0700) is True
     assert _cron_next_run_matches_expr({"kind": "cron"}, _SATURDAY_0700) is True
@@ -173,10 +173,10 @@ def test_stale_edit_without_manual_marker_still_reanchors(temp_home, monkeypatch
     """#93049 protection intact after the #94010 fix: a hand-edited stale
     next_run_at WITHOUT the manual_run_at marker still re-anchors without
     firing (carried from #94034's suite)."""
-    from cron.jobs import get_due_jobs, get_job
+    from hermes_agent.cron.jobs import get_due_jobs, get_job
 
     monkeypatch.setattr(
-        "cron.jobs._hermes_now", lambda: _SATURDAY_0700 + timedelta(minutes=5)
+        "hermes_agent.cron.jobs._hermes_now", lambda: _SATURDAY_0700 + timedelta(minutes=5)
     )
     jid = _write_cron_job("0 7 * * 1-5", _SATURDAY_0700)
 

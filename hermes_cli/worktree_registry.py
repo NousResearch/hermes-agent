@@ -1,6 +1,6 @@
 """Per-profile registry of every repository Hermes has created a worktree in.
 
-The 6-hourly cron sweep (``cron.scheduler._worktree_maintenance_repos``) only knew the Hermes
+The 6-hourly cron sweep (``hermes_agent.cron.scheduler._worktree_maintenance_repos``) only knew the Hermes
 checkout and cron job workdirs, so trees made by ``hermes -w`` / ``/worktree new`` / subagent
 isolation / the Desktop git pane in any other repo were never swept. Each creation path records
 its repo here; the sweep unions this list with its other sources.

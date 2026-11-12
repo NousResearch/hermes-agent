@@ -9,7 +9,7 @@ import asyncio
 import threading
 from unittest.mock import MagicMock, patch
 
-from cron.scheduler import _deliver_result
+from hermes_agent.cron.scheduler import _deliver_result
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import SendResult
 
@@ -50,7 +50,7 @@ def test_named_dm_topic_resolves_through_live_adapter_for_text_and_media(tmp_pat
     worker.start()
     try:
         with patch("gateway.config.load_gateway_config", return_value=config), \
-             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("hermes_agent.cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
              patch("gateway.platforms.base.BasePlatformAdapter.filter_media_delivery_paths",
                    side_effect=lambda files: files):
             error = _deliver_result(

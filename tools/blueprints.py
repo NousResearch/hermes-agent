@@ -124,7 +124,7 @@ def blueprint_spec_for_installed(skill_name: str) -> Optional[BlueprintSpec]:
 
 
 def blueprint_to_job_spec(spec: BlueprintSpec, *, name: Optional[str] = None) -> dict[str, Any]:
-    """``cron.jobs.create_job`` kwargs for a spec — the single translation used by
+    """``hermes_agent.cron.jobs.create_job`` kwargs for a spec — the single translation used by
     both ``create_blueprint_job`` and the suggestion path so they never drift."""
     return {
         "prompt": spec.prompt, "schedule": spec.schedule, "name": name or f"blueprint:{spec.skill_name}",
@@ -137,7 +137,7 @@ def blueprint_to_job_spec(spec: BlueprintSpec, *, name: Optional[str] = None) ->
 def create_blueprint_job(spec: BlueprintSpec, *, origin: Optional[dict[str, Any]] = None,
                          name: Optional[str] = None) -> dict[str, Any]:
     """Create the cron job for a spec (skill preloaded via ``skills=[name]``); returns the job dict."""
-    from cron.scheduler import create_job_with_scheduler_registration
+    from hermes_agent.cron.scheduler import create_job_with_scheduler_registration
 
     job_spec = blueprint_to_job_spec(spec, name=name)
     if origin is not None:
@@ -151,7 +151,7 @@ def register_blueprint_suggestion(spec: BlueprintSpec) -> Optional[dict[str, Any
     if not spec.skill_name:
         return None
     try:
-        from cron.suggestions import add_suggestion
+        from hermes_agent.cron.suggestions import add_suggestion
     except Exception:  # pragma: no cover - import guard
         return None
 

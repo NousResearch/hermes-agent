@@ -32,13 +32,13 @@ from datetime import datetime, timedelta, UTC
 from pathlib import Path
 from agent.deadline import poll_until
 from hermes_constants import get_hermes_home
-from cron.constants import CLAIM_TTL_INACTIVITY_HEADROOM, FIRE_CLAIM_SKEW_SECONDS, FIRE_CLAIM_TTL_SECONDS
-from cron.env_settings import cron_env_setting
-from cron.jobs_invariants import _validate_job_mode_invariants, validate_schedule_knobs
-from cron.jobs_model_pin import _main_model_pin
-from cron import jobs_time
-from cron.scheduler_ownership import _claim_owner_is_dead
-from cron import extra_fire, store_health
+from hermes_agent.cron.constants import CLAIM_TTL_INACTIVITY_HEADROOM, FIRE_CLAIM_SKEW_SECONDS, FIRE_CLAIM_TTL_SECONDS
+from hermes_agent.cron.env_settings import cron_env_setting
+from hermes_agent.cron.jobs_invariants import _validate_job_mode_invariants, validate_schedule_knobs
+from hermes_agent.cron.jobs_model_pin import _main_model_pin
+from hermes_agent.cron import jobs_time
+from hermes_agent.cron.scheduler_ownership import _claim_owner_is_dead
+from hermes_agent.cron import extra_fire, store_health
 from typing import Optional, Dict, List, Any, Callable, Set, Tuple, Union, Collection
 
 logger = logging.getLogger(__name__)
@@ -87,7 +87,7 @@ def _ensure_croniter() -> bool:
 # profile's jobs under that same HERMES_HOME — so a job authored in profile `coder` lives in
 # `~/.hermes/profiles/coder/cron/jobs.json` and executes with `coder`'s `.env`, `config.yaml`, and skills.
 # Do NOT change this to the default root: that re-breaks per-profile isolation. See also the dynamic
-# `_get_hermes_home()` / `_get_lock_paths()` resolution in cron/scheduler.py. See #4707.
+# `_get_hermes_home()` / `_get_lock_paths()` resolution in hermes_agent/cron/scheduler.py. See #4707.
 HERMES_DIR = get_hermes_home().resolve()
 # Default-profile fallback and compatibility surface for callers/tests. Cross-profile callers must
 # scope paths with use_cron_store() instead of mutating these process-wide.
@@ -209,7 +209,7 @@ def get_cron_output_dir() -> Path:
 # mid-run.
 ONESHOT_RUN_CLAIM_TTL_SECONDS = 1800
 
-# Derived TTL = inactivity timeout × CLAIM_TTL_INACTIVITY_HEADROOM (cron/constants.py). The TTL
+# Derived TTL = inactivity timeout × CLAIM_TTL_INACTIVITY_HEADROOM (hermes_agent/cron/constants.py). The TTL
 # only recovers a claim left by a tick that DIED mid-run.
 
 _DEFAULT_CRON_INACTIVITY_TIMEOUT = 600.0
@@ -242,7 +242,7 @@ def _job_running_in_this_process(job_id: str) -> bool:
     profile A's running ``daily-brief`` keep profile B's stale one-shot alive forever.
     """
     try:
-        from cron.scheduler import is_job_running
+        from hermes_agent.cron.scheduler import is_job_running
         return is_job_running(job_id)
     except Exception:
         logger.warning(
@@ -999,7 +999,7 @@ def _job_is_stale_error_recurring(
     """
     if job.get("last_status") != "error":
         return False
-    from cron.quota_hold import hold_active
+    from hermes_agent.cron.quota_hold import hold_active
     if hold_active(job, now):
         return False  # deliberately parked past a provider usage window, not wedged (#89376)
     if _job_running_in_this_process(str(job.get("id") or "")):
@@ -1878,7 +1878,7 @@ def create_job(
     if not prompt_text and not f["script"] and not normalized_skills:
         raise ValueError(EMPTY_PAYLOAD_ERROR)
     # Reject gateway-lifecycle commands (respawn loops) here, not just in the CLI: covers the tool.
-    from cron.lifecycle_guard import check_gateway_lifecycle
+    from hermes_agent.cron.lifecycle_guard import check_gateway_lifecycle
     check_gateway_lifecycle(prompt_text, f["script"])
 
     label_source = (
@@ -1990,7 +1990,7 @@ def list_jobs(include_disabled: bool = False) -> list[dict[str, Any]]:
     if not include_disabled:
         jobs = [j for j in jobs if j.get("enabled", True)]
     try:
-        from cron.executions import latest_executions, live_executions
+        from hermes_agent.cron.executions import latest_executions, live_executions
 
         ids = [job.get("id", "") for job in jobs]
         latest, live = latest_executions(ids), live_executions(ids)
@@ -2148,7 +2148,7 @@ def update_job(job_id: str, updates: dict[str, Any]) -> Optional[dict[str, Any]]
             # next_run_at now follows the new schedule; a stale quota_hold_until would only shield
             # the record from the stale-error re-arm while no longer describing where it is
             # parked. The next fire re-parks (with a fresh notice) if the window is still closed.
-            from cron.quota_hold import clear_state as _clear_quota_hold
+            from hermes_agent.cron.quota_hold import clear_state as _clear_quota_hold
             _clear_quota_hold(updated)
         elif "timezone" in updates and updated.get("state") != "paused":
             # The instant on file was computed in the OLD zone; leaving it would make the new
@@ -2244,7 +2244,7 @@ def trigger_job(job_id: str, extra_prompt: Optional[str] = None) -> Optional[dic
         "paused_reason": None,
         "next_run_at": manual_run_at,
         # Run-now intent, so cron expression/TZ repair guards don't treat it as stale state; the
-        # overwritten slot comes back at claim time (an extra fire, cron/extra_fire.py).
+        # overwritten slot comes back at claim time (an extra fire, hermes_agent/cron/extra_fire.py).
         "manual_run_at": manual_run_at, extra_fire.RESTORE_KEY: extra_fire.restore_target(job),
         "manual_run_prompt": (extra_prompt or None),
     })
@@ -2327,7 +2327,7 @@ def remove_job(job_id: str) -> bool:
         if job_output_dir.exists():
             shutil.rmtree(job_output_dir)
         try:
-            from cron.notepad import clear_notepad
+            from hermes_agent.cron.notepad import clear_notepad
             clear_notepad(canonical_id)
         except Exception:
             logger.debug("Failed to clear notepad for removed job %s", canonical_id, exc_info=True)
@@ -2339,8 +2339,8 @@ def remove_job(job_id: str) -> bool:
 
 
 def cancel_job_run(job_id: str, reason: Optional[str] = None) -> dict[str, Any]:
-    """Stop the job's live run (if any); its schedule is untouched. See ``cron.cancellation``."""
-    from cron.cancellation import cancel_run
+    """Stop the job's live run (if any); its schedule is untouched. See ``hermes_agent.cron.cancellation``."""
+    from hermes_agent.cron.cancellation import cancel_run
 
     return cancel_run(job_id, reason=reason)
 
@@ -2434,7 +2434,7 @@ def _advance_after_run(job: dict[str, Any], now: str, *, ladder_rung: bool = Fal
     completion when the repeat limit is reached or a one-shot has no further run.
 
     ``ladder_rung``: this run re-ran an occurrence that already counted (an unreachable-model
-    re-run, ``cron.unreachable_retry.is_retry_run``), so ``repeat.completed`` is left as is."""
+    re-run, ``hermes_agent.cron.unreachable_retry.is_retry_run``), so ``repeat.completed`` is left as is."""
     # If no next run, decide whether this is terminal completion (one-shot) or a transient failure
     # (recurring schedule couldn't compute — e.g. 'croniter' missing from the runtime env). Recurring jobs
     # must NEVER be silently disabled: that turns a missing runtime dep into "job completed" and the user's
@@ -2497,7 +2497,7 @@ def mark_job_run(
 ) -> bool:
     """Mark a job as run: update last_run_at/last_status, bump completed, recompute next_run_at,
     and retire the record as a terminal completion when the repeat limit is reached. A manual run
-    (an extra fire, ``cron/extra_fire.py``) bumps nothing and keeps the pending occurrence.
+    (an extra fire, ``hermes_agent/cron/extra_fire.py``) bumps nothing and keeps the pending occurrence.
 
     ``delivery_error`` is separate from the agent error: agent succeeded but delivery failed records
     ``last_status = "delivery_failed"`` (never "ok") while ``failure_streak`` is left alone. An
@@ -2506,8 +2506,8 @@ def mark_job_run(
 
     ``model_unreachable``: this failed run never reached the model (transient network/DNS error,
     zero API calls). Recurring jobs then get a bounded automatic re-run — ``next_run_at`` is pulled
-    earlier per ``cron.unreachable_retry.RETRY_DELAYS_SECONDS`` — instead of waiting a full period
-    (Cowork-style; see cron/unreachable_retry.py). ``ladder_rung``: this run IS one of those
+    earlier per ``hermes_agent.cron.unreachable_retry.RETRY_DELAYS_SECONDS`` — instead of waiting a full period
+    (Cowork-style; see hermes_agent/cron/unreachable_retry.py). ``ladder_rung``: this run IS one of those
     re-runs (``is_retry_run``); its occurrence already counted, so ``repeat.completed`` is not
     bumped again.
 
@@ -2515,7 +2515,7 @@ def mark_job_run(
     ``retry after <N>s``). Recurring jobs are parked through the window instead of re-firing into
     it on every tick. ``recover_consumed_fire`` lets a scheduled sparse cron recover its
     consumed fire when the provider reopens; manual runs retain the natural schedule
-    (cron/quota_hold.py, #89376).
+    (hermes_agent/cron/quota_hold.py, #89376).
     """
     def apply(jobs, _i, job):
         if execution_id is not None and execution_id in job.get("canonical_completions", []):
@@ -2533,14 +2533,14 @@ def mark_job_run(
         _record_run_outcome(job, success, error, delivery_error, status, now)
         job.update(held)  # a run-now queued mid-run is its own fire, not this one
         if execution_id is not None:  # retire ids recovery can no longer replay; latest stays last
-            from cron.scheduler_authority import replayable_completions as live
+            from hermes_agent.cron.scheduler_authority import replayable_completions as live
             job["canonical_completions"] = [*live(job_id, job.get("canonical_completions")), execution_id]
         if extra:  # a manual run: repeat budget and pending occurrence untouched
             extra_fire.settle(job, now)
         else:
             _advance_after_run(job, now, ladder_rung=ladder_rung)
-        from cron import quota_hold
-        from cron.unreachable_retry import clear_state, plan_retry
+        from hermes_agent.cron import quota_hold
+        from hermes_agent.cron.unreachable_retry import clear_state, plan_retry
 
         if not success and model_unreachable and not is_terminal_job(job):
             plan_retry(job)
@@ -2601,7 +2601,7 @@ def claim_dispatch(job_id: str) -> bool:
             jobs.pop(i)
             # See #73973.
             save_jobs(jobs, removed_ids={job_id})
-            from cron.jobs_oneshot_diagnostics import write_wedged
+            from hermes_agent.cron.jobs_oneshot_diagnostics import write_wedged
             write_wedged(job)
             logger.info(
                 "Job '%s': dispatch limit reached (%d/%d) — removing", label, completed, times)
@@ -2743,7 +2743,7 @@ def claim_job_for_fire(
         now = _hermes_now()
         if _claim_is_live(job.get("fire_claim"), now, claim_ttl_seconds):
             return False  # someone holds a fresh claim
-        from cron.occurrences import completed_occurrence, scheduled_instant
+        from hermes_agent.cron.occurrences import completed_occurrence, scheduled_instant
 
         # ``manual`` (an off-tick run-now) must NOT stamp an occurrence identity: outside a
         # scheduler tick ``next_run_at`` is the NEXT occurrence, not the one being run, so
@@ -3081,8 +3081,8 @@ def _reanchor_stale_cron(d: _DueJob) -> bool:
     through to fire ONCE (at-most-once holds: completion rewrites the instant)."""
     stale_class = _classify_stale_cron_next_run(d.schedule, d.raw_next_run_dt, d.next_run_dt)
     if stale_class == STALE_CRON_EXPR_EDIT:
-        from cron.quota_hold import is_recovery_fire
-        from cron.unreachable_retry import is_retry_fire
+        from hermes_agent.cron.quota_hold import is_recovery_fire
+        from hermes_agent.cron.unreachable_retry import is_retry_fire
         if is_recovery_fire(d.job, d.next_run) or is_retry_fire(d.job, d.next_run):
             logger.info(
                 "cron.off_lattice_fire job='%s' id=%s expr=%r at=%s",
@@ -3146,7 +3146,7 @@ def _oneshot_dispatch_limit_reached(job: dict[str, Any], scan: _DueScan) -> bool
             name, completed, times)
     scan.retire(job["id"])
     # The claimed run never completed here by definition — leave an operator-visible diagnostic.
-    from cron.jobs_oneshot_diagnostics import write_wedged
+    from hermes_agent.cron.jobs_oneshot_diagnostics import write_wedged
     write_wedged(job)
     return True
 
@@ -3156,7 +3156,7 @@ def _restore_unclaimed_slot(job: dict[str, Any], scan: _DueScan) -> Optional[str
     (#107485); returns the restored ``next_run_at`` or None. Restored ONCE: the stamp is dropped
     here, so the slot then meets the ordinary late / fast-forward / ``cron.catch_up_missed``
     policy like any other overdue instant — never a replay of every missed slot."""
-    from cron.occurrences import unclaimed_pending_slot
+    from hermes_agent.cron.occurrences import unclaimed_pending_slot
 
     slot = unclaimed_pending_slot(job, scan.now)
     if slot is None:
@@ -3204,7 +3204,7 @@ def _evaluate_due_job(job: dict[str, Any], scan: _DueScan, run_claim_ttl: float)
     # into both fields, and any rewrite of next_run_at (edit, re-anchor, fire-claim advance) must
     # invalidate the marker. Do not "fix" this with _ensure_aware normalization.
     manual_run = job.get("manual_run_at") == next_run
-    from cron.occurrences import completed_occurrence, scheduled_instant
+    from hermes_agent.cron.occurrences import completed_occurrence, scheduled_instant
 
     if not manual_run and completed_occurrence(job, next_run):
         new_next = d.recompute_next() if recurring else None
@@ -3226,7 +3226,7 @@ def _evaluate_due_job(job: dict[str, Any], scan: _DueScan, run_claim_ttl: float)
     if not manual_run and kind == "cron" and _reanchor_stale_cron(d):
         return False
     grace = _compute_grace_seconds(d.schedule, job.get("grace_minutes"))
-    from cron.missed_runs import fast_forward_missed_recurring, retire_expired_oneshot
+    from hermes_agent.cron.missed_runs import fast_forward_missed_recurring, retire_expired_oneshot
 
     if not manual_run and recurring and fast_forward_missed_recurring(d, grace):
         return False
@@ -3258,7 +3258,7 @@ def _evaluate_due_job(job: dict[str, Any], scan: _DueScan, run_claim_ttl: float)
         job["last_dispatch"] = dispatch_stamp
         # The tick advances next_run_at past this occurrence before any fire claim exists; the
         # stamp survives a process death in that window so the slot is restored, not lost.
-        from cron.occurrences import pending_slot_stamp
+        from hermes_agent.cron.occurrences import pending_slot_stamp
 
         scan.persist(
             job["id"], last_dispatch=dispatch_stamp,

@@ -34,7 +34,7 @@ from tests.gateway.restart_test_helpers import make_restart_runner
 
 @pytest.fixture(autouse=True)
 def _reset_cron_running_set():
-    import cron.scheduler as sched
+    import hermes_agent.cron.scheduler as sched
 
     sched._running_job_ids.clear()
     sched._interrupted_job_ids.clear()
@@ -48,7 +48,7 @@ class TestDrainWaitsForCronOnDefaultConfig:
 
     @pytest.mark.asyncio
     async def test_zero_drain_timeout_still_waits_for_cron(self):
-        import cron.scheduler as sched
+        import hermes_agent.cron.scheduler as sched
 
         runner, _adapter = make_restart_runner()
         sched._running_job_ids.add("be62d36a9914")
@@ -90,7 +90,7 @@ class TestDrainWaitsForCronOnDefaultConfig:
         """A job that never finishes must still lose, or a cron-triggered
         restart (the reporter's `hermes update` job) would deadlock: the job
         waits for the gateway to exit while the gateway waits for the job."""
-        import cron.scheduler as sched
+        import hermes_agent.cron.scheduler as sched
 
         runner, _adapter = make_restart_runner()
         sched._running_job_ids.add("never-finishes")
@@ -118,7 +118,7 @@ class TestDrainWaitsForCronOnDefaultConfig:
     @pytest.mark.asyncio
     async def test_cron_timeout_defaults_to_the_shared_budget(self):
         """Callers that pass one argument keep the pre-#82161 semantics."""
-        import cron.scheduler as sched
+        import hermes_agent.cron.scheduler as sched
 
         runner, _adapter = make_restart_runner()
         sched._running_job_ids.add("job-1")

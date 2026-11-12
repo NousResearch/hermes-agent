@@ -100,7 +100,7 @@ async def test_tui_context_with_a_live_agent_renders_the_category_table(owner, m
 
 @pytest.mark.asyncio
 async def test_tui_cron_is_the_classic_overview_with_the_profile_jobs(owner):
-    from cron.jobs import create_job
+    from hermes_agent.cron.jobs import create_job
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     token = set_hermes_home_override(str(owner.home))
     try:
@@ -149,7 +149,7 @@ async def test_cron_writes_stay_refused_on_a_viewer_connection_and_reads_list_al
     answers one request at a time with a deadline) keeps main's refusal for /cron writes, whichever surface
     created the session, a classic CLI session included. Its reads still list, ``-a`` included (main's TUI
     alias)."""
-    from cron.jobs import create_job, pause_job
+    from hermes_agent.cron.jobs import create_job, pause_job
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     token = set_hermes_home_override(str(owner.home))
     try:
@@ -177,19 +177,19 @@ async def test_concurrent_cron_runs_never_wait_on_the_pool_their_jobs_need(owner
     import concurrent.futures
     from pathlib import Path
     from types import MethodType
-    import cron.scheduler
-    from cron.jobs import create_job, get_job
+    import hermes_agent.cron.scheduler
+    from hermes_agent.cron.jobs import create_job, get_job
     from gateway.run import GatewayRunner
     from gateway.session_controls import AuthorityConnection
     from gateway.session_cron import current_execution
     runner = owner.authority.runner
     runner._get_executor = MethodType(GatewayRunner._get_executor, runner)
     runner._run_in_executor_with_context = MethodType(GatewayRunner._run_in_executor_with_context, runner)
-    submit = cron.scheduler.run_job  # outside the owner's execution: submit the fire and wait for it
+    submit = hermes_agent.cron.scheduler.run_job  # outside the owner's execution: submit the fire and wait for it
 
     def run_job(job, **kwargs):
         return submit(job, **kwargs) if current_execution() is None else (True, '# out', 'ran', None)
-    monkeypatch.setattr(cron.scheduler, 'run_job', run_job)
+    monkeypatch.setattr(hermes_agent.cron.scheduler, 'run_job', run_job)
     # The fire is submitted to the owner bound to the home of the authority's store (bind_owner).
     home = Path(owner.authority.db.db_path).resolve().parent
     (home / 'config.yaml').write_text((owner.home / 'config.yaml').read_text())

@@ -1,6 +1,6 @@
 """Cowork-inspired bounded automatic re-runs for cron fires that never reached the model.
 
-Contract (cron/unreachable_retry.py): a recurring job whose run fails with a transient
+Contract (hermes_agent/cron/unreachable_retry.py): a recurring job whose run fails with a transient
 network/DNS error before ANY model call gets its ``next_run_at`` pulled earlier along a
 bounded ladder (5/15/30 min); a run that reaches the model resets the ladder, and the
 ladder never fires past its last rung.
@@ -10,10 +10,10 @@ from datetime import datetime, timedelta, timezone, UTC
 
 import pytest
 
-import cron.scheduler as sched
-from cron import unreachable_retry as ur
-from cron.scheduler_bookkeeping import finish_completed_run
-from cron.jobs import create_job, get_due_jobs, get_job, load_jobs, mark_job_run, save_jobs
+import hermes_agent.cron.scheduler as sched
+from hermes_agent.cron import unreachable_retry as ur
+from hermes_agent.cron.scheduler_bookkeeping import finish_completed_run
+from hermes_agent.cron.jobs import create_job, get_due_jobs, get_job, load_jobs, mark_job_run, save_jobs
 
 
 @pytest.fixture
@@ -58,13 +58,13 @@ def test_unreachable_failure_pulls_next_run_earlier_then_ladder_exhausts(
     assert datetime.fromisoformat(j["next_run_at"]) - now > timedelta(hours=1)
 
     pinned = datetime(2026, 9, 18, 12, 1, tzinfo=UTC)
-    monkeypatch.setattr("cron.jobs._hermes_now", lambda: pinned)
+    monkeypatch.setattr("hermes_agent.cron.jobs._hermes_now", lambda: pinned)
     monkeypatch.setattr(ur, "_hermes_now", lambda: pinned)
     weekly = create_job("weekly digest", "0 12 * * 5")
     assert mark_job_run(weekly["id"], False, "ConnectError: dns", model_unreachable=True)
     retry_at = datetime.fromisoformat(get_job(weekly["id"])["next_run_at"])
     assert retry_at == pinned + timedelta(seconds=ur.RETRY_DELAYS_SECONDS[0])
-    monkeypatch.setattr("cron.jobs._hermes_now", lambda: retry_at + timedelta(seconds=1))
+    monkeypatch.setattr("hermes_agent.cron.jobs._hermes_now", lambda: retry_at + timedelta(seconds=1))
     assert weekly["id"] in {due["id"] for due in get_due_jobs()}
 
     # A direct jobs.json expression edit while a retry is parked re-anchors without firing.
@@ -73,7 +73,7 @@ def test_unreachable_failure_pulls_next_run_earlier_then_ladder_exhausts(
     jobs = load_jobs()
     next(j for j in jobs if j["id"] == weekly["id"])["schedule"]["expr"] = "0 9 * * 1"
     save_jobs(jobs)
-    monkeypatch.setattr("cron.jobs._hermes_now", lambda: retry_at + timedelta(seconds=1))
+    monkeypatch.setattr("hermes_agent.cron.jobs._hermes_now", lambda: retry_at + timedelta(seconds=1))
     assert weekly["id"] not in {due["id"] for due in get_due_jobs()}
 
 
@@ -138,7 +138,7 @@ def test_ladder_reruns_do_not_spend_extra_repeat_budget(tmp_cron_home, monkeypat
     the final-run notice). Drives the tick's claim hand-off and bookkeeping tail: the claimed
     snapshot's ``next_run_at`` has already moved to the natural slot when the run is recorded."""
     clock = [datetime.now(UTC)]
-    monkeypatch.setattr("cron.jobs._hermes_now", lambda: clock[0])
+    monkeypatch.setattr("hermes_agent.cron.jobs._hermes_now", lambda: clock[0])
     monkeypatch.setattr(ur, "_hermes_now", lambda: clock[0])
     monkeypatch.setattr(sched, "finish_execution", lambda *_a, **_kw: None)
     runs = []
@@ -166,7 +166,7 @@ def test_ladder_reruns_do_not_spend_extra_repeat_budget(tmp_cron_home, monkeypat
             # A rung whose restart-safe worker died is recovered as an unknown outcome.
             monkeypatch.setattr(
                 sched, "get_execution", lambda *_a, **_kw: {"status": "unknown", "error": "worker died"})
-            from cron.scheduler_worker_failure import record_unknown_worker_outcome
+            from hermes_agent.cron.scheduler_worker_failure import record_unknown_worker_outcome
             assert record_unknown_worker_outcome(run)
             assert get_job(job_id)["repeat"]["completed"] == 1, "a dead-worker rung must not count"
             return

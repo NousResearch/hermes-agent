@@ -88,11 +88,11 @@ async def test_a_transient_refusal_leaves_the_same_id_resendable(bot, monkeypatc
 
 @pytest.mark.asyncio
 async def test_a_cron_report_parked_across_a_drain_is_delivered_on_the_next_tick(bot, monkeypatch):
-    """``cron/bot_chat_legacy`` keeps a record queued when the door raises and replays the same id
+    """``hermes_agent/cron/bot_chat_legacy`` keeps a record queued when the door raises and replays the same id
     next tick: a drain during a gateway restart must not turn into a transferred refusal."""
     import asyncio
     import json
-    from cron.bot_chat_legacy import drain_legacy_pending
+    from hermes_agent.cron.bot_chat_legacy import drain_legacy_pending
     from gateway.session_bot import deliver
     from tools import bot_live_delivery as mailbox
     loop = asyncio.get_running_loop()

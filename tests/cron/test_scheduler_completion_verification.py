@@ -19,7 +19,7 @@ from gateway import session_cron
 
 import pytest
 
-import cron.scheduler as cron_scheduler
+import hermes_agent.cron.scheduler as cron_scheduler
 from gateway.session_context import reset_session_vars
 
 

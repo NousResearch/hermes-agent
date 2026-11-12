@@ -14,9 +14,9 @@ import pytest
               "timeout_hard_exit", "timeout_payload_exception"]
 )
 def test_adopted_worker_failure_is_visible(tmp_path, monkeypatch, manual, death):
-    from cron import executions
-    from cron import scheduler
-    from cron.jobs import claim_job_for_fire, create_job, get_job, use_cron_store
+    from hermes_agent.cron import executions
+    from hermes_agent.cron import scheduler
+    from hermes_agent.cron.jobs import claim_job_for_fire, create_job, get_job, use_cron_store
     from tools.process_registry import GatewayChildDispatch
 
     print("SCHEDULER", scheduler.__file__, flush=True)
@@ -123,7 +123,7 @@ else:
         assert "worker-probe-startup-sentinel" in (result["job_error"] or ""), result
         assert len(delivered) == 1, result
         assert len(executions.list_executions()) <= executions.MAX_TERMINAL_EXECUTIONS
-        from cron.scheduler_worker_failure import record_unknown_worker_outcome
+        from hermes_agent.cron.scheduler_worker_failure import record_unknown_worker_outcome
 
         # Re-observing an old terminal row cannot notify twice or erase a newer fire.
         record_unknown_worker_outcome(claimed)
@@ -141,14 +141,14 @@ def test_terminalizer_refuses_an_attempt_whose_worker_is_still_alive(
 ):
     """The targeted terminalizer must not steal a LIVE worker's attempt: refusing a live
     owner is what keeps the fix from becoming a second way to lose side effects."""
-    from cron import executions
+    from hermes_agent.cron import executions
 
     monkeypatch.setattr(executions, "EXECUTIONS_FILE", tmp_path / "executions.db")
 
     script = (
         "import sys, time\n"
         "from pathlib import Path\n"
-        "import cron.executions as executions\n"
+        "from hermes_agent.cron import executions\n"
         f"executions.EXECUTIONS_FILE = Path({str(executions.EXECUTIONS_FILE)!r})\n"
         "assert executions.adopt_claimed_execution(sys.argv[1]) is not None\n"
         "sys.stdout.write('adopted\\n')\n"

@@ -71,7 +71,7 @@ def match_blueprint(query: str) -> tuple[Optional[Any], list[Any]]:
     it's picked): exact key first, then case-insensitive prefix on key or title, then substring
     anywhere in key/title/description, then a difflib fuzzy pass on keys.
     """
-    from cron.blueprint_catalog import list_blueprints
+    from hermes_agent.cron.blueprint_catalog import list_blueprints
     q = (query or "").strip().lower()
     if not q:
         return None, []
@@ -99,7 +99,7 @@ def match_blueprint(query: str) -> tuple[Optional[Any], list[Any]]:
 
 
 def _humanize_schedule(blueprint) -> str:
-    from cron.blueprint_catalog import _humanize_schedule as _h
+    from hermes_agent.cron.blueprint_catalog import _humanize_schedule as _h
     try:
         return _h(blueprint)
     except Exception:
@@ -113,7 +113,7 @@ def build_blueprint_seed(blueprint) -> str:
     calls the ``cronjob`` tool with the cron expression built from ``schedule_template`` and the
     rendered prompt. Defaults are stated so the agent can offer them.
     """
-    from cron.blueprint_catalog import WEEKDAY_PRESETS
+    from hermes_agent.cron.blueprint_catalog import WEEKDAY_PRESETS
     lines: list[str] = [
         f"Set up the '{blueprint.title}' automation for me (automation blueprint "
         f"'{blueprint.key}'). {blueprint.description}",
@@ -148,7 +148,7 @@ def build_blueprint_seed(blueprint) -> str:
 
 
 def _fmt_catalog() -> str:
-    from cron.blueprint_catalog import list_blueprints
+    from hermes_agent.cron.blueprint_catalog import list_blueprints
     lines = ["Automation Blueprints — `/blueprint <name>` and I'll ask you what I need:\n"]
     for r in list_blueprints():
         source = f" (plugin: {r.plugin})" if r.plugin else ""
@@ -169,7 +169,7 @@ def _fmt_candidates(query: str, candidates: list[Any]) -> str:
 
 
 def _fmt_no_match(query: str) -> str:
-    from cron.blueprint_catalog import list_blueprints
+    from hermes_agent.cron.blueprint_catalog import list_blueprints
     close = difflib.get_close_matches((query or "").lower(), [r.key for r in list_blueprints()], n=3, cutoff=0.4)
     msg = f"No automation blueprint matches '{query}'."
     if close:
@@ -193,7 +193,7 @@ def handle_blueprint_command(
     up from; ``surface`` (``"cli"`` | ``"gateway"``) picks the follow-up hint wording.
     """
     try:
-        from cron.blueprint_catalog import fill_blueprint, BlueprintFillError
+        from hermes_agent.cron.blueprint_catalog import fill_blueprint, BlueprintFillError
     except Exception as e:  # pragma: no cover - import guard
         logger.debug("blueprint catalog import failed: %s", e)
         return BlueprintCommandResult("Automation Blueprints are unavailable in this build.")
@@ -228,7 +228,7 @@ def handle_blueprint_command(
         )
 
     try:
-        from cron.scheduler import CronSchedulerRegistrationError, create_job_with_scheduler_registration
+        from hermes_agent.cron.scheduler import CronSchedulerRegistrationError, create_job_with_scheduler_registration
         job = create_job_with_scheduler_registration(**spec)
     except CronSchedulerRegistrationError as e:
         return BlueprintCommandResult(e.user_message())

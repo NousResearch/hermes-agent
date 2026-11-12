@@ -5,7 +5,7 @@ interrupted ``hermes update``) serves mixed ``sys.modules``; when such a
 process races a fresh gateway for the cron tick lock and wins, every agent
 job it dispatches can die on ImportErrors whose real cause is staleness.
 
-The gate in ``cron.scheduler.tick`` (before lock acquisition) yields — raises
+The gate in ``hermes_agent.cron.scheduler.tick`` (before lock acquisition) yields — raises
 ``CronTickYielded`` — only when ALL of:
 
 1. this process is provably stale (boot fingerprint ≠ disk revision),
@@ -25,7 +25,7 @@ from unittest.mock import patch
 
 import pytest
 
-import cron.scheduler as scheduler_mod
+import hermes_agent.cron.scheduler as scheduler_mod
 
 
 BOOT_SHA = "a" * 40
@@ -154,7 +154,7 @@ class TestYieldedTickIsAFailedTick:
     """(e) A yielded tick must not be recorded as a healthy tick."""
 
     def test_provider_records_error_and_unsuccessful_heartbeat(self):
-        from cron.scheduler_provider import InProcessCronScheduler
+        from hermes_agent.cron.scheduler_provider import InProcessCronScheduler
 
         beats: list[bool] = []
         errors: list[str] = []
@@ -162,15 +162,15 @@ class TestYieldedTickIsAFailedTick:
         prov = InProcessCronScheduler()
 
         with patch(
-            "cron.scheduler.tick",
+            "hermes_agent.cron.scheduler.tick",
             side_effect=scheduler_mod.CronTickYielded(SKEW[0], SKEW[1]),
         ), patch(
-            "cron.jobs.record_ticker_heartbeat",
+            "hermes_agent.cron.jobs.record_ticker_heartbeat",
             side_effect=lambda success=False: beats.append(success),
         ), patch(
-            "cron.jobs.record_ticker_error",
+            "hermes_agent.cron.jobs.record_ticker_error",
             side_effect=lambda msg: errors.append(msg),
-        ), patch("cron.jobs.clear_ticker_error") as clear:
+        ), patch("hermes_agent.cron.jobs.clear_ticker_error") as clear:
             t = threading.Thread(
                 target=prov.start, args=(stop,), kwargs={"interval": 0}, daemon=True
             )
@@ -188,7 +188,7 @@ class TestYieldedTickIsAFailedTick:
     def test_ticker_takes_over_when_gateway_lock_releases(self):
         """Self-healing: once the fresh gateway dies (lock inactive), the
         yielding ticker's next tick proceeds normally."""
-        from cron.scheduler_provider import InProcessCronScheduler
+        from hermes_agent.cron.scheduler_provider import InProcessCronScheduler
 
         beats: list[bool] = []
         state = {"foreign_gateway_alive": True}
@@ -201,10 +201,10 @@ class TestYieldedTickIsAFailedTick:
                 raise scheduler_mod.CronTickYielded(SKEW[0], SKEW[1])
             return 0
 
-        with patch("cron.scheduler.tick", side_effect=_tick), patch(
-            "cron.jobs.record_ticker_heartbeat",
+        with patch("hermes_agent.cron.scheduler.tick", side_effect=_tick), patch(
+            "hermes_agent.cron.jobs.record_ticker_heartbeat",
             side_effect=lambda success=False: beats.append(success),
-        ), patch("cron.jobs.record_ticker_error"), patch("cron.jobs.clear_ticker_error"):
+        ), patch("hermes_agent.cron.jobs.record_ticker_error"), patch("hermes_agent.cron.jobs.clear_ticker_error"):
             t = threading.Thread(
                 target=prov.start, args=(stop,), kwargs={"interval": 0}, daemon=True
             )
@@ -223,7 +223,7 @@ class TestYieldedTickIsAFailedTick:
         runtime lock) must not cancel profile B's tick in the same cycle —
         B may have no other ticker. B's heartbeat stays healthy; A's records
         the yield."""
-        from cron.scheduler_provider import InProcessCronScheduler
+        from hermes_agent.cron.scheduler_provider import InProcessCronScheduler
 
         # The multiplex loop skips profile homes that don't exist on disk
         # (_existing_profile_homes, #47368) — use real directories.
@@ -258,10 +258,10 @@ class TestYieldedTickIsAFailedTick:
 
             per_home_errors[str(get_hermes_home())].append(msg)
 
-        with patch("cron.scheduler.tick", side_effect=_tick), patch(
-            "cron.jobs.record_ticker_heartbeat", side_effect=_beat
-        ), patch("cron.jobs.record_ticker_error", side_effect=_err), patch(
-            "cron.jobs.clear_ticker_error"
+        with patch("hermes_agent.cron.scheduler.tick", side_effect=_tick), patch(
+            "hermes_agent.cron.jobs.record_ticker_heartbeat", side_effect=_beat
+        ), patch("hermes_agent.cron.jobs.record_ticker_error", side_effect=_err), patch(
+            "hermes_agent.cron.jobs.clear_ticker_error"
         ):
             t = threading.Thread(
                 target=prov.start,

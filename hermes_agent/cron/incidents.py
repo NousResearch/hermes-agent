@@ -7,7 +7,7 @@ job + same normalized error resolves to the SAME incident id, so a closed incide
 until the error text changes and mints a new one. ``alerted`` means a failure ping actually reached
 the operator (``alerted_at`` = when the latest one did; the scheduler withholds repeats until
 ``cron.failure_repeat_alert_hours`` have passed). Incidents share ``cron/executions.db`` with
-``cron.executions`` (one ledger file).
+``hermes_agent.cron.executions`` (one ledger file).
 """
 
 from __future__ import annotations
@@ -20,11 +20,11 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
-from cron import executions as _executions
+from hermes_agent.cron import executions as _executions
 from hermes_constants import get_hermes_home
 from hermes_time import now as _hermes_now
 
-# Optional test override (mirrors ``cron.executions.EXECUTIONS_FILE``).
+# Optional test override (mirrors ``hermes_agent.cron.executions.EXECUTIONS_FILE``).
 EXECUTIONS_FILE: Optional[Path] = None
 
 # ``resolved``: the job ran OK after the failure (auto); ``closed``: the operator acked the signature
@@ -51,7 +51,7 @@ _lock = threading.RLock()
 
 
 def _db_path() -> Path:
-    """Shared cron DB path. The ``cron.executions`` override wins when installed so redirecting the
+    """Shared cron DB path. The ``hermes_agent.cron.executions`` override wins when installed so redirecting the
     executions ledger also redirects the incident table (they must stay in the SAME database); then
     this module's own override, then the canonical profile home."""
     for override in (_executions.EXECUTIONS_FILE, EXECUTIONS_FILE):
@@ -62,9 +62,9 @@ def _db_path() -> Path:
 
 def _connect() -> sqlite3.Connection:
     # Late imports: a scheduler daemon that outlives an on-disk upgrade already has the OLD
-    # ``hermes_cli.sqlite_util`` / ``cron.jobs`` cached, so new names must be resolved at call time,
+    # ``hermes_cli.sqlite_util`` / ``hermes_agent.cron.jobs`` cached, so new names must be resolved at call time,
     # not at import time (the guarantee cron/ledger.py used to carry, see e24c8499).
-    from cron.jobs import _ensure_cron_dir
+    from hermes_agent.cron.jobs import _ensure_cron_dir
     from hermes_cli.sqlite_util import open_db
 
     path = _db_path()
@@ -201,7 +201,7 @@ def set_incident_state(incident_id: str, state: str) -> bool:
     """Transition an incident's lifecycle state; return whether it changed. ``closed`` is terminal
     for that signature (re-open happens by a changed error minting a NEW incident). Unknown states
     are rejected (no-op, ``False``). ``alerted`` also stamps ``alerted_at`` — every time, so the
-    cooldown reminder (see ``cron.scheduler._upsert_incident_for_failure``) restarts its window."""
+    cooldown reminder (see ``hermes_agent.cron.scheduler._upsert_incident_for_failure``) restarts its window."""
     if state not in INCIDENT_STATES:
         return False
     now = _hermes_now().isoformat()

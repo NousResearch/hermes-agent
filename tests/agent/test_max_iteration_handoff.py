@@ -8,7 +8,7 @@ parsing the exit reason independently.
 import pytest
 
 from agent.turn_failure_copy import is_max_iteration_handoff
-from cron.scheduler import _final_response_from_result
+from hermes_agent.cron.scheduler import _final_response_from_result
 
 _HANDOFF = {
     "final_response": "checkpoint: two of three steps done",

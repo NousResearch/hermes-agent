@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 
 pytest.importorskip("croniter")
 
-from cron.jobs import compute_next_run
+from hermes_agent.cron.jobs import compute_next_run
 
 
 class TestCronComputeNextRunUsesLastRunAt:
@@ -28,7 +28,7 @@ class TestCronComputeNextRunUsesLastRunAt:
 
         # But now it's April 10 at 22:00 (e.g., gateway restarted)
         now = datetime(2026, 4, 10, 22, 0, 0, tzinfo=morocco)
-        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        monkeypatch.setattr("hermes_agent.cron.jobs._hermes_now", lambda: now)
 
         schedule = {"kind": "cron", "expr": "0 */6 * * *"}  # every 6 hours
 

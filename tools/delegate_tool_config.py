@@ -531,7 +531,7 @@ def _resolve_child_fallback_chain(parent_agent, routing_cfg: Any, pinned: bool) 
     Pinned children (provider, endpoint or model override) never borrow the parent chain;
     unpinned children inherit it when ``fallback_providers`` is absent/null. An explicit ``[]``
     disables fallback either way. Malformed entries are dropped by the canonical normalizer.
-    Same rule as a pinned cron job (``cron/scheduler.py::_job_fallback_chain``).
+    Same rule as a pinned cron job (``hermes_agent/cron/scheduler.py::_job_fallback_chain``).
     """
     return scoped_fallback_chain(
         getattr(parent_agent, "_fallback_chain", None),

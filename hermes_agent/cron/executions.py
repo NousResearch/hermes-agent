@@ -21,7 +21,7 @@ from typing import Any, Dict, Iterator, List, Optional
 
 from hermes_constants import get_hermes_home
 from hermes_time import now as _hermes_now
-from cron.constants import CLAIM_TTL_INACTIVITY_HEADROOM
+from hermes_agent.cron.constants import CLAIM_TTL_INACTIVITY_HEADROOM
 from hermes_cli.observability.shared_metrics_gateway import record_cron_finish
 
 logger = logging.getLogger(__name__)
@@ -49,9 +49,9 @@ _PROCESS_ID = uuid.uuid4().hex
 
 def _connect() -> sqlite3.Connection:
     # Late imports: a scheduler daemon that outlives an on-disk upgrade already has the OLD
-    # ``hermes_cli.sqlite_util`` / ``cron.jobs`` cached, so new names must be resolved at call time,
+    # ``hermes_cli.sqlite_util`` / ``hermes_agent.cron.jobs`` cached, so new names must be resolved at call time,
     # not at import time (the guarantee cron/ledger.py used to carry, see e24c8499).
-    from cron.jobs import _ensure_cron_dir
+    from hermes_agent.cron.jobs import _ensure_cron_dir
     from hermes_cli.sqlite_util import open_db
 
     path = EXECUTIONS_FILE or (get_hermes_home().resolve() / "cron" / "executions.db")
@@ -192,8 +192,8 @@ def _live_owner_stale_after_seconds() -> Optional[float]:
     live owners — today's behaviour) when the inactivity timeout is 0/unlimited or not a finite
     positive number: with no bound to derive from, fail closed.
     """
-    from cron.scheduler import _cron_inactivity_seconds
-    from cron.scheduler_script import _get_script_timeout
+    from hermes_agent.cron.scheduler import _cron_inactivity_seconds
+    from hermes_agent.cron.scheduler_script import _get_script_timeout
 
     inactivity = float(_cron_inactivity_seconds())
     if not math.isfinite(inactivity) or inactivity <= 0:
@@ -249,7 +249,7 @@ def create_execution(
     job_id: str, *, source: str, scheduled_instant: Optional[str] = None,
 ) -> dict[str, Any]:
     """Persist a claimed attempt before executor/provider dispatch."""
-    from cron.occurrences import scheduled_instant as canonical_instant
+    from hermes_agent.cron.occurrences import scheduled_instant as canonical_instant
 
     now = _hermes_now().isoformat()
     execution_id = uuid.uuid4().hex
@@ -270,7 +270,7 @@ def create_execution(
 
 def set_execution_occurrence(execution_id: str, instant: Optional[str]) -> None:
     """Bind the store-claimed snapshot before a provider hands it to a worker."""
-    from cron.occurrences import scheduled_instant
+    from hermes_agent.cron.occurrences import scheduled_instant
 
     with _transaction() as conn:
         cur = conn.execute(
@@ -381,7 +381,7 @@ def record_missed_occurrences(
     """Book occurrences the scheduler passed over without running as ONE terminal ``missed`` row
     (``missed ×N``), so run history shows the gap instead of nothing. Never started, so no
     owner fencing applies; ``first_instant`` is the earliest skipped slot."""
-    from cron.occurrences import scheduled_instant as canonical_instant
+    from hermes_agent.cron.occurrences import scheduled_instant as canonical_instant
 
     if count < 1:
         return None

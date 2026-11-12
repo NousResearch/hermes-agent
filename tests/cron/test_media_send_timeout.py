@@ -14,20 +14,20 @@ Covers two salvaged fixes:
 
 import pytest
 
-from cron.scheduler_script import _DEFAULT_MEDIA_SEND_TIMEOUT, _get_media_send_timeout
-from cron.scheduler_delivery import _send_media_via_adapter
+from hermes_agent.cron.scheduler_script import _DEFAULT_MEDIA_SEND_TIMEOUT, _get_media_send_timeout
+from hermes_agent.cron.scheduler_delivery import _send_media_via_adapter
 
 
 class TestMediaSendTimeoutResolution:
     def test_default(self, monkeypatch):
         monkeypatch.delenv("HERMES_CRON_MEDIA_SEND_TIMEOUT", raising=False)
-        monkeypatch.setattr("cron.scheduler.load_config", dict)
+        monkeypatch.setattr("hermes_agent.cron.scheduler.load_config", dict)
         assert _get_media_send_timeout() == _DEFAULT_MEDIA_SEND_TIMEOUT
 
     def test_env_wins(self, monkeypatch):
         monkeypatch.setenv("HERMES_CRON_MEDIA_SEND_TIMEOUT", "45")
         monkeypatch.setattr(
-            "cron.scheduler.load_config",
+            "hermes_agent.cron.scheduler.load_config",
             lambda: {"cron": {"media_send_timeout_seconds": 900}},
         )
         assert _get_media_send_timeout() == 45
@@ -35,7 +35,7 @@ class TestMediaSendTimeoutResolution:
     def test_config_value(self, monkeypatch):
         monkeypatch.delenv("HERMES_CRON_MEDIA_SEND_TIMEOUT", raising=False)
         monkeypatch.setattr(
-            "cron.scheduler.load_config",
+            "hermes_agent.cron.scheduler.load_config",
             lambda: {"cron": {"media_send_timeout_seconds": 900}},
         )
         assert _get_media_send_timeout() == 900
@@ -43,13 +43,13 @@ class TestMediaSendTimeoutResolution:
     @pytest.mark.parametrize("bad", ["abc", "-5", "0", ""])
     def test_invalid_env_falls_back(self, monkeypatch, bad):
         monkeypatch.setenv("HERMES_CRON_MEDIA_SEND_TIMEOUT", bad)
-        monkeypatch.setattr("cron.scheduler.load_config", dict)
+        monkeypatch.setattr("hermes_agent.cron.scheduler.load_config", dict)
         assert _get_media_send_timeout() == _DEFAULT_MEDIA_SEND_TIMEOUT
 
     def test_invalid_config_falls_back(self, monkeypatch):
         monkeypatch.delenv("HERMES_CRON_MEDIA_SEND_TIMEOUT", raising=False)
         monkeypatch.setattr(
-            "cron.scheduler.load_config",
+            "hermes_agent.cron.scheduler.load_config",
             lambda: {"cron": {"media_send_timeout_seconds": "nope"}},
         )
         assert _get_media_send_timeout() == _DEFAULT_MEDIA_SEND_TIMEOUT

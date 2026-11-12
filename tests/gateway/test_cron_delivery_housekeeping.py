@@ -3,8 +3,8 @@
 from contextlib import contextmanager
 from types import SimpleNamespace
 
-from cron import scheduler
-from cron import scheduler_preflight as sched_preflight
+from hermes_agent.cron import scheduler
+from hermes_agent.cron import scheduler_preflight as sched_preflight
 import gateway.run as gateway_run
 
 
@@ -176,7 +176,7 @@ def test_primary_drain_delivers_credentialless_satellite_queue_row_through_prima
 
     import hermes_yaml as yaml
 
-    from cron import delivery_queue
+    from hermes_agent.cron import delivery_queue
     from gateway.config import Platform
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
@@ -217,7 +217,7 @@ def test_primary_drain_delivers_credentialless_satellite_queue_row_through_prima
     monkeypatch.setattr(gateway_run, "_handoff_watch_scopes", lambda _r: [("satellite", satellite_home)])
     try:
         with patch("tools.send_message_tool._send_to_platform", _standalone), \
-             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}):
+             patch("hermes_agent.cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}):
             gateway_run._drain_restart_safe_cron_deliveries({Platform.DISCORD: PrimaryDiscord()}, loop, runner)
     finally:
         loop.call_soon_threadsafe(loop.stop)
@@ -237,7 +237,7 @@ def test_a_queued_worker_delivery_is_drained_before_the_next_housekeeping_tick(t
     import threading
     import time
 
-    from cron import delivery_queue
+    from hermes_agent.cron import delivery_queue
 
     monkeypatch.setattr(delivery_queue, "DELIVERY_DB", tmp_path / "deliveries.db")
     drained = threading.Event()
@@ -270,7 +270,7 @@ def test_a_queued_worker_delivery_is_drained_before_the_next_housekeeping_tick(t
 def test_the_watch_settles_after_the_drain_wrote_its_outcome(tmp_path, monkeypatch):
     """The drain's own status write wakes exactly one more (empty) pass; a stable queue
     never wakes it again, so the housekeeping thread does not spin on its own writes."""
-    from cron import delivery_queue
+    from hermes_agent.cron import delivery_queue
     from gateway.run_delivery_queue_watch import DeliveryQueueWatch
 
     monkeypatch.setattr(delivery_queue, "DELIVERY_DB", tmp_path / "deliveries.db")

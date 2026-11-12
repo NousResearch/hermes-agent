@@ -1,7 +1,7 @@
 """Cron: import path of the restart-safe external worker.
 
-The worker is spawned as ``sys.executable -m cron.scheduler``. Its entry module is
-``cron.scheduler``, not ``hermes_cli.main``, so nothing bootstraps the gateway's checkout
+The worker is spawned as ``sys.executable -m hermes_agent.cron.scheduler``. Its entry module is
+``hermes_agent.cron.scheduler``, not ``hermes_cli.main``, so nothing bootstraps the gateway's checkout
 onto its ``sys.path``; historically it imported ``cron`` only through the implicit ``-m``
 cwd entry. That entry is gone under ``PYTHONSAFEPATH`` and useless when the venv's
 editable install maps a moved/deleted checkout -- the worker then dies with
@@ -71,7 +71,7 @@ def pin_hermes_tree_on_pythonpath(worker_env: dict, repo_root: Path) -> dict:
     and pinning it would move site-packages ahead of the stdlib on ``sys.path``.
 
     Order (checkout, generation, sanitizer-kept) mirrors ``activate_dependencies``' own
-    ``sys.path``. For the cron worker, its boot (``cron/worker_bootstrap.py``) then re-selects
+    ``sys.path``. For the cron worker, its boot (``hermes_agent/cron/worker_bootstrap.py``) then re-selects
     and leases the committed generation before any third-party import, and exits the worker
     if it cannot.
     """

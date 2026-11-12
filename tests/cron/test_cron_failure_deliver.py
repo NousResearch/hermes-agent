@@ -15,10 +15,10 @@ import json
 
 import pytest
 
-import cron.scheduler as s
-from cron import scheduler_delivery as sched_delivery
-from cron import scheduler_preflight as sched_preflight
-from cron.scheduler import _resolve_delivery_targets
+import hermes_agent.cron.scheduler as s
+from hermes_agent.cron import scheduler_delivery as sched_delivery
+from hermes_agent.cron import scheduler_preflight as sched_preflight
+from hermes_agent.cron.scheduler import _resolve_delivery_targets
 
 
 @pytest.fixture
@@ -30,7 +30,7 @@ def cron_env(tmp_path, monkeypatch):
     (hermes_home / "cron" / "output").mkdir()
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
-    import cron.jobs as jobs_mod
+    import hermes_agent.cron.jobs as jobs_mod
     monkeypatch.setattr(jobs_mod, "HERMES_DIR", hermes_home)
     monkeypatch.setattr(jobs_mod, "CRON_DIR", hermes_home / "cron")
     monkeypatch.setattr(jobs_mod, "JOBS_FILE", hermes_home / "cron" / "jobs.json")
@@ -76,7 +76,7 @@ def run_env(monkeypatch, tmp_path):
     monkeypatch.setattr(hp, "discover_plugins", lambda *a, **k: None)
 
     state: dict = {"send": send_calls, "marked": [], "saved": [], "finished": []}
-    from cron import delivery_queue
+    from hermes_agent.cron import delivery_queue
     monkeypatch.setattr(delivery_queue, "DELIVERY_DB", home / "cron" / "deliveries.db")
 
     def drain(*, for_failure):
@@ -109,7 +109,7 @@ def run_env(monkeypatch, tmp_path):
         lambda *a, **kw: state["finished"].append((a, kw)),
     )
     # The drain settles a queued outcome in the (stubbed) ledger: record it the same way.
-    from cron import executions
+    from hermes_agent.cron import executions
     monkeypatch.setattr(
         executions, "settle_delivery_outcome",
         lambda execution_id, outcome: state["finished"].append(
@@ -301,7 +301,7 @@ class TestToolSurface:
 
     def test_create_stores_failure_deliver(self, cron_env):
         from tools.cronjob_tools import cronjob
-        from cron.jobs import get_job
+        from hermes_agent.cron.jobs import get_job
 
         result = json.loads(cronjob(
             action="create",
@@ -316,7 +316,7 @@ class TestToolSurface:
     def test_create_without_failure_deliver_does_not_persist_the_key(self, cron_env):
         """Existing-job byte-identity: the field only exists when set."""
         from tools.cronjob_tools import cronjob
-        from cron.jobs import get_job
+        from hermes_agent.cron.jobs import get_job
 
         result = json.loads(cronjob(
             action="create", prompt="scan", schedule="every 1h",
@@ -326,7 +326,7 @@ class TestToolSurface:
 
     def test_create_flattens_list_value_like_deliver(self, cron_env):
         from tools.cronjob_tools import cronjob
-        from cron.jobs import get_job
+        from hermes_agent.cron.jobs import get_job
 
         result = json.loads(cronjob(
             action="create",
@@ -354,7 +354,7 @@ class TestToolSurface:
         assert via_failure["error"] == via_deliver["error"]
 
     def test_update_sets_and_clears_failure_deliver(self, cron_env):
-        from cron.jobs import create_job, get_job
+        from hermes_agent.cron.jobs import create_job, get_job
         from tools.cronjob_tools import cronjob
 
         job = create_job(prompt="scan", schedule="every 1h")

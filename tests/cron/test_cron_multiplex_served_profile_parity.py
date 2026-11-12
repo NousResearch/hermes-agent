@@ -44,9 +44,9 @@ def two_homes(tmp_path, monkeypatch):
 def test_cron_env_settings_resolve_from_the_served_profile(two_homes):
     """``HERMES_CRON_TIMEOUT`` / ``HERMES_MODEL`` are alpha's (or absent) both with the fire-time
     secret scope installed and on the bare tick thread — never the default profile's environ."""
-    import cron.scheduler as sched
-    from cron.jobs import _oneshot_run_claim_ttl_seconds
-    from cron.scheduler_preflight import _preflight_check_provider_key
+    import hermes_agent.cron.scheduler as sched
+    from hermes_agent.cron.jobs import _oneshot_run_claim_ttl_seconds
+    from hermes_agent.cron.scheduler_preflight import _preflight_check_provider_key
 
     _root, alpha = two_homes
     captured = {}

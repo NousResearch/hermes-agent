@@ -65,7 +65,7 @@ def test_blueprint_instantiate_create_job_off_loop(monkeypatch, loop_probe):
     monkeypatch.setattr(_web_server_cron, "_call_cron_for_profile", fake_call)
     monkeypatch.setattr(web_server, "_has_valid_session_token", lambda req: True)
 
-    import cron.blueprint_catalog as bc
+    import hermes_agent.cron.blueprint_catalog as bc
     monkeypatch.setattr(bc, "get_blueprint", lambda key: object())
     monkeypatch.setattr(
         bc,
@@ -94,7 +94,7 @@ def test_blueprint_instantiate_reports_saved_but_unregistered(monkeypatch):
     seam — the unit tests cover ``_create_cron_job_sync``; this proves the
     blueprint route surfaces the same structured envelope through FastAPI.
     """
-    from cron.scheduler import CronSchedulerRegistrationError
+    from hermes_agent.cron.scheduler import CronSchedulerRegistrationError
 
     failure = CronSchedulerRegistrationError(
         {"id": "bp-saved-job", "name": "bp job"},
@@ -107,7 +107,7 @@ def test_blueprint_instantiate_reports_saved_but_unregistered(monkeypatch):
     monkeypatch.setattr(_web_server_cron, "_call_cron_for_profile", fail_call)
     monkeypatch.setattr(web_server, "_has_valid_session_token", lambda req: True)
 
-    import cron.blueprint_catalog as bc
+    import hermes_agent.cron.blueprint_catalog as bc
     monkeypatch.setattr(bc, "get_blueprint", lambda key: object())
     monkeypatch.setattr(
         bc,

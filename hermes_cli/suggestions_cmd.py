@@ -42,7 +42,7 @@ def _resolve_origin() -> Optional[dict[str, Any]]:
 def _accept(store, rest: str, origin, surface: str) -> str:
     if not rest:
         return "Usage: /suggestions accept <number|id>"
-    from cron.scheduler import CronSchedulerRegistrationError
+    from hermes_agent.cron.scheduler import CronSchedulerRegistrationError
     try:
         job = store.accept_suggestion(rest, origin=origin)
     except CronSchedulerRegistrationError as e:
@@ -66,7 +66,7 @@ def _dismiss(store, rest: str, origin, surface: str) -> str:
 
 def _catalog(store, rest: str, origin, surface: str) -> str:
     try:
-        from cron.suggestion_catalog import seed_catalog_suggestions
+        from hermes_agent.cron.suggestion_catalog import seed_catalog_suggestions
         created = seed_catalog_suggestions()
     except Exception as e:
         logger.debug("catalog seed failed: %s", e)
@@ -104,7 +104,7 @@ def handle_suggestions_command(
     if origin is None:
         origin = _resolve_origin()
     try:
-        from cron import suggestions as store
+        from hermes_agent.cron import suggestions as store
     except Exception as e:  # pragma: no cover - import guard
         logger.debug("suggestions store import failed: %s", e)
         return "Suggestions are unavailable in this build."

@@ -23,7 +23,7 @@ from typing import Any, Dict, Optional, Protocol
 
 from hermes_constants import get_hermes_home
 
-from cron.executions import cancellable_execution
+from hermes_agent.cron.executions import cancellable_execution
 
 # A marker whose run was SIGKILLed before it could clean up is unreadable garbage. Canceling a
 # job is rare, so the prune rides along with the write instead of needing its own sweep.
@@ -174,8 +174,8 @@ def finish_cancelled_run(job: dict[str, Any], execution_id: str, fire_owner: Opt
     """Book an operator-cancelled run: ledger row ``cancelled`` with the recorded reason, and the
     job's ``last_status`` — without a failure alert or a failure-streak bump, since the operator
     asked for it. A job removed mid-run has no record left to mark; its ledger row still lands."""
-    from cron import scheduler
-    from cron.unreachable_retry import is_retry_run
+    from hermes_agent.cron import scheduler
+    from hermes_agent.cron.unreachable_retry import is_retry_run
 
     reason = CancelRequest(execution_id).reason
     if not scheduler.self_removal_delivery_allowed(job["id"]):
@@ -191,7 +191,7 @@ def finish_lost_execution(execution_id: str, error: str) -> Optional[dict[str, A
     """Close an attempt whose fire claim vanished. Removing a job mid-run cancels it AND drops the
     claim, so a run that finds its claim gone books the operator's ``cancelled`` (with the reason)
     when a cancel marker is waiting, and ``failed`` with ``error`` only for a real claim loss."""
-    from cron import scheduler
+    from hermes_agent.cron import scheduler
 
     if cancel_requested(execution_id):
         return scheduler.finish_execution(

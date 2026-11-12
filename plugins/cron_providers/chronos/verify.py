@@ -11,7 +11,7 @@ import logging
 import threading
 from typing import Any, Callable, Dict, Optional
 
-logger = logging.getLogger("cron.chronos.verify")
+logger = logging.getLogger("hermes_agent.cron.chronos.verify")
 
 # Purpose claim scoping a token to the fire endpoint (a general agent JWT must not replay here).
 _FIRE_PURPOSE = "cron_fire"

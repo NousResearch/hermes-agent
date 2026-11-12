@@ -19,7 +19,7 @@ from gateway.session_context import _VAR_MAP, clear_session_vars, set_session_va
 
 @pytest.fixture
 def temp_cron_home(tmp_path, monkeypatch):
-    from cron import jobs as cron_jobs
+    from hermes_agent.cron import jobs as cron_jobs
 
     with cron_jobs.use_cron_store(tmp_path):
         cron_jobs.ensure_dirs()
@@ -125,7 +125,7 @@ class TestCronContextUpdatePath:
         cron agent updating deliver='origin' would otherwise recreate the
         dangling literal-origin shape on an origin-less job."""
         from tools.cronjob_tools import cronjob
-        from cron.jobs import get_job
+        from hermes_agent.cron.jobs import get_job
 
         tokens, extra = _enter_cron_context("telegram", "-100123456", "17")
         try:
@@ -143,7 +143,7 @@ class TestCronContextUpdatePath:
 
     def test_update_deliver_outside_cron_context_unchanged(self, temp_cron_home):
         from tools.cronjob_tools import cronjob
-        from cron.jobs import get_job
+        from hermes_agent.cron.jobs import get_job
 
         created = _create(deliver="local")
         result = json.loads(

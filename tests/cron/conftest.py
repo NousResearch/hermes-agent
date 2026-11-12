@@ -4,7 +4,7 @@ Provides a default ``HERMES_MODEL`` for cron run_job tests so each one
 doesn't have to spell out a model. The global conftest blanks
 HERMES_MODEL hermetically; without this autouse fixture every cron test
 that exercises ``run_job`` would hit the fail-fast guard added in
-``cron/scheduler.py`` (see issue #23979) and have to be rewritten.
+``hermes_agent/cron/scheduler.py`` (see issue #23979) and have to be rewritten.
 
 Tests that specifically need ``HERMES_MODEL`` unset — model-resolution
 edge cases — call ``monkeypatch.delenv("HERMES_MODEL", raising=False)``
@@ -29,7 +29,7 @@ def make_cron_provider():
     redefining inline spy/failing classes, and an ABC rename breaks them
     loudly instead of silently passing a duck-type.
     """
-    from cron.scheduler_provider import CronScheduler
+    from hermes_agent.cron.scheduler_provider import CronScheduler
 
     def _make(register_job=None, name="stub"):
         class _StubProvider(CronScheduler):
@@ -95,7 +95,7 @@ def owner_execution_runner():
     from hermes_agent.hermes_state_registry import acquire, release
 
     def run(job, *, extra_prompt=None, cancel_event=None, execution_id=None):
-        from cron.scheduler import _get_hermes_home
+        from hermes_agent.cron.scheduler import _get_hermes_home
 
         db = acquire(_get_hermes_home() / "state.db")
         identity = uuid4().hex
@@ -136,5 +136,5 @@ def owner_execution_runner():
 def cron_owner(monkeypatch):
     """Replace only the client transport with the production owner execution seam."""
     run = owner_execution_runner()
-    monkeypatch.setattr("cron.scheduler_authority.run_canonical_job", run)
+    monkeypatch.setattr("hermes_agent.cron.scheduler_authority.run_canonical_job", run)
     return run

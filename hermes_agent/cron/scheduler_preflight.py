@@ -1,7 +1,7 @@
 """Cron pre-run preflight: transient provider-resolution error classification, provider-key /
 delivery-target / skills checks, and the shared-route adapter view used by satellite profiles.
 
-Split out of ``cron.scheduler``. Import names from this module directly (``cron.scheduler`` only
+Split out of ``hermes_agent.cron.scheduler``. Import names from this module directly (``hermes_agent.cron.scheduler`` only
 imports the few it calls itself). Origin-resident helpers and sibling split modules are reached
 late-bound (``_sched`` / module refs at the bottom) so monkeypatching the defining module works.
 """
@@ -14,10 +14,10 @@ import logging
 import os
 from typing import Optional
 
-from cron.env_settings import cron_env_setting
+from hermes_agent.cron.env_settings import cron_env_setting
 
 # Log-record parity with the origin module.
-logger = logging.getLogger("cron.scheduler")
+logger = logging.getLogger("hermes_agent.cron.scheduler")
 
 # Error-string prefixes from ``run_job``; ``run_one_job`` keys off them for last_status and the
 # alert-once dedup. ``:silent`` = already alerted on a previous tick — do not deliver again.
@@ -113,7 +113,7 @@ def _preflight_check_provider_key(job: dict, cfg: dict) -> Optional[str]:
     except AuthError as exc:
         if is_rate_limited_auth_error(exc):
             # Quota/rate-limit is not a missing credential: let the real path report it and hold
-            # the job through the provider's window (cron/quota_hold.py, #89376).
+            # the job through the provider's window (hermes_agent/cron/quota_hold.py, #89376).
             return None
         return (
             f"provider credential missing: {exc} {_credential_store_scope_label()}. "
@@ -319,7 +319,7 @@ _SKILL_MISSING_FIELDS = (
 def _preflight_check_skills(job: dict) -> Optional[str]:
     """Block only on an affirmative ``setup_needed`` verdict from ``skill_view``; skills that fail
     to load fall through to ``_build_job_prompt``'s skipped-skill handling (fail-open)."""
-    from cron.scheduler_prompt import _job_skill_names
+    from hermes_agent.cron.scheduler_prompt import _job_skill_names
     skill_names = _job_skill_names(job)
     if not skill_names:
         return None
@@ -424,5 +424,5 @@ def _preflight_job_config(job: dict, cfg: dict) -> Optional[str]:
 
 # Late-bound origin namespace (see module docstring). Imported LAST so this module is fully
 # populated before ``scheduler`` re-exports from it.
-from cron import scheduler as _sched
-from cron import scheduler_delivery as _delivery
+from hermes_agent.cron import scheduler as _sched
+from hermes_agent.cron import scheduler_delivery as _delivery

@@ -82,7 +82,7 @@ COMPRESSION_CONFIG = (
 
 CREATE_JOB = """
 import json, sys
-from cron.jobs import create_job, trigger_job
+from hermes_agent.cron.jobs import create_job, trigger_job
 spec = json.loads(sys.argv[1])
 job = create_job(prompt=spec["prompt"], schedule="every 1h", name="ep2-digest", deliver="origin",
                  origin=spec["origin"], attach_to_session=True)

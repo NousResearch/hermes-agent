@@ -29,7 +29,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="cron-owned-fork-") as root:
         os.environ["HERMES_HOME"] = root
         os.environ["HERMES_CRON_SCRIPT_TIMEOUT"] = "2"
-        from cron.scheduler_script import _run_job_script
+        from hermes_agent.cron.scheduler_script import _run_job_script
 
         scripts = Path(root, "scripts")
         scripts.mkdir()

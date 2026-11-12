@@ -39,7 +39,7 @@ status display, gateway setup, and more.
   `get_env_value` check.
 - `cron_deliver_env_var: str` — name of the `*_HOME_CHANNEL` env var.  When
   set, `deliver=<name>` cron jobs route to this var without editing
-  `cron/scheduler.py`'s hardcoded sets.
+  `hermes_agent/cron/scheduler.py`'s hardcoded sets.
 - `standalone_sender_fn: async (...) -> dict`: out-of-process delivery
   for cron jobs that run separately from the gateway.  Without this, a
   `deliver=<name>` job fires correctly but the actual send returns
@@ -294,7 +294,7 @@ And add it to the `hermes-gateway` composite:
 
 ---
 
-## 8. Cron Delivery (`cron/scheduler.py`)
+## 8. Cron Delivery (`hermes_agent/cron/scheduler.py`)
 
 Add to `platform_map` in `_deliver_result()`:
 

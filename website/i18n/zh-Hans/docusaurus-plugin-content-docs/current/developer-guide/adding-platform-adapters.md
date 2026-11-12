@@ -127,7 +127,7 @@ def register(ctx):
         # 填充 PlatformConfig.extra。参见下方"环境变量驱动的自动配置"章节。
         env_enablement_fn=_env_enablement,
         # Cron 主频道投递支持。允许 deliver=my_platform 的 cron 任务
-        # 无需编辑 cron/scheduler.py 即可路由。参见下方"Cron 投递"章节。
+        # 无需编辑 hermes_agent/cron/scheduler.py 即可路由。参见下方"Cron 投递"章节。
         cron_deliver_env_var="MY_PLATFORM_HOME_CHANNEL",
         # 每平台用户授权环境变量
         allowed_users_env="MY_PLATFORM_ALLOWED_USERS",
@@ -547,7 +547,7 @@ await self.handle_message(event)
 ### 5. 跨平台投递
 
 1. **`gateway/platforms/webhook.py`** — 将 `"newplat"` 添加到投递类型元组
-2. **`cron/scheduler.py`** — 添加到 `_KNOWN_DELIVERY_PLATFORMS` frozenset 和 `_deliver_result()` 平台映射
+2. **`hermes_agent/cron/scheduler.py`** — 添加到 `_KNOWN_DELIVERY_PLATFORMS` frozenset 和 `_deliver_result()` 平台映射
 
 ### 6. CLI 集成
 

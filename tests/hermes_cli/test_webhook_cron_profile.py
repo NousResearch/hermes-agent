@@ -58,7 +58,7 @@ def test_default_route_still_resolves_default_job(homes):
 
 @pytest.mark.parametrize("failure", ["missing", "ambiguous", "corrupt"])
 def test_failed_target_lookup_preserves_route_and_restores_store(homes, failure):
-    from cron.jobs import resolve_job_ref
+    from hermes_agent.cron.jobs import resolve_job_ref
 
     root, coder = homes
     subscribe(route_profile="coder", cron_job="")

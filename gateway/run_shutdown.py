@@ -210,14 +210,14 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         # which is fine for a drain but unsafe for a suspend predicate — a transient read failure would make
         # live work look idle and reopen the mid-job freeze. Here an unreadable source counts as work
         # (sentinel 1) so the machine stays awake until the source is readable again.
-        from cron.scheduler import get_running_job_ids
+        from hermes_agent.cron.scheduler import get_running_job_ids
         return len(get_running_job_ids())
 
     def _active_cron_job_count(self) -> int:
         """Cron jobs currently executing — they run outside ``_running_agents``; 0 if cron can't import.
 
         Cron jobs run through a standalone ``AIAgent`` on the scheduler's own thread pool
-        (``cron/scheduler.py::run_job``), entirely outside ``self._running_agents`` — the dict every OTHER
+        (``hermes_agent/cron/scheduler.py::run_job``), entirely outside ``self._running_agents`` — the dict every OTHER
         active-work check on this class (``_running_agent_count``, ``_drain_active_agents``) reads. Without
         this, the shutdown drain is structurally blind to in-flight cron work: it can report
         ``active_at_start=0`` and proceed straight to killing tool subprocesses while a cron job's terminal
@@ -921,8 +921,8 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         if not job_ids:
             return 0
         try:
-            from cron.jobs import get_job
-            from cron.scheduler import _resolve_delivery_targets
+            from hermes_agent.cron.jobs import get_job
+            from hermes_agent.cron.scheduler import _resolve_delivery_targets
         except Exception as e:
             logger.debug("Cron interrupt notification unavailable: %s", e)
             return 0
@@ -1490,19 +1490,19 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         return self._wedged_chat_agent_count() + self._wedged_cron_job_count()
 
     def _restart_wait_cron_counts(self) -> dict:
-        """``cron.scheduler.get_restart_wait_cron_counts``, counted per profile-scoped run.
+        """``hermes_agent.cron.scheduler.get_restart_wait_cron_counts``, counted per profile-scoped run.
 
         Fail-soft toward waiting: if the split can't be read, every active cron run stays
         awaitable and nothing is excluded.
         """
         try:
-            from cron.scheduler import get_restart_wait_cron_counts
+            from hermes_agent.cron.scheduler import get_restart_wait_cron_counts
             return get_restart_wait_cron_counts()
         except Exception:
             return {"awaitable": self._active_cron_job_count(), "wedged": 0, "restart_safe": 0}
 
     def _wedged_cron_job_count(self) -> int:
-        """Cron runs past ``cron.scheduler.get_wedged_job_ids``'s allowance; 0 if cron can't import."""
+        """Cron runs past ``hermes_agent.cron.scheduler.get_wedged_job_ids``'s allowance; 0 if cron can't import."""
         return self._restart_wait_cron_counts()["wedged"]
 
     def _restart_safe_cron_count(self) -> int:
@@ -1592,7 +1592,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
                         unit["idle_s"] = summary.get("seconds_since_activity")
             units.append(unit)
         with suppress(Exception):
-            from cron.scheduler import get_running_job_details, get_wedged_job_ids
+            from hermes_agent.cron.scheduler import get_running_job_details, get_wedged_job_ids
             wedged = get_wedged_job_ids()
             for job in get_running_job_details():
                 units.append({"kind": "cron", "job_id": job["job_id"], "elapsed_s": job["elapsed_s"],
@@ -1767,7 +1767,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             # Any cron job still dispatched at this instant just had its tool subprocess killed above
             # (kill_all() has no per-job-ID targeting — it's a global sweep). No-op when no cron job is in
             # flight. See #60432.
-            from cron.scheduler import mark_running_jobs_interrupted
+            from hermes_agent.cron.scheduler import mark_running_jobs_interrupted
             _interrupted = mark_running_jobs_interrupted(
                 f"Gateway shutdown ({phase}) killed the job's tool subprocess before the run finished."
             )

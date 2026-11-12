@@ -49,8 +49,8 @@ def test_fire_cron_job_scopes_store_and_runtime_home_together(
     monkeypatch,
 ):
     """A profile fire must execute and persist under the same profile home."""
-    from cron import jobs as cron_jobs
-    from cron import scheduler
+    from hermes_agent.cron import jobs as cron_jobs
+    from hermes_agent.cron import scheduler
 
     from hermes_constants import (
         reset_hermes_home_override,
@@ -70,7 +70,7 @@ def test_fire_cron_job_scopes_store_and_runtime_home_together(
             return True
 
     monkeypatch.setattr(
-        "cron.scheduler_provider.resolve_cron_scheduler",
+        "hermes_agent.cron.scheduler_provider.resolve_cron_scheduler",
         lambda: RecordingProvider(),
     )
 
@@ -92,8 +92,8 @@ def test_create_registers_scheduler_inside_target_profile(
     monkeypatch,
 ):
     """Dashboard create must resolve and register under the selected profile."""
-    from cron import jobs as cron_jobs
-    from cron.scheduler_provider import CronScheduler
+    from hermes_agent.cron import jobs as cron_jobs
+    from hermes_agent.cron.scheduler_provider import CronScheduler
     from hermes_constants import get_hermes_home
 
     worker_home = isolated_profiles["worker_alpha"]
@@ -113,7 +113,7 @@ def test_create_registers_scheduler_inside_target_profile(
             captured["jobs_file"] = cron_jobs._current_cron_store().jobs_file
 
     monkeypatch.setattr(
-        "cron.scheduler_provider.resolve_cron_scheduler",
+        "hermes_agent.cron.scheduler_provider.resolve_cron_scheduler",
         lambda: RecordingProvider(),
     )
 
@@ -136,7 +136,7 @@ def test_dashboard_create_reports_saved_but_unregistered(
     monkeypatch,
 ):
     """Dashboard callers can distinguish persistence from remote registration."""
-    from cron.scheduler import CronSchedulerRegistrationError
+    from hermes_agent.cron.scheduler import CronSchedulerRegistrationError
 
     job = {"id": "saved-job", "name": "saved job"}
     failure = CronSchedulerRegistrationError(
@@ -175,8 +175,8 @@ def test_notify_cron_provider_scopes_store_and_runtime_home_together(
     monkeypatch,
 ):
     """Provider reconciliation must observe the mutated profile, not default."""
-    from cron import jobs as cron_jobs
-    from cron import scheduler
+    from hermes_agent.cron import jobs as cron_jobs
+    from hermes_agent.cron import scheduler
 
     from hermes_constants import (
         reset_hermes_home_override,
@@ -199,7 +199,7 @@ def test_notify_cron_provider_scopes_store_and_runtime_home_together(
             captured["jobs_file"] = cron_jobs._current_cron_store().jobs_file
 
     monkeypatch.setattr(
-        "cron.scheduler_provider.resolve_cron_scheduler",
+        "hermes_agent.cron.scheduler_provider.resolve_cron_scheduler",
         lambda: RecordingProvider(),
     )
 
@@ -232,7 +232,7 @@ def test_notify_cron_provider_failure_is_best_effort(
             raise RuntimeError("provider unavailable")
 
     monkeypatch.setattr(
-        "cron.scheduler_provider.resolve_cron_scheduler",
+        "hermes_agent.cron.scheduler_provider.resolve_cron_scheduler",
         lambda: FailNotifyProvider(),
     )
 
@@ -256,7 +256,7 @@ def test_external_provider_reconcile_fails_closed_with_multiple_profiles(
     must NOT run — its orphan cleanup would disarm the other profiles'
     armed one-shots in the shared NAS registry. The mutation itself still
     succeeds (fail-closed only skips the remote converge)."""
-    from cron import scheduler
+    from hermes_agent.cron import scheduler
 
     monkeypatch.setattr(scheduler, "_hermes_home", None)
     monkeypatch.setattr(
@@ -278,7 +278,7 @@ def test_external_provider_reconcile_fails_closed_with_multiple_profiles(
             notified.append(True)
 
     monkeypatch.setattr(
-        "cron.scheduler_provider.resolve_cron_scheduler",
+        "hermes_agent.cron.scheduler_provider.resolve_cron_scheduler",
         lambda: ExternalProvider(),
     )
 
@@ -303,8 +303,8 @@ def test_builtin_provider_hook_still_fires_with_multiple_profiles(
 ):
     """The built-in provider re-reads jobs.json per tick — its hook is a
     safe no-op and must NOT be blocked by the multi-profile guard."""
-    from cron import scheduler
-    from cron.scheduler_provider import InProcessCronScheduler
+    from hermes_agent.cron import scheduler
+    from hermes_agent.cron.scheduler_provider import InProcessCronScheduler
 
     monkeypatch.setattr(scheduler, "_hermes_home", None)
     monkeypatch.setattr(
@@ -319,7 +319,7 @@ def test_builtin_provider_hook_still_fires_with_multiple_profiles(
             notified.append(True)
 
     monkeypatch.setattr(
-        "cron.scheduler_provider.resolve_cron_scheduler",
+        "hermes_agent.cron.scheduler_provider.resolve_cron_scheduler",
         lambda: BuiltinProbe(),
     )
 
@@ -340,7 +340,7 @@ def test_profile_call_cannot_retarget_ticker_store_mid_write(
     monkeypatch,
 ):
     """A dashboard profile call must not redirect a concurrent ticker save."""
-    from cron import jobs as cron_jobs
+    from hermes_agent.cron import jobs as cron_jobs
 
     default_cron = isolated_profiles["default"] / "cron"
     worker_cron = isolated_profiles["worker_alpha"] / "cron"
@@ -510,7 +510,7 @@ async def test_trigger_cron_job_fires_only_selected_job_and_returns_refreshed_st
     isolated_profiles,
     monkeypatch,
 ):
-    from cron import jobs as cron_jobs
+    from hermes_agent.cron import jobs as cron_jobs
 
     selected = _web_server_cron._call_cron_for_profile(
         "worker_alpha",
@@ -542,7 +542,7 @@ async def test_trigger_cron_job_fires_only_selected_job_and_returns_refreshed_st
             return True
 
     monkeypatch.setattr(
-        "cron.scheduler_provider.resolve_cron_scheduler",
+        "hermes_agent.cron.scheduler_provider.resolve_cron_scheduler",
         lambda: RecordingProvider(),
     )
     monkeypatch.setattr(
@@ -596,7 +596,7 @@ async def test_trigger_cron_job_reports_lost_claim_as_conflict(
             return False
 
     monkeypatch.setattr(
-        "cron.scheduler_provider.resolve_cron_scheduler",
+        "hermes_agent.cron.scheduler_provider.resolve_cron_scheduler",
         lambda: ClaimLostProvider(),
     )
 
@@ -611,7 +611,7 @@ async def test_trigger_cron_job_forces_paused_job_atomically(
     isolated_profiles,
     monkeypatch,
 ):
-    from cron import jobs as cron_jobs
+    from hermes_agent.cron import jobs as cron_jobs
 
     job = _web_server_cron._call_cron_for_profile(
         "worker_alpha",
@@ -631,7 +631,7 @@ async def test_trigger_cron_job_forces_paused_job_atomically(
             return True
 
     monkeypatch.setattr(
-        "cron.scheduler_provider.resolve_cron_scheduler",
+        "hermes_agent.cron.scheduler_provider.resolve_cron_scheduler",
         lambda: ForceProvider(),
     )
 
@@ -669,7 +669,7 @@ async def test_trigger_paused_job_rejects_legacy_provider_without_mutating_job(
             return True
 
     monkeypatch.setattr(
-        "cron.scheduler_provider.resolve_cron_scheduler",
+        "hermes_agent.cron.scheduler_provider.resolve_cron_scheduler",
         lambda: LegacyProvider(),
     )
 
@@ -692,7 +692,7 @@ async def test_trigger_cron_job_returns_refreshed_execution_failure(
     isolated_profiles,
     monkeypatch,
 ):
-    from cron import jobs as cron_jobs
+    from hermes_agent.cron import jobs as cron_jobs
 
     job = _web_server_cron._call_cron_for_profile(
         "worker_alpha",
@@ -708,7 +708,7 @@ async def test_trigger_cron_job_returns_refreshed_execution_failure(
             return False
 
     monkeypatch.setattr(
-        "cron.scheduler_provider.resolve_cron_scheduler",
+        "hermes_agent.cron.scheduler_provider.resolve_cron_scheduler",
         lambda: FailedProvider(),
     )
 
@@ -726,7 +726,7 @@ async def test_trigger_cron_job_returns_completed_snapshot_for_retained_oneshot(
     isolated_profiles,
     monkeypatch,
 ):
-    from cron import jobs as cron_jobs
+    from hermes_agent.cron import jobs as cron_jobs
 
     job = _web_server_cron._call_cron_for_profile(
         "worker_alpha",
@@ -742,7 +742,7 @@ async def test_trigger_cron_job_returns_completed_snapshot_for_retained_oneshot(
             return True
 
     monkeypatch.setattr(
-        "cron.scheduler_provider.resolve_cron_scheduler",
+        "hermes_agent.cron.scheduler_provider.resolve_cron_scheduler",
         lambda: SuccessfulProvider(),
     )
 
@@ -905,7 +905,7 @@ async def test_dashboard_cron_rejects_missing_context_from(isolated_profiles):
 @pytest.mark.asyncio
 async def test_update_cron_job_rejects_id_mutation(isolated_profiles, monkeypatch):
     """Dashboard surfaces a 400 (not a 500 or silent rename) when an
-    id-mutation attempt is rejected by cron/jobs.update_job."""
+    id-mutation attempt is rejected by hermes_agent/cron/jobs.update_job."""
 
     notified_profiles = []
     monkeypatch.setattr(
@@ -1142,8 +1142,8 @@ class TestCronJobsCrossProfileDedup:
     """Regression tests for #51721: GET /api/cron/jobs (profile=all) aggregated
     jobs from every profile without deduplication — a job copied into a second
     profile's cron/jobs.json during profile creation showed up twice. Uses real
-    cron.jobs storage (direct jobs.json writes for the id-less case) so the
-    tests exercise cron.jobs._normalize_job_record()'s real "unknown" sentinel
+    hermes_agent.cron.jobs storage (direct jobs.json writes for the id-less case) so the
+    tests exercise hermes_agent.cron.jobs._normalize_job_record()'s real "unknown" sentinel
     behavior, not a mocked list.
     """
 
@@ -1212,7 +1212,7 @@ class TestCronJobsCrossProfileDedup:
         assert ids == {"job-a", "job-b"}
 
     def test_idless_records_from_different_profiles_both_preserved(self, isolated_profiles):
-        """cron.jobs._normalize_job_record() fills a missing id with the literal
+        """hermes_agent.cron.jobs._normalize_job_record() fills a missing id with the literal
         sentinel string "unknown" before this data reaches the aggregation
         logic. Two genuinely DIFFERENT id-less jobs (hand-edited or pre-id-field
         legacy records) from different profiles both normalize to id="unknown" —
@@ -1511,7 +1511,7 @@ class TestCronRunHistoryFallback:
         latest attempt's — and the failed latest attempt must appear as its own
         row carrying its timestamp and error (a 120s filename window cannot
         establish that the newest file belongs to last_run_at)."""
-        from cron import executions as cron_executions
+        from hermes_agent.cron import executions as cron_executions
         from zoneinfo import ZoneInfo
 
         job_id = "job-missing-newest-doc"

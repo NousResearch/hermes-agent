@@ -1,7 +1,7 @@
 """Curated catalog of starter cron-job suggestions.
 
 These are the built-in automations Hermes can offer a new user out of the box — the ``catalog``
-source of the unified suggestion surface. Each entry is a ready-to-run ``cron.jobs.create_job`` spec
+source of the unified suggestion surface. Each entry is a ready-to-run ``hermes_agent.cron.jobs.create_job`` spec
 wrapped as a suggestion; the user accepts via ``/suggestions``. Nothing here auto-schedules.
 
 The "important-mail monitor" entry (``classify_items.py``: poll -> LLM-score urgency -> surface
@@ -30,7 +30,7 @@ class CatalogEntry:
     key: str                 # stable dedup key (never re-offered once dismissed)
     title: str
     description: str
-    job_spec: dict[str, Any]  # kwargs for cron.jobs.create_job
+    job_spec: dict[str, Any]  # kwargs for hermes_agent.cron.jobs.create_job
 
 
 # The curated set. Schedules use the cron/interval syntax create_job accepts.
@@ -121,13 +121,13 @@ def seed_catalog_suggestions(
 ) -> list[dict[str, Any]]:
     """Register catalog entries as pending suggestions.
 
-    ``add_fn`` defaults to ``cron.suggestions.add_suggestion`` (injectable for tests). ``keys``
+    ``add_fn`` defaults to ``hermes_agent.cron.suggestions.add_suggestion`` (injectable for tests). ``keys``
     restricts to specific catalog entries; omit to seed all. Entries already dismissed/accepted (by
     dedup key) or beyond the pending cap are skipped by the store, so re-seeding is safe and
     idempotent. Returns the list of suggestion records actually created.
     """
     if add_fn is None:
-        from cron.suggestions import add_suggestion as add_fn  # type: ignore[assignment]
+        from hermes_agent.cron.suggestions import add_suggestion as add_fn  # type: ignore[assignment]
 
     wanted = set(keys) if keys else None
     created: list[dict[str, Any]] = []

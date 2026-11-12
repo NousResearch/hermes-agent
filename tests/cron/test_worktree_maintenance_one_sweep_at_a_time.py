@@ -8,8 +8,8 @@ watchdog gave up.
 import threading
 import time
 
-from cron import scheduler
-from cron import scheduler_worktree_maintenance as maintenance
+from hermes_agent.cron import scheduler
+from hermes_agent.cron import scheduler_worktree_maintenance as maintenance
 
 
 def _join_prune_threads(timeout: float = 30.0) -> None:

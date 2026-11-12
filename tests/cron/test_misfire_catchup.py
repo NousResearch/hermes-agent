@@ -12,8 +12,8 @@ from datetime import timedelta
 
 import pytest
 
-from cron.jobs import _hermes_now, create_job, get_job, load_jobs, save_jobs
-from cron.scheduler_provider import (
+from hermes_agent.cron.jobs import _hermes_now, create_job, get_job, load_jobs, save_jobs
+from hermes_agent.cron.scheduler_provider import (
     CronScheduler,
     InProcessCronScheduler,
     fire_overdue_jobs,
@@ -23,9 +23,9 @@ from cron.scheduler_provider import (
 @pytest.fixture()
 def tmp_cron_dir(tmp_path, monkeypatch):
     """Redirect cron storage to a temp directory."""
-    monkeypatch.setattr("cron.jobs.CRON_DIR", tmp_path / "cron")
-    monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
-    monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
+    monkeypatch.setattr("hermes_agent.cron.jobs.CRON_DIR", tmp_path / "cron")
+    monkeypatch.setattr("hermes_agent.cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
+    monkeypatch.setattr("hermes_agent.cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
     return tmp_path
 
 
@@ -92,7 +92,7 @@ class TestFireOverdueJobs:
 
     def test_grace_zero_disables(self, tmp_cron_dir, monkeypatch):
         monkeypatch.setattr(
-            "cron.scheduler_provider._misfire_grace_minutes", lambda: 0.0
+            "hermes_agent.cron.scheduler_provider._misfire_grace_minutes", lambda: 0.0
         )
         job = create_job(prompt="p", schedule="every 1h")
         _park_in_past(job["id"], minutes=600)
@@ -104,7 +104,7 @@ class TestFireOverdueJobs:
         assert fire_overdue_jobs(provider) == 0
 
     def test_paused_job_not_fired(self, tmp_cron_dir):
-        from cron.jobs import pause_job
+        from hermes_agent.cron.jobs import pause_job
 
         job = create_job(prompt="p", schedule="every 1h")
         _park_in_past(job["id"], minutes=30)
@@ -114,7 +114,7 @@ class TestFireOverdueJobs:
     def test_fresh_external_claim_wins(self, tmp_cron_dir):
         """A concurrent external fire holds the store claim — the sweep's
         claim_fire loses the CAS and must not dispatch (at-most-once)."""
-        from cron.jobs import claim_job_for_fire
+        from hermes_agent.cron.jobs import claim_job_for_fire
 
         job = create_job(prompt="p", schedule="every 1h")
         _park_in_past(job["id"], minutes=30)

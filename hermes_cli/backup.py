@@ -1136,7 +1136,7 @@ def _newest_first(root: Path, keep_entry) -> list[Path]:
     return sorted(filter(keep_entry, root.iterdir()), key=lambda p: p.name, reverse=True)
 
 
-# Kept in sync with ``_QUICK_STATE_FILES`` and ``cron/jobs.py``'s ``JOBS_FILE``.
+# Kept in sync with ``_QUICK_STATE_FILES`` and ``hermes_agent/cron/jobs.py``'s ``JOBS_FILE``.
 _CRON_JOBS_REL = "cron/jobs.json"
 
 

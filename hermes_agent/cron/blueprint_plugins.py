@@ -15,7 +15,7 @@ import string
 from dataclasses import fields
 from typing import Any, Iterable, List, Mapping
 
-from cron.blueprint_catalog import AutomationBlueprint, BlueprintSlot, fill_blueprint
+from hermes_agent.cron.blueprint_catalog import AutomationBlueprint, BlueprintSlot, fill_blueprint
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +99,7 @@ def _validate(blueprint: AutomationBlueprint) -> None:
     # When every required slot has a default, fill it now so a broken template or schedule fails at
     # registration instead of on the user's first "Schedule it".
     if all(s.optional or s.default not in (None, "") for s in blueprint.slots):
-        from cron.jobs import parse_schedule
+        from hermes_agent.cron.jobs import parse_schedule
 
         parse_schedule(fill_blueprint(blueprint, {})["schedule"])
 

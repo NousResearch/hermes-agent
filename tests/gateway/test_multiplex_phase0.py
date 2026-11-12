@@ -74,7 +74,7 @@ class TestMultiplexConfigFlag:
         from types import SimpleNamespace
         from gateway import run as run_mod
         from gateway import run_bootstrap
-        from cron.scheduler_provider import InProcessCronScheduler
+        from hermes_agent.cron.scheduler_provider import InProcessCronScheduler
 
         captured = {}
 
@@ -82,7 +82,7 @@ class TestMultiplexConfigFlag:
             def start(self, stop_event, **kwargs):
                 captured.update(kwargs)
 
-        monkeypatch.setattr("cron.scheduler_provider.resolve_cron_scheduler", lambda: _Ticker())
+        monkeypatch.setattr("hermes_agent.cron.scheduler_provider.resolve_cron_scheduler", lambda: _Ticker())
         monkeypatch.setattr(run_mod, "_cron_tick_profile_homes", lambda cfg: [("rex", tmp_path)])
         monkeypatch.setattr(run_mod, "_start_gateway_housekeeping", lambda *a, **k: None)
         runner = SimpleNamespace(

@@ -166,7 +166,7 @@ def test_untracked_autostash_cannot_sweep_runtime_state(flat_install_repo):
 def test_untracked_autostash_leaves_open_wal_database_readable(flat_install_repo):
     """The updater's real stash step must not unlink the -wal/-shm sidecars of a
     WAL-mode database the scheduler holds open (cron/executions.db). With the
-    base file ignored but its sidecars swept, the next ``cron.executions._connect()``
+    base file ignored but its sidecars swept, the next ``hermes_agent.cron.executions._connect()``
     finds a database whose WAL vanished under a live writer and fails with
     ``disk I/O error`` (the review repro on #111175)."""
     from hermes_cli.update_cmd_stash import _stash_local_changes_if_needed
@@ -186,7 +186,7 @@ def test_untracked_autostash_leaves_open_wal_database_readable(flat_install_repo
         stash_ref = _stash_local_changes_if_needed(["git"], flat_install_repo)
 
         assert stash_ref
-        # Fresh connection, exactly as every cron.executions call opens one.
+        # Fresh connection, exactly as every hermes_agent.cron.executions call opens one.
         with sqlite3.connect(db_path) as reader:
             assert reader.execute("SELECT status FROM executions").fetchall() == [("ok",)]
     finally:

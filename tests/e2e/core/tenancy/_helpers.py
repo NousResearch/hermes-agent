@@ -333,7 +333,7 @@ def text_leaks(label: str, text: str, tenants: dict[str, Tenant], owner: str | N
     return out
 
 
-_SEED_CRON = ("import sys; from cron.jobs import create_job, trigger_job, list_jobs; "
+_SEED_CRON = ("import sys; from hermes_agent.cron.jobs import create_job, trigger_job, list_jobs; "
               "jobs = [j for j in list_jobs(include_disabled=True) if j.get('name') == 'tenancy-canary']; "
               "j = jobs[0] if jobs else create_job(prompt=sys.argv[1], schedule='every 1h', name='tenancy-canary', "
               "deliver='local'); trigger_job(j['id']); print(j['id'])")

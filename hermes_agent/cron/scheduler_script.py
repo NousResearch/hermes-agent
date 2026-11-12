@@ -1,7 +1,7 @@
 """Cron pre-run script execution: timeouts, Windows venv bootstrap, process-tree termination,
 and the claim-heartbeat thread that keeps a long script's run claim alive.
 
-Split out of ``cron.scheduler``. Import names from this module directly (``cron.scheduler`` only
+Split out of ``hermes_agent.cron.scheduler``. Import names from this module directly (``hermes_agent.cron.scheduler`` only
 imports the few it calls itself). Origin-resident helpers and sibling split modules are reached
 late-bound (``_sched`` / module refs at the bottom) so monkeypatching the defining module works.
 """
@@ -19,8 +19,8 @@ import subprocess
 import sys
 import threading
 import time
-from cron.env_settings import cron_env_setting
-from cron.jobs import _ensure_cron_dir
+from hermes_agent.cron.env_settings import cron_env_setting
+from hermes_agent.cron.jobs import _ensure_cron_dir
 from pathlib import Path
 from typing import Any, Callable, Optional, TYPE_CHECKING
 
@@ -28,10 +28,10 @@ from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli._startup_fast import project_root_str
 
 if TYPE_CHECKING:
-    from cron.cancellation import _CancelEventLike
+    from hermes_agent.cron.cancellation import _CancelEventLike
 
 # Log-record parity with the origin module.
-logger = logging.getLogger("cron.scheduler")
+logger = logging.getLogger("hermes_agent.cron.scheduler")
 
 
 def _positive_int(raw) -> Optional[int]:
@@ -344,7 +344,7 @@ def _resolve_script_path(script_path: str) -> tuple[Optional[Path], Optional[str
 
     # Reject NUL eagerly: on Windows Path ops raise ValueError *after* expanduser so the try below
     # would not catch it. str() first so the guard itself cannot raise on a non-str script_path.
-    # Same ingestion contract as cron.lifecycle_guard._expand_candidate_path: a NUL-bearing value can never
+    # Same ingestion contract as hermes_agent.cron.lifecycle_guard._expand_candidate_path: a NUL-bearing value can never
     # name a real script, and on Windows the Path operations raise ValueError *after* expanduser (expanduser
     # never expands "~user" there, so the try below never fires) — reject eagerly so both platforms fail
     # cleanly instead of crashing the scheduler. str() first so the guard itself can never raise TypeError
@@ -387,7 +387,7 @@ def _resolve_cron_interpreter(interpreter: str) -> tuple[Optional[str], Optional
     Python: the lifecycle guard classifies ``.py`` scripts as Python and skips its shell reference
     walk, so ``interpreter=/bin/bash`` would run an unscanned ``.py`` body as shell. ``pythonw``
     is refused because it discards captured output (an agent job would go silently quiet)."""
-    from cron.lifecycle_guard import _INTERPRETER_IMAGE_RE
+    from hermes_agent.cron.lifecycle_guard import _INTERPRETER_IMAGE_RE
 
     raw = interpreter.strip()
     try:
@@ -509,7 +509,7 @@ def _run_job_script(
             if cancel_event is not None and cancel_event.is_set():
                 _terminate_cron_script_tree(proc)
                 _drain_script_pipes(proc)
-                from cron.cancellation import cancel_reason
+                from hermes_agent.cron.cancellation import cancel_reason
                 return False, f"Script cancelled: {cancel_reason(cancel_event)}"
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -612,4 +612,4 @@ def _run_job_script_with_claim_heartbeat(
 
 # Late-bound origin namespace (see module docstring). Imported LAST so this module is fully
 # populated before ``scheduler`` re-exports from it.
-from cron import scheduler as _sched
+from hermes_agent.cron import scheduler as _sched

@@ -12,7 +12,7 @@ from argparse import Namespace
 
 import pytest
 
-from cron.lifecycle_guard import contains_gateway_lifecycle_command as _contains_gateway_lifecycle_command
+from hermes_agent.cron.lifecycle_guard import contains_gateway_lifecycle_command as _contains_gateway_lifecycle_command
 from hermes_cli.cron import cron_command
 
 
@@ -161,7 +161,7 @@ class TestGatewayLifecyclePattern:
         # same choke point, where it collapses to `kickstart`. This is the
         # entry point terminal_tool.py calls in gateway sessions, so it is the
         # boundary that matters.
-        from cron.lifecycle_guard import (
+        from hermes_agent.cron.lifecycle_guard import (
             contains_gateway_lifecycle_command_or_referenced_script,
         )
 
@@ -373,7 +373,7 @@ class TestProfileFlagGatewayLifecycle:
         # With no profile identity the guard cannot prove self-targeting, so
         # the profile-flag form is allowed rather than over-blocking siblings;
         # the adjacent form stays blocked unconditionally.
-        from cron import lifecycle_guard
+        from hermes_agent.cron import lifecycle_guard
 
         monkeypatch.setattr(lifecycle_guard, "_current_profile_name", lambda: None)
         assert not _contains_gateway_lifecycle_command("hermes -p zeus gateway restart")
@@ -385,9 +385,9 @@ class TestCronCreateLifecycleBlock:
 
     @pytest.fixture(autouse=True)
     def _setup_cron_dir(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("cron.jobs.CRON_DIR", tmp_path / "cron")
-        monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
-        monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
+        monkeypatch.setattr("hermes_agent.cron.jobs.CRON_DIR", tmp_path / "cron")
+        monkeypatch.setattr("hermes_agent.cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
+        monkeypatch.setattr("hermes_agent.cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
 
     def test_block_hermes_gateway_restart(self, capsys):
         args = Namespace(
@@ -582,7 +582,7 @@ class TestTerminalToolGatewayLifecycleGuard:
     ):
         """#78398: an over-budget root must never reach shlex — not even via
         the launchctl pre-scan that runs before the full guard."""
-        from cron import lifecycle_guard
+        from hermes_agent.cron import lifecycle_guard
         import tools.terminal_tool as tt
 
         self._patch_env(monkeypatch, self._make_fake_env(), inside_gateway=True)
@@ -872,11 +872,11 @@ class TestTerminalToolGatewayLifecycleGuard:
 
 
 # ---------------------------------------------------------------------------
-# cron.lifecycle_guard module — the shared checker create_job/CLI/terminal use
+# hermes_agent.cron.lifecycle_guard module — the shared checker create_job/CLI/terminal use
 # ---------------------------------------------------------------------------
 
 class TestLifecycleGuardModule:
-    """Direct tests for cron.lifecycle_guard.check_gateway_lifecycle."""
+    """Direct tests for hermes_agent.cron.lifecycle_guard.check_gateway_lifecycle."""
 
 
     def test_nul_padded_script_is_still_scanned(self, tmp_path):
@@ -887,7 +887,7 @@ class TestLifecycleGuardModule:
         past an embedded NUL, so one pad byte bypassed the guard entirely while
         the script still ran its lifecycle command.
         """
-        from cron.lifecycle_guard import (
+        from hermes_agent.cron.lifecycle_guard import (
             contains_gateway_lifecycle_command_or_referenced_script,
         )
         script = tmp_path / "padded.sh"
@@ -905,7 +905,7 @@ class TestLifecycleGuardModule:
         Keying the fix on a leading ``#!`` alone is insufficient: a shebang-less
         file with a NUL on any line but the first executes normally.
         """
-        from cron.lifecycle_guard import (
+        from hermes_agent.cron.lifecycle_guard import (
             contains_gateway_lifecycle_command_or_referenced_script,
         )
         script = tmp_path / "padded_noshebang.sh"
@@ -918,7 +918,7 @@ class TestLifecycleGuardModule:
 
     def test_macho_binary_is_not_scanned_as_script(self, tmp_path):
         """Same for Mach-O, including the universal/fat signature (macOS)."""
-        from cron.lifecycle_guard import (
+        from hermes_agent.cron.lifecycle_guard import (
             contains_gateway_lifecycle_command_or_referenced_script,
         )
         for name, magic in (
@@ -940,7 +940,7 @@ class TestLifecycleGuardModule:
         Stripping NULs must not let a too-large file skip the size guard — the
         binary check runs first, the size check still applies afterwards.
         """
-        from cron.lifecycle_guard import (
+        from hermes_agent.cron.lifecycle_guard import (
             contains_gateway_lifecycle_command_or_referenced_script,
         )
         script = tmp_path / "huge.sh"
@@ -952,13 +952,13 @@ class TestLifecycleGuardModule:
 
 
     def test_prompt_with_command_raises(self):
-        from cron.lifecycle_guard import GatewayLifecycleBlocked, check_gateway_lifecycle
+        from hermes_agent.cron.lifecycle_guard import GatewayLifecycleBlocked, check_gateway_lifecycle
         with pytest.raises(GatewayLifecycleBlocked):
             check_gateway_lifecycle("please run hermes gateway restart", None)
 
 
     def test_script_with_command_raises(self, tmp_path, monkeypatch):
-        from cron.lifecycle_guard import GatewayLifecycleBlocked, check_gateway_lifecycle
+        from hermes_agent.cron.lifecycle_guard import GatewayLifecycleBlocked, check_gateway_lifecycle
         script = tmp_path / "restart.sh"
         script.write_text("#!/usr/bin/env bash\nhermes gateway restart\n", encoding="utf-8")
         with pytest.raises(GatewayLifecycleBlocked):
@@ -974,7 +974,7 @@ class TestLifecycleGuardModule:
     def test_script_with_neutral_label_submit_or_bootstrap_raises(
         self, tmp_path, line
     ):
-        from cron.lifecycle_guard import GatewayLifecycleBlocked, check_gateway_lifecycle
+        from hermes_agent.cron.lifecycle_guard import GatewayLifecycleBlocked, check_gateway_lifecycle
         script = tmp_path / "persistent.sh"
         script.write_text(f"#!/usr/bin/env bash\n{line}\n", encoding="utf-8")
         with pytest.raises(GatewayLifecycleBlocked):
@@ -984,7 +984,7 @@ class TestLifecycleGuardModule:
     def test_binary_script_does_not_silently_bypass(self, tmp_path):
         """Non-UTF-8 bytes used to be swallowed by UnicodeDecodeError; now we
         decode with errors='replace' so the scan always sees the command."""
-        from cron.lifecycle_guard import GatewayLifecycleBlocked, check_gateway_lifecycle
+        from hermes_agent.cron.lifecycle_guard import GatewayLifecycleBlocked, check_gateway_lifecycle
         script = tmp_path / "weird.bin"
         script.write_bytes(b"\xfehermes gateway restart\xff")
         with pytest.raises(GatewayLifecycleBlocked):
@@ -995,7 +995,7 @@ class TestLifecycleGuardModule:
         """A bare/relative script name resolves under HERMES_HOME/scripts (the
         same place the scheduler runs it from) — otherwise the guard would read
         a nonexistent relative path and scan prompt-only content."""
-        from cron.lifecycle_guard import GatewayLifecycleBlocked, check_gateway_lifecycle
+        from hermes_agent.cron.lifecycle_guard import GatewayLifecycleBlocked, check_gateway_lifecycle
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
         scripts_dir = tmp_path / ".hermes" / "scripts"
         scripts_dir.mkdir(parents=True)
@@ -1017,7 +1017,7 @@ class TestLifecycleGuardModule:
         so the walk is skipped for .py and only the direct command regex
         runs.
         """
-        from cron.lifecycle_guard import check_gateway_lifecycle
+        from hermes_agent.cron.lifecycle_guard import check_gateway_lifecycle
         script = tmp_path / "digest.py"
         script.write_text(
             "from pathlib import Path\n"
@@ -1032,7 +1032,7 @@ class TestLifecycleGuardModule:
         """#77131: skipping the shell walk for .py must NOT weaken the guard —
         a literal lifecycle command embedded in a .py script is still caught
         by the direct regex scan."""
-        from cron.lifecycle_guard import GatewayLifecycleBlocked, check_gateway_lifecycle
+        from hermes_agent.cron.lifecycle_guard import GatewayLifecycleBlocked, check_gateway_lifecycle
         script = tmp_path / "evil.py"
         script.write_text('import os\nos.system("hermes gateway restart")\n', encoding="utf-8")
         with pytest.raises(GatewayLifecycleBlocked):
@@ -1050,7 +1050,7 @@ class TestLifecycleGuardModule:
         ``ValueError: embedded null byte`` (the tool errored out, the command
         never ran). The guard must tolerate binary content from the fallback
         and return False without raising."""
-        from cron.lifecycle_guard import (
+        from hermes_agent.cron.lifecycle_guard import (
             contains_gateway_lifecycle_command_or_referenced_script,
         )
         # Simulates the pre-fix _read_script_in_env handing back an ELF's
@@ -1071,7 +1071,7 @@ class TestLifecycleGuardModule:
     def test_shell_script_reference_walk_still_works(self, tmp_path):
         """The referenced-script walk still applies to real shell scripts:
         a .sh script that itself invokes a lifecycle command is caught."""
-        from cron.lifecycle_guard import GatewayLifecycleBlocked, check_gateway_lifecycle
+        from hermes_agent.cron.lifecycle_guard import GatewayLifecycleBlocked, check_gateway_lifecycle
         script = tmp_path / "wrapper.sh"
         script.write_text("#!/usr/bin/env bash\n./deploy.sh\n", encoding="utf-8")
         (tmp_path / "deploy.sh").write_text("#!/usr/bin/env bash\nhermes gateway stop\n", encoding="utf-8")
@@ -1089,7 +1089,7 @@ class TestLifecycleGuardModule:
         the resolved FileProvider path from local metadata and fail closed
         without opening it.
         """
-        from cron import lifecycle_guard
+        from hermes_agent.cron import lifecycle_guard
 
         cloud_dir = (
             tmp_path
@@ -1127,7 +1127,7 @@ class TestLifecycleGuardModule:
         FileProvider hazard as iCloud's Mobile Documents: an evicted
         placeholder's open() can hang preflight. The guard must fail closed
         on the lexical path without opening the file."""
-        from cron import lifecycle_guard
+        from hermes_agent.cron import lifecycle_guard
 
         cloud_dir = (
             tmp_path
@@ -1161,8 +1161,8 @@ class TestLifecycleGuardModule:
         check_gateway_lifecycle) must also refuse a cloud-resident script
         without opening it, and the surfaced reason must attribute the
         refusal to the cloud-synced path — not to a lifecycle command."""
-        from cron import lifecycle_guard
-        from cron.lifecycle_guard import (
+        from hermes_agent.cron import lifecycle_guard
+        from hermes_agent.cron.lifecycle_guard import (
             GatewayLifecycleBlocked,
             check_gateway_lifecycle,
         )
@@ -1199,7 +1199,7 @@ class TestLifecycleGuardModule:
     def test_tilde_nul_candidate_does_not_crash_cron_script_resolution(self):
         """T2: the same ``expanduser`` crash via the cron ``script`` path
         (``_resolve_script_path`` / ``check_gateway_lifecycle``)."""
-        from cron.lifecycle_guard import check_gateway_lifecycle
+        from hermes_agent.cron.lifecycle_guard import check_gateway_lifecycle
 
         # Must neither raise ValueError nor block: an unresolvable script
         # value has nothing to scan, and scheduler path validation reports
@@ -1212,7 +1212,7 @@ class TestLifecycleGuardModule:
         skipped as binary at the recursion boundary — not matched and
         blocked. Hardening one callback (#79454) left every other current or
         future callback exposed; the boundary sanitizer covers them all."""
-        from cron.lifecycle_guard import (
+        from hermes_agent.cron.lifecycle_guard import (
             contains_gateway_lifecycle_command_or_referenced_script,
         )
 
@@ -1230,7 +1230,7 @@ class TestLifecycleGuardModule:
         """T4: >1 MiB of NUL-free text from a remote callback must follow the
         local-read contract (oversized regular file → fail closed, #76762)
         instead of being scanned unbounded — the 179 MiB case from #77729."""
-        from cron.lifecycle_guard import (
+        from hermes_agent.cron.lifecycle_guard import (
             _MAX_REFERENCED_SCRIPT_BYTES,
             contains_gateway_lifecycle_command_or_referenced_script,
         )
@@ -1248,7 +1248,7 @@ class TestLifecycleGuardModule:
         """The public guard is a total function: no input may raise. Covers
         the residual class beyond the four named sites — including
         ``expanduser`` RuntimeError when HOME is unset under launchd."""
-        from cron.lifecycle_guard import (
+        from hermes_agent.cron.lifecycle_guard import (
             contains_gateway_lifecycle_command_or_referenced_script,
         )
 
@@ -1273,7 +1273,7 @@ class TestLifecycleGuardModule:
         back to the direct-scan verdict instead of propagating — a guard
         crash breaks every terminal command until gateway restart (#77780),
         strictly worse than either verdict."""
-        import cron.lifecycle_guard as lg
+        import hermes_agent.cron.lifecycle_guard as lg
 
         def _boom(*args, **kwargs):
             raise RuntimeError("sibling site nobody found yet")
@@ -1296,7 +1296,7 @@ class TestLifecycleGuardModule:
         not crash."""
         from pathlib import Path
 
-        from cron.lifecycle_guard import check_gateway_lifecycle
+        from hermes_agent.cron.lifecycle_guard import check_gateway_lifecycle
 
         monkeypatch.delenv("HERMES_HOME", raising=False)
         monkeypatch.delenv("HOME", raising=False)
@@ -1314,7 +1314,7 @@ class TestLifecycleGuardModule:
 
 
 # ---------------------------------------------------------------------------
-# Defense 2 (chokepoint): cron.jobs.create_job blocks the AGENT model-tool path
+# Defense 2 (chokepoint): hermes_agent.cron.jobs.create_job blocks the AGENT model-tool path
 # ---------------------------------------------------------------------------
 
 class TestDotSourceIsScannedLikeSource:
@@ -1328,7 +1328,7 @@ class TestDotSourceIsScannedLikeSource:
     """
 
     def _scan(self, command, cwd):
-        from cron.lifecycle_guard import (
+        from hermes_agent.cron.lifecycle_guard import (
             contains_gateway_lifecycle_command_or_referenced_script,
         )
 
@@ -1384,7 +1384,7 @@ class TestTransparentWrapperPrefixes:
     `bash ~/restart.sh`."""
 
     def _scan(self, command, cwd=None):
-        from cron.lifecycle_guard import (
+        from hermes_agent.cron.lifecycle_guard import (
             contains_gateway_lifecycle_command_or_referenced_script,
         )
 
@@ -1418,7 +1418,7 @@ class TestTransparentWrapperPrefixes:
 
     @pytest.mark.parametrize("prefix", ["sudo", "env", "nohup", "setsid"])
     def test_wrapped_launchctl_submit_is_blocked(self, prefix):
-        from cron.lifecycle_guard import contains_launchctl_submit_command
+        from hermes_agent.cron.lifecycle_guard import contains_launchctl_submit_command
 
         assert contains_launchctl_submit_command(
             f"{prefix} launchctl submit -l com.example.helper -- /usr/bin/true"
@@ -1507,7 +1507,7 @@ class TestRelativePathDoesNotDisableDataExemption:
     lifecycle string."""
 
     def _scan(self, command):
-        from cron.lifecycle_guard import (
+        from hermes_agent.cron.lifecycle_guard import (
             contains_gateway_lifecycle_command_or_referenced_script,
         )
 
@@ -1544,23 +1544,23 @@ class TestRelativePathDoesNotDisableDataExemption:
 
 class TestCreateJobBlocksLifecycleCommands:
     """The regression the CLI-layer-only guard could not catch: the agent's
-    `cronjob` model tool calls cron.jobs.create_job directly, bypassing
+    `cronjob` model tool calls hermes_agent.cron.jobs.create_job directly, bypassing
     hermes_cli.cron.cron_create. Enforcing at create_job covers both."""
 
     @pytest.fixture(autouse=True)
     def _setup_cron_dir(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("cron.jobs.CRON_DIR", tmp_path / "cron")
-        monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
-        monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
+        monkeypatch.setattr("hermes_agent.cron.jobs.CRON_DIR", tmp_path / "cron")
+        monkeypatch.setattr("hermes_agent.cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
+        monkeypatch.setattr("hermes_agent.cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
 
     def test_create_job_blocks_prompt_command(self):
-        from cron.jobs import create_job
-        from cron.lifecycle_guard import GatewayLifecycleBlocked
+        from hermes_agent.cron.jobs import create_job
+        from hermes_agent.cron.lifecycle_guard import GatewayLifecycleBlocked
         with pytest.raises(GatewayLifecycleBlocked):
             create_job(prompt="then run hermes gateway restart", schedule="30m")
 
     def test_create_job_allows_benign_prompt(self):
-        from cron.jobs import create_job
+        from hermes_agent.cron.jobs import create_job
         job = create_job(prompt="summarize the API gateway logs and note restart events",
                          schedule="30m")
         assert job["id"]
@@ -1735,7 +1735,7 @@ class TestLifecycleGuardDataArgumentExemption:
     text and a grep for the lifecycle string in syslog."""
 
     def _scan(self, command, **kwargs):
-        from cron.lifecycle_guard import (
+        from hermes_agent.cron.lifecycle_guard import (
             contains_gateway_lifecycle_command_or_referenced_script,
         )
         return contains_gateway_lifecycle_command_or_referenced_script(
@@ -1786,7 +1786,7 @@ class TestLifecycleGuardDataArgumentExemption:
         fail-closed: the same SQL buried in non-shell-shaped Python source
         (e.g. inside a subprocess.run list literal) stays blocked because
         the masker cannot prove it is data."""
-        from cron.lifecycle_guard import check_gateway_lifecycle
+        from hermes_agent.cron.lifecycle_guard import check_gateway_lifecycle
         script = tmp_path / "report.py"
         script.write_text("print('nightly report')\n", encoding="utf-8")
         prompt = (
@@ -1802,7 +1802,7 @@ class TestLifecycleGuardNeverRaises:
     never crash (the live 'ValueError: embedded null byte' class)."""
 
     def _scan(self, command, **kwargs):
-        from cron.lifecycle_guard import (
+        from hermes_agent.cron.lifecycle_guard import (
             contains_gateway_lifecycle_command_or_referenced_script,
         )
         return contains_gateway_lifecycle_command_or_referenced_script(
@@ -1857,7 +1857,7 @@ class TestLifecycleGuardNeverRaises:
     def test_magic_prefix_binaries_skipped_without_full_read(self, tmp_path):
         """Executable magic (ELF/PE/Mach-O) short-circuits the read: the
         guard must not treat compiled binaries as scripts at all."""
-        from cron.lifecycle_guard import _read_referenced_script
+        from hermes_agent.cron.lifecycle_guard import _read_referenced_script
         for name, magic in [
             ("elf", b"\x7fELF"),
             ("pe", b"MZ"),
@@ -1874,7 +1874,7 @@ class TestLifecycleGuardNeverRaises:
     def test_check_gateway_lifecycle_adversarial_script_values(self, tmp_path):
         """check_gateway_lifecycle must never raise anything but the
         documented GatewayLifecycleBlocked for junk script values."""
-        from cron.lifecycle_guard import (
+        from hermes_agent.cron.lifecycle_guard import (
             GatewayLifecycleBlocked,
             check_gateway_lifecycle,
         )

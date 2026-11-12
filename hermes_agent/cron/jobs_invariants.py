@@ -1,6 +1,6 @@
 """Execution-mode invariants every cron job definition must satisfy.
 
-``create_job`` and ``update_job`` (``cron/jobs.py``) both run these, so an update cannot
+``create_job`` and ``update_job`` (``hermes_agent/cron/jobs.py``) both run these, so an update cannot
 bypass a rule the create door enforces.
 """
 from typing import Optional
@@ -54,7 +54,7 @@ def validate_schedule_knobs(
     something to a recurring cron cadence, so accepting it silently would suggest an effect it
     cannot have.
     """
-    from cron.jobs_time import normalize_grace_minutes, normalize_timezone
+    from hermes_agent.cron.jobs_time import normalize_grace_minutes, normalize_timezone
 
     normalize_timezone(timezone)
     minutes = normalize_grace_minutes(grace_minutes)
@@ -73,6 +73,6 @@ def _script_is_command_line(script: str) -> bool:
     missing filename stays creatable (``hermes cron doctor`` reports it)."""
     if not any(ch.isspace() for ch in script.strip()):
         return False
-    from cron.lifecycle_guard import _resolve_script_path
+    from hermes_agent.cron.lifecycle_guard import _resolve_script_path
     path = _resolve_script_path(script)
     return path is None or not path.is_file()

@@ -331,7 +331,7 @@ class CronJobCreate(BaseModel):
     deliver: str = "local"
     # Finite repeat count (runs N times then completes); None = unlimited. Accepts the
     # same user-facing strings the CLI accepts ('forever'/'once'/'3'). Normalization and
-    # validation happen in cron.jobs.create_job via normalize_repeat_value — the shared
+    # validation happen in hermes_agent.cron.jobs.create_job via normalize_repeat_value — the shared
     # chokepoint with the CLI and update paths — so an unparseable value 400s there.
     repeat: Optional[int | str] = None
     skills: Optional[list[str]] = None
@@ -343,7 +343,7 @@ class CronJobCreate(BaseModel):
     enabled_toolsets: Optional[list[str]] = None
     workdir: Optional[str] = None
     no_agent: bool = False
-    # Validated in cron.jobs.create_job (unknown IANA zone / out-of-range grace -> 400).
+    # Validated in hermes_agent.cron.jobs.create_job (unknown IANA zone / out-of-range grace -> 400).
     timezone: Optional[str] = None
     grace_minutes: Optional[int | str] = None
     # Missed-run policy: true runs one catch-up, false skips; omitted follows the default.

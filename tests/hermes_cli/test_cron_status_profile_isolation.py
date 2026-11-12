@@ -29,9 +29,9 @@ import pytest
 
 @pytest.fixture()
 def tmp_cron_dir(tmp_path, monkeypatch):
-    monkeypatch.setattr("cron.jobs.CRON_DIR", tmp_path / "cron")
-    monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
-    monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
+    monkeypatch.setattr("hermes_agent.cron.jobs.CRON_DIR", tmp_path / "cron")
+    monkeypatch.setattr("hermes_agent.cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
+    monkeypatch.setattr("hermes_agent.cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
     return tmp_path
 
 
@@ -118,7 +118,7 @@ class TestCronStatusMissingHeartbeat:
         import io
         from contextlib import redirect_stdout
         import hermes_cli.cron as cron_cli
-        from cron.jobs import create_job
+        from hermes_agent.cron.jobs import create_job
 
         create_job(prompt="Test", schedule="every 1h")
 
@@ -129,9 +129,9 @@ class TestCronStatusMissingHeartbeat:
             patch("hermes_cli.gateway.find_gateway_pids", return_value=[4242]),
             patch("gateway.status.is_gateway_runtime_lock_active", return_value=True),
             patch("gateway.status.get_running_pid", return_value=4242),
-            patch("cron.jobs.get_ticker_heartbeat_age", return_value=None),
-            patch("cron.jobs.get_ticker_success_age", return_value=None),
-            patch("cron.jobs.TICKER_INTERVAL_SECONDS", 60),
+            patch("hermes_agent.cron.jobs.get_ticker_heartbeat_age", return_value=None),
+            patch("hermes_agent.cron.jobs.get_ticker_success_age", return_value=None),
+            patch("hermes_agent.cron.jobs.TICKER_INTERVAL_SECONDS", 60),
             # Gateway started a few seconds ago, ticker hasn't had its first tick yet
             patch("gateway.status._read_pid_record", return_value={"pid": 4242, "start_time": int(now)}),
             patch("gateway.status._get_process_start_time", return_value=int(now)),

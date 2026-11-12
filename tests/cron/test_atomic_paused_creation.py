@@ -1,14 +1,14 @@
 """Creation is either armed normally or durably paused before registration."""
 import json
 
-from cron import jobs
+from hermes_agent.cron import jobs
 from tools import cronjob_tools
 
 
 def test_paused_creation_is_inert_until_operator_action(tmp_path, monkeypatch, make_cron_provider):
     registered, writes = [], []
     provider = make_cron_provider(register_job=lambda job: registered.append(job["id"]))
-    monkeypatch.setattr("cron.scheduler_provider.resolve_cron_scheduler", lambda: provider)
+    monkeypatch.setattr("hermes_agent.cron.scheduler_provider.resolve_cron_scheduler", lambda: provider)
     save = jobs.save_jobs
 
     def observe(rows):

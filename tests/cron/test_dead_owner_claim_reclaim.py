@@ -11,7 +11,7 @@ Two-part fix under test here:
 1. ``hermes_cli.cron._job_action("run", ...)`` declares the channel stateless
    before invoking the cron API, so the background-dispatch path is gated off
    and the run executes synchronously to completion in the CLI process.
-2. ``cron.scheduler.tick`` periodically reaps execution rows whose owner
+2. ``hermes_agent.cron.scheduler.tick`` periodically reaps execution rows whose owner
    process is provably dead (``recover_interrupted_executions``), so a stale
    ``claimed`` row from a crashed/exited owner auto-clears without a gateway
    restart.
@@ -26,13 +26,13 @@ from unittest.mock import patch
 
 import pytest
 
-import cron.scheduler as scheduler_mod
+import hermes_agent.cron.scheduler as scheduler_mod
 from hermes_constants import hermes_home_key
 
 
 @pytest.fixture()
 def executions(monkeypatch, tmp_path):
-    import cron.executions as executions_mod
+    import hermes_agent.cron.executions as executions_mod
 
     monkeypatch.setattr(
         executions_mod, "EXECUTIONS_FILE", tmp_path / "cron" / "executions.db"
@@ -119,7 +119,7 @@ class TestTickReapsDeadOwnerClaims:
     def test_reap_is_throttled_between_ticks(self, monkeypatch, executions):
         calls = []
         monkeypatch.setattr(
-            "cron.executions.recover_interrupted_executions",
+            "hermes_agent.cron.executions.recover_interrupted_executions",
             lambda: calls.append(1) or 0,
         )
 
@@ -141,7 +141,7 @@ class TestTickReapsDeadOwnerClaims:
             raise RuntimeError("ledger unavailable")
 
         monkeypatch.setattr(
-            "cron.executions.recover_interrupted_executions", _boom
+            "hermes_agent.cron.executions.recover_interrupted_executions", _boom
         )
 
         assert _run_tick() == 0
@@ -211,7 +211,7 @@ def test_reap_throttle_is_profile_scoped(monkeypatch, tmp_path):
     """In multiplex mode each profile's tick must get its own reap scan: the
     first profile in a cycle must not consume a process-global throttle slot
     that starves every other profile."""
-    import cron.executions as executions_mod
+    import hermes_agent.cron.executions as executions_mod
 
     calls = []
     monkeypatch.setattr(

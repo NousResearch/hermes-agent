@@ -1,12 +1,12 @@
 """Suppressed automatic diagnostics retain failed jobs without invented delivery receipts."""
 import pytest
 
-from cron import executions, incidents, jobs, scheduler
+from hermes_agent.cron import executions, incidents, jobs, scheduler
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 
 
 def delivery_queue_rows():
-    from cron.delivery_queue import _connect
+    from hermes_agent.cron.delivery_queue import _connect
 
     conn = _connect()
     try:
@@ -42,7 +42,7 @@ def test_real_run_ledger_and_incident_match_actual_presentation(tmp_path, monkey
     monkeypatch.setattr(scheduler, "run_job", run)
     job = jobs.create_job(prompt="fixture only", schedule="every 1h", deliver="telegram:fixture")
     if external_worker:
-        from cron import delivery_queue
+        from hermes_agent.cron import delivery_queue
         execution = executions.create_execution(job["id"], source="fixture")
         job["execution_id"] = execution["id"]
         monkeypatch.setenv("_HERMES_CRON_EXTERNAL_WORKER", execution["id"])

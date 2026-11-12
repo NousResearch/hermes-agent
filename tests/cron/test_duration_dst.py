@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from cron import jobs
+from hermes_agent.cron import jobs
 
 
 @pytest.fixture(params=[

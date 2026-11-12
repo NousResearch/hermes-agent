@@ -2,7 +2,7 @@
 shutdown, and a job whose tool subprocess got killed by shutdown must
 never be reported as a successful run.
 
-Covers the cron/scheduler.py primitives directly:
+Covers the hermes_agent/cron/scheduler.py primitives directly:
   - get_running_job_ids() -- thread-safe snapshot the gateway drain reads
   - mark_running_jobs_interrupted() -- called by the gateway right after
     it force-kills tool subprocesses
@@ -21,7 +21,7 @@ import pytest
 def _reset_scheduler_state():
     """Every test starts from a clean slate and leaves one behind, since
     these sets are module-level globals shared across the test process."""
-    import cron.scheduler as sched
+    import hermes_agent.cron.scheduler as sched
 
     sched._running_job_ids.clear()
     sched._running_fire_owners.clear()
@@ -35,7 +35,7 @@ def _reset_scheduler_state():
 class TestGetRunningJobIds:
 
     def test_reflects_in_flight_jobs(self):
-        import cron.scheduler as sched
+        import hermes_agent.cron.scheduler as sched
 
         sched._running_job_ids.add(sched._inflight_key("job-1"))
         sched._running_job_ids.add(sched._inflight_key("job-2"))
@@ -48,7 +48,7 @@ class TestGetRunningJobIds:
         """Mutating _running_job_ids after the call must not change the
         already-returned snapshot -- callers (the gateway drain loop) rely
         on this to safely count in a tight polling loop."""
-        import cron.scheduler as sched
+        import hermes_agent.cron.scheduler as sched
 
         sched._running_job_ids.add(sched._inflight_key("job-1"))
         snapshot = sched.get_running_job_ids()
@@ -59,16 +59,16 @@ class TestGetRunningJobIds:
 
 class TestMarkRunningJobsInterrupted:
     def test_no_op_when_nothing_running(self):
-        import cron.scheduler as sched
+        import hermes_agent.cron.scheduler as sched
 
-        with patch("cron.scheduler.mark_job_run") as mock_mark:
+        with patch("hermes_agent.cron.scheduler.mark_job_run") as mock_mark:
             marked = sched.mark_running_jobs_interrupted("shutdown")
 
         assert marked == []
         mock_mark.assert_not_called()
 
     def test_marks_every_in_flight_job(self):
-        import cron.scheduler as sched
+        import hermes_agent.cron.scheduler as sched
 
         sched._running_job_ids.update(
             {sched._inflight_key("job-1"), sched._inflight_key("job-2")})
@@ -80,7 +80,7 @@ class TestMarkRunningJobsInterrupted:
             }
         )
 
-        with patch("cron.scheduler.mark_job_run", return_value=True) as mock_mark:
+        with patch("hermes_agent.cron.scheduler.mark_job_run", return_value=True) as mock_mark:
             marked = sched.mark_running_jobs_interrupted("gateway shutdown (final-cleanup)")
 
         assert sorted(marked) == ["job-1", "job-2"]
@@ -94,11 +94,11 @@ class TestMarkRunningJobsInterrupted:
             assert c.kwargs["expected_fire_owner"] in {"owner-1", "owner-2"}
 
     def test_sets_interrupted_flag_for_consumption_by_run_one_job(self):
-        import cron.scheduler as sched
+        import hermes_agent.cron.scheduler as sched
 
         sched._running_job_ids.add(sched._inflight_key("job-1"))
 
-        with patch("cron.scheduler.mark_job_run"):
+        with patch("hermes_agent.cron.scheduler.mark_job_run"):
             sched.mark_running_jobs_interrupted("shutdown")
 
         assert sched._inflight_key("job-1") in sched._interrupted_job_ids
@@ -107,7 +107,7 @@ class TestMarkRunningJobsInterrupted:
         """mark_job_run raising for one job (e.g. a jobs.json write race)
         must not prevent the rest from being marked -- this runs during
         shutdown, there's no retry window."""
-        import cron.scheduler as sched
+        import hermes_agent.cron.scheduler as sched
 
         sched._running_job_ids.update(
             {sched._inflight_key("job-1"), sched._inflight_key("job-2")})
@@ -124,14 +124,14 @@ class TestMarkRunningJobsInterrupted:
                 raise OSError("disk full")
             return True
 
-        with patch("cron.scheduler.mark_job_run", side_effect=_side_effect):
+        with patch("hermes_agent.cron.scheduler.mark_job_run", side_effect=_side_effect):
             marked = sched.mark_running_jobs_interrupted("shutdown")
 
         assert marked == ["job-2"]
 
     def test_stale_shutdown_cannot_clear_replacement_owner(self, tmp_path):
-        from cron import jobs
-        import cron.scheduler as sched
+        from hermes_agent.cron import jobs
+        import hermes_agent.cron.scheduler as sched
 
         profile_home = tmp_path / "profile"
         profile_home.mkdir()
@@ -163,7 +163,7 @@ class TestMarkRunningJobsInterrupted:
 
 class TestRunningFireOwnerRegistry:
     def test_run_one_job_registers_owner_only_while_active(self):
-        import cron.scheduler as sched
+        import hermes_agent.cron.scheduler as sched
 
         job = {
             "id": "owned-job",
@@ -176,14 +176,14 @@ class TestRunningFireOwnerRegistry:
             ]
             return True
 
-        with patch("cron.scheduler._run_with_fire_claim_heartbeat", side_effect=_observe_registry):
+        with patch("hermes_agent.cron.scheduler._run_with_fire_claim_heartbeat", side_effect=_observe_registry):
             assert sched.run_one_job(job) is True
 
         assert sched._inflight_key(job["id"]) not in sched._running_fire_owners
 
     def test_shutdown_sees_all_concurrent_direct_fire_owners(self, monkeypatch):
         """Direct entry points and replacement owners share one token registry."""
-        import cron.scheduler as sched
+        import hermes_agent.cron.scheduler as sched
 
         entered = threading.Barrier(3)
         release = threading.Event()
@@ -221,8 +221,8 @@ class TestRunningFireOwnerRegistry:
         assert "same-job" not in sched.get_running_job_ids()
 
     def test_shutdown_marks_each_owner_in_its_profile_store(self, monkeypatch, tmp_path):
-        import cron.jobs as cron_jobs
-        import cron.scheduler as sched
+        import hermes_agent.cron.jobs as cron_jobs
+        import hermes_agent.cron.scheduler as sched
 
         profile_a = tmp_path / "a"
         profile_b = tmp_path / "b"
@@ -259,7 +259,7 @@ class TestIsInterrupted:
 
 
     def test_does_not_clear_the_flag(self):
-        import cron.scheduler as sched
+        import hermes_agent.cron.scheduler as sched
 
         sched._interrupted_job_ids.add(sched._inflight_key("job-1"))
 
@@ -274,7 +274,7 @@ class TestIsInterrupted:
 class TestConsumeInterruptedFlag:
 
     def test_true_and_clears_when_marked(self):
-        import cron.scheduler as sched
+        import hermes_agent.cron.scheduler as sched
 
         sched._interrupted_job_ids.add(sched._inflight_key("job-1"))
 
@@ -294,7 +294,7 @@ class TestExecutionScopedInterruption:
     """
 
     def test_interruption_targets_only_the_interrupted_execution(self):
-        import cron.scheduler as sched
+        import hermes_agent.cron.scheduler as sched
 
         profile_home = sched._get_hermes_home().resolve()
         old_token = object()
@@ -302,7 +302,7 @@ class TestExecutionScopedInterruption:
             old_token: ("owner-1", profile_home),
         }
 
-        with patch("cron.scheduler.mark_job_run", return_value=True):
+        with patch("hermes_agent.cron.scheduler.mark_job_run", return_value=True):
             sched.mark_running_jobs_interrupted("shutdown")
 
         assert sched._is_interrupted("job-1", old_token) is True
@@ -314,14 +314,14 @@ class TestExecutionScopedInterruption:
         assert sched._is_interrupted("job-1", old_token) is False
 
     def test_only_owners_marks_only_targeted_executions(self):
-        import cron.scheduler as sched
+        import hermes_agent.cron.scheduler as sched
 
         profile_home = sched._get_hermes_home().resolve()
         token_a, token_b = object(), object()
         sched._running_fire_owners[sched._inflight_key("job-a")] = {token_a: ("owner-a", profile_home)}
         sched._running_fire_owners[sched._inflight_key("job-b")] = {token_b: ("owner-b", profile_home)}
 
-        with patch("cron.scheduler.mark_job_run", return_value=True) as mock_mark:
+        with patch("hermes_agent.cron.scheduler.mark_job_run", return_value=True) as mock_mark:
             marked = sched.mark_running_jobs_interrupted(
                 "dashboard shutdown",
                 only_owners={("job-a", "owner-a")},
@@ -336,14 +336,14 @@ class TestExecutionScopedInterruption:
     def test_replacement_execution_of_same_job_is_not_poisoned(self):
         """A replacement owner starting while the stale flag exists must
         complete through the normal mark path, not the interrupted one."""
-        import cron.scheduler as sched
+        import hermes_agent.cron.scheduler as sched
 
         profile_home = sched._get_hermes_home().resolve()
         stale_token = object()
         sched._running_fire_owners[sched._inflight_key("job-1")] = {
             stale_token: ("stale-owner", profile_home),
         }
-        with patch("cron.scheduler.mark_job_run", return_value=True):
+        with patch("hermes_agent.cron.scheduler.mark_job_run", return_value=True):
             sched.mark_running_jobs_interrupted("shutdown")
         sched._running_fire_owners.clear()
 
@@ -353,20 +353,20 @@ class TestExecutionScopedInterruption:
             "prompt": "do work",
             "fire_claim": {"by": "replacement-owner"},
         }
-        with patch("cron.scheduler.claim_dispatch", return_value=True), \
+        with patch("hermes_agent.cron.scheduler.claim_dispatch", return_value=True), \
              patch("agent.secret_scope.set_secret_scope", return_value=None), \
              patch("agent.secret_scope.build_profile_secret_scope", return_value={}), \
              patch("agent.secret_scope.reset_secret_scope"), \
              patch(
-                 "cron.scheduler.run_job",
+                 "hermes_agent.cron.scheduler.run_job",
                  return_value=(True, "full output", "final response", None),
              ), \
-             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
-             patch("cron.scheduler._is_cron_silence_response", return_value=False), \
-             patch("cron.scheduler._deliver_result", return_value=None), \
-             patch("cron.scheduler.fire_claim_fence"), \
-             patch("cron.scheduler.heartbeat_fire_claim", return_value=True), \
-             patch("cron.scheduler.mark_job_run", return_value=True) as mock_mark:
+             patch("hermes_agent.cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("hermes_agent.cron.scheduler._is_cron_silence_response", return_value=False), \
+             patch("hermes_agent.cron.scheduler._deliver_result", return_value=None), \
+             patch("hermes_agent.cron.scheduler.fire_claim_fence"), \
+             patch("hermes_agent.cron.scheduler.heartbeat_fire_claim", return_value=True), \
+             patch("hermes_agent.cron.scheduler.mark_job_run", return_value=True) as mock_mark:
             result = sched.run_one_job(job)
 
         assert result is True
@@ -375,7 +375,7 @@ class TestExecutionScopedInterruption:
 
 class TestCombinedCancelEvent:
     def test_or_semantics(self):
-        import cron.scheduler as sched
+        import hermes_agent.cron.scheduler as sched
 
         a, b = threading.Event(), threading.Event()
         combined = sched._CombinedCancelEvent(a, b)
@@ -384,7 +384,7 @@ class TestCombinedCancelEvent:
         assert combined.is_set() is True
 
     def test_set_propagates_to_all(self):
-        import cron.scheduler as sched
+        import hermes_agent.cron.scheduler as sched
 
         a, b = threading.Event(), threading.Event()
         combined = sched._CombinedCancelEvent(a, b)
@@ -392,7 +392,7 @@ class TestCombinedCancelEvent:
         assert a.is_set() and b.is_set()
 
     def test_run_one_job_forwards_external_cancel_event(self):
-        import cron.scheduler as sched
+        import hermes_agent.cron.scheduler as sched
 
         external = threading.Event()
         job = {"id": "job-x", "name": "x", "prompt": "p"}
@@ -428,23 +428,23 @@ class TestBaseExceptionThroughOwnerFencedFlow:
 
     def _patches(self, run_side_effect):
         return (
-            patch("cron.scheduler.claim_dispatch", return_value=True),
+            patch("hermes_agent.cron.scheduler.claim_dispatch", return_value=True),
             patch("agent.secret_scope.set_secret_scope", return_value=None),
             patch("agent.secret_scope.build_profile_secret_scope", return_value={}),
             patch("agent.secret_scope.reset_secret_scope"),
-            patch("cron.scheduler.run_job", side_effect=run_side_effect),
-            patch("cron.scheduler.heartbeat_fire_claim", return_value=True),
+            patch("hermes_agent.cron.scheduler.run_job", side_effect=run_side_effect),
+            patch("hermes_agent.cron.scheduler.heartbeat_fire_claim", return_value=True),
         )
 
     def test_cancelled_error_records_failure_and_reraises(self):
         import asyncio
 
-        import cron.scheduler as sched
+        import hermes_agent.cron.scheduler as sched
 
         p1, p2, p3, p4, p5, p6 = self._patches(asyncio.CancelledError())
         with p1, p2, p3, p4, p5, p6, \
-             patch("cron.scheduler.mark_job_run", return_value=True) as mock_mark, \
-             patch("cron.scheduler.finish_execution") as mock_finish:
+             patch("hermes_agent.cron.scheduler.mark_job_run", return_value=True) as mock_mark, \
+             patch("hermes_agent.cron.scheduler.finish_execution") as mock_finish:
             try:
                 sched.run_one_job(self._job())
                 raised = False
@@ -458,12 +458,12 @@ class TestBaseExceptionThroughOwnerFencedFlow:
         assert mock_finish.call_args.kwargs["success"] is False
 
     def test_keyboard_interrupt_records_failure_and_reraises(self):
-        import cron.scheduler as sched
+        import hermes_agent.cron.scheduler as sched
 
         p1, p2, p3, p4, p5, p6 = self._patches(KeyboardInterrupt())
         with p1, p2, p3, p4, p5, p6, \
-             patch("cron.scheduler.mark_job_run", return_value=True) as mock_mark, \
-             patch("cron.scheduler.finish_execution"):
+             patch("hermes_agent.cron.scheduler.mark_job_run", return_value=True) as mock_mark, \
+             patch("hermes_agent.cron.scheduler.finish_execution"):
             try:
                 sched.run_one_job(self._job())
                 raised = False
@@ -479,12 +479,12 @@ class TestBaseExceptionThroughOwnerFencedFlow:
         BaseException path must NOT write terminal state over it."""
         import asyncio
 
-        import cron.scheduler as sched
+        import hermes_agent.cron.scheduler as sched
 
         p1, p2, p3, p4, p5, p6 = self._patches(asyncio.CancelledError())
         with p1, p2, p3, p4, p5, p6, \
-             patch("cron.scheduler.mark_job_run", return_value=False) as mock_mark, \
-             patch("cron.scheduler.finish_execution"):
+             patch("hermes_agent.cron.scheduler.mark_job_run", return_value=False) as mock_mark, \
+             patch("hermes_agent.cron.scheduler.finish_execution"):
             try:
                 sched.run_one_job(self._job())
             except asyncio.CancelledError:
@@ -504,7 +504,7 @@ class TestCallerLossAfterClaimAcquisition:
     and block retries while that ownership is live."""
 
     def test_second_fire_cannot_claim_while_first_ownership_live(self, tmp_path):
-        from cron import jobs
+        from hermes_agent.cron import jobs
 
         with jobs.use_cron_store(tmp_path):
             job = jobs.create_job(prompt="x", schedule="every 5m", name="owned")
@@ -536,23 +536,23 @@ class TestRunOneJobHonoursInterruptedFlag:
         return {"id": job_id, "name": "test job", "prompt": "do work"}
 
     def test_success_path_skipped_when_interrupted(self):
-        import cron.scheduler as sched
+        import hermes_agent.cron.scheduler as sched
 
         job = self._make_job()
         sched._interrupted_job_ids.add(sched._inflight_key(job["id"]))
 
-        with patch("cron.scheduler.claim_dispatch", return_value=True), \
+        with patch("hermes_agent.cron.scheduler.claim_dispatch", return_value=True), \
              patch("agent.secret_scope.set_secret_scope", return_value=None), \
              patch("agent.secret_scope.build_profile_secret_scope", return_value={}), \
              patch("agent.secret_scope.reset_secret_scope"), \
              patch(
-                 "cron.scheduler.run_job",
+                 "hermes_agent.cron.scheduler.run_job",
                  return_value=(True, "full output", "final response", None),
              ), \
-             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
-             patch("cron.scheduler._is_cron_silence_response", return_value=False), \
-             patch("cron.scheduler._deliver_result", return_value=None), \
-             patch("cron.scheduler.mark_job_run") as mock_mark:
+             patch("hermes_agent.cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("hermes_agent.cron.scheduler._is_cron_silence_response", return_value=False), \
+             patch("hermes_agent.cron.scheduler._deliver_result", return_value=None), \
+             patch("hermes_agent.cron.scheduler.mark_job_run") as mock_mark:
             result = sched.run_one_job(job)
 
         assert result is True
@@ -571,27 +571,27 @@ class TestRunOneJobHonoursInterruptedFlag:
         eventual status write gets suppressed. Interrupted jobs must route
         through the same failure-summary delivery path a real failure
         would."""
-        import cron.scheduler as sched
+        import hermes_agent.cron.scheduler as sched
 
         job = dict(self._make_job(), deliver="telegram")
         sched._interrupted_job_ids.add(sched._inflight_key(job["id"]))
 
-        with patch("cron.scheduler.claim_dispatch", return_value=True), \
+        with patch("hermes_agent.cron.scheduler.claim_dispatch", return_value=True), \
              patch("agent.secret_scope.set_secret_scope", return_value=None), \
              patch("agent.secret_scope.build_profile_secret_scope", return_value={}), \
              patch("agent.secret_scope.reset_secret_scope"), \
              patch(
-                 "cron.scheduler.run_job",
+                 "hermes_agent.cron.scheduler.run_job",
                  return_value=(True, "full output", "a plausible final response", None),
              ), \
-             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("hermes_agent.cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
              patch(
-                 "cron.scheduler._summarize_cron_failure_for_delivery",
+                 "hermes_agent.cron.scheduler._summarize_cron_failure_for_delivery",
                  return_value="This run was interrupted.",
              ) as mock_summarize, \
-             patch("cron.scheduler._is_cron_silence_response", return_value=False), \
-             patch("cron.delivery_queue.enqueue", return_value={"status": "pending"}) as mock_deliver, \
-             patch("cron.scheduler.mark_job_run"):
+             patch("hermes_agent.cron.scheduler._is_cron_silence_response", return_value=False), \
+             patch("hermes_agent.cron.delivery_queue.enqueue", return_value={"status": "pending"}) as mock_deliver, \
+             patch("hermes_agent.cron.scheduler.mark_job_run"):
             result = sched.run_one_job(job)
 
         assert result is True
@@ -607,17 +607,17 @@ class TestRunOneJobHonoursInterruptedFlag:
 
 
     def test_exception_path_also_honours_interrupted_flag(self):
-        import cron.scheduler as sched
+        import hermes_agent.cron.scheduler as sched
 
         job = self._make_job()
         sched._interrupted_job_ids.add(sched._inflight_key(job["id"]))
 
-        with patch("cron.scheduler.claim_dispatch", return_value=True), \
+        with patch("hermes_agent.cron.scheduler.claim_dispatch", return_value=True), \
              patch("agent.secret_scope.set_secret_scope", return_value=None), \
              patch("agent.secret_scope.build_profile_secret_scope", return_value={}), \
              patch("agent.secret_scope.reset_secret_scope"), \
-             patch("cron.scheduler.run_job", side_effect=RuntimeError("boom")), \
-             patch("cron.scheduler.mark_job_run") as mock_mark:
+             patch("hermes_agent.cron.scheduler.run_job", side_effect=RuntimeError("boom")), \
+             patch("hermes_agent.cron.scheduler.mark_job_run") as mock_mark:
             result = sched.run_one_job(job)
 
         assert result is False

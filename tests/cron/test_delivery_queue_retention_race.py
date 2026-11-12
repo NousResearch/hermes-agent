@@ -6,7 +6,7 @@ import sys
 
 
 def test_enqueue_during_retention_never_recreates_delivered_request(tmp_path, monkeypatch):
-    from cron import delivery_queue as queue
+    from hermes_agent.cron import delivery_queue as queue
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     db = tmp_path / "deliveries.db"
@@ -28,7 +28,7 @@ def test_enqueue_during_retention_never_recreates_delivered_request(tmp_path, mo
                     [sys.executable, "-c", """
 import sqlite3
 import sys
-from cron import delivery_queue as queue
+from hermes_agent.cron import delivery_queue as queue
 queue.MAX_TERMINAL_DELIVERIES = 0
 try:
     with sqlite3.connect(sys.argv[1], timeout=0) as conn:

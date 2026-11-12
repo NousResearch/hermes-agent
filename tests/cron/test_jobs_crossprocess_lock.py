@@ -21,7 +21,7 @@ import time
 
 import pytest
 
-from cron import jobs
+from hermes_agent.cron import jobs
 
 
 # Repo root (parent of the ``cron`` package) so the child process can import it.

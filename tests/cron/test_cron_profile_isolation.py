@@ -46,9 +46,9 @@ def test_cron_storage_anchors_at_profile_home(tmp_path, monkeypatch):
     assert hermes_constants.get_hermes_home().resolve() == profile_home.resolve()
     assert hermes_constants.get_default_hermes_root().resolve() == root.resolve()
 
-    # cron/jobs.py computes HERMES_DIR from get_hermes_home() at import, so a
+    # hermes_agent/cron/jobs.py computes HERMES_DIR from get_hermes_home() at import, so a
     # fresh import under this env anchors the store at <profile>/cron.
-    from cron import jobs
+    from hermes_agent.cron import jobs
 
     importlib.reload(jobs)
     try:

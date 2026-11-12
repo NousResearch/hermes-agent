@@ -3,7 +3,7 @@ from datetime import timedelta
 
 import pytest
 
-from cron import jobs
+from hermes_agent.cron import jobs
 
 
 @pytest.mark.parametrize("catch_up", [True, False])

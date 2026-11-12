@@ -85,7 +85,7 @@ def test_plugin_blueprint_is_listed_by_slash_command_and_matches(homes):
 
 @pytest.mark.asyncio
 async def test_plugin_blueprint_in_api_catalog_and_instantiates_real_job(homes):
-    from cron.jobs import load_jobs
+    from hermes_agent.cron.jobs import load_jobs
 
     _write_plugin(homes["default"], "teamtools", _STANDUP)
 
@@ -132,7 +132,7 @@ async def test_plugin_blueprints_are_profile_scoped(homes):
 
 
 def test_plugin_cannot_shadow_builtin_and_bad_keys_are_rejected(homes, caplog):
-    from cron.blueprint_catalog import get_blueprint, list_blueprints
+    from hermes_agent.cron.blueprint_catalog import get_blueprint, list_blueprints
 
     body = textwrap.dedent(
         """
@@ -169,7 +169,7 @@ def test_plugin_cannot_shadow_builtin_and_bad_keys_are_rejected(homes, caplog):
     ],
 )
 def test_malformed_plugin_blueprint_is_warned_and_ignored(homes, caplog, fields, reason):
-    from cron.blueprint_catalog import list_blueprints
+    from hermes_agent.cron.blueprint_catalog import list_blueprints
 
     base = dict(title="T", description="d", schedule_template="0 9 * * *", prompt_template="hi")
     base.update(fields)
@@ -183,7 +183,7 @@ def test_malformed_plugin_blueprint_is_warned_and_ignored(homes, caplog, fields,
 
 @pytest.mark.asyncio
 async def test_job_from_plugin_blueprint_survives_plugin_disable(homes):
-    from cron.jobs import load_jobs
+    from hermes_agent.cron.jobs import load_jobs
     from hermes_cli.plugins import _reset_plugin_managers_for_tests
 
     _write_plugin(homes["default"], "teamtools", _STANDUP)

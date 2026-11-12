@@ -3,7 +3,7 @@
 A cron job that restarts/stops the gateway from inside the gateway (``hermes gateway restart``,
 ``launchctl kickstart ai.hermes.gateway``, ``systemctl restart hermes-gateway``) kills the process,
 the supervisor revives it, auto-resume re-runs the turn: a SIGTERM-respawn loop.
-``cron.jobs.create_job`` rejects such specs on every creation path. Patterns are command-shaped —
+``hermes_agent.cron.jobs.create_job`` rejects such specs on every creation path. Patterns are command-shaped —
 anchored on concrete command identifiers — so they cannot fire on prose. Defence-in-depth layer.
 """
 
@@ -838,7 +838,7 @@ def _resolved_or_nothing(candidate: str, cwd: Optional[str]) -> Iterator[Path]:
 
 
 def _resolve_script_path(script_path: str) -> Optional[Path]:
-    """Resolve a cron ``script`` value the way ``cron.scheduler`` does (relative paths live under
+    """Resolve a cron ``script`` value the way ``hermes_agent.cron.scheduler`` does (relative paths live under
     ``<HERMES_HOME>/scripts/``) so the guard scans the file that will actually run."""
     from hermes_constants import get_hermes_home
 

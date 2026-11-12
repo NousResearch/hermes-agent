@@ -359,7 +359,7 @@ class TestRealBuilders:
 
 class TestCronBuilder:
     def _prompts(self, jobs):
-        from cron.scheduler import _build_job_prompt
+        from hermes_agent.cron.scheduler import _build_job_prompt
 
         with patch(
             "agent.skill_bundles.resolve_bundle_command_key", return_value=None

@@ -5,14 +5,14 @@ import os
 import subprocess
 import sys
 
-from cron import executions, jobs, scheduler_authority
+from hermes_agent.cron import executions, jobs, scheduler_authority
 
 
 def test_live_firer_journal_survives_until_its_execution_can_settle(tmp_path, monkeypatch):
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     with jobs.use_cron_store(tmp_path / 'cron'):
         job = jobs.create_job(prompt='report', schedule='every 1h', deliver='local')
-        code = ('import sys; from cron.executions import create_execution, mark_execution_running; '
+        code = ('import sys; from hermes_agent.cron.executions import create_execution, mark_execution_running; '
                 f'row=create_execution({job["id"]!r},source="receipt-fixture"); '
                 'mark_execution_running(row["id"]); print(row["id"],flush=True); sys.stdin.read()')
         child = subprocess.Popen([sys.executable, '-c', code], env=dict(os.environ),

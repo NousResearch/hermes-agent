@@ -112,20 +112,20 @@ def test_same_second_reruns_get_unique_dirs(curator_env):
 # cron job that listed X in its ``skills`` field would fail to load X at
 # run time — the scheduler logs a warning and skips it, so the scheduled
 # job runs without the instructions it was scheduled to follow. These
-# tests verify that _write_run_report calls into cron.jobs to repair
+# tests verify that _write_run_report calls into hermes_agent.cron.jobs to repair
 # those references and records what it did in both run.json and
 # cron_rewrites.json.
 
 
 @pytest.fixture
 def curator_env_with_cron(curator_env, monkeypatch):
-    """Extend curator_env with an initialized + repointed cron.jobs module."""
+    """Extend curator_env with an initialized + repointed hermes_agent.cron.jobs module."""
     home = curator_env["home"]
     (home / "cron").mkdir(exist_ok=True)
     (home / "cron" / "output").mkdir(exist_ok=True)
 
     import importlib
-    import cron.jobs as jobs_mod
+    import hermes_agent.cron.jobs as jobs_mod
     importlib.reload(jobs_mod)
     monkeypatch.setattr(jobs_mod, "HERMES_DIR", home)
     monkeypatch.setattr(jobs_mod, "CRON_DIR", home / "cron")

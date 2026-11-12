@@ -45,7 +45,7 @@ def test_cron_tick_fails_only_that_fire_and_never_runs_on_defaults(tmp_path, mon
     """``_load_cron_job_config`` keeps refusing defaults (the SystemExit passes its ``except
     Exception``); ``run_job`` — the fire's owner — turns it into this fire's failure result."""
     import run_agent  # run_job imports it; its import-time dotenv load reads config
-    from cron import scheduler
+    from hermes_agent.cron import scheduler
     monkeypatch.setattr("hermes_cli.config_backend.config_exists", _outage)
     with pytest.raises(ConfigBackendUnavailable):
         scheduler._load_cron_job_config({"id": "j", "model": "m"}, "j", "job")
@@ -65,7 +65,7 @@ def test_cron_tick_fails_only_that_fire_and_never_runs_on_defaults(tmp_path, mon
 def test_cron_job_body_records_the_outage_and_keeps_the_ticker(monkeypatch, tmp_path):
     """The body owner (``_run_one_job_body``) records a fire that escaped with the outage as failed
     and returns, instead of re-raising it into the ticker thread like a real SystemExit."""
-    from cron import executions, jobs, scheduler
+    from hermes_agent.cron import executions, jobs, scheduler
     monkeypatch.setattr(scheduler, "run_job", lambda job, **kw: _outage())
     marked = []
     real_mark = scheduler.mark_job_run
@@ -83,8 +83,8 @@ def test_cron_pin_refuses_instead_of_dropping_the_lock(monkeypatch, tmp_path):
     """``pinned=True`` reads the main model; with the plane down that is an invalid request
     (ValueError, the create/update path's refusal), never ``(None, None)`` = silently unpinned
     and never a SystemExit out of the cronjob tool or RPC."""
-    from cron import jobs
-    from cron.jobs_model_pin import _main_model_pin
+    from hermes_agent.cron import jobs
+    from hermes_agent.cron.jobs_model_pin import _main_model_pin
     monkeypatch.setattr("hermes_cli.config_backend.config_exists", _outage)
     with pytest.raises(ValueError, match="cannot pin the job to the main model.*HTTP 503"):
         _main_model_pin()

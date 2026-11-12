@@ -39,7 +39,7 @@ def test_cron_bot_chat_delivery_creates_the_missing_bot_chat_and_admits(tmp_path
         monkeypatch.setenv('HERMES_HOME', str(home))
         monkeypatch.setattr(Path, 'home', lambda: user)
         with daemon(root, home, env, barrier=False):
-            from cron.scheduler_delivery import _deliver_to_bot_chat
+            from hermes_agent.cron.scheduler_delivery import _deliver_to_bot_chat
             job = {'id': 'digest', 'name': 'Digest', 'execution_id': 'run-1'}
             first = _deliver_to_bot_chat(job, 'FIRST_PAYLOAD', '')
             receipt = job['_bot_chat_delivery_receipts']['bot-chat:(own)']

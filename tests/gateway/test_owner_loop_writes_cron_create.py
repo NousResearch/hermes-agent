@@ -6,7 +6,7 @@ import threading
 import time
 from types import SimpleNamespace
 
-from cron import jobs
+from hermes_agent.cron import jobs
 from gateway import run, session_cron
 from gateway.config import GatewayConfig
 from gateway.session import SessionStore

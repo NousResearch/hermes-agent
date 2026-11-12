@@ -1046,7 +1046,7 @@ class TestNativeEnvironmentContracts:
         Independent audit of every real launcher producer (Electron
         ``apps/desktop/electron/main.ts``,
         ``gateway/run.py::_ensure_windows_gateway_venv_imports``,
-        ``cron/scheduler.py::_windows_cron_python_invocation``,
+        ``hermes_agent/cron/scheduler.py::_windows_cron_python_invocation``,
         ``hermes_agent/tui_gateway/host_supervisor.py``) shows they all inject the exact
         repo root and/or the venv site-packages — none injects
         ``<repo>/tools`` or another direct child as an independent

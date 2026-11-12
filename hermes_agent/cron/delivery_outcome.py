@@ -1,6 +1,6 @@
 """Write a queued cron delivery's terminal outcome back onto the run that queued it.
 
-An agent run hands its send to ``cron.delivery_queue`` and books ``last_status =
+An agent run hands its send to ``hermes_agent.cron.delivery_queue`` and books ``last_status =
 "delivery_queued"`` / ledger ``delivery_outcome = "queued"``. Once a gateway drain sends,
 refuses, suppresses or fences the send ``unknown``, the job record and the execution
 ledger must carry the real result (main's inline ``ok``/``delivered`` and
@@ -29,8 +29,8 @@ _LEDGER_OUTCOME = {
 def _settle_job_record(job_id: str, execution_id: str, delivery_error: Optional[str]) -> bool:
     """Stamp the outcome onto the job only while *execution_id* is still its current run:
     the ledger's latest attempt for the job AND the job's latest recorded completion."""
-    from cron.executions import latest_execution
-    from cron.jobs import _with_job, save_jobs
+    from hermes_agent.cron.executions import latest_execution
+    from hermes_agent.cron.jobs import _with_job, save_jobs
 
     latest = latest_execution(job_id)
     if latest is None or latest.get("id") != execution_id:
@@ -55,7 +55,7 @@ def _settle_job_record(job_id: str, execution_id: str, delivery_error: Optional[
 
 def _terminal(execution_id: str) -> Optional[tuple[str, Optional[str]]]:
     """``(ledger_outcome, delivery_error)`` once the queue row is terminal, else None."""
-    from cron.delivery_queue import get_status
+    from hermes_agent.cron.delivery_queue import get_status
 
     row = get_status(str(execution_id))
     if not row or row["status"] not in _LEDGER_OUTCOME:
@@ -79,7 +79,7 @@ def settle_queued_delivery(job_id: Optional[str], execution_id: Optional[str]) -
     terminal = _terminal(str(execution_id))
     if terminal is None:
         return False
-    from cron.executions import settle_delivery_outcome
+    from hermes_agent.cron.executions import settle_delivery_outcome
 
     settle_delivery_outcome(str(execution_id), terminal[0])
     _settle_job_record(str(job_id), str(execution_id), terminal[1])

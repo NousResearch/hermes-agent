@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 import hermes_time
 import pytest
 
-from cron import jobs
+from hermes_agent.cron import jobs
 
 
 NEW_YORK = ZoneInfo("America/New_York")
@@ -61,7 +61,7 @@ def test_fold_one_interval_is_not_due_during_fold_zero(dst_cron_store, monkeypat
 
 def test_fold_hour_timers_measure_real_elapsed_time(dst_cron_store, monkeypatch):
     """Claim ages and re-run delays count real seconds across the repeated hour."""
-    from cron import unreachable_retry
+    from hermes_agent.cron import unreachable_retry
 
     now = _instant(6, 2)  # 01:02 EST, fold=1
     claimed = _instant(5, 58)  # 01:58 EDT, fold=0: four real minutes earlier

@@ -91,7 +91,7 @@ def canonical_bot(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize('phase', ['queued', 'settled'])
 def test_cron_tracks_real_canonical_receipt(canonical_bot, phase):
-    from cron.scheduler_delivery import _deliver_to_bot_chat
+    from hermes_agent.cron.scheduler_delivery import _deliver_to_bot_chat
 
     bot = canonical_bot
     job = {'id': 'owned-cron', 'name': 'Receipt check', 'execution_id': 'one-owned-execution'}

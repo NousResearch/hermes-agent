@@ -1,6 +1,6 @@
 """External cron workers must see plugin-registered secret sources (#121929).
 
-``python -m cron.scheduler --external-worker-file`` starts with the builtin secret-source
+``python -m hermes_agent.cron.scheduler --external-worker-file`` starts with the builtin secret-source
 registry alone; a plugin source (``ctx.register_secret_source()``) only exists after plugin
 discovery, so ``hydrate_profile_secret_sources`` hydrated nothing and agent-mode jobs died at
 credential resolution. Discovery must run under the payload's home override so a multiplexed
@@ -59,7 +59,7 @@ def homes(tmp_path, monkeypatch):
 
 def test_worker_hydrates_owning_profile_plugin_secret_source(homes, tmp_path, monkeypatch):
     _launch, profile = homes
-    from cron import scheduler
+    from hermes_agent.cron import scheduler
 
     payload = tmp_path / "payload.json"
     payload.write_text(
@@ -68,7 +68,7 @@ def test_worker_hydrates_owning_profile_plugin_secret_source(homes, tmp_path, mo
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        "cron.executions.adopt_claimed_execution",
+        "hermes_agent.cron.executions.adopt_claimed_execution",
         lambda execution_id: {"id": execution_id, "status": "running"},
     )
     scopes = []

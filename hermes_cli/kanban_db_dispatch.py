@@ -2864,7 +2864,7 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     # The worker is `-m hermes_cli.kanban_worker_client` with no console-script bootstrap, and the scrub
     # above strips our PYTHONPATH entries, so a PYTHONPATH-launched dispatcher's child died on
     # `No module named 'hermes_cli'` (#112729). Pinned last, after every other env decision.
-    from cron.scheduler_worker_env import pin_hermes_tree_on_pythonpath
+    from hermes_agent.cron.scheduler_worker_env import pin_hermes_tree_on_pythonpath
     env = pin_hermes_tree_on_pythonpath(env, Path(project_root_str()))
     # A worker spawned by a managed systemd gateway must leave the gateway's
     # cgroup before startup; otherwise restarting the service kills the worker

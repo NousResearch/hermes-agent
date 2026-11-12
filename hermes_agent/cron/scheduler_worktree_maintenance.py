@@ -1,7 +1,7 @@
-"""Process-wide coordination for the cron tick's worktree prune (``cron.scheduler`` runs in here).
+"""Process-wide coordination for the cron tick's worktree prune (``hermes_agent.cron.scheduler`` runs in here).
 
-One process ticks every served profile (``cron/AGENTS.md``), so the per-profile throttle in
-``cron.scheduler`` legitimately lets each profile decide it is due, and each due profile gets its
+One process ticks every served profile (``hermes_agent/cron/AGENTS.md``), so the per-profile throttle in
+``hermes_agent.cron.scheduler`` legitimately lets each profile decide it is due, and each due profile gets its
 own ``cron-worktree-prune`` thread. Those threads used to fork ``git`` side by side, which starved a
 338-profile gateway's event loop until the liveness watchdog exited 75 (#143255). Two guards:
 

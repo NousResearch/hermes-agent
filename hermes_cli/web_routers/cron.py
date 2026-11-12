@@ -52,9 +52,9 @@ def _job_not_found() -> HTTPException:
 
 
 def _normalize_dashboard_cron_updates(updates: dict[str, Any], profile_home: Path) -> dict[str, Any]:
-    """Normalize dashboard JSON into cron.jobs.update_job's storage shape.
+    """Normalize dashboard JSON into hermes_agent.cron.jobs.update_job's storage shape.
 
-    Stays in the dashboard adapter layer on purpose: cron/jobs.py is the source
+    Stays in the dashboard adapter layer on purpose: hermes_agent/cron/jobs.py is the source
     of truth for scheduling; this only translates form payloads into shapes the
     core functions already accept.
     """
@@ -140,7 +140,7 @@ def _list_cron_jobs_sync(profile: str = "all"):
         if not isinstance(job, dict):
             continue
         jid = job.get("id") or job.get("job_id")
-        # cron.jobs._normalize_job_record() fills a missing id with the literal
+        # hermes_agent.cron.jobs._normalize_job_record() fills a missing id with the literal
         # sentinel string "unknown" — which is truthy, so a plain `if not jid`
         # check would NOT catch it and two genuinely different id-less jobs from
         # different profiles would collapse into one under this shared sentinel
@@ -298,7 +298,7 @@ def _owner_profile_executions(canonical_job_id: str) -> list[dict[str, Any]]:
     the owner-home scope so it opens the OWNER's cron/executions.db.
     """
     try:
-        from cron.executions import _TERMINAL_STATES, list_executions
+        from hermes_agent.cron.executions import _TERMINAL_STATES, list_executions
 
         rows = list_executions(job_id=canonical_job_id, limit=100)
     except Exception:
@@ -363,7 +363,7 @@ def _list_cron_output_runs(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """SessionDB-less run records for jobs that never create agent sessions: ``(docs, attempts)``.
 
-    Script-only (no_agent) jobs deliberately skip SessionDB (cron/scheduler.run_job),
+    Script-only (no_agent) jobs deliberately skip SessionDB (hermes_agent/cron/scheduler.run_job),
     so their completed runs are invisible to the run-history endpoint. Their
     output docs (one .md per fire under cron/output/<job_id>/) and the execution
     ledger (one row per fire) are the only per-run records. ``docs`` are rows in
@@ -433,7 +433,7 @@ def _live_inflight_execution(canonical_job_id: str) -> Optional[dict[str, Any]]:
     Must run inside the owner-home scope so it reads the OWNER's executions.db.
     """
     try:
-        from cron.executions import live_inflight_execution
+        from hermes_agent.cron.executions import live_inflight_execution
 
         return live_inflight_execution(canonical_job_id)
     except Exception:
@@ -766,7 +766,7 @@ async def get_cron_delivery_targets(profile: Optional[str] = None):
     silently loses every configured platform."""
     targets = [{"id": "local", "name": "Local (save only)", "home_target_set": True, "home_env_var": None}]
     try:
-        from cron.scheduler_delivery import cron_delivery_targets
+        from hermes_agent.cron.scheduler_delivery import cron_delivery_targets
 
         with _config_profile_scope(profile):
             targets.extend(cron_delivery_targets())
@@ -902,13 +902,13 @@ def _blueprint_catalog_sync(profile: Optional[str]) -> list:
     """Built-in + ``profile``'s plugin blueprints, with the ``deliver`` slot's options rewritten
     from that profile's configured gateway platforms. Plugin discovery can import plugin code, so
     this runs off the event loop, inside the profile scope that picks the plugin manager."""
-    from cron.blueprint_catalog import blueprint_catalog_entry, list_blueprints
+    from hermes_agent.cron.blueprint_catalog import blueprint_catalog_entry, list_blueprints
 
     with _config_profile_scope(profile):  # an unknown ?profile= raises the scope's 404
         catalog = list_blueprints()
         deliver_options = None
         try:
-            from cron.scheduler_delivery import cron_delivery_targets
+            from hermes_agent.cron.scheduler_delivery import cron_delivery_targets
 
             platforms = [t["id"] for t in cron_delivery_targets() if t.get("id")]
             deliver_options = ["origin", "local", *platforms]
@@ -939,7 +939,7 @@ async def list_cron_blueprints(profile: Optional[str] = None):
 
 
 def _blueprint_for_profile(key: str, profile: Optional[str]):
-    from cron.blueprint_catalog import get_blueprint
+    from hermes_agent.cron.blueprint_catalog import get_blueprint
 
     with _config_profile_scope(profile):
         return get_blueprint(key)
@@ -949,7 +949,7 @@ def _blueprint_for_profile(key: str, profile: Optional[str]):
 async def instantiate_blueprint(body: AutomationBlueprintInstantiate, profile: str = "default"):
     """Fill a blueprint's slots and create the cron job (form-submit path)."""
     try:
-        from cron.blueprint_catalog import BlueprintFillError, fill_blueprint
+        from hermes_agent.cron.blueprint_catalog import BlueprintFillError, fill_blueprint
 
         blueprint = await _run_cron_dashboard_io(_blueprint_for_profile, body.blueprint, profile)
         if blueprint is None:

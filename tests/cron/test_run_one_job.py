@@ -12,7 +12,7 @@ extracted helper directly.
 """
 import pytest
 
-import cron.scheduler as s
+import hermes_agent.cron.scheduler as s
 
 
 def _patch_pipeline(monkeypatch, *, success=True, output="out", final="final response",
@@ -38,7 +38,7 @@ def _patch_pipeline(monkeypatch, *, success=True, output="out", final="final res
 
     monkeypatch.setattr(s, "run_job", fake_run_job)
     monkeypatch.setattr(s, "save_job_output", fake_save)
-    monkeypatch.setattr("cron.delivery_queue.enqueue", fake_deliver)
+    monkeypatch.setattr("hermes_agent.cron.delivery_queue.enqueue", fake_deliver)
     monkeypatch.setattr(s, "mark_job_run", fake_mark)
     return calls
 
@@ -89,7 +89,7 @@ def test_run_one_job_agent_declared_failure_is_delivered_verbatim(monkeypatch):
     _patch_pipeline(monkeypatch, final=f"[CRON_FAILURE]\n{evidence}")
     # Delivery rides the durable queue on the canonical path; the composed content is what lands.
     monkeypatch.setattr(
-        "cron.delivery_queue.enqueue",
+        "hermes_agent.cron.delivery_queue.enqueue",
         lambda execution_id, job, content, **kw: delivered.append(content) or {"status": "pending"})
 
     s.run_one_job({"id": "verbatim", "name": "nightly export", "deliver": "telegram"})
@@ -151,7 +151,7 @@ def test_run_one_job_exception_delivers_failure_alert(monkeypatch):
     assert len(delivered) == 1 and delivered[0][0] == "j3"
     # The notice carries the classifier verdict's gloss from the copy table (whatever its wording),
     # never the raw HTTP code as the lead, plus a retry command.
-    from cron.scheduler_failure_copy import _provider_failure_cause, classify_cron_failure_reason
+    from hermes_agent.cron.scheduler_failure_copy import _provider_failure_cause, classify_cron_failure_reason
     gloss = _provider_failure_cause(classify_cron_failure_reason("Gemini HTTP 503 (UNAVAILABLE)"))
     assert gloss and gloss in delivered[0][1]
     assert not delivered[0][1].lstrip("⚠️ ").startswith("Gemini HTTP 503")
@@ -402,7 +402,7 @@ def test_run_one_job_installs_secret_scope_under_multiplex(monkeypatch, tmp_path
 
     monkeypatch.setattr(s, "run_job", fake_run_job)
     monkeypatch.setattr(s, "save_job_output", lambda jid, out: f"/tmp/{jid}.txt")
-    monkeypatch.setattr("cron.delivery_queue.enqueue", fake_deliver)
+    monkeypatch.setattr("hermes_agent.cron.delivery_queue.enqueue", fake_deliver)
     monkeypatch.setattr(s, "mark_job_run", lambda *a, **k: None)
 
     ss.set_multiplex_active(True)

@@ -8,7 +8,7 @@ import contextlib
 import logging
 from typing import Any, Dict, List
 
-logger = logging.getLogger("cron.chronos")
+logger = logging.getLogger("hermes_agent.cron.chronos")
 
 _PROVISION_PATH = "/api/agent-cron/provision"
 _CANCEL_PATH = "/api/agent-cron/cancel"

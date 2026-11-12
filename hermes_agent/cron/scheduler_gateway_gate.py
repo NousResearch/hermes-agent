@@ -48,7 +48,7 @@ def _gateway_unavailable(home) -> str | None:
 def _note_fire_refused(job_ids, detail: str) -> None:
     """Stamp ``last_fire_error`` (shown by ``hermes cron list``) and drop the dispatch marks the
     due scan just wrote: the slot was never handed over, so nothing must "restore" or "reclaim" it."""
-    from cron.jobs import _hermes_now, _jobs_lock, load_jobs, save_jobs
+    from hermes_agent.cron.jobs import _hermes_now, _jobs_lock, load_jobs, save_jobs
 
     ids = set(job_ids)
     with _jobs_lock():

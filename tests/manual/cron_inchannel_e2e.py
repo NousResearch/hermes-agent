@@ -45,8 +45,8 @@ def _fresh_home():
 HOME = _fresh_home()
 
 # Import AFTER HERMES_HOME is set.
-import cron.scheduler as sched
-from cron import scheduler_delivery as sched_delivery
+import hermes_agent.cron.scheduler as sched
+from hermes_agent.cron import scheduler_delivery as sched_delivery
 from gateway import mirror
 from gateway.config import GatewayConfig, Platform
 from gateway.session import SessionStore, SessionSource, build_session_key

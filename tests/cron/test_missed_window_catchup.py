@@ -26,7 +26,7 @@ REPO = Path(__file__).resolve().parents[2]
 _CRASH_BEFORE_DISPATCH = """
 import os, sys
 sys.path.insert(0, sys.argv[1])
-import cron.scheduler as S
+import hermes_agent.cron.scheduler as S
 S.create_execution = lambda *a, **k: os._exit(137)  # SIGKILL in the advance→claim window
 S.tick(verbose=False, sync=True)
 """
@@ -40,9 +40,9 @@ def slot_env(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.delenv("HERMES_MACHINE_ID", raising=False)
 
-    import cron.executions as E
-    import cron.jobs as J
-    import cron.scheduler as S
+    import hermes_agent.cron.executions as E
+    import hermes_agent.cron.jobs as J
+    import hermes_agent.cron.scheduler as S
 
     monkeypatch.setattr(J, "HERMES_DIR", home)
     monkeypatch.setattr(J, "CRON_DIR", home / "cron")
@@ -95,7 +95,7 @@ class TestMissedWindowCatchUp:
         assert slot_env["fires"]() == 1, "occurrence lost in the restart gap must fire once"
         row = E.latest_execution(job_id)
         assert row["status"] == "completed"
-        from cron.occurrences import scheduled_instant
+        from hermes_agent.cron.occurrences import scheduled_instant
         assert row["scheduled_instant"] == scheduled_instant(slot), "restored slot keeps its identity"
 
         S.tick(verbose=False, sync=True)

@@ -20,10 +20,10 @@ def temp_home(tmp_path, monkeypatch):
 
 
 def test_notify_helper_calls_provider_on_jobs_changed(monkeypatch):
-    """cron.scheduler._notify_provider_jobs_changed resolves the provider and
+    """hermes_agent.cron.scheduler._notify_provider_jobs_changed resolves the provider and
     calls on_jobs_changed exactly once."""
-    import cron.scheduler_provider as sp
-    import cron.scheduler as sched
+    import hermes_agent.cron.scheduler_provider as sp
+    import hermes_agent.cron.scheduler as sched
 
     calls = []
 
@@ -49,8 +49,8 @@ def test_create_registers_first_trigger_with_active_provider(
     temp_home, monkeypatch, make_cron_provider
 ):
     """A successful create is not reported until the provider sees the job."""
-    import cron.scheduler_provider as sp
-    import cron.scheduler as sched
+    import hermes_agent.cron.scheduler_provider as sp
+    import hermes_agent.cron.scheduler as sched
 
     registered = []
     provider = make_cron_provider(register_job=registered.append)
@@ -69,9 +69,9 @@ def test_create_failure_preserves_job_and_hides_provider_details(
     temp_home, monkeypatch, make_cron_provider
 ):
     """Registration failure is explicit without losing the durable local job."""
-    from cron import jobs
-    import cron.scheduler_provider as sp
-    import cron.scheduler as sched
+    from hermes_agent.cron import jobs
+    import hermes_agent.cron.scheduler_provider as sp
+    import hermes_agent.cron.scheduler as sched
 
     provider = make_cron_provider(register_job=_fail_registration, name="failing")
     monkeypatch.setattr(sp, "resolve_cron_scheduler", lambda: provider)
@@ -95,7 +95,7 @@ def test_tool_create_registers_provider_before_reporting_success(
     temp_home, monkeypatch, make_cron_provider
 ):
     """The model-tool success response includes a provider-registered job."""
-    import cron.scheduler_provider as sp
+    import hermes_agent.cron.scheduler_provider as sp
 
     registered = []
     provider = make_cron_provider(register_job=registered.append, name="recording")
@@ -116,7 +116,7 @@ def test_tool_create_reports_partial_registration_failure(
     temp_home, monkeypatch, make_cron_provider
 ):
     """The model tool must not claim a remotely unregistered job succeeded."""
-    import cron.scheduler_provider as sp
+    import hermes_agent.cron.scheduler_provider as sp
 
     provider = make_cron_provider(register_job=_fail_registration, name="failing")
     monkeypatch.setattr(sp, "resolve_cron_scheduler", lambda: provider)

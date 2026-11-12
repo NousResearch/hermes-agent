@@ -15,8 +15,8 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-from cron import jobs, scheduler
-from cron.scheduler_provider import InProcessCronScheduler
+from hermes_agent.cron import jobs, scheduler
+from hermes_agent.cron.scheduler_provider import InProcessCronScheduler
 if sys.argv[1] == 'builtin':
     scheduler.tick(verbose=False, sync=True)
 else:
@@ -25,7 +25,7 @@ else:
         if sys.argv[1] != 'worker':
             provider.fire_due(job['id'], force=sys.argv[1] == 'manual')
             continue
-        from cron.executions import mark_execution_handoff_pending
+        from hermes_agent.cron.executions import mark_execution_handoff_pending
         claim = provider.claim_fire(job['id'])
         if claim is None:
             continue
@@ -35,7 +35,7 @@ else:
         ack = home / (claim['execution_id'] + '.ready')
         payload.write_text(json.dumps({'job': claim, 'profile_home': str(home),
                                        'multiplex_active': False}))
-        subprocess.run([sys.executable, '-m', 'cron.scheduler',
+        subprocess.run([sys.executable, '-m', 'hermes_agent.cron.scheduler',
                         '--external-worker-file', str(payload), '--ack-file', str(ack)],
                        stdin=subprocess.DEVNULL, check=True, timeout=60)
         assert json.loads(ack.read_text())['pid'] != os.getpid()
@@ -98,9 +98,9 @@ def test_completed_occurrence_survives_restart_and_prestamp_rollback(tmp_path, m
 
 def test_ledger_migration_and_completion_identity(tmp_path, monkeypatch):
     import sqlite3
-    from cron import executions, jobs
-    from cron.occurrences import completed_occurrence
-    from cron.scheduler_provider import InProcessCronScheduler
+    from hermes_agent.cron import executions, jobs
+    from hermes_agent.cron.occurrences import completed_occurrence
+    from hermes_agent.cron.scheduler_provider import InProcessCronScheduler
 
     db = tmp_path / 'executions.db'
     monkeypatch.setattr(executions, 'EXECUTIONS_FILE', db)
@@ -163,8 +163,8 @@ def test_ledger_migration_and_completion_identity(tmp_path, monkeypatch):
 def test_completion_before_occurrence_does_not_prove_slot_completed(tmp_path, monkeypatch):
     from datetime import datetime, timezone
 
-    from cron import executions
-    from cron.occurrences import completed_occurrence
+    from hermes_agent.cron import executions
+    from hermes_agent.cron.occurrences import completed_occurrence
 
     monkeypatch.setattr(executions, 'EXECUTIONS_FILE', tmp_path / 'executions.db')
     slot = '2026-01-05T00:00:00+00:00'
@@ -188,7 +188,7 @@ def test_completed_occurrence_skip_names_job_slot_and_row(tmp_path, monkeypatch,
     import logging
     from datetime import timedelta
 
-    from cron import executions, jobs
+    from hermes_agent.cron import executions, jobs
     from hermes_time import now
 
     monkeypatch.setattr(executions, 'EXECUTIONS_FILE', tmp_path / 'executions.db')
@@ -201,12 +201,12 @@ def test_completed_occurrence_skip_names_job_slot_and_row(tmp_path, monkeypatch,
         completed = executions.create_execution(stored['id'], source='builtin', scheduled_instant=slot)
         executions.finish_execution(completed['id'], success=True)
 
-        with caplog.at_level(logging.WARNING, logger='cron.occurrences'):
+        with caplog.at_level(logging.WARNING, logger='hermes_agent.cron.occurrences'):
             assert jobs.get_due_jobs() == []
 
         assert jobs.load_jobs()[0]['next_run_at'] != slot
     skip = [r.getMessage() for r in caplog.records if completed['id'] in r.getMessage()]
     assert len(skip) == 1, caplog.text
     assert stored['id'] in skip[0]
-    from cron.occurrences import scheduled_instant
+    from hermes_agent.cron.occurrences import scheduled_instant
     assert scheduled_instant(slot) in skip[0]

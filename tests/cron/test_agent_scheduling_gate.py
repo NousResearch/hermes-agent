@@ -16,7 +16,7 @@ default off) makes that denial opt-out-able:
 
 import pytest
 
-from cron.scheduler import _resolve_cron_disabled_toolsets
+from hermes_agent.cron.scheduler import _resolve_cron_disabled_toolsets
 
 
 # The toolsets that must be denied in cron context no matter what the

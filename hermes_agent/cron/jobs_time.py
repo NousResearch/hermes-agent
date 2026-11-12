@@ -1,11 +1,11 @@
-"""Per-job ``timezone`` and ``grace_minutes`` knobs (sibling of ``cron/jobs.py``).
+"""Per-job ``timezone`` and ``grace_minutes`` knobs (sibling of ``hermes_agent/cron/jobs.py``).
 
 A job may pin its own IANA ``timezone``: its cron expression is then that zone's WALL CLOCK,
 independent of the profile's configured zone. Absent/None means "inherit the profile", so a
 store written before this field existed keeps byte-identical behaviour. ``grace_minutes``
 overrides the computed half-period catch-up window for one job (``0`` = never catch up).
 
-Behaviour lives here, not in the facade: ``cron/jobs.py`` is already past the file-lines
+Behaviour lives here, not in the facade: ``hermes_agent/cron/jobs.py`` is already past the file-lines
 ratchet. The facade keeps the call sites (``compute_next_run``, the due scan, and every write
 site that advances ``next_run_at``), which read the pins through this module.
 
@@ -14,7 +14,7 @@ and the cron repair predicates then compare WALL CLOCKS. Normalizing a New-York 
 into a Los-Angeles profile zone makes the wall clock look like it is still in the future, so
 ``_repair_timezone_shifted_cron`` re-anchors to the NEXT occurrence and the due one is lost —
 the "job timezone east of the profile timezone silently never fires" failure. See
-``cron.jobs._evaluate_due_job``.
+``hermes_agent.cron.jobs._evaluate_due_job``.
 """
 
 from __future__ import annotations
@@ -147,7 +147,7 @@ def grace_seconds_override(grace_minutes: Any) -> Optional[int]:
 
 def prune_inherited_knobs(record: dict[str, Any]) -> None:
     """An explicitly cleared knob is stored by DROPPING the key, not as null: an absent optional
-    key is this repo's spelling for "unset" (see ``cron/jobs.py``'s optional-field write loop),
+    key is this repo's spelling for "unset" (see ``hermes_agent/cron/jobs.py``'s optional-field write loop),
     and a stored null would render as a pinned-but-blank zone.
 
     ``grace_minutes`` is tested with ``is None`` — ``0`` is the real "never catch up" value and
@@ -167,7 +167,7 @@ def oneshot_instant(value: Any, zone: Optional[ZoneInfo] = None) -> Optional[dat
     clock, so a pinned zone interprets it in that zone (``2026-06-01T09:00:00`` means 09:00
     for THIS job) instead of in the host's local time.
     """
-    from cron.jobs import _ensure_aware  # late import: the facade owns naive normalization
+    from hermes_agent.cron.jobs import _ensure_aware  # late import: the facade owns naive normalization
 
     try:
         dt = datetime.fromisoformat(str(value))

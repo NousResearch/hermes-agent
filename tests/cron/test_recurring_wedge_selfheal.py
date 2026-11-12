@@ -48,7 +48,7 @@ def cron_env(tmp_path, monkeypatch):
     (hermes_home / "scripts").mkdir()
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
-    import cron.jobs as jobs_mod
+    import hermes_agent.cron.jobs as jobs_mod
     monkeypatch.setattr(jobs_mod, "HERMES_DIR", hermes_home)
     monkeypatch.setattr(jobs_mod, "CRON_DIR", hermes_home / "cron")
     monkeypatch.setattr(jobs_mod, "JOBS_FILE", hermes_home / "cron" / "jobs.json")
@@ -71,8 +71,8 @@ def cron_env(tmp_path, monkeypatch):
 
 class TestStaleInflightSelfHeal:
     def _setup(self, cron_env, monkeypatch):
-        from cron import scheduler as S
-        from cron import executions as E
+        from hermes_agent.cron import scheduler as S
+        from hermes_agent.cron import executions as E
 
         env = cron_env
         monkeypatch.setattr(E, "EXECUTIONS_FILE", env["home"] / "cron" / "executions.db")
@@ -84,7 +84,7 @@ class TestStaleInflightSelfHeal:
         next tick and the wedged job re-fires without a force-run."""
         S, E, env = self._setup(cron_env, monkeypatch)
         job_id = env["job_id"]
-        import cron.jobs as J
+        import hermes_agent.cron.jobs as J
 
 
         # Simulate the incident leak: job id claimed with no owning future,
@@ -99,7 +99,7 @@ class TestStaleInflightSelfHeal:
         # return the wedged job as due so the in-cycle sweep releases the claim
         # and the dispatch loop re-fires it.
         job = J.get_job(job_id)
-        with mock.patch("cron.jobs.load_jobs", return_value=[job]):
+        with mock.patch("hermes_agent.cron.jobs.load_jobs", return_value=[job]):
             S.tick(verbose=False, sync=True)
 
         latest = E.latest_execution(job_id)
@@ -113,7 +113,7 @@ class TestStaleInflightSelfHeal:
     def test_guard_stats_reported(self, cron_env, monkeypatch):
         """The guard must surface a countable forced-release signal."""
         S, _E, env = self._setup(cron_env, monkeypatch)
-        import cron.jobs as J
+        import hermes_agent.cron.jobs as J
 
         S._running_job_ids.clear()
         S._running_since.clear()
@@ -133,9 +133,9 @@ class TestEAGAINCreateExecutionLeak:
 
 
     def test_pool_submit_eagain_releases_claim_and_redispatches(self, cron_env, monkeypatch, tmp_path):
-        from cron import scheduler as S
-        from cron import executions as E
-        import cron.jobs as J
+        from hermes_agent.cron import scheduler as S
+        from hermes_agent.cron import executions as E
+        import hermes_agent.cron.jobs as J
 
         env = cron_env
         monkeypatch.setattr(E, "EXECUTIONS_FILE", env["home"] / "cron" / "executions.db")
@@ -158,7 +158,7 @@ class TestEAGAINCreateExecutionLeak:
             return real_submit(self, *a, **k)
         monkeypatch.setattr(S.concurrent.futures.ThreadPoolExecutor, "submit", flaky)
 
-        with mock.patch("cron.jobs.load_jobs", return_value=[job]):
+        with mock.patch("hermes_agent.cron.jobs.load_jobs", return_value=[job]):
             S.tick(verbose=False, sync=True)
 
         # Claim released; job still scheduled.
@@ -167,7 +167,7 @@ class TestEAGAINCreateExecutionLeak:
         # Second tick (substrate recovered): job re-dispatches and completes.
         now = datetime.now(UTC)
         J.update_job(job_id, {"next_run_at": (now - timedelta(minutes=1)).isoformat()})
-        with mock.patch("cron.jobs.load_jobs", return_value=[J.get_job(job_id)]):
+        with mock.patch("hermes_agent.cron.jobs.load_jobs", return_value=[J.get_job(job_id)]):
             S.tick(verbose=False, sync=True)
 
         latest = E.latest_execution(job_id)

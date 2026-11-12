@@ -40,7 +40,7 @@ class DeliveryQueueWatch:
         self._served = list(self._homes())
 
     def _stamp(self) -> tuple:
-        from cron.delivery_queue import queue_path
+        from hermes_agent.cron.delivery_queue import queue_path
 
         stamps = []
         for home in self._served:

@@ -23,14 +23,14 @@ class TestInterpreterShuttingDownHelper:
         """The concurrent.futures module-global flag can be set a hair before
         ``sys.is_finalizing()`` flips — matching the error text catches that
         race so a shutdown RuntimeError isn't misread as a real failure."""
-        from cron.scheduler import _interpreter_shutting_down
+        from hermes_agent.cron.scheduler import _interpreter_shutting_down
 
         exc = RuntimeError("cannot schedule new futures after interpreter shutdown")
         with patch("sys.is_finalizing", return_value=False):
             assert _interpreter_shutting_down(exc) is True
 
     def test_unrelated_error_is_not_shutdown(self):
-        from cron.scheduler import _interpreter_shutting_down
+        from hermes_agent.cron.scheduler import _interpreter_shutting_down
 
         exc = RuntimeError("some other problem")
         with patch("sys.is_finalizing", return_value=False):
@@ -51,7 +51,7 @@ class TestStandaloneDeliverySkipsDuringShutdown:
         skip BEFORE attempting to schedule the send — no ``_send_to_platform``
         call, a graceful warning-level skip, and an error string returned
         (not a raised exception)."""
-        from cron.scheduler import _deliver_result
+        from hermes_agent.cron.scheduler import _deliver_result
 
         job = {
             "id": "gov-job",

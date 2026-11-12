@@ -39,7 +39,7 @@ def served_host(tmp_path, monkeypatch):
 
 
 def test_cron_status_names_the_host_gateway_for_a_served_profile(served_host, capsys, monkeypatch):
-    from cron import jobs
+    from hermes_agent.cron import jobs
     from hermes_cli import cron
 
     monkeypatch.setattr(jobs, "CRON_DIR", served_host / "profiles/served/cron")

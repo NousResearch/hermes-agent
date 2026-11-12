@@ -16,7 +16,7 @@ KEY = 'e' * 32
 
 @pytest.mark.asyncio
 async def test_long_cron_report_is_admitted_and_relayed_dm_stays_capped(bot):
-    from cron.scheduler_delivery import bot_chat_message
+    from hermes_agent.cron.scheduler_delivery import bot_chat_message
     from gateway.session_bot import deliver
     from tools.bot_live_delivery import read_delivery_result
     report = '\n'.join(f'- item {i}: status ok, details recorded' for i in range(480))

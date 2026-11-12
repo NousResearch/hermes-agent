@@ -502,7 +502,7 @@ def _check_state_db(should_fix: bool, f: Finding) -> None:
 def _check_cron_store(should_fix: bool, f: Finding) -> None:
     """The cron store accepts writes and its filesystem is not nearly full (jobs skip otherwise)."""
     from hermes_cli.doctor import HERMES_HOME, _DHH
-    from cron.store_health import LOW_FREE_BYTES, free_bytes, probe_report
+    from hermes_agent.cron.store_health import LOW_FREE_BYTES, free_bytes, probe_report
     cron_dir = HERMES_HOME / "cron"
     if (report := probe_report(cron_dir)) is not None:
         check_warn(f"{_DHH}/cron/ is NOT writable ({report['error']}) — scheduled cron jobs are being skipped")

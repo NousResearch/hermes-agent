@@ -23,7 +23,7 @@ class TestRelayFrontedDeliveryPlatforms:
     def test_detects_fronted_delivery_platform(self):
         job = {"id": "j1", "deliver": "discord"}
         with patch("gateway.relay.relay_fronted_platforms", return_value={"discord"}), patch(
-            "cron.scheduler._resolve_delivery_targets",
+            "hermes_agent.cron.scheduler._resolve_delivery_targets",
             return_value=[{"platform": "discord", "chat_id": "123"}],
         ):
             assert cronjob_tools._relay_fronted_delivery_platforms(job) == {"discord"}
@@ -31,7 +31,7 @@ class TestRelayFrontedDeliveryPlatforms:
     def test_ignores_non_fronted_platform(self):
         job = {"id": "j1", "deliver": "discord"}
         with patch("gateway.relay.relay_fronted_platforms", return_value={"telegram"}), patch(
-            "cron.scheduler._resolve_delivery_targets",
+            "hermes_agent.cron.scheduler._resolve_delivery_targets",
             return_value=[{"platform": "discord", "chat_id": "123"}],
         ):
             assert cronjob_tools._relay_fronted_delivery_platforms(job) == set()
@@ -139,7 +139,7 @@ class TestManualRunPromptConsumption:
     manual occurrence, and only that fire."""
 
     def test_run_one_job_consumes_stamped_prompt(self):
-        from cron import scheduler
+        from hermes_agent.cron import scheduler
 
         captured = {}
 
@@ -159,7 +159,7 @@ class TestManualRunPromptConsumption:
         assert captured["extra_prompt"] == "focus on EU numbers"
 
     def test_explicit_extra_prompt_wins_over_stamp(self):
-        from cron import scheduler
+        from hermes_agent.cron import scheduler
 
         captured = {}
 
@@ -180,7 +180,7 @@ class TestManualRunPromptConsumption:
 
     def test_stamp_ignored_without_manual_run_intent(self):
         """A leftover prompt with no manual_run_at (defensive) is not injected."""
-        from cron import scheduler
+        from hermes_agent.cron import scheduler
 
         captured = {}
 
@@ -199,7 +199,7 @@ class TestManualRunPromptConsumption:
 class TestTriggerJobPromptStamp:
     def test_trigger_stamps_and_mark_run_clears(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        import cron.jobs as jobs_mod
+        import hermes_agent.cron.jobs as jobs_mod
         import importlib
 
         importlib.reload(jobs_mod)
@@ -217,7 +217,7 @@ class TestTriggerJobPromptStamp:
 
     def test_retrigger_without_prompt_clears_stale_stamp(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        import cron.jobs as jobs_mod
+        import hermes_agent.cron.jobs as jobs_mod
         import importlib
 
         importlib.reload(jobs_mod)

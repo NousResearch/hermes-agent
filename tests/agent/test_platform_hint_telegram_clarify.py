@@ -33,7 +33,7 @@ def test_telegram_stable_prompt_prefers_clarify_buttons_over_fake_controls():
 
 
 def _cron_tool_names():
-    from cron.scheduler import _resolve_cron_disabled_toolsets
+    from hermes_agent.cron.scheduler import _resolve_cron_disabled_toolsets
     from model_tools import get_tool_definitions
     defs = get_tool_definitions(disabled_toolsets=_resolve_cron_disabled_toolsets({}), quiet_mode=True)
     return [d["function"]["name"] for d in defs]

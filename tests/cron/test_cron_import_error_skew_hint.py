@@ -9,8 +9,8 @@ fingerprint — when boot SHA != disk HEAD, the delivered error must say so and
 name the command.
 """
 
-from cron import scheduler
-from cron.scheduler import _summarize_cron_failure_for_delivery
+from hermes_agent.cron import scheduler
+from hermes_agent.cron.scheduler import _summarize_cron_failure_for_delivery
 
 IMPORT_ERROR = (
     "ImportError: cannot import name 'user_originated_turn_view' "

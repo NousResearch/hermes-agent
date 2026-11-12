@@ -28,8 +28,8 @@ def register(ctx):
 
 _TICK = '''
 import json, sys
-from cron import scheduler, scheduler_authority
-from cron.executions import list_executions
+from hermes_agent.cron import scheduler, scheduler_authority
+from hermes_agent.cron.executions import list_executions
 from tests.cron.conftest import owner_execution_runner
 # Cron executes inside the profile's owner; run the owner's execution seam in-process.
 scheduler_authority.run_canonical_job = owner_execution_runner()
@@ -87,7 +87,7 @@ def test_tool_hook_in_a_ticked_job_sees_its_execution_and_none_outside(tmp_path)
 
 def test_identity_is_scoped_and_not_inherited_by_delegated_children():
     from agent.delegation_context import delegated_child_context
-    from cron.execution_identity import (
+    from hermes_agent.cron.execution_identity import (
         current_cron_execution, enter_cron_execution, exit_cron_execution)
 
     record = {"source": "builtin", "scheduled_instant": None, "started_at": "2026-10-04T00:00:00"}

@@ -1,16 +1,16 @@
 """C13 — virtual-clock soak of the REAL cron ticker loop (~30 virtual days per scenario).
 
 Real: ``InProcessCronScheduler.start`` (the gateway's ticker loop: startup recovery, tick, heartbeat
-bookkeeping), ``cron.scheduler.tick`` / due scan / pending slots / fire claims + heartbeat /
+bookkeeping), ``hermes_agent.cron.scheduler.tick`` / due scan / pending slots / fire claims + heartbeat /
 executions ledger / delivery routing / ``mark_job_run``, a second OS process sharing HERMES_HOME
 (its ticker races the in-process one for every tick; the tick lock admits one). Fire-claim
 contention between two OS processes is ``test_two_replicas_contend_for_every_fire``.
-Fake: the agent (``cron.scheduler.run_job``) and the platform wire (``_send_to_platform``), which
+Fake: the agent (``hermes_agent.cron.scheduler.run_job``) and the platform wire (``_send_to_platform``), which
 record what they were handed. The gateway housekeeping thread's drain of the durable delivery
 queue is performed by the driver after every tick settles (``H.drain_deliveries``).
 Time: one file-backed virtual clock (see ``_cron_clock``).
 
-Oracle (independent of cron/jobs.py): per job, the expected fire set is computed from croniter
+Oracle (independent of hermes_agent/cron/jobs.py): per job, the expected fire set is computed from croniter
 over the job's configured zone (hermes ``timezone`` if set, else the process zone — "server
 local"), stepping only through the tick instants the harness actually drove, with the documented
 policies:
@@ -172,7 +172,7 @@ class Model:
 
     def manual(self, name: str, t: float) -> None:
         """A run-now ahead of the pending slot is an EXTRA fire: the slot and the repeat budget stay
-        put (cron/extra_fire.py, f656543e030). Once the slot is due it IS the scheduled fire."""
+        put (hermes_agent/cron/extra_fire.py, f656543e030). Once the slot is due it IS the scheduled fire."""
         job = self.jobs[name]
         self.fires.append((name, None, t))
         if job.pending is not None and job.pending <= t:
@@ -233,13 +233,13 @@ class Soak:
 
     # job creation through the real store API
     def create(self, name: str, schedule: str, *, repeat=None, chat="1000"):
-        from cron.jobs import create_job
+        from hermes_agent.cron.jobs import create_job
 
         job = create_job(prompt=f"soak {name}", schedule=schedule, name=name, repeat=repeat,
                          deliver=f"telegram:{chat}")
         self.ids[name] = job["id"]
         t = self.now()
-        from cron.jobs import parse_schedule
+        from hermes_agent.cron.jobs import parse_schedule
 
         parsed = parse_schedule(schedule)
         if parsed["kind"] == "cron":
@@ -268,7 +268,7 @@ class Soak:
         return min(c for c in cands if c > now)
 
     def settle(self) -> None:
-        import cron.scheduler as sched
+        import hermes_agent.cron.scheduler as sched
 
         held_ids = {self.ids[n] for n in self.held}
 
@@ -291,7 +291,7 @@ class Soak:
         self.check(t)
 
     def check(self, t: float) -> None:
-        from cron.jobs import get_ticker_last_error
+        from hermes_agent.cron.jobs import get_ticker_last_error
 
         where = self.describe(t)
         starts = [r for r in H.read_jsonl(self.control.runs) if r["event"] == "start"]
@@ -333,7 +333,7 @@ class Soak:
         self.control.set_behaviors(arg)
 
     def ev_manual(self, name):
-        from cron.jobs import get_job
+        from hermes_agent.cron.jobs import get_job
         from tools.cronjob_tools import _execute_job_now
 
         t = self.now()
@@ -344,7 +344,7 @@ class Soak:
         self.check(t)
 
     def ev_trigger(self, name):
-        from cron.jobs import trigger_job
+        from hermes_agent.cron.jobs import trigger_job
 
         trigger_job(self.ids[name])
         self.model.jobs[name].trigger = True
@@ -400,7 +400,7 @@ class Soak:
         self.tick(entering=name)
         exec_id = self._entered_exec(name)
         t0 = self.now()
-        from cron.jobs import claim_job_for_fire
+        from hermes_agent.cron.jobs import claim_job_for_fire
 
         for k in range(1, HOLD_STEPS + 1):
             self.clock.set(t0 + 30 * k)
@@ -591,7 +591,7 @@ def _run_scenario(sc: Scenario, soak_env) -> dict[str, int]:
         lines.insert(0, f"timezone: {sc.hermes_tz}")
     (hermes_home / "config.yaml").write_text("\n".join(lines) + "\n", encoding="utf-8")
     control = H.Control(tmp_path / "control").ensure()
-    from cron import jobs
+    from hermes_agent.cron import jobs
 
     # Liveness markers fsync twice per loop iteration (the dominant wall cost at virtual
     # cadence); they are diagnostics, not scheduling, and are covered by tests/cron.
@@ -606,7 +606,7 @@ def _run_scenario(sc: Scenario, soak_env) -> dict[str, int]:
         # A failure mid-hold must not leak a parked run (and its writes) into the next scenario.
         for name in list(soak.held):
             control.hold_file(name).unlink(missing_ok=True)
-        import cron.scheduler as sched
+        import hermes_agent.cron.scheduler as sched
 
         H.wait_until(lambda: not sched.get_running_job_ids(), f"{sc.id}: held runs to drain")
         if soak.child is not None:
@@ -644,7 +644,7 @@ def test_two_replicas_contend_for_every_fire(soak_env):
     (hermes_home / "config.yaml").write_text(
         "platforms:\n  telegram:\n    enabled: true\n    token: fake-soak-token\n", encoding="utf-8")
     control = H.Control(tmp_path / "control").ensure()
-    from cron import jobs
+    from hermes_agent.cron import jobs
 
     monkeypatch.setattr(jobs, "record_ticker_heartbeat", lambda **_kw: None)
     clock = H.VirtualClock(control.clock_file)

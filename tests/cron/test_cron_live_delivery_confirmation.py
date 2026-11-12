@@ -24,9 +24,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from cron import scheduler_delivery as sched_delivery
-from cron.scheduler import _deliver_result
-from cron.scheduler_delivery import _confirm_adapter_delivery
+from hermes_agent.cron import scheduler_delivery as sched_delivery
+from hermes_agent.cron.scheduler import _deliver_result
+from hermes_agent.cron.scheduler_delivery import _confirm_adapter_delivery
 from gateway.config import Platform, PlatformConfig
 
 
@@ -64,19 +64,19 @@ class TestConfirmAdapterDelivery:
 
 
     def test_positive_evidence_is_delivered_without_warning(self, caplog):
-        with caplog.at_level(logging.WARNING, logger="cron.scheduler"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.cron.scheduler"):
             assert _confirm_adapter_delivery(_SendResult(message_id=1234), "j1") is True
         assert "UNVERIFIED" not in caplog.text
 
     def test_raw_response_alone_counts_as_evidence(self, caplog):
-        with caplog.at_level(logging.WARNING, logger="cron.scheduler"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.cron.scheduler"):
             result = _SendResult(raw_response={"ok": True})
             assert _confirm_adapter_delivery(result, "j1") is True
         assert "UNVERIFIED" not in caplog.text
 
     def test_evidence_free_success_is_accepted_but_warned(self, caplog):
         """Not proof of failure either — accept it, but say so in the log."""
-        with caplog.at_level(logging.WARNING, logger="cron.scheduler"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.cron.scheduler"):
             assert _confirm_adapter_delivery(_SendResult(), "92e639af907f") is True
         assert "UNVERIFIED" in caplog.text
         assert "92e639af907f" in caplog.text
@@ -161,9 +161,9 @@ def _run(job, content, send_result, relay=False, standalone_result=None, cron_cf
         return standalone_result if standalone_result is not None else {}
 
     with patch("gateway.config.load_gateway_config", return_value=_gateway_config(relay)), \
-         patch("cron.scheduler.load_config",
+         patch("hermes_agent.cron.scheduler.load_config",
                return_value={"cron": {"wrap_response": False, **(cron_cfg or {})}}), \
-         patch("cron.scheduler_delivery._record_delivery_verification", side_effect=_record_verification), \
+         patch("hermes_agent.cron.scheduler_delivery._record_delivery_verification", side_effect=_record_verification), \
          patch("gateway.delivery.DeliveryRouter", return_value=router), \
          patch("tools.send_message_tool._send_to_platform", _fake_send_to_platform), \
          patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
@@ -175,7 +175,7 @@ class TestFilteredResultIsNotDelivered:
     FILTERED = {"success": True, "filtered": "silence_narration", "delivered": False}
 
     def test_filtered_dict_does_not_log_a_live_delivery(self, caplog):
-        with caplog.at_level(logging.INFO, logger="cron.scheduler"):
+        with caplog.at_level(logging.INFO, logger="hermes_agent.cron.scheduler"):
             _, router_calls, standalone_calls = _run(_job(), "...", self.FILTERED)
 
         assert len(router_calls) == 1                     # the live send was attempted
@@ -192,7 +192,7 @@ class TestFilteredResultIsNotDelivered:
         assert standalone_calls == []
 
     def test_confirmed_send_result_still_delivers(self, caplog):
-        with caplog.at_level(logging.INFO, logger="cron.scheduler"):
+        with caplog.at_level(logging.INFO, logger="hermes_agent.cron.scheduler"):
             error, router_calls, standalone_calls = _run(
                 _job(), "Nightly report.", _SendResult(message_id=1234),
             )
@@ -212,7 +212,7 @@ class TestEmptyPayloadFailsClosed:
         content without an API call, so an unguarded fallback would log a
         standalone "delivered" for the same phantom payload (#77763).
         """
-        with caplog.at_level(logging.INFO, logger="cron.scheduler"):
+        with caplog.at_level(logging.INFO, logger="hermes_agent.cron.scheduler"):
             error, router_calls, standalone_calls = _run(
                 _job(), "   ", _SendResult(message_id=1),
             )
@@ -268,7 +268,7 @@ class TestLiveDeliveryIsAFinalNotification:
             sent.append({"media": list(media_files), "metadata": metadata})
             return []
 
-        with patch("cron.scheduler_delivery._send_media_via_adapter", side_effect=fake_send_media), \
+        with patch("hermes_agent.cron.scheduler_delivery._send_media_via_adapter", side_effect=fake_send_media), \
              patch("gateway.platforms.base.BasePlatformAdapter.filter_media_delivery_paths",
                    side_effect=lambda files: files):
             error, router_calls, _ = _run(
@@ -308,7 +308,7 @@ class TestNotifyIsConfigurable:
             sent.append(metadata)
             return []
 
-        with patch("cron.scheduler_delivery._send_media_via_adapter", side_effect=fake_send_media), \
+        with patch("hermes_agent.cron.scheduler_delivery._send_media_via_adapter", side_effect=fake_send_media), \
              patch("gateway.platforms.base.BasePlatformAdapter.filter_media_delivery_paths",
                    side_effect=lambda files: files):
             _run(
@@ -345,7 +345,7 @@ class TestUnverifiedDeliveryIsRecordedOnTheJob:
 
 
     def test_recorder_clears_a_stale_marker(self):
-        with patch("cron.jobs.update_job") as update_job:
+        with patch("hermes_agent.cron.jobs.update_job") as update_job:
             sched_delivery._record_delivery_verification({"id": "j1", "last_delivery_unverified": ["slack:C1"]}, [])
             update_job.assert_called_once_with("j1", {"last_delivery_unverified": None})
 
@@ -366,9 +366,9 @@ class TestStandaloneSendIsBounded:
     def _deliver_standalone(sender, cron_cfg):
         """Drive the production entry point with no live adapters (the standalone lane)."""
         with patch("gateway.config.load_gateway_config", return_value=_gateway_config()), \
-             patch("cron.scheduler.load_config",
+             patch("hermes_agent.cron.scheduler.load_config",
                    return_value={"cron": {"wrap_response": False, **cron_cfg}}), \
-             patch("cron.scheduler_delivery._record_delivery_verification"), \
+             patch("hermes_agent.cron.scheduler_delivery._record_delivery_verification"), \
              patch("tools.send_message_tool._send_to_platform", sender):
             return _deliver_result(_job(), "Nightly report.")
 
@@ -376,7 +376,7 @@ class TestStandaloneSendIsBounded:
         async def _hang(*_args, **_kwargs):
             await asyncio.Event().wait()  # transport mid-reconnect: the send never resolves
 
-        with caplog.at_level(logging.INFO, logger="cron.scheduler"):
+        with caplog.at_level(logging.INFO, logger="hermes_agent.cron.scheduler"):
             started = time.monotonic()
             error = self._deliver_standalone(_hang, {"standalone_send_timeout_seconds": 1})
 
@@ -400,11 +400,11 @@ class TestStandaloneSendIsBounded:
         with patch("gateway.platforms.base.BasePlatformAdapter.filter_media_delivery_paths",
                    side_effect=lambda files, **_kw: files), \
              patch("gateway.config.load_gateway_config", return_value=_gateway_config()), \
-             patch("cron.scheduler.load_config", return_value={
+             patch("hermes_agent.cron.scheduler.load_config", return_value={
                  "cron": {"wrap_response": False, "standalone_send_timeout_seconds": 1}}), \
-             patch("cron.scheduler_delivery._record_delivery_verification"), \
+             patch("hermes_agent.cron.scheduler_delivery._record_delivery_verification"), \
              patch("tools.send_message_tool._send_to_platform", _slow_upload), \
-             caplog.at_level(logging.INFO, logger="cron.scheduler"):
+             caplog.at_level(logging.INFO, logger="hermes_agent.cron.scheduler"):
             error = _deliver_result(_job(), f"Nightly report.\nMEDIA:{media}")
 
         assert error is None
@@ -414,7 +414,7 @@ class TestStandaloneSendIsBounded:
         async def _ok(*_args, **_kwargs):
             return {"success": True, "message_id": 7}
 
-        with caplog.at_level(logging.INFO, logger="cron.scheduler"):
+        with caplog.at_level(logging.INFO, logger="hermes_agent.cron.scheduler"):
             error = self._deliver_standalone(_ok, {})
 
         assert error is None

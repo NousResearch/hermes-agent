@@ -155,7 +155,7 @@ def test_quit_keeps_the_tree_while_another_viewer_still_holds_the_session(tmp_pa
 
 @pytest.mark.parametrize('bound', ['workdir', 'origin'])
 def test_quit_keeps_the_tree_while_a_cron_job_is_bound_to_it(tmp_path, monkeypatch, bound):
-    from cron import jobs
+    from hermes_agent.cron import jobs
 
     def prepare(db, cwd):
         db.end_session('tui-wt', 'tui_shutdown')

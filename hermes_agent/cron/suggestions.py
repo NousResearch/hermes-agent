@@ -4,8 +4,8 @@ A suggestion is a ready-to-run cron job spec the user accepts (creates the real 
 (latched by ``dedup_key`` so it is never re-offered). Every proposal flows through here regardless
 of source: ``catalog`` (curated starters), ``blueprint`` (skill ``blueprint:`` blocks, see
 ``tools/blueprints.py``), ``usage`` (self-improvement review), ``integration`` (connected account).
-Accepting calls ``cron.jobs.create_job`` with the stored ``job_spec`` — no second job engine;
-nothing auto-creates (consent-first). Storage mirrors ``cron/jobs.py`` (atomic replace, 0600).
+Accepting calls ``hermes_agent.cron.jobs.create_job`` with the stored ``job_spec`` — no second job engine;
+nothing auto-creates (consent-first). Storage mirrors ``hermes_agent/cron/jobs.py`` (atomic replace, 0600).
 """
 
 from __future__ import annotations
@@ -23,11 +23,11 @@ from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
-# Per-profile by design (anchored on get_hermes_home(), see cron/jobs.py). Optional test override;
+# Per-profile by design (anchored on get_hermes_home(), see hermes_agent/cron/jobs.py). Optional test override;
 # production resolves the path at CALL time so multiplexed profile ticks (set_hermes_home_override)
 # cannot leak one profile's suggestions into the import-time home.
 # Per-profile by design (issue #4707): suggestions live alongside the active profile's cron store. Anchor on
-# get_hermes_home() (profile home), not the shared default root. Same pattern as cron/executions.py.
+# get_hermes_home() (profile home), not the shared default root. Same pattern as hermes_agent/cron/executions.py.
 SUGGESTIONS_FILE: Optional[Path] = None
 
 # Protects load->modify->save cycles (the background review fork and the main agent can both write).
@@ -47,7 +47,7 @@ def _current_suggestions_file() -> Path:
 
 
 def _ensure_dir() -> None:
-    from cron.jobs import _ensure_cron_dir
+    from hermes_agent.cron.jobs import _ensure_cron_dir
 
     _ensure_cron_dir(_current_suggestions_file().parent)
 
@@ -96,7 +96,7 @@ def add_suggestion(
     """Register a pending suggestion. Returns the record, or None when skipped: the same
     ``dedup_key`` was already decided on or is still pending (never re-offer, never duplicate), or
     the pending list is full (``MAX_PENDING``). ``job_spec`` is passed straight to
-    ``cron.jobs.create_job`` on accept."""
+    ``hermes_agent.cron.jobs.create_job`` on accept."""
     if source not in VALID_SOURCES:
         raise ValueError(f"unknown suggestion source: {source!r}")
     if not title.strip() or not dedup_key.strip():
@@ -172,7 +172,7 @@ def accept_suggestion(ref: str, *, origin: Optional[dict[str, Any]] = None) -> O
     if not s or s.get("status") != _STATUS_PENDING:
         return None
 
-    from cron.scheduler import (
+    from hermes_agent.cron.scheduler import (
         CronSchedulerRegistrationError, create_job_with_scheduler_registration,
     )
 

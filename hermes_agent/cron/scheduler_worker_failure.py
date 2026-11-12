@@ -10,8 +10,8 @@ def record_unknown_worker_outcome(
     Fence the notice and bookkeeping together so recovery cannot overwrite a newer
     fire or duplicate a failure the worker already recorded.
     """
-    from cron import scheduler
-    from cron.unreachable_retry import is_retry_run
+    from hermes_agent.cron import scheduler
+    from hermes_agent.cron.unreachable_retry import is_retry_run
 
     execution = scheduler.get_execution(str(job["execution_id"]))
     if not execution or execution.get("status") != "unknown":

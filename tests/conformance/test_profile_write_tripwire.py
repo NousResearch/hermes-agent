@@ -209,7 +209,7 @@ def _exercise_memory_store(tripwire: ProfileTripwire) -> None:
 
 def _exercise_cron_store(tripwire: ProfileTripwire) -> None:
     """cron save_jobs()/load_jobs() store resolution (#89625)."""
-    from cron.jobs import load_jobs, save_jobs
+    from hermes_agent.cron.jobs import load_jobs, save_jobs
 
     job = {
         "id": "tripwire-job",

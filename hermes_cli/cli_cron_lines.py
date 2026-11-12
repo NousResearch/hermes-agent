@@ -140,7 +140,7 @@ def _add_lines(subcommand: str, opts: dict) -> list[str]:
 
 
 def _edit_lines(subcommand: str, opts: dict) -> list[str]:
-    from cron import get_job
+    from hermes_agent.cron import get_job
     positionals = opts["positionals"]
     if not positionals:
         return [_t("cron.usage_edit")]

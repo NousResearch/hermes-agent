@@ -18,7 +18,7 @@ from unittest.mock import patch
 
 import pytest
 
-from cron import scheduler
+from hermes_agent.cron import scheduler
 
 
 @pytest.fixture
@@ -74,7 +74,7 @@ class TestWriteUsageAudit:
 
     def test_writer_exception_swallowed(self, tmp_hermes_home):
         # Force json.dumps to raise — writer must NOT propagate.
-        with patch("cron.scheduler.json.dumps", side_effect=RuntimeError("kaboom")):
+        with patch("hermes_agent.cron.scheduler.json.dumps", side_effect=RuntimeError("kaboom")):
             scheduler._write_usage_audit({"job_id": "x"})
 
         # File never created.

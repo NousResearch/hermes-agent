@@ -13,7 +13,7 @@ Three invariants, each broken before the multiplex-scope fix:
 
 from __future__ import annotations
 
-import cron.scheduler as sched
+import hermes_agent.cron.scheduler as sched
 from hermes_constants import (
     hermes_home_key,
     reset_hermes_home_override,
@@ -76,7 +76,7 @@ class TestPerProfileYieldGate:
         # Imported per test, not at module scope: a module-level import of a module that does not
         # exist on the base commit turns the whole file into a COLLECTION ERROR, which is not
         # behavioural red-on-base evidence for the invariants below.
-        import cron.scheduler_ownership as ownership
+        import hermes_agent.cron.scheduler_ownership as ownership
 
         home_a, home_b = _two_homes(tmp_path)
         boot, disk = "a" * 40, "b" * 40
@@ -109,7 +109,7 @@ class TestPerProfileYieldGate:
 
     def test_host_multiplexer_never_yields_a_home_it_ticks(self, tmp_path, monkeypatch):
         """Owning the runtime lock only excuses the homes this process actually ticks."""
-        import cron.scheduler_ownership as ownership
+        import hermes_agent.cron.scheduler_ownership as ownership
 
         home_a, home_b = _two_homes(tmp_path)
         boot, disk = "a" * 40, "b" * 40

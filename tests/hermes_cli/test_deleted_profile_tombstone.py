@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 import pytest
 
-from cron.scheduler_delivery import BOT_CHAT_PLATFORM, cron_delivery_targets
+from hermes_agent.cron.scheduler_delivery import BOT_CHAT_PLATFORM, cron_delivery_targets
 from hermes_cli.config import ensure_hermes_home
 from hermes_cli.profiles import (
     backfill_profile_envs,

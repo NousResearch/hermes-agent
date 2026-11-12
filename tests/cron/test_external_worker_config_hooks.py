@@ -1,6 +1,6 @@
 """External cron workers must register the owning profile's config-declared hooks (#131764).
 
-``python -m cron.scheduler --external-worker-file`` starts with the builtin registry alone and
+``python -m hermes_agent.cron.scheduler --external-worker-file`` starts with the builtin registry alone and
 used to never call ``shell_hooks.register_from_config()`` / ``outbound_webhooks.register_from_
 config()``, so ``hooks:`` blocks in the owning profile's config.yaml silently stopped firing for
 cron sessions the moment fires were handed to the worker instead of running in-process in the
@@ -55,7 +55,7 @@ def test_worker_registers_owning_profile_config_hooks(homes, tmp_path, monkeypat
     _launch, profile = homes
     from agent import outbound_webhooks
     from agent import shell_hooks
-    from cron import scheduler
+    from hermes_agent.cron import scheduler
     from hermes_constants import hermes_home_key
 
     payload = tmp_path / "payload.json"
@@ -65,7 +65,7 @@ def test_worker_registers_owning_profile_config_hooks(homes, tmp_path, monkeypat
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        "cron.executions.adopt_claimed_execution",
+        "hermes_agent.cron.executions.adopt_claimed_execution",
         lambda execution_id: {"id": execution_id, "status": "running"},
     )
     monkeypatch.setattr(scheduler, "run_one_job", lambda *a, **k: True)

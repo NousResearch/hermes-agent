@@ -15,11 +15,11 @@ def fail_empty_response(d, final_response):
 
 def finish_interrupted_run(job, execution_id, delivery_error):
     """Shutdown already advanced this run; update a failed notice without spending another fire."""
-    from cron import scheduler
+    from hermes_agent.cron import scheduler
     logger = scheduler.logger
     if delivery_error:
         try:
-            from cron.jobs import update_job
+            from hermes_agent.cron.jobs import update_job
             update_job(job['id'], {'last_delivery_error': delivery_error})
         except Exception as exc:
             logger.debug('Failed recording delivery_error for interrupted job %s: %s', job['id'], exc, exc_info=True)
@@ -53,29 +53,29 @@ def finish_completed_run(d, fire_owner: Optional[str], execution_id: str, *, rec
     """mark_job_run (owner-fenced) + execution ledger row for a run that reached delivery.
 
     ``d`` is the scheduler's ``_RunDelivery``. Store and ledger writers are read off the
-    ``cron.scheduler`` facade, which is where tests and the receipt-recovery path patch them."""
-    from cron import scheduler
+    ``hermes_agent.cron.scheduler`` facade, which is where tests and the receipt-recovery path patch them."""
+    from hermes_agent.cron import scheduler
     job = d.job
     if not d.should_deliver and job.get("last_delivery_queued"):
-        from cron.jobs import update_job
+        from hermes_agent.cron.jobs import update_job
         update_job(job["id"], {"last_delivery_queued": None})
         job["last_delivery_queued"] = None
     mark_kwargs: dict = {"delivery_error": d.delivery_error}
-    from cron.scheduler_authority import journal_path
+    from hermes_agent.cron.scheduler_authority import journal_path
     journal = journal_path(job['id'], execution_id)
     if not job.get('no_agent'):
         mark_kwargs['execution_id'] = execution_id
     if not d.success and job.pop("_model_unreachable", False):
         # Never-reached-the-model failure: schedule the Cowork-style bounded re-run
-        # (cron/unreachable_retry.py) inside the same fenced store write.
+        # (hermes_agent/cron/unreachable_retry.py) inside the same fenced store write.
         mark_kwargs["model_unreachable"] = True
-    from cron.unreachable_retry import is_retry_run
+    from hermes_agent.cron.unreachable_retry import is_retry_run
     if is_retry_run(job):
         # A re-run of an occurrence that already counted: must not spend another repeat slot.
         mark_kwargs["ladder_rung"] = True
     _hold_s = job.pop("_quota_hold_seconds", None)
     if not d.success and _hold_s:
-        # Provider window closed for a known duration: park past it (cron/quota_hold.py, #89376).
+        # Provider window closed for a known duration: park past it (hermes_agent/cron/quota_hold.py, #89376).
         mark_kwargs["quota_hold_seconds"] = _hold_s
         mark_kwargs["recover_consumed_fire"] = bool(job.get("_scheduled_instant"))
     if d.success and not d.delivery_error and d.should_deliver and job.get("last_delivery_queued"):
@@ -104,15 +104,15 @@ def finish_completed_run(d, fire_owner: Optional[str], execution_id: str, *, rec
         incident_acked=d.incident_acked,
         success=d.success,
     )
-    from cron.delivery_outcome import settle_quietly, settled_outcome
+    from hermes_agent.cron.delivery_outcome import settle_quietly, settled_outcome
     if delivery_outcome == "queued":
-        # A drain that already finished this send (cron/delivery_outcome.py) is the real outcome.
+        # A drain that already finished this send (hermes_agent/cron/delivery_outcome.py) is the real outcome.
         delivery_outcome = settled_outcome(execution_id) or "queued"
     if delivery_outcome in ("delivered", "not_configured") and not d.success:
         # Failure ping left the process (or had a configured target): mark the incident alerted.
         scheduler._mark_incident_alerted(d.failure_incident_id)
     from functools import partial
-    from cron.executions import FIRER_FINISHED_STATES, get_execution, recover_receipted_execution
+    from hermes_agent.cron.executions import FIRER_FINISHED_STATES, get_execution, recover_receipted_execution
     finish = partial(recover_receipted_execution, job_id=job['id']) if recovered else scheduler.finish_execution
     finished = finish(
         execution_id, success=d.success, error=d.error, delivery_outcome=delivery_outcome)

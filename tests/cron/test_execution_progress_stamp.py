@@ -12,9 +12,9 @@ import threading
 
 import pytest
 
-import cron.executions as executions_mod
-from cron import scheduler
-from cron.executions import _transaction, create_execution, mark_execution_running
+import hermes_agent.cron.executions as executions_mod
+from hermes_agent.cron import scheduler
+from hermes_agent.cron.executions import _transaction, create_execution, mark_execution_running
 
 
 @pytest.fixture(autouse=True)

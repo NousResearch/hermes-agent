@@ -22,7 +22,7 @@ import threading
 
 import pytest
 
-from cron import jobs
+from hermes_agent.cron import jobs
 
 
 pytestmark = pytest.mark.platforms("posix")  # POSIX-only: uid/gid ownership semantics
@@ -166,11 +166,11 @@ class TestTickerErrorMarker:
 class TestTickerLoopRecordsErrors:
     def _run_one_tick(self, monkeypatch, tick_fn):
         """Run one iteration of the built-in ticker loop with a stubbed tick."""
-        from cron.scheduler_provider import InProcessCronScheduler
+        from hermes_agent.cron.scheduler_provider import InProcessCronScheduler
 
         provider = InProcessCronScheduler()
         monkeypatch.setattr(provider, "recover_interrupted", lambda: 0)
-        monkeypatch.setattr("cron.scheduler.tick", tick_fn)
+        monkeypatch.setattr("hermes_agent.cron.scheduler.tick", tick_fn)
 
         stop_event = threading.Event()
         original_wait = stop_event.wait
@@ -227,7 +227,7 @@ class TestCronStatusSurfacesError:
                 "[Errno 13] Permission denied: '/opt/data/cron/jobs.json'"
             ),
         )
-        monkeypatch.setattr("cron.jobs.list_jobs", lambda **k: [])
+        monkeypatch.setattr("hermes_agent.cron.jobs.list_jobs", lambda **k: [])
 
         cron_cli.cron_status()
         out = capsys.readouterr().out

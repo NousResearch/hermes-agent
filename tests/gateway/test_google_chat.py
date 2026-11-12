@@ -1627,7 +1627,7 @@ class TestAuthorizationEmailMatch:
 #
 # After the generic-plugin-interface migration, Google Chat no longer lives in
 # the hardcoded ``_KNOWN_DELIVERY_PLATFORMS`` / ``_HOME_TARGET_ENV_VARS`` sets
-# in ``cron/scheduler.py``.  It earns cron delivery via
+# in ``hermes_agent/cron/scheduler.py``.  It earns cron delivery via
 # ``PlatformEntry.cron_deliver_env_var``, which the scheduler consults through
 # ``_is_known_delivery_platform`` and ``_resolve_home_env_var``.  The tests
 # below check that public resolver behavior, not the hardcoded sets.
@@ -1669,7 +1669,7 @@ class TestCronSchedulerRegistry:
 
     def test_google_chat_is_known_delivery_platform(self):
         self._ensure_registered()
-        from cron.scheduler_delivery import _is_known_delivery_platform
+        from hermes_agent.cron.scheduler_delivery import _is_known_delivery_platform
 
         assert _is_known_delivery_platform("google_chat") is True
 

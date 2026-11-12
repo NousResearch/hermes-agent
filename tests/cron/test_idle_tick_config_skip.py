@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-import cron.scheduler as scheduler_mod
+import hermes_agent.cron.scheduler as scheduler_mod
 
 
 def _run_idle_tick(**kwargs):

@@ -1,6 +1,6 @@
 """UTF-8 BOM tolerance for independent jobs.json readers (dump/status).
 
-cron/jobs.load_jobs is covered in tests/cron/test_jobs.py. dump and status
+hermes_agent/cron/jobs.load_jobs is covered in tests/cron/test_jobs.py. dump and status
 each open jobs.json themselves — keep them on the same utf-8-sig dialect.
 """
 

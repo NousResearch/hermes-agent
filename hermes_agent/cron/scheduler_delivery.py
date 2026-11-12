@@ -1,7 +1,7 @@
 """Cron delivery: target resolution (origin/home/explicit/bot-chat/room), transcript mirroring and
 session seeding, live-adapter / relay / standalone send lanes, and ``_deliver_result``.
 
-Split out of ``cron.scheduler``. Import names from this module directly (``cron.scheduler`` only
+Split out of ``hermes_agent.cron.scheduler``. Import names from this module directly (``hermes_agent.cron.scheduler`` only
 imports the few it calls itself). Origin-resident helpers and sibling split modules are reached
 late-bound (``_sched`` / module refs at the bottom) so monkeypatching the defining module works.
 """
@@ -20,7 +20,7 @@ from typing import Any, List, Optional
 
 
 # Log-record parity with the origin module.
-logger = logging.getLogger("cron.scheduler")
+logger = logging.getLogger("hermes_agent.cron.scheduler")
 
 
 # Validates user-supplied delivery platform names, preventing env-var enumeration via crafted names.
@@ -720,7 +720,7 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *,
     else is an explicit unverified status string so Optional[str] callers cannot misreport
     admission as delivery. ``profile`` is ``""`` for the job's own profile. There is no
     second-writer fallback: a target whose authority is not ready gets the payload parked under
-    the same delivery id (``cron.bot_chat_legacy.defer``) and admitted by a later tick.
+    the same delivery id (``hermes_agent.cron.bot_chat_legacy.defer``) and admitted by a later tick.
     """
     import hashlib
     import json
@@ -766,7 +766,7 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *,
             try:
                 owner = find_canonical_live_owner(home)
             except ValueError:  # the target's gateway is down or starting: not a disposition
-                from cron.bot_chat_legacy import defer
+                from hermes_agent.cron.bot_chat_legacy import defer
                 defer(key, job, content, home, for_failure=for_failure)
                 job.setdefault("_bot_chat_delivery_receipts", {})[target] = {"status": "queued", "delivery_id": key}
                 return f"{target} queued (receipt {key}): target profile not running; admitted once it is"
@@ -1097,7 +1097,7 @@ def _record_delivery_verification(job: dict, unverified_targets: list) -> None:
         return
     job.update(values)
     try:
-        from cron.jobs import update_job
+        from hermes_agent.cron.jobs import update_job
         update_job(job["id"], values)
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("Job '%s': could not record delivery verification: %s", job.get("id"), exc)
@@ -1280,7 +1280,7 @@ def _live_route_metadata(t: _TargetDelivery) -> tuple[Optional[str], dict, dict]
             media_metadata["thread_id"] = thread_id
 
     # Relay egress discriminators (scope_id / user_id) from the persisted origin: the adapter's caches are cold
-    # after a restart. See cron/scheduler_delivery_origin.py.
+    # after a restart. See hermes_agent/cron/scheduler_delivery_origin.py.
     _origin.stamp_origin_discriminators(t, route_metadata, media_metadata)
     return route_thread_id, route_metadata, media_metadata
 
@@ -1846,15 +1846,15 @@ def _deliver_result(
     if (external_execution and adapters is None
             and external_execution == str(job.get("execution_id") or "")
             and any(target["platform"] not in (BOT_CHAT_PLATFORM, ROOM_PLATFORM) for target in targets)):
-        from cron.delivery_queue import enqueue_and_wait
+        from hermes_agent.cron.delivery_queue import enqueue_and_wait
 
         _record_delivery_verification(job, [])
         error = enqueue_and_wait(external_execution, job, content, for_failure=for_failure)
-        from cron.delivery_queue import get_status
+        from hermes_agent.cron.delivery_queue import get_status
         delivery_status = get_status(external_execution)
         if delivery_status and delivery_status["status"] == "suppressed":
             job["_notification_all_targets_suppressed"] = True
-        from cron.jobs import get_job
+        from hermes_agent.cron.jobs import get_job
         refreshed = get_job(job["id"]) or {}
         job["last_delivery_queued"] = refreshed.get("last_delivery_queued")
         return error
@@ -1991,9 +1991,9 @@ def _deliver_result(
 
 # Late-bound origin namespace (see module docstring). Imported LAST so this module is fully
 # populated before ``scheduler`` re-exports from it.
-from cron import scheduler as _sched
-from cron.scheduler_delivery_room import (
+from hermes_agent.cron import scheduler as _sched
+from hermes_agent.cron.scheduler_delivery_room import (
     ROOM_PLATFORM, deliver_to_room, parse_room_deliver_token, resolve_room_target)
-from cron import scheduler_delivery_origin as _origin
-from cron import scheduler_preflight as _preflight
-from cron import scheduler_script as _script
+from hermes_agent.cron import scheduler_delivery_origin as _origin
+from hermes_agent.cron import scheduler_preflight as _preflight
+from hermes_agent.cron import scheduler_script as _script

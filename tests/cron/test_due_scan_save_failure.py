@@ -25,9 +25,9 @@ from datetime import timedelta
 import pytest
 from datetime import datetime, timezone, UTC
 
-from cron import jobs as cronjobs
-from cron import store_health
-from cron.jobs import get_due_jobs, load_jobs, save_jobs
+from hermes_agent.cron import jobs as cronjobs
+from hermes_agent.cron import store_health
+from hermes_agent.cron.jobs import get_due_jobs, load_jobs, save_jobs
 
 FIXED_NOW = datetime(2026, 6, 22, 12, 0, 0, tzinfo=UTC)
 
@@ -38,10 +38,10 @@ def cron_store(tmp_path, monkeypatch):
     monkeypatch.setattr(store_health, "_degraded", {})
     monkeypatch.setattr(store_health, "_listener", None)
     monkeypatch.setattr(store_health, "_recovered", {})
-    monkeypatch.setattr("cron.jobs.CRON_DIR", tmp_path / "cron")
-    monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
-    monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
-    monkeypatch.setattr("cron.jobs._hermes_now", lambda: FIXED_NOW)
+    monkeypatch.setattr("hermes_agent.cron.jobs.CRON_DIR", tmp_path / "cron")
+    monkeypatch.setattr("hermes_agent.cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
+    monkeypatch.setattr("hermes_agent.cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
+    monkeypatch.setattr("hermes_agent.cron.jobs._hermes_now", lambda: FIXED_NOW)
     return tmp_path
 
 
@@ -84,7 +84,7 @@ def full_disk(monkeypatch):
 def test_due_jobs_are_returned_when_the_store_cannot_be_saved(cron_store, full_disk, monkeypatch, caplog):
     save_jobs([_due_job(), _half_paused_job()])
 
-    with caplog.at_level(logging.WARNING, logger="cron.jobs"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.cron.jobs"):
         assert [d["id"] for d in get_due_jobs()] == ["due-job"]
         assert [d["id"] for d in get_due_jobs()] == ["due-job"]
 
@@ -93,7 +93,7 @@ def test_due_jobs_are_returned_when_the_store_cannot_be_saved(cron_store, full_d
 
     # One WARNING per outage per store (its degraded state), not one per 60s scan, and a
     # sibling profile on the same errno is not silenced; each names its store.
-    warnings = [r.getMessage() for r in caplog.records if r.name == "cron.jobs" and r.levelno == logging.WARNING]
+    warnings = [r.getMessage() for r in caplog.records if r.name == "hermes_agent.cron.jobs" and r.levelno == logging.WARNING]
     assert len(warnings) == 2 and "due-scan repairs not persisted" in warnings[0]
     assert str(cron_store / "cron") in warnings[0] and str(cron_store / "other-profile") in warnings[1]
 
@@ -105,7 +105,7 @@ def test_tick_on_unwritable_store_returns_cleanly_without_dispatch(cron_store, m
     a due one-shot still reaches its fire claim, which fails closed with a ``failed`` execution row.
     The tick neither raises nor alters the store, still reaps MCP orphans (also when every due job
     was skipped), and a WARNING names the unwritable store."""
-    from cron import executions, scheduler
+    from hermes_agent.cron import executions, scheduler
 
     once = dict(_due_job("once"), schedule={"kind": "once", "run_at": FIXED_NOW.isoformat(), "display": "once"},
                 repeat={"times": 1, "completed": 0})
@@ -146,7 +146,7 @@ def test_dispatch_failure_after_receipt_never_leaves_it_claimed(
         cron_store, monkeypatch, caplog, site, exc, ledger_fails):
     """A non-OSError fire-claim failure, or a failure after create_execution in _submit_with_guard,
     must settle the receipt: a ``claimed`` row never resolves and reads forever as in flight."""
-    from cron import executions, scheduler
+    from hermes_agent.cron import executions, scheduler
 
     def boom(*_a, **_k):
         raise exc("boom")
@@ -177,7 +177,7 @@ def test_unwritable_store_degrades_once_throttles_and_catches_up_once(cron_store
     """One degraded state per outage: entered once, advance/claim skipped while the scan's save
     keeps failing (one write attempt per tick), cleared by the first save that lands; then the recurring job and the one-shot that
     stayed due across 5 ticks each fire ONCE, and the one-shot keeps a single ``failed`` row."""
-    from cron import executions, scheduler
+    from hermes_agent.cron import executions, scheduler
 
     clock = {"now": FIXED_NOW, "mono": 0.0}
     monkeypatch.setattr(cronjobs, "_hermes_now", lambda: clock["now"])
@@ -217,7 +217,7 @@ def test_unwritable_store_degrades_once_throttles_and_catches_up_once(cron_store
     assert events == [("unwritable", 0)]
     # Distinct (job, due instant): the unpersisted fast-forward keeps both on one instant each.
     assert store_health.degraded_record(cron_store / "cron").skipped_runs == 2
-    from cron.occurrences import get_catch_up_occurrence_count
+    from hermes_agent.cron.occurrences import get_catch_up_occurrence_count
     assert get_catch_up_occurrence_count() == 0  # the fast-forward did not persist: not counted yet
     outage = False
     clock["now"], clock["mono"] = FIXED_NOW + timedelta(minutes=5), 180.0
@@ -272,7 +272,7 @@ def test_idle_tick_reprobes_a_degraded_store_and_clears_it(cron_store, monkeypat
     """With nothing due no save lands, so only a re-probe can end the outage; without it the
     store stays degraded (writable=0, no "recovered" notice) after the disk is fixed. The probe
     only creates an empty file, so recovery is confirmed by a real jobs.json save."""
-    from cron import scheduler
+    from hermes_agent.cron import scheduler
 
     clock = {"mono": 0.0}
     monkeypatch.setattr(store_health.time, "monotonic", lambda: clock["mono"])
@@ -313,7 +313,7 @@ def test_unwritable_store_is_shown_in_cron_status_and_announced_once(cron_store,
     from gateway.cron_store_notices import install_cron_store_notices
     from hermes_cli import cron as cron_cli
 
-    from cron import scheduler
+    from hermes_agent.cron import scheduler
 
     save_jobs([_due_job()])
     cron_dir = cron_store / "cron"
@@ -455,7 +455,7 @@ def test_unwritable_store_is_shown_in_cron_status_and_announced_once(cron_store,
     assert f"fix permissions on {cron_dir}" in sent[0][1]
     assert "writable again; 1 skipped run(s), catching up once per job" in sent[1][1]
     assert any(r.levelname == "WARNING" and "unwritable notice for" in r.getMessage() for r in caplog.records)
-    from cron import scheduler_ownership  # the profile leaves this gateway, its home already deleted
+    from hermes_agent.cron import scheduler_ownership  # the profile leaves this gateway, its home already deleted
     monkeypatch.setattr(scheduler_ownership, "_ticked_homes", {})
     sibling = cron_store / "sibling"  # a second profile whose cron/ reaches the same store
     sibling.mkdir()

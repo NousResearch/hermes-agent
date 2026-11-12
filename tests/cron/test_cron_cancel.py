@@ -9,14 +9,14 @@ import pytest
 @pytest.fixture(autouse=True)
 def _isolated_cancels(monkeypatch, tmp_path):
     """Point the marker store at a scratch home so a cancel can never see a real profile."""
-    from cron import cancellation
+    from hermes_agent.cron import cancellation
 
     monkeypatch.setattr(cancellation, "_cancels_dir", lambda: tmp_path / "cancels")
     yield
 
 
 def _claim(job_id: str) -> dict:
-    from cron.executions import create_execution, mark_execution_running
+    from hermes_agent.cron.executions import create_execution, mark_execution_running
 
     record = create_execution(job_id, source="test")
     mark_execution_running(record["id"])
@@ -24,7 +24,7 @@ def _claim(job_id: str) -> dict:
 
 
 def test_marker_drives_the_runs_cancel_view():
-    from cron.cancellation import CancelRequest, cancel_requested, clear_cancel, request_cancel
+    from hermes_agent.cron.cancellation import CancelRequest, cancel_requested, clear_cancel, request_cancel
 
     request = CancelRequest("exec-a")
     assert not request.is_set()
@@ -40,10 +40,10 @@ def test_marker_drives_the_runs_cancel_view():
 
 
 def test_a_marker_only_ever_reaches_its_own_execution():
-    from cron.cancellation import CancelRequest
+    from hermes_agent.cron.cancellation import CancelRequest
 
     finished, upcoming = CancelRequest("exec-old"), CancelRequest("exec-new")
-    from cron.cancellation import request_cancel
+    from hermes_agent.cron.cancellation import request_cancel
     request_cancel("exec-old")
 
     assert finished.is_set()
@@ -52,7 +52,7 @@ def test_a_marker_only_ever_reaches_its_own_execution():
 
 
 def test_cancel_run_targets_the_live_execution():
-    from cron.cancellation import CancelRequest, cancel_run
+    from hermes_agent.cron.cancellation import CancelRequest, cancel_run
 
     record = _claim("job-live")
     result = cancel_run("job-live", reason="wedged")
@@ -64,8 +64,8 @@ def test_cancel_run_targets_the_live_execution():
 
 def test_cancel_reaches_a_live_run_behind_a_refused_trigger():
     """A Run-now refused while a run is live books a newer failed row; the live run stays cancellable."""
-    from cron.cancellation import cancel_run
-    from cron.executions import _transaction, create_execution, finish_execution
+    from hermes_agent.cron.cancellation import cancel_run
+    from hermes_agent.cron.executions import _transaction, create_execution, finish_execution
 
     live = _claim("job-busy")
     refused = create_execution("job-busy", source="test")
@@ -78,11 +78,11 @@ def test_cancel_reaches_a_live_run_behind_a_refused_trigger():
 
 
 def test_cancel_is_a_noop_when_nothing_is_in_flight():
-    from cron.cancellation import cancel_run
+    from hermes_agent.cron.cancellation import cancel_run
 
     _claim("job-done")
-    from cron.executions import finish_execution
-    from cron.executions import latest_execution
+    from hermes_agent.cron.executions import finish_execution
+    from hermes_agent.cron.executions import latest_execution
     finish_execution(latest_execution("job-done")["id"], success=True)
 
     result = cancel_run("job-done")
@@ -91,8 +91,8 @@ def test_cancel_is_a_noop_when_nothing_is_in_flight():
 
 
 def test_operator_cancel_is_not_treated_as_claim_loss():
-    from cron import scheduler
-    from cron.cancellation import CancelRequest, request_cancel
+    from hermes_agent.cron import scheduler
+    from hermes_agent.cron.cancellation import CancelRequest, request_cancel
 
     job = {"id": "job-fence", "fire_claim": {"by": "someone-else"}}
     request_cancel("exec-fenced")
@@ -114,8 +114,8 @@ def test_cancelling_a_script_job_kills_it_and_names_the_reason(tmp_path, monkeyp
     from pathlib import Path
 
     import psutil
-    from cron import scheduler, scheduler_script
-    from cron.cancellation import CancelRequest, request_cancel
+    from hermes_agent.cron import scheduler, scheduler_script
+    from hermes_agent.cron.cancellation import CancelRequest, request_cancel
 
     # Script paths resolve under the firing profile's home; point it at the scratch dir.
     monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path)
@@ -178,7 +178,7 @@ def test_cancelling_a_script_job_kills_it_and_names_the_reason(tmp_path, monkeyp
 
 
 def test_a_second_request_keeps_the_reason_the_run_already_reported():
-    from cron.cancellation import CancelRequest, request_cancel
+    from hermes_agent.cron.cancellation import CancelRequest, request_cancel
 
     request_cancel("exec-reason", reason="operator asked")
 
@@ -190,8 +190,8 @@ def test_a_second_request_keeps_the_reason_the_run_already_reported():
 
 
 def test_a_second_request_still_prunes_stale_markers(monkeypatch):
-    from cron import cancellation
-    from cron.cancellation import request_cancel
+    from hermes_agent.cron import cancellation
+    from hermes_agent.cron.cancellation import request_cancel
 
     pruned: list = []
     monkeypatch.setattr(cancellation, "_prune_stale_markers", lambda now=None: pruned.append(now))
@@ -216,7 +216,7 @@ def test_a_cancel_lands_on_a_filesystem_without_hard_links(monkeypatch):
     import errno
     import os
 
-    from cron.cancellation import CancelRequest, request_cancel
+    from hermes_agent.cron.cancellation import CancelRequest, request_cancel
 
     def no_links(src, dst):
         raise OSError(errno.EPERM, "hard links not supported")

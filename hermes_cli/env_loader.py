@@ -677,7 +677,7 @@ def load_hermes_dotenv(
     # from the config the override resolves to, i.e. the routed profile's cwd into the shared env.
     # External sources still refresh against the profile mapping.
     # (``is_multiplex_active()`` is also true, context-locally, for a routed cron fire in the desktop
-    # backend — see ``cron.scheduler_provider.routed_profile_fire``.)
+    # backend — see ``hermes_agent.cron.scheduler_provider.routed_profile_fire``.)
     from agent.secret_scope import is_multiplex_active
     from hermes_constants import get_hermes_home, get_hermes_home_override
 

@@ -20,8 +20,8 @@ via get_fallback_chain() and reports "No fallback chain configured." when
 it's empty.
 """
 
-from cron import scheduler
-from cron.scheduler import _summarize_cron_failure_for_delivery
+from hermes_agent.cron import scheduler
+from hermes_agent.cron.scheduler import _summarize_cron_failure_for_delivery
 
 
 def test_inactivity_timeout_is_not_reported_as_provider_timeout():

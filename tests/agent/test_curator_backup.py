@@ -232,7 +232,7 @@ def test_real_run_takes_pre_snapshot(backup_env, monkeypatch):
 
 def _write_cron_jobs(home: Path, jobs: list) -> Path:
     """Write a synthetic cron/jobs.json under HERMES_HOME. Returns the path.
-    Mirrors cron.jobs.save_jobs() wrapper shape: `{"jobs": [...], "updated_at": ...}`.
+    Mirrors hermes_agent.cron.jobs.save_jobs() wrapper shape: `{"jobs": [...], "updated_at": ...}`.
     """
     cron_dir = home / "cron"
     cron_dir.mkdir(parents=True, exist_ok=True)
@@ -245,15 +245,15 @@ def _write_cron_jobs(home: Path, jobs: list) -> Path:
 
 
 def _reload_cron_jobs(home: Path):
-    """Reload cron.jobs so its module-level HERMES_DIR picks up the tmp HOME."""
+    """Reload hermes_agent.cron.jobs so its module-level HERMES_DIR picks up the tmp HOME."""
     import hermes_constants
     importlib.reload(hermes_constants)
-    if "cron.jobs" in sys.modules:
-        import cron.jobs as _cj
+    if "hermes_agent.cron.jobs" in sys.modules:
+        import hermes_agent.cron.jobs as _cj
         importlib.reload(_cj)
     else:
-        import cron.jobs as _cj
-    import cron.jobs as cj
+        import hermes_agent.cron.jobs as _cj
+    import hermes_agent.cron.jobs as cj
     return cj
 
 
@@ -266,7 +266,7 @@ def _reload_cron_jobs(home: Path):
 def test_snapshot_cron_jobs_utf8_bom_counted_and_backup_bomless(backup_env):
     """A UTF-8 BOM on jobs.json (Windows editors) must not break the job
     count, and the snapshot copy is written BOM-less so rollback restores a
-    file cron/jobs.load_jobs can read."""
+    file hermes_agent/cron/jobs.load_jobs can read."""
     cb = backup_env["cb"]
     _write_skill(backup_env["skills"], "alpha")
     cron_dir = backup_env["home"] / "cron"

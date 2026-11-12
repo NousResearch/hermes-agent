@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from cron import jobs as job_store
+from hermes_agent.cron import jobs as job_store
 from hermes_cli.cron import _print_active_jobs_summary
 
 

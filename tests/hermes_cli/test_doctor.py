@@ -1638,7 +1638,7 @@ class TestMacOSTCCGrants:
 ])
 def test_cron_store_check_reports_writability_and_low_space(
         monkeypatch, tmp_path, capsys, probe_error, free, root, expected, issues):
-    from cron import store_health
+    from hermes_agent.cron import store_health
 
     (tmp_path / "cron").mkdir()
     monkeypatch.setattr(doctor, "HERMES_HOME", tmp_path)

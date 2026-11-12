@@ -8,7 +8,7 @@ bookkeeping write.
 """
 import pytest
 
-from cron import executions, jobs, scheduler
+from hermes_agent.cron import executions, jobs, scheduler
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 
 
@@ -29,7 +29,7 @@ def test_drained_delivery_outcome_is_written_back(tmp_path, monkeypatch, transpo
     monkeypatch.setattr("tools.send_message_tool._send_to_platform", send)
     monkeypatch.setattr(scheduler, "run_job", lambda job, **kw: (True, "raw", "the result", None))
     if drain_timing == "before_bookkeeping":
-        from cron import delivery_queue
+        from hermes_agent.cron import delivery_queue
         real_enqueue = delivery_queue.enqueue
 
         def enqueue_then_drain(*args, **kwargs):

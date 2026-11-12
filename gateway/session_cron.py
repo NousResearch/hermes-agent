@@ -102,11 +102,11 @@ def _actor(authority, actor):
 
 
 def _create(authority, actor, params):
-    from cron.jobs import get_job
+    from hermes_agent.cron.jobs import get_job
     from gateway.session_local_recovery import local_identity, restore_local_session
     from gateway.session_policy import build_policy, bind_launch_key
     from gateway.run import _load_gateway_config
-    from cron.scheduler import _load_cron_job_config
+    from hermes_agent.cron.scheduler import _load_cron_job_config
     from gateway.config import Platform
     from gateway.session import SessionSource, SessionEntry
     from gateway.session_lifecycle import _now
@@ -153,7 +153,7 @@ def _create(authority, actor, params):
 CRON_SESSION_READ_ONLY_SURFACE = {'layer': 'gateway', 'code': 'cron_session_read_only', 'retryable': False}
 
 # Run-side verdicts run_job stamps on the job dict for the firing scheduler's bookkeeping tail
-# (cron/quota_hold.py parks past a closed usage window; cron/unreachable_retry.py re-runs a
+# (hermes_agent/cron/quota_hold.py parks past a closed usage window; hermes_agent/cron/unreachable_retry.py re-runs a
 # never-reached model). They cross the authority boundary inside the cron result.
 RUN_JOB_FLAGS = ('_model_unreachable', '_quota_hold_seconds')
 
@@ -236,7 +236,7 @@ async def operation(authority, name, params, actor=None):
         flags = (saved['result'].get('cron_job_flags') or {}) if saved else {}
         if result is None:
             result = [False, '', '', row.get('outcome') or 'unknown_execution']
-    from cron.scheduler_liveness import owner_progress
+    from hermes_agent.cron.scheduler_liveness import owner_progress
     return {'status': row['status'], 'result': result, 'job_flags': flags,
             'progress_at': owner_progress.get(row['request_id'].rsplit(':', 1)[-1])}
 
@@ -254,7 +254,7 @@ async def rpc(connection, name, params):
 
 def scheduler_execution_id(job_id, request_id):
     """The scheduler's execution id this admission carries: ``_create`` admits under
-    ``cron:<job>:<request_id>`` and the ticker's ``request_id`` IS its ``cron/executions`` row id."""
+    ``cron:<job>:<request_id>`` and the ticker's ``request_id`` IS its ``hermes_agent/cron/executions`` row id."""
     return request_id.removeprefix(cron_request_id(job_id, ''))
 
 
@@ -264,8 +264,8 @@ def _run_identified(run_job, job, execution_id, **kwargs):
     The scheduler binds it in the FIRING thread, but the owner executes on its own loop, whose
     context never saw that binding; re-bind it here from the same ledger row, in the profile scope
     the caller entered (so the row and the profile name are this profile's)."""
-    from cron.execution_identity import enter_cron_execution, exit_cron_execution
-    from cron.executions import get_execution
+    from hermes_agent.cron.execution_identity import enter_cron_execution, exit_cron_execution
+    from hermes_agent.cron.executions import get_execution
     token = enter_cron_execution(job, execution_id, get_execution(execution_id) or {})
     try:
         return run_job(job, execution_id=execution_id, **kwargs)
@@ -274,7 +274,7 @@ def _run_identified(run_job, job, execution_id, **kwargs):
 
 
 async def execute(authority, ref, row, policy):
-    from cron.scheduler import run_job
+    from hermes_agent.cron.scheduler import run_job
     from gateway.run import _profile_runtime_scope
     data = json.loads(policy.request_json)
     if (row['payload'] != {'text': data['extra_prompt'] or ''}
@@ -296,7 +296,7 @@ async def execute(authority, ref, row, policy):
     job = dict(data['cron_job'], execution_id=execution_id)
     token = bind_execution(authority, ref.session_id, job['id'], execution_id)
     try:
-        from cron.cancellation import CancelRequest, _CombinedCancelEvent
+        from hermes_agent.cron.cancellation import CancelRequest, _CombinedCancelEvent
 
         db_path = await asyncio.to_thread(Path(authority.db.db_path).resolve)
         with _profile_runtime_scope(db_path.parent):
@@ -315,7 +315,7 @@ async def execute(authority, ref, row, policy):
             raise RuntimeError(result[3] or 'cron execution failed')
         return result[2]
     finally:
-        from cron.scheduler_liveness import owner_progress
+        from hermes_agent.cron.scheduler_liveness import owner_progress
         owner_progress.pop(execution_id, None)
         _execution.reset(token)
         cancellations.pop(row['admission_id'], None)

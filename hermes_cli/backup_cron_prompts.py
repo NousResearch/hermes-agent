@@ -99,7 +99,7 @@ def _restore_under_cron_lock(home: Path, snap_prompts: dict[str, str]) -> list[s
     store to ``home`` so a sibling profile's recovery serializes with THAT profile's writers.
     Raises ``RuntimeError`` on an unreadable store and ``OSError`` on a failed write.
     """
-    from cron import jobs as cron_jobs
+    from hermes_agent.cron import jobs as cron_jobs
 
     with cron_jobs.use_cron_store(home), cron_jobs._jobs_lock():
         jobs = cron_jobs.load_jobs()

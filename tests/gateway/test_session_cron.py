@@ -6,7 +6,7 @@ import pytest
 
 
 def test_cron_admission_uses_job_model_and_exact_retry(tmp_path, monkeypatch):
-    from cron import jobs
+    from hermes_agent.cron import jobs
     from gateway import run, session_cron
     from gateway.session import SessionStore
     from gateway.session_authority import SessionAuthority
@@ -49,7 +49,7 @@ async def test_cron_cancel_between_claim_and_execution_registration_stops_the_jo
     """A started admission whose execute() has not registered its event yet still honours cancel."""
     from contextlib import nullcontext
     import json
-    from cron import scheduler
+    from hermes_agent.cron import scheduler
     from gateway import run, session_cron
     from gateway.session_authority import LiveSession, SessionAuthority
     from gateway.session_contract import SessionActor, SessionRef
@@ -94,9 +94,9 @@ async def test_owner_execution_binds_the_scheduler_cron_identity_inside_run_job(
     the scheduler's execution id (the admission's request id), never on the admission id."""
     from contextlib import nullcontext
     import json
-    from cron import scheduler
-    from cron.execution_identity import current_cron_execution
-    from cron.executions import create_execution, mark_execution_running
+    from hermes_agent.cron import scheduler
+    from hermes_agent.cron.execution_identity import current_cron_execution
+    from hermes_agent.cron.executions import create_execution, mark_execution_running
     from gateway import run, session_cron
     from gateway.session_authority import LiveSession, SessionAuthority
     from gateway.session_contract import SessionRef
@@ -140,8 +140,8 @@ def test_draining_owner_still_answers_status_and_cancel_of_admitted_cron_work(tm
     firer polls ``status`` until the run settles: refusing it made the firer raise
     CronExecutionUnknown and pause the job although the run completed. New fires stay fenced."""
     import threading
-    from cron import jobs
-    from cron.scheduler_authority import run_canonical_job
+    from hermes_agent.cron import jobs
+    from hermes_agent.cron.scheduler_authority import run_canonical_job
     from gateway import run, session_cron
     from gateway.config import GatewayConfig
     from gateway.session import SessionStore

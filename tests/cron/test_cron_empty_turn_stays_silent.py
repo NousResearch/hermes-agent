@@ -5,7 +5,7 @@
 import pytest
 
 from agent.turn_explainers import TurnExplainersMixin
-from cron.scheduler import _final_response_from_result
+from hermes_agent.cron.scheduler import _final_response_from_result
 
 
 class _AIAgent:

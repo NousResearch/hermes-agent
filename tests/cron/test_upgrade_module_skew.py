@@ -1,8 +1,8 @@
 """Cron imports remain usable when a daemon spans an on-disk upgrade.
 
-A long-running scheduler already has ``hermes_cli.sqlite_util`` and ``cron.jobs`` cached from
+A long-running scheduler already has ``hermes_cli.sqlite_util`` and ``hermes_agent.cron.jobs`` cached from
 BEFORE the upgrade; the first lazy import of a cron store afterwards must not need names those
-stale modules lack (``scheduler_prompt._build_job_prompt`` imports ``cron.notepad`` unguarded, so
+stale modules lack (``scheduler_prompt._build_job_prompt`` imports ``hermes_agent.cron.notepad`` unguarded, so
 an ``ImportError`` there fails every job tick until restart).
 """
 
@@ -29,14 +29,14 @@ import cron.{store}
 
 _OCCURRENCES_SKEW_SCRIPT = """
 from datetime import datetime, timedelta, timezone
-import cron.jobs as jobs
+from hermes_agent.cron import jobs
 
 # Model a daemon that loaded cron.jobs before these constants existed, then
 # lazy-loads the newer occurrences module from disk during a due scan.
 for name in ("FIRE_CLAIM_SKEW_SECONDS", "FIRE_CLAIM_TTL_SECONDS"):
     delattr(jobs, name)
 
-from cron.occurrences import completed_occurrence, unclaimed_pending_slot
+from hermes_agent.cron.occurrences import completed_occurrence, unclaimed_pending_slot
 
 assert not completed_occurrence({"id": "job"}, "2026-01-01T00:00:00+00:00")
 

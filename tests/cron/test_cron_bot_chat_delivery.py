@@ -10,15 +10,15 @@ from unittest import mock
 
 import pytest
 
-from cron import scheduler_delivery as sched_delivery
-from cron.scheduler import _resolve_delivery_targets
-from cron.scheduler_delivery import (
+from hermes_agent.cron import scheduler_delivery as sched_delivery
+from hermes_agent.cron.scheduler import _resolve_delivery_targets
+from hermes_agent.cron.scheduler_delivery import (
     BOT_CHAT_PLATFORM,
     _deliver_to_bot_chat,
     _resolve_bot_chat_target,
     parse_bot_chat_deliver_token,
 )
-from cron.scheduler_preflight import _preflight_check_delivery
+from hermes_agent.cron.scheduler_preflight import _preflight_check_delivery
 
 
 # ── token parsing ────────────────────────────────────────────────────────────
@@ -208,9 +208,9 @@ def test_tick_hands_legacy_pending_records_to_the_live_owner_once(tmp_path, monk
     uncertain CLI turn) is never resent; the files stay as evidence."""
     import json
 
-    import cron.jobs as J
-    import cron.scheduler as S
-    from cron import scheduler_authority
+    import hermes_agent.cron.jobs as J
+    import hermes_agent.cron.scheduler as S
+    from hermes_agent.cron import scheduler_authority
     from tools import bot_live_delivery as mailbox
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

@@ -29,7 +29,7 @@ def replayable_completions(job_id, completions):
 def pause_for_unknown(job_id, execution_id, reason):
     """The firer pauses the job for this fire's unverified admission and records that exact pause
     on the fire's journal, so the receipt that later proves the run terminal can lift it."""
-    from cron.jobs import pause_job
+    from hermes_agent.cron.jobs import pause_job
     from utils import atomic_json_write
     paused = pause_job(job_id, reason=reason)
     journal = journal_path(job_id, execution_id)
@@ -42,7 +42,7 @@ def pause_for_unknown(job_id, execution_id, reason):
 def _lift_pause(job_id, pause):
     """A verified terminal receipt resolved the uncertainty that paused the schedule: resume it iff
     the job is still held by exactly that pause (an operator's own pause/resume is never touched)."""
-    from cron.jobs import get_job, resume_job
+    from hermes_agent.cron.jobs import get_job, resume_job
     job = get_job(job_id) if isinstance(pause, dict) else None
     if (job is not None and job.get('state') == 'paused'
             and (job.get('paused_at'), job.get('paused_reason')) == (pause['paused_at'], pause['reason'])):
@@ -113,7 +113,7 @@ def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id
                 # The owner's agent is still working: refresh OUR ledger row (the owner's stamp is
                 # fenced to the row's owner), once per owner stamp, so the stale-claim sweep measures
                 # the run's silence. A wedged owner stops stamping and the sweep still fires.
-                from cron.executions import touch_execution_progress
+                from hermes_agent.cron.executions import touch_execution_progress
                 progress = state['progress_at']
                 await asyncio.to_thread(touch_execution_progress, request_id)
             if state['status'] == 'terminal':
@@ -155,11 +155,11 @@ def reconcile_pending(*, allow_connect=True):
     from gateway.session_cron import owner_for_home, operation
     from hermes_constants import get_hermes_home
     from hermes_cli.gateway_client import connect_gateway
-    from cron.executions import FIRER_FINISHED_STATES, execution_owner_live, get_execution
-    from cron.jobs import get_job, pause_job
-    from cron.scheduler import (_RunDelivery, _FireOwnership, _apply_agent_failure_marker,
+    from hermes_agent.cron.executions import FIRER_FINISHED_STATES, execution_owner_live, get_execution
+    from hermes_agent.cron.jobs import get_job, pause_job
+    from hermes_agent.cron.scheduler import (_RunDelivery, _FireOwnership, _apply_agent_failure_marker,
                                 _save_compose_deliver)
-    from cron.scheduler_bookkeeping import fail_empty_response, finish_completed_run
+    from hermes_agent.cron.scheduler_bookkeeping import fail_empty_response, finish_completed_run
     from utils import atomic_json_write
     import logging
 

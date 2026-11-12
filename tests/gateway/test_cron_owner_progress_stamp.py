@@ -8,14 +8,14 @@ import asyncio
 import threading
 from types import SimpleNamespace
 
-import cron.executions as executions_mod
+import hermes_agent.cron.executions as executions_mod
 from tests.waiting import wait_until
 
 
 def test_owner_progress_reaches_the_firers_ledger_row(tmp_path, monkeypatch):
-    from cron import jobs, scheduler, scheduler_liveness
-    from cron.executions import _transaction, create_execution, mark_execution_running
-    from cron.scheduler_authority import run_canonical_job
+    from hermes_agent.cron import jobs, scheduler, scheduler_liveness
+    from hermes_agent.cron.executions import _transaction, create_execution, mark_execution_running
+    from hermes_agent.cron.scheduler_authority import run_canonical_job
     from gateway import run, session_cron
     from gateway.config import GatewayConfig, Platform
     from gateway.session import SessionStore

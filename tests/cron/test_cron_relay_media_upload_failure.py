@@ -74,13 +74,13 @@ def _gateway_config():
 
 
 def _drain(job, content, adapter, loop, execution_id):
-    from cron import scheduler
-    from cron.delivery_queue import enqueue, get_status
+    from hermes_agent.cron import scheduler
+    from hermes_agent.cron.delivery_queue import enqueue, get_status
 
     enqueue(execution_id, job, content)
     with patch("gateway.config.load_gateway_config", return_value=_gateway_config()), \
-         patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
-         patch("cron.scheduler_delivery._maybe_mirror_cron_delivery", lambda *a, **k: None):
+         patch("hermes_agent.cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+         patch("hermes_agent.cron.scheduler_delivery._maybe_mirror_cron_delivery", lambda *a, **k: None):
         assert scheduler.drain_delivery_queue({Platform.RELAY: adapter}, loop) == 1
     return get_status(execution_id)
 
@@ -121,8 +121,8 @@ def test_transient_upload_403_still_delivers_the_report(live_relay, tmp_path):
 
 def test_inline_run_records_delivery_failed_not_ok(live_relay, tmp_path):
     """The inline lane (no queue) feeds the same error into the job record."""
-    from cron.jobs import create_job, get_job, mark_job_run
-    from cron.scheduler import _deliver_result
+    from hermes_agent.cron.jobs import create_job, get_job, mark_job_run
+    from hermes_agent.cron.scheduler import _deliver_result
 
     connector, adapter, loop = live_relay
     pdf = tmp_path / "q3-report.pdf"
@@ -131,8 +131,8 @@ def test_inline_run_records_delivery_failed_not_ok(live_relay, tmp_path):
     job = create_job("Post the Q3 report", "every 1d", name="Q3 report", deliver="origin",
                      origin={"platform": "slack", "chat_id": CHAT})
     with patch("gateway.config.load_gateway_config", return_value=_gateway_config()), \
-         patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
-         patch("cron.scheduler_delivery._maybe_mirror_cron_delivery", lambda *a, **k: None):
+         patch("hermes_agent.cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+         patch("hermes_agent.cron.scheduler_delivery._maybe_mirror_cron_delivery", lambda *a, **k: None):
         error = _deliver_result(job, f"Q3 numbers are in.\n\nMEDIA:{pdf}",
                                 adapters={Platform.RELAY: adapter}, loop=loop)
     mark_job_run(job["id"], True, delivery_error=error)

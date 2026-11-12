@@ -3,7 +3,7 @@
 The 2026-08-14 incident (t_20e23f84): 4 recurring no_agent interval jobs
 EAGAIN-failed at 12:50 and then recorded ZERO executions for ~1h47m (~9 missed
 cycles) even after the substrate recovered, and the wedge SURVIVED a gateway
-restart.  The in-memory stale-claim sweep (cron/scheduler.py, t_3778a491)
+restart.  The in-memory stale-claim sweep (hermes_agent/cron/scheduler.py, t_3778a491)
 heals a leaked `_running_job_ids` claim in-process, but that is only the
 in-process half.  A recurring job whose *persisted* state shows
 `last_status == "error"` and whose `next_run_at` was re-armed into the future
@@ -12,7 +12,7 @@ running set (nothing force-releases it) and it is not due (so `get_due_jobs`
 never returns it).  It just sits — exactly the restart-surviving symptom
 documented in the incident.
 
-This recovery (cron/jobs.py `_get_due_jobs_locked`) re-arms `next_run_at` to
+This recovery (hermes_agent/cron/jobs.py `_get_due_jobs_locked`) re-arms `next_run_at` to
 now for a recurring job that:
   * is in a persisted `last_status == "error"` state, AND
   * has NOT re-fired within a full cadence (`last_run_at` older than
@@ -48,7 +48,7 @@ def cron_env(tmp_path, monkeypatch):
     (hermes_home / "scripts").mkdir()
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
-    import cron.jobs as jobs_mod
+    import hermes_agent.cron.jobs as jobs_mod
     monkeypatch.setattr(jobs_mod, "HERMES_DIR", hermes_home)
     monkeypatch.setattr(jobs_mod, "CRON_DIR", hermes_home / "cron")
     monkeypatch.setattr(jobs_mod, "JOBS_FILE", hermes_home / "cron" / "jobs.json")
@@ -66,9 +66,9 @@ def cron_env(tmp_path, monkeypatch):
 
 
 def _setup(cron_env, monkeypatch):
-    from cron import scheduler as S
-    from cron import executions as E
-    import cron.jobs as J
+    from hermes_agent.cron import scheduler as S
+    from hermes_agent.cron import executions as E
+    import hermes_agent.cron.jobs as J
 
     env = cron_env
     monkeypatch.setattr(E, "EXECUTIONS_FILE", env["home"] / "cron" / "executions.db")
@@ -104,7 +104,7 @@ class TestPersistedStaleErrorRecovery:
         _persist_stale_error(J, job_id, error_age_minutes=110)
 
         job = J.get_job(job_id)
-        with mock.patch("cron.jobs.load_jobs", return_value=[job]):
+        with mock.patch("hermes_agent.cron.jobs.load_jobs", return_value=[job]):
             S.tick(verbose=False, sync=True)
 
         latest = E.latest_execution(job_id)
@@ -113,7 +113,7 @@ class TestPersistedStaleErrorRecovery:
         )
         assert latest["status"] == "completed"
         # The recovery must be countable / probe-visible.
-        from cron import jobs as Jmod
+        from hermes_agent.cron import jobs as Jmod
         stats = Jmod.get_persisted_error_recovery_stats()
         assert stats["persisted_error_recoveries"] >= 1
 
@@ -129,7 +129,7 @@ class TestPersistedStaleErrorRecovery:
         _persist_stale_error(J, job_id, error_age_minutes=5)  # within cadence
 
         job = J.get_job(job_id)
-        with mock.patch("cron.jobs.load_jobs", return_value=[job]):
+        with mock.patch("hermes_agent.cron.jobs.load_jobs", return_value=[job]):
             S.tick(verbose=False, sync=True)
 
         latest = E.latest_execution(job_id)
@@ -156,7 +156,7 @@ class TestPersistedStaleErrorRecovery:
         job = J.get_job(job_id)
         assert not J._job_is_stale_error_recurring(job, job["schedule"], now)
 
-        with mock.patch("cron.jobs.load_jobs", return_value=[job]):
+        with mock.patch("hermes_agent.cron.jobs.load_jobs", return_value=[job]):
             S.tick(verbose=False, sync=True)
         assert E.latest_execution(job_id) is None, (
             "a job with a live fire_claim held by another process must not be "

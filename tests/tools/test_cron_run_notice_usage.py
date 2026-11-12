@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from cron import jobs
+from hermes_agent.cron import jobs
 from tests.fakes.cron_owner import admit_fire, cron_owner
 from tools.cronjob_tools import _try_dispatch_background_run
 from tools.process_registry_notifications import format_process_notification
@@ -30,7 +30,7 @@ def _completion(job, run_one_job):
     others = []
     try:
         with patch("tools.cronjob_tools.claim_job_for_fire", side_effect=lambda jid, **kw: dict(job)), \
-             patch("cron.scheduler.run_one_job", side_effect=run_one_job):
+             patch("hermes_agent.cron.scheduler.run_one_job", side_effect=run_one_job):
             res = _try_dispatch_background_run(dict(job))
             assert res["dispatched"] is True
             while True:  # a blocking get is the signal; Empty after the deadline fails the test

@@ -2,7 +2,7 @@
 
 The leak
 --------
-``cron/scheduler.py`` tracks in-flight cron jobs in the module-level
+``hermes_agent/cron/scheduler.py`` tracks in-flight cron jobs in the module-level
 ``_running_job_ids`` set. ``_submit_with_guard`` adds a job id BEFORE the
 future that owns its release exists: everything between the add and
 ``pool.submit`` — ``create_execution``, ``contextvars.copy_context()``, and
@@ -10,7 +10,7 @@ once running, the whole pre-future body of ``run_one_job`` (SessionDB
 construction around L3150-3161, agent import/build, config load) — has no
 ``finally`` that discards the id. If any of it throws or hangs, the release
 path in ``_run_and_release``'s ``finally`` never runs. Every later tick then
-short-circuits with ``cron.scheduler: Job '<x>' already running — skipping``
+short-circuits with ``hermes_agent.cron.scheduler: Job '<x>' already running — skipping``
 with no ``last_error``, no failure counter, and no alert, until the whole
 gateway process restarts (incident: jarvis ``board-pm-triage-*`` jobs,
 2026-08-02).
@@ -43,7 +43,7 @@ from unittest.mock import patch
 
 import pytest
 
-import cron.scheduler as sched
+import hermes_agent.cron.scheduler as sched
 
 
 @pytest.fixture(autouse=True)
@@ -128,7 +128,7 @@ class TestStaleInflightLeak:
 
         with caplog.at_level("WARNING"), \
              patch.object(sched, "_get_hermes_home", return_value=tmp_path), \
-             patch("cron.jobs.load_jobs", return_value=[job]), \
+             patch("hermes_agent.cron.jobs.load_jobs", return_value=[job]), \
              patch.object(sched, "get_due_jobs", return_value=[]), \
              patch.object(sched, "mark_job_run") as mark:
             sched.tick(verbose=False)
@@ -165,7 +165,7 @@ class TestStaleInflightLeak:
             running_since[job_id] = time.time() - 60  # 1 minute old
 
         with patch.object(sched, "_get_hermes_home", return_value=tmp_path), \
-             patch("cron.jobs.load_jobs", return_value=[job]), \
+             patch("hermes_agent.cron.jobs.load_jobs", return_value=[job]), \
              patch.object(sched, "get_due_jobs", return_value=[]), \
              patch.object(sched, "mark_job_run") as mark:
             sched.tick(verbose=False)
@@ -327,7 +327,7 @@ class TestWedgedJobRefiresWithoutRestart:
 
         with patch.object(sched, "_get_hermes_home", return_value=tmp_path), \
              patch.object(sched, "get_due_jobs", return_value=[job]), \
-             patch("cron.jobs.load_jobs", return_value=[job]), \
+             patch("hermes_agent.cron.jobs.load_jobs", return_value=[job]), \
              patch.object(sched, "advance_next_runs"), \
              patch.object(sched, "mark_job_run"), \
              patch.object(sched, "create_execution", return_value={"id": "exec-1"}), \
@@ -390,7 +390,7 @@ class TestLedgerTerminalReconciliation:
         self._inject_young_claim(job_id, tmp_path)
 
         with patch.object(sched, "_get_hermes_home", return_value=tmp_path), \
-             patch("cron.executions.latest_executions", return_value={
+             patch("hermes_agent.cron.executions.latest_executions", return_value={
                  job_id: {"status": "failed", "id": "exec-x",
                           "claimed_at": self._row_at(-30)},  # after claim (-60)
              }), \
@@ -415,7 +415,7 @@ class TestLedgerTerminalReconciliation:
         self._inject_young_claim(job_id, tmp_path)
 
         with patch.object(sched, "_get_hermes_home", return_value=tmp_path), \
-             patch("cron.executions.latest_executions", return_value={
+             patch("hermes_agent.cron.executions.latest_executions", return_value={
                  job_id: {"status": "completed", "id": "exec-prev",
                           "claimed_at": self._row_at(-600)},  # before claim (-60)
              }), \
@@ -436,7 +436,7 @@ class TestLedgerTerminalReconciliation:
         self._inject_young_claim(job_id, tmp_path)
 
         with patch.object(sched, "_get_hermes_home", return_value=tmp_path), \
-             patch("cron.executions.latest_executions", return_value={
+             patch("hermes_agent.cron.executions.latest_executions", return_value={
                  job_id: {"status": "failed", "id": "exec-x"},
              }), \
              patch.object(sched, "mark_job_run"):
@@ -454,7 +454,7 @@ class TestLedgerTerminalReconciliation:
         self._inject_young_claim(job_id, tmp_path)
 
         with patch.object(sched, "_get_hermes_home", return_value=tmp_path), \
-             patch("cron.executions.latest_executions", return_value={}), \
+             patch("hermes_agent.cron.executions.latest_executions", return_value={}), \
              patch.object(sched, "mark_job_run"):
             released = sched.sweep_stale_inflight([job])
 
@@ -470,7 +470,7 @@ class TestLedgerTerminalReconciliation:
         self._inject_young_claim(job_id, tmp_path)
 
         with patch.object(sched, "_get_hermes_home", return_value=tmp_path), \
-             patch("cron.executions.latest_executions", return_value={
+             patch("hermes_agent.cron.executions.latest_executions", return_value={
                  job_id: {"status": "running", "id": "exec-y"},
              }), \
              patch.object(sched, "mark_job_run"):
@@ -489,7 +489,7 @@ class TestLedgerTerminalReconciliation:
             sched._running_since[sched._inflight_key(job_id, tmp_path)] = time.time() - 6 * 60 * 60  # 6h old
 
         with patch.object(sched, "_get_hermes_home", return_value=tmp_path), \
-             patch("cron.executions.latest_executions", return_value={
+             patch("hermes_agent.cron.executions.latest_executions", return_value={
                  job_id: {"status": "completed", "id": "exec-z",
                           "claimed_at": self._row_at(-3 * 60 * 60)},  # after claim (-6h)
              }), \

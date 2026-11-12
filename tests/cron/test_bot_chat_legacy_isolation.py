@@ -7,9 +7,9 @@ still fires the due job beside it.
 import json
 from datetime import timedelta
 
-import cron.jobs as J
-import cron.scheduler as S
-from cron import scheduler_authority
+import hermes_agent.cron.jobs as J
+import hermes_agent.cron.scheduler as S
+from hermes_agent.cron import scheduler_authority
 
 
 def test_corrupt_legacy_record_is_isolated_and_due_job_still_fires(tmp_path, monkeypatch):

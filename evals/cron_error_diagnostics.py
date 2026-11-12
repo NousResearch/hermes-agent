@@ -27,7 +27,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="cron-diagnostics-") as home:
         os.environ.update(HOME=home, HERMES_HOME=home)
         sys.path.insert(0, str(checkout))
-        from cron import jobs, scheduler
+        from hermes_agent.cron import jobs, scheduler
         from hermes_cli.cli_cron_lines import cron_list_lines
         from openai import OpenAI
         from tools.cronjob_job_args import _format_job

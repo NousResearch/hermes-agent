@@ -1,4 +1,4 @@
-"""Unit contract for the per-job schedule knobs: ``cron/jobs_time.py``.
+"""Unit contract for the per-job schedule knobs: ``hermes_agent/cron/jobs_time.py``.
 
 Covers the two values a job may pin — an IANA ``timezone`` for its cron wall clock and a
 ``grace_minutes`` override for the catch-up window — including the two traps that cost a
@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from cron import jobs_time
+from hermes_agent.cron import jobs_time
 
 NY = ZoneInfo("America/New_York")
 

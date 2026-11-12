@@ -2,7 +2,7 @@
 
 Regression coverage: the validator used to accept a script path that pointed
 at a file that doesn't exist, only failing later at every cron fire with a
-generic "Script not found" error from cron/scheduler_script.py. It also
+generic "Script not found" error from hermes_agent/cron/scheduler_script.py. It also
 hardcoded "~/.hermes/scripts/" in its messages even though resolution goes
 through get_hermes_home(), which is per-profile.
 """

@@ -4,7 +4,7 @@
 (``mcp-finnhub``). Either spelling is a selection: the job gets that server and no other.
 """
 
-from cron.scheduler import _merge_mcp_into_per_job_toolsets
+from hermes_agent.cron.scheduler import _merge_mcp_into_per_job_toolsets
 
 CFG = {
     "mcp_servers": {

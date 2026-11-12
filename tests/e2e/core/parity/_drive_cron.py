@@ -5,7 +5,7 @@ job (``--deliver local``: no platform; ``--workdir``: cron's documented
 per-job cwd/context channel, see ``hermes cron create --help``), then
 ``hermes cron run <id>`` executes it: the CLI waits synchronously
 (``hermes_cli/cron.py::_job_action`` forces the synchronous path) while the turn
-runs in the profile's gateway daemon (``cron.scheduler_authority.run_canonical_job``
+runs in the profile's gateway daemon (``hermes_agent.cron.scheduler_authority.run_canonical_job``
 → ``connect_gateway``, which spawns the daemon when none owns the profile) — the
 same agent build the ticker uses — and prints ``Ran now: succeeded.``. The job's
 saved output file (``cron/output/<id>/<ts>.md``, ``## Response`` section) is what
@@ -31,7 +31,7 @@ from tests.e2e.core.parity._helpers import (
 )
 from tests.fakes.fake_llm_provider import FakeLLMServer
 
-# cron/scheduler.py::_resolve_cron_enabled_toolsets -> _get_platform_tools(cfg, "cron") default.
+# hermes_agent/cron/scheduler.py::_resolve_cron_enabled_toolsets -> _get_platform_tools(cfg, "cron") default.
 CRON_TOOLSET = "hermes-cron"
 _JOB_ID = re.compile(r"Created job: (\S+)")
 _RESPONSE = re.compile(r"^## Response\s*\n(.*)\Z", re.DOTALL | re.MULTILINE)

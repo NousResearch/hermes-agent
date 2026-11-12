@@ -39,10 +39,10 @@ _checkout_root = Path(__file__).resolve().parent.parent
 if str(_checkout_root) not in sys.path:
     sys.path.append(str(_checkout_root))
 
-from cron.worker_bootstrap import WORKER_MARKER, finish_worker_boot
+from hermes_agent.cron.worker_bootstrap import WORKER_MARKER, finish_worker_boot
 from hermes_constants import get_hermes_home, hermes_home_key
 from hermes_cli.observability.shared_metrics_gateway import note_cron_execution, note_cron_skipped
-from cron.env_settings import cron_env_setting
+from hermes_agent.cron.env_settings import cron_env_setting
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import (
     load_config, load_config_readonly)
@@ -245,7 +245,7 @@ def _should_yield_tick_to_fresh_gateway() -> tuple[str, str] | None:
     if disk_sha is None:
         return None
     try:
-        from cron.scheduler_ownership import live_gateway_ticking, owns_cron_tick_for
+        from hermes_agent.cron.scheduler_ownership import live_gateway_ticking, owns_cron_tick_for
 
         home = _get_hermes_home()
         if owns_cron_tick_for(home):
@@ -264,7 +264,7 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     Deterministic scheduler/script shapes are matched first (their text can contain "timed out"
     and would otherwise be blamed on the model service); everything else goes through the shared
     ``classify_api_error`` verdict and the copy table in ``scheduler_failure_copy``."""
-    from cron.scheduler_failure_copy import (
+    from hermes_agent.cron.scheduler_failure_copy import (
         classify_cron_failure_reason, generic_failure_notice, inactivity_notice,
         provider_failure_notice, script_timeout_notice)
 
@@ -333,7 +333,7 @@ DEFAULT_FAILURE_REPEAT_ALERT_HOURS = 6.0
 def _failure_repeat_alert_hours() -> float:
     """``cron.failure_repeat_alert_hours``: how long an ``alerted`` incident stays silent before one
     reminder ping. ``0`` (or negative) re-alerts on every failing run (the pre-gate behaviour)."""
-    from cron.jobs import _cron_config_number
+    from hermes_agent.cron.jobs import _cron_config_number
 
     return _cron_config_number("failure_repeat_alert_hours", DEFAULT_FAILURE_REPEAT_ALERT_HOURS, float)
 
@@ -349,7 +349,7 @@ def _repeat_alert_withheld(incident: dict) -> bool:
     if not alerted_at:
         return False
     try:
-        from cron.jobs import _elapsed_seconds, _ensure_aware
+        from hermes_agent.cron.jobs import _elapsed_seconds, _ensure_aware
 
         last = _ensure_aware(datetime.fromisoformat(str(alerted_at)))
     except (TypeError, ValueError):
@@ -366,7 +366,7 @@ def _upsert_incident_for_failure(
     already went out) -> suppress the per-run ping. Store errors log at debug; the caller delivers
     as if none existed."""
     try:
-        from cron.incidents import get_incident, upsert_incident
+        from hermes_agent.cron.incidents import get_incident, upsert_incident
 
         incident_id, _is_new = upsert_incident(
             job["id"], str(error or ""), job_name=job.get("name"), output_file=output_file)
@@ -385,7 +385,7 @@ def _resolve_incidents_for_recovered_job(job: dict) -> None:
     """Best-effort: a successful run marks the job's open incidents ``resolved`` (never touches an
     operator ``closed`` ack). Store errors log at debug; delivery is unaffected."""
     try:
-        from cron.incidents import close_incidents_for_recovered_job
+        from hermes_agent.cron.incidents import close_incidents_for_recovered_job
 
         close_incidents_for_recovered_job(job["id"])
     except Exception as exc:
@@ -397,7 +397,7 @@ def _mark_incident_alerted(incident_id: Optional[str]) -> None:
     if not incident_id:
         return
     try:
-        from cron.incidents import set_incident_state
+        from hermes_agent.cron.incidents import set_incident_state
 
         set_incident_state(incident_id, "alerted")
     except Exception as exc:
@@ -523,19 +523,19 @@ def _resolve_job_reasoning_config(job: dict, cfg: dict, model: str) -> dict | No
     return resolve_reasoning_config(cfg if isinstance(cfg, dict) else {}, str(model))
 
 
-from cron.jobs import (
+from hermes_agent.cron.jobs import (
     _ensure_cron_dir, advance_next_runs, claim_dispatch, claim_job_for_fire, fire_claim_fence,
     clear_run_claim, get_due_jobs, heartbeat_fire_claim, heartbeat_run_claim, mark_job_run,
     save_job_output, self_removal_delivery_allowed, self_removal_delivery_scope, use_cron_store)
-from cron import store_health
-from cron.execution_identity import enter_cron_execution, exit_cron_execution
-from cron.executions import (
+from hermes_agent.cron import store_health
+from hermes_agent.cron.execution_identity import enter_cron_execution, exit_cron_execution
+from hermes_agent.cron.executions import (
     FIRER_FINISHED_STATES, _TERMINAL_STATES, HANDOFF_ADOPTION_GRACE_SECONDS, create_execution, finish_execution,
     get_execution, mark_execution_handoff_pending, mark_execution_running,
     recover_interrupted_executions, settle_unstarted_execution, terminalize_dead_owner)
-from cron.scheduler_liveness import ExecutionProgressStamper, _inactivity_watchdog_loop
-from cron.scheduler_bookkeeping import _classify_delivery_outcome
-from cron.cancellation import (CancelRequest, _CancelEventLike, _CombinedCancelEvent, cancel_reason,
+from hermes_agent.cron.scheduler_liveness import ExecutionProgressStamper, _inactivity_watchdog_loop
+from hermes_agent.cron.scheduler_bookkeeping import _classify_delivery_outcome
+from hermes_agent.cron.cancellation import (CancelRequest, _CancelEventLike, _CombinedCancelEvent, cancel_reason,
                                clear_cancel, finish_lost_execution,
                                run_job_unless_cancelled as _run_job_unless_cancelled)
 
@@ -718,7 +718,7 @@ def _wedged_inflight_keys() -> frozenset[tuple]:
         # their interval resolved; a claim from another profile falls back to the floor.
         by_id: dict = {}
         with contextlib.suppress(Exception):
-            from cron.jobs import load_jobs
+            from hermes_agent.cron.jobs import load_jobs
             by_id = {j.get("id"): j for j in load_jobs()}
         local_home = hermes_home_key(_get_hermes_home())
         with _running_lock:
@@ -886,11 +886,11 @@ def _cron_interval_minutes(expr: str) -> Optional[float]:
     result = None
     ok = False
     with contextlib.suppress(Exception):
-        from cron.jobs import _ensure_croniter
+        from hermes_agent.cron.jobs import _ensure_croniter
 
         ok = _ensure_croniter()
         if ok:
-            from cron.jobs import croniter as _croniter
+            from hermes_agent.cron.jobs import croniter as _croniter
             from datetime import datetime
 
             base = datetime.now()
@@ -913,7 +913,7 @@ def _job_interval_minutes(job: dict) -> Optional[float]:
     with contextlib.suppress(Exception):
         schedule = job.get("schedule")
         if isinstance(schedule, str) and schedule.strip():
-            from cron.jobs import parse_schedule
+            from hermes_agent.cron.jobs import parse_schedule
 
             schedule = parse_schedule(schedule) or {}
         if isinstance(schedule, dict):
@@ -980,7 +980,7 @@ def _latest_executions_for_releasable_claims() -> dict:
     if not candidates:
         return {}
     try:
-        from cron.executions import latest_executions as _latest_execs
+        from hermes_agent.cron.executions import latest_executions as _latest_execs
         return _latest_execs(candidates)
     except Exception:
         return {}
@@ -994,7 +994,7 @@ def _row_belongs_to_claim(row: dict, claim_started: float) -> bool:
     if not claimed_at:
         return False
     try:
-        from cron.jobs import _ensure_aware as _ensure_aware_ts
+        from hermes_agent.cron.jobs import _ensure_aware as _ensure_aware_ts
         row_ts = _ensure_aware_ts(datetime.fromisoformat(claimed_at))
         return row_ts.timestamp() >= claim_started
     except (ValueError, TypeError, OSError):
@@ -1050,7 +1050,7 @@ def sweep_stale_inflight(due_jobs: Optional[list] = None) -> list:
     floor_seconds = _inflight_min_allowance_minutes() * 60.0
     now = time.time()
     stale: list = []
-    from cron.executions import _TERMINAL_STATES as _terminal_states
+    from hermes_agent.cron.executions import _TERMINAL_STATES as _terminal_states
 
     _latest = _latest_executions_for_releasable_claims()
     _local_home = hermes_home_key(_get_hermes_home())
@@ -1359,7 +1359,7 @@ def _reclaim_fds_best_effort() -> None:
 
 def drain_delivery_queue(adapters, loop) -> int:
     """Send queued worker results through this gateway's live adapters."""
-    from cron.delivery_queue import _path, drain
+    from hermes_agent.cron.delivery_queue import _path, drain
 
     # Only restart-safe workers create the queue file.  Every gateway (macOS,
     # Windows, launchd, Docker) runs this housekeeping tick, so skip the sqlite
@@ -1520,7 +1520,7 @@ def _run_no_agent_job(
     script_path = job.get("script")
     # Legacy/hand-edited no_agent job without a script: pause it, or it re-fires every tick.
     if not str(script_path or "").strip():
-        from cron.jobs_invariants import NO_AGENT_WITHOUT_SCRIPT_ERROR
+        from hermes_agent.cron.jobs_invariants import NO_AGENT_WITHOUT_SCRIPT_ERROR
 
         return _block_and_pause_job(job_id, job_name, NO_AGENT_WITHOUT_SCRIPT_ERROR)
 
@@ -1565,7 +1565,7 @@ def _apply_monitor_gate(
     monitor_context)``. Monitor context is runtime data and must remain distinct from a
     user-authored ``extra_prompt`` so the prompt scanner keeps its strict user-input boundary.
     """
-    from cron.monitor import check_monitor, job_has_monitor
+    from hermes_agent.cron.monitor import check_monitor, job_has_monitor
 
     if not job_has_monitor(job):
         return None, extra_prompt, None
@@ -1703,7 +1703,7 @@ def _preflight_or_block(job: dict, job_id: str, job_name: str, cfg: dict) -> Opt
             if not _pf_reason and job.get("preflight_alerted"):
                 # Config healthy again: clear alert-once marker so a future break re-alerts.
                 with contextlib.suppress(Exception):
-                    from cron.jobs import clear_preflight_alerted
+                    from hermes_agent.cron.jobs import clear_preflight_alerted
                     clear_preflight_alerted(job_id)
     except Exception:
         # Fail open: the validator must never take down a runnable job.
@@ -1721,7 +1721,7 @@ def _blocked_config_result(job_id: str, job_name: str, _pf_reason: str) -> tuple
         job_name, job_id, _pf_reason)
     already_alerted = False
     try:
-        from cron.jobs import mark_preflight_alerted
+        from hermes_agent.cron.jobs import mark_preflight_alerted
         already_alerted = mark_preflight_alerted(job_id)
     except Exception:
         logger.debug("Job '%s': could not persist preflight alert marker", job_id, exc_info=True)
@@ -1891,7 +1891,7 @@ def _open_cron_session_db(job: dict):
             # inside it, the future's result would be orphaned and its SQLite FDs (.db, WAL, SHM) leak until
             # process exit. Register a done-callback that retrieves and closes any eventual late result
             # (#72782).
-            from cron.scheduler_detached_worker import _close_late_session_db_result
+            from hermes_agent.cron.scheduler_detached_worker import _close_late_session_db_result
             _session_db_future.add_done_callback(_close_late_session_db_result)
             raise
         finally:
@@ -2250,7 +2250,7 @@ def _prepare_job_prompt(
         return _run_no_agent_job(job, job_id, job_name, cancel_event), None
 
     # Legacy / hand-edited job with nothing to run: pause it instead of waking the LLM every fire.
-    from cron.jobs import EMPTY_PAYLOAD_ERROR, job_payload_is_empty
+    from hermes_agent.cron.jobs import EMPTY_PAYLOAD_ERROR, job_payload_is_empty
 
     if job_payload_is_empty(job):
         return _block_and_pause_job(job_id, job_name, EMPTY_PAYLOAD_ERROR), None
@@ -2561,7 +2561,7 @@ def run_job(
     if owner_execution is not None and owner_execution[2:] != (job['id'], execution_id):
         owner_execution = None
     if not job.get("no_agent") and owner_execution is None:
-        from cron.scheduler_authority import run_canonical_job
+        from hermes_agent.cron.scheduler_authority import run_canonical_job
         return run_canonical_job(job, extra_prompt=extra_prompt, cancel_event=cancel_event,
                                  execution_id=execution_id)
     job_id = job["id"]
@@ -2631,16 +2631,16 @@ def run_job(
     except (Exception, ConfigBackendUnavailable) as e:  # the plane being down fails THIS fire only
         error_msg = f"{type(e).__name__}: {e!s}"
         logger.exception("Job '%s' failed: %s", job_name, error_msg)
-        # Cowork-style unreachable-model re-run (cron/unreachable_retry.py): flag failures where
+        # Cowork-style unreachable-model re-run (hermes_agent/cron/unreachable_retry.py): flag failures where
         # the model was never reached (transient network/DNS, zero API calls) so the bookkeeping
         # tail can schedule a bounded automatic re-run instead of waiting a full period.
         try:
-            from cron.unreachable_retry import is_model_unreachable_failure
+            from hermes_agent.cron.unreachable_retry import is_model_unreachable_failure
             if is_model_unreachable_failure(e, agent):
                 job["_model_unreachable"] = True
-            # Provider usage window closed for a known duration (cron/quota_hold.py): flag it so the
+            # Provider usage window closed for a known duration (hermes_agent/cron/quota_hold.py): flag it so the
             # bookkeeping tail parks the job past the window instead of re-firing into it (#89376).
-            from cron.quota_hold import hold_seconds_from_failure
+            from hermes_agent.cron.quota_hold import hold_seconds_from_failure
             _hold_s = hold_seconds_from_failure(e)
             if _hold_s:
                 job["_quota_hold_seconds"] = _hold_s
@@ -2649,7 +2649,7 @@ def run_job(
         # No audit row when we failed before the agent existed; the audit write must never raise.
         if _audit is not None:
             _audit.write({}, error_msg)
-        from cron.scheduler_diagnostics import format_run_error
+        from hermes_agent.cron.scheduler_diagnostics import format_run_error
         output = (
             _run_doc_header(job, f"{job_name} (FAILED)", job_id, prompt)
             + format_run_error(e)
@@ -2657,7 +2657,7 @@ def run_job(
         return False, output, "", error_msg
 
     finally:
-        from cron.scheduler_detached_worker import defer_teardown_to_running_worker
+        from hermes_agent.cron.scheduler_detached_worker import defer_teardown_to_running_worker
         _worker_teardown_deferred = defer_teardown_to_running_worker(
             _worker_state.get("future"), _session_db, agent, job_id, job_name, _cron_session_id,
             workdir=scope.workdir)
@@ -2823,7 +2823,7 @@ def run_one_job(
             stage = "failed after handoff" if post_handoff else "dispatch failed"
             error = f"Restart-safe cron worker {stage}: {handoff_error}"
             if post_handoff:
-                from cron.scheduler_worker_failure import record_unknown_worker_outcome
+                from hermes_agent.cron.scheduler_worker_failure import record_unknown_worker_outcome
 
                 if record_unknown_worker_outcome(job, error=str(handoff_error), adapters=adapters, loop=loop):
                     return True
@@ -2841,7 +2841,7 @@ def run_one_job(
                     with _fire_secret_scope():
                         delivery_error, delivery_outcome = _deliver_crash_failure(
                             job, error, adapters=adapters, loop=loop)
-                from cron.unreachable_retry import is_retry_run
+                from hermes_agent.cron.unreachable_retry import is_retry_run
                 mark_job_run(
                     job["id"],
                     False,
@@ -2857,7 +2857,7 @@ def run_one_job(
                     delivery_outcome=delivery_outcome)
             return True
         if handed_off:
-            from cron.scheduler_worker_failure import record_unknown_worker_outcome
+            from hermes_agent.cron.scheduler_worker_failure import record_unknown_worker_outcome
 
             record_unknown_worker_outcome(job, adapters=adapters, loop=loop)
             return True
@@ -2908,7 +2908,7 @@ def _record_fire_ownership_lost(
     terminal write instead of leaving fire_claim/last_status stale; otherwise discard.
     An interrupted ladder re-run re-ran an occurrence that already counted, so its terminal
     write must not spend another repeat slot (same as every other terminal path)."""
-    from cron.unreachable_retry import is_retry_run
+    from hermes_agent.cron.unreachable_retry import is_retry_run
     job_id = job["id"]
     if fire_owner is not None and heartbeat_fire_claim(job_id, expected_owner=fire_owner):
         mark_job_run(
@@ -2938,7 +2938,7 @@ def _compose_run_delivery(
     if blocked_config and not success:
         # Bypass the generic failure summarizer (its auth/timeout heuristics would mislabel this).
         _pf_text = re.sub(r"\[blocked_config[^\]]*\]\s*", "", err).strip()
-        from cron.scheduler_failure_copy import blocked_config_notice
+        from hermes_agent.cron.scheduler_failure_copy import blocked_config_notice
         deliver_content = blocked_config_notice(job.get("name") or job["id"], _pf_text)
     elif success:
         deliver_content = final_response
@@ -2956,12 +2956,12 @@ def _compose_run_delivery(
             # The agent already diagnosed the failure in prose; the summarizer's substring
             # heuristics would re-diagnose it ("timed out" -> blame the model service, "401" ->
             # "sign in again") and attach the wrong remediation. Deliver the evidence as-is.
-            from cron.scheduler_failure_copy import generic_failure_notice
+            from hermes_agent.cron.scheduler_failure_copy import generic_failure_notice
             deliver_content = generic_failure_notice(
                 job.get("name") or job["id"], job["id"], err.strip().rstrip("."),
             ) + _failure_streak_nudge(job)
         else:
-            from cron.quota_hold import hold_notice
+            from hermes_agent.cron.quota_hold import hold_notice
             deliver_content = (
                 _summarize_cron_failure_for_delivery(job, error) + _failure_streak_nudge(job)
                 # The one alert on entering a provider-window hold says so (#89376).
@@ -3090,10 +3090,10 @@ def _save_compose_deliver(
     d.should_deliver = bool(deliver_content.strip()) and not _silent_alert
     if d.should_deliver and not d.success and job.get("_model_unreachable"):
         # The model was never reached and a bounded automatic re-run will be scheduled
-        # (cron/unreachable_retry.py): hold the failure notice — the re-run either
+        # (hermes_agent/cron/unreachable_retry.py): hold the failure notice — the re-run either
         # delivers the real result or, once the ladder is exhausted, the next failure
         # alerts normally. Mirrors Cowork's silent 5/15/30-minute re-runs.
-        from cron.unreachable_retry import will_retry
+        from hermes_agent.cron.unreachable_retry import will_retry
         if will_retry(job):
             d.should_deliver = False
             logger.info(
@@ -3119,7 +3119,7 @@ def _save_compose_deliver(
     )
     execution_id = job.get('execution_id')
     if execution_id and not job.get('no_agent'):
-        from cron.delivery_queue import enqueue
+        from hermes_agent.cron.delivery_queue import enqueue
         # Nothing to send: an origin-less job is ``not_configured``, never a queued "delivery".
         if d.unresolved_origin or _normalize_deliver_value(
                 _delivery_lane_value(job, for_failure=not d.success)) == "local":
@@ -3213,7 +3213,7 @@ def _install_fire_secret_scope() -> tuple[contextvars.Token, Optional[contextvar
     restart-safe handoff in ``run_one_job`` runs before this and keeps today's semantics (#107692).
     """
     from agent.secret_scope import set_multiplex_context, set_secret_scope
-    from cron.scheduler_provider import routed_profile_fire
+    from hermes_agent.cron.scheduler_provider import routed_profile_fire
     from hermes_cli.env_loader import hydrate_profile_secret_sources
     from hermes_agent.tui_gateway.launch_profile_policy import owner_secret_scope
 
@@ -3380,7 +3380,7 @@ def _run_one_job_body(
             _record_fire_ownership_lost(job, fire_owner, execution_id)
             return True
 
-        from cron.scheduler_bookkeeping import fail_empty_response
+        from hermes_agent.cron.scheduler_bookkeeping import fail_empty_response
         fail_empty_response(d, final_response)
 
         if _fire_claim_ownership_lost():
@@ -3404,18 +3404,18 @@ def _run_one_job_body(
                 return True
 
         if _consume_interrupted_flag(job["id"], execution_token):
-            from cron.scheduler_bookkeeping import finish_interrupted_run
+            from hermes_agent.cron.scheduler_bookkeeping import finish_interrupted_run
             finish_interrupted_run(job, execution_id, delivery_error)
             return True
 
-        from cron.scheduler_bookkeeping import finish_completed_run
+        from hermes_agent.cron.scheduler_bookkeeping import finish_completed_run
         return finish_completed_run(d, fire_owner, execution_id)
 
     except BaseException as e:
-        from cron.scheduler_authority import CronExecutionUnknown
+        from hermes_agent.cron.scheduler_authority import CronExecutionUnknown
         if isinstance(e, CronExecutionUnknown):
-            from cron.executions import give_up_execution
-            from cron.scheduler_authority import pause_for_unknown
+            from hermes_agent.cron.executions import give_up_execution
+            from hermes_agent.cron.scheduler_authority import pause_for_unknown
             pause_for_unknown(job["id"], execution_id, str(e))
             give_up_execution(execution_id, reason=str(e))
             logger.error("Cron %s paused with unverified admission: %s", job["id"], e)
@@ -3460,7 +3460,7 @@ def _run_one_job_body(
                     mark_kwargs["expected_fire_owner"] = fire_owner
                 if contained:
                     mark_kwargs["delivery_error"] = delivery_error
-                from cron.unreachable_retry import is_retry_run
+                from hermes_agent.cron.unreachable_retry import is_retry_run
                 if is_retry_run(job):
                     # A crashed ladder re-run: its occurrence already counted toward repeat.
                     mark_kwargs["ladder_rung"] = True
@@ -3524,7 +3524,7 @@ def _wait_for_external_cron_worker_body(
             # cleanup; only a still-live terminal worker needs background reaping.
             returncode = process.poll()
             if returncode is None:
-                from cron.scheduler_detached_worker import reap_terminal_worker_in_background
+                from hermes_agent.cron.scheduler_detached_worker import reap_terminal_worker_in_background
 
                 reap_terminal_worker_in_background(process)
                 return True
@@ -3546,7 +3546,7 @@ def _wait_for_external_cron_worker_body(
         # execution, refusing the next manual fire with "Job is already being
         # fired" (#128509). Raising routes the existing post-handoff bookkeeping
         # instead: retire the claim and report the uncertain run, not a pre-dispatch failure.
-        from cron.scheduler_worker_failure import external_worker_exited_reason
+        from hermes_agent.cron.scheduler_worker_failure import external_worker_exited_reason
 
         reason = external_worker_exited_reason(returncode)
         if not terminalize_dead_owner(execution_id, reason=reason):
@@ -3558,7 +3558,7 @@ def _wait_for_external_cron_worker_body(
                 return True
         stderr_tail = ""
         if stderr_path is not None:
-            from cron.scheduler_diagnostics import external_worker_stderr_tail
+            from hermes_agent.cron.scheduler_diagnostics import external_worker_stderr_tail
 
             stderr_tail = external_worker_stderr_tail(stderr_path)
         raise RuntimeError(f"{reason}{stderr_tail}")
@@ -3622,7 +3622,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
     command = [
         sys.executable,
         "-m",
-        "cron.scheduler",
+        "hermes_agent.cron.scheduler",
         "--external-worker-file",
         str(payload_path),
         "--ack-file",
@@ -3630,7 +3630,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
     ]
 
     from agent.secret_scope import is_multiplex_active
-    from cron.scheduler_provider import routed_profile_fire
+    from hermes_agent.cron.scheduler_provider import routed_profile_fire
     from tools.environments.local import build_subprocess_env, strip_launch_profile_env
     from tools.process_registry import (
         restart_safe_gateway_child_argv,
@@ -3706,11 +3706,11 @@ def _launch_external_cron_worker(job: dict) -> bool:
         "HERMES_EXEC_ASK",
     ):
         worker_env.pop(_presence_var, None)
-    # `-m cron.scheduler` has no hermes_cli.main bootstrap; pin this checkout explicitly
+    # `-m hermes_agent.cron.scheduler` has no hermes_cli.main bootstrap; pin this checkout explicitly
     # (PYTHONSAFEPATH / stale editable mapping, #112729), hand the child the committed
     # dependency generation (#122222), and mark it so its own entry runs the PM dependency
-    # boot. See cron/scheduler_worker_env.py and cron/worker_bootstrap.py.
-    from cron.scheduler_worker_env import pin_hermes_tree_on_pythonpath
+    # boot. See hermes_agent/cron/scheduler_worker_env.py and hermes_agent/cron/worker_bootstrap.py.
+    from hermes_agent.cron.scheduler_worker_env import pin_hermes_tree_on_pythonpath
     repo_root = Path(project_root_str())
     worker_env = pin_hermes_tree_on_pythonpath(worker_env, repo_root)
     worker_env[WORKER_MARKER] = "1"
@@ -3802,7 +3802,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
             with _running_lock:
                 _restart_safe_waiter_job_ids.discard(_inflight_key(job_id))
             payload_path.unlink(missing_ok=True)
-            from cron.scheduler_diagnostics import external_worker_stderr_tail
+            from hermes_agent.cron.scheduler_diagnostics import external_worker_stderr_tail
             stderr_tail = external_worker_stderr_tail(stderr_path)
             stderr_path.unlink(missing_ok=True)
             if dispatch.mode == "scoped" and scoped_spawn_lost_user_bus(worker_env):
@@ -3867,7 +3867,7 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
         set_multiplex_active,
         set_secret_scope,
     )
-    from cron.executions import adopt_claimed_execution
+    from hermes_agent.cron.executions import adopt_claimed_execution
     from hermes_cli.env_loader import hydrate_profile_secret_sources
     from hermes_constants import (
         reset_hermes_home_override,
@@ -3955,9 +3955,9 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
 def _notify_provider_jobs_changed() -> None:
     """Best-effort: tell the active scheduler provider the job set changed. Call AFTER a successful
     store mutation so an external provider can re-provision/cancel the one-shot; no-op for the
-    built-in. Kept out of cron/jobs.py (import cycle). Never raises."""
+    built-in. Kept out of hermes_agent/cron/jobs.py (import cycle). Never raises."""
     try:
-        from cron.scheduler_provider import resolve_cron_scheduler
+        from hermes_agent.cron.scheduler_provider import resolve_cron_scheduler
         resolve_cron_scheduler().on_jobs_changed()
     except Exception as e:
         logger.debug("on_jobs_changed notify failed: %s", e)
@@ -3996,8 +3996,8 @@ class CronSchedulerRegistrationError(RuntimeError):
 
 def create_job_with_scheduler_registration(**kwargs) -> dict:
     """Persist one job and register its first trigger with the active provider."""
-    from cron.jobs import create_job
-    from cron.scheduler_provider import resolve_cron_scheduler
+    from hermes_agent.cron.jobs import create_job
+    from hermes_agent.cron.scheduler_provider import resolve_cron_scheduler
 
     job = create_job(**kwargs)
     if not job.get("enabled", True):
@@ -4042,7 +4042,7 @@ def _worktree_maintenance_repos() -> list[str]:
             repos.add(str(install_root))
 
     with contextlib.suppress(Exception):
-        from cron.jobs import load_jobs
+        from hermes_agent.cron.jobs import load_jobs
 
         for job in load_jobs():
             workdir = str(job.get("workdir") or "").strip()
@@ -4065,7 +4065,7 @@ def _maybe_run_worktree_maintenance() -> None:
     """Throttled worktree prune from the cron tick, on a daemon thread so the tick never waits on
     git. Same pruner as ``hermes -w`` startup (idle dirty/unpushed trees archived before removal,
     live trees untouched). Discovery is throttled per profile home, the prune once per repo across
-    served profiles, and ``cron.scheduler_worktree_maintenance`` runs one sweep at a time per
+    served profiles, and ``hermes_agent.cron.scheduler_worktree_maintenance`` runs one sweep at a time per
     process. Runs in a copy of the caller's context (profile-home override); never raises."""
     global _last_worktree_maintenance_at
     import contextvars
@@ -4082,7 +4082,7 @@ def _maybe_run_worktree_maintenance() -> None:
         _last_worktree_maintenance_at = {**stamps, home: now}
 
     def _run() -> None:
-        from cron.scheduler_worktree_maintenance import run_sweep
+        from hermes_agent.cron.scheduler_worktree_maintenance import run_sweep
 
         run_sweep(_worktree_maintenance_repos,
                   interval_seconds=_WORKTREE_MAINTENANCE_INTERVAL_SECONDS)
@@ -4157,7 +4157,7 @@ def _maybe_reap_dead_owners() -> None:
         return
     _last_dead_owner_reap_at[_reap_key] = _reap_now
     try:
-        from cron.executions import recover_interrupted_executions
+        from hermes_agent.cron.executions import recover_interrupted_executions
 
         _reclaimed = recover_interrupted_executions()
         if _reclaimed:
@@ -4180,7 +4180,7 @@ def _sweep_stale_inflight_for_tick(due_jobs: list) -> None:
         _inflight_ids = {key[1] for key in _running_job_ids if key[0] == _local_home}
         _due_ids = {j.get("id") for j in due_jobs if isinstance(j, dict)}
         if not _inflight_ids <= _due_ids:
-            from cron.jobs import load_jobs as _load_all_jobs
+            from hermes_agent.cron.jobs import load_jobs as _load_all_jobs
 
             _sweep_jobs = _load_all_jobs()
     try:
@@ -4362,32 +4362,32 @@ def _sweep_mcp_orphans_when_all_done(futures: list) -> None:
         _f.add_done_callback(_on_done)
 
 
-from cron.scheduler_tick import tick
+from hermes_agent.cron.scheduler_tick import tick
 
 
 # ---------------------------------------------------------------------------
-# Split modules. Imported at the bottom (import cycle: they late-bind ``cron.scheduler`` as
+# Split modules. Imported at the bottom (import cycle: they late-bind ``hermes_agent.cron.scheduler`` as
 # ``_sched``). Only names this module itself calls; everything else lives in the split module.
 # ---------------------------------------------------------------------------
-from cron.scheduler_delivery import (
+from hermes_agent.cron.scheduler_delivery import (
     _deliver_result, _delivery_lane_value, _normalize_deliver_value, _resolve_delivery_target,
     _resolve_delivery_targets,
 )
-from cron.scheduler_script import (
+from hermes_agent.cron.scheduler_script import (
     _get_session_db_timeout, _run_job_script_with_claim_heartbeat, _start_heartbeat_thread,
 )
-from cron.scheduler_prompt import (
+from hermes_agent.cron.scheduler_prompt import (
     _PROMPT_FRAME, _PROMPT_HEADING, _PROMPT_SEPARATOR, _RESPONSE_FRAME, _RESPONSE_HEADING,
     _RESPONSE_TERMINATOR, _block_and_pause_job, _build_job_prompt, _guard_job_credential_exfil,
     _job_doc_header, _parse_wake_gate,
 )
-from cron.scheduler_preflight import (
+from hermes_agent.cron.scheduler_preflight import (
     BLOCKED_CONFIG_MARKER, BLOCKED_CONFIG_SILENT_MARKER, _cron_preflight_enabled,
     _empty_requested_mcp_toolsets, _is_transient_provider_resolve_error, _preflight_job_config,
 )
 
 
-# `python -m cron.scheduler` entry: MUST stay below the split-module imports so the worker /
+# `python -m hermes_agent.cron.scheduler` entry: MUST stay below the split-module imports so the worker /
 # tick paths see every name they need.
 if __name__ == "__main__":
     if "--external-worker-file" in sys.argv:

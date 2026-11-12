@@ -8,7 +8,7 @@ inside the Python body failed closed as an oversized "script".
 
 import pytest
 
-from cron.lifecycle_guard import contains_gateway_lifecycle_command_or_referenced_script as guard
+from hermes_agent.cron.lifecycle_guard import contains_gateway_lifecycle_command_or_referenced_script as guard
 
 
 def _big_file(tmp_path):
@@ -56,7 +56,7 @@ def test_mentioned_data_file_that_cannot_be_scanned_is_not_a_verdict(tmp_path, m
     """A file only MENTIONED in an inert body may exhaust the text budget (one >64 KiB line), pull
     in 64+ remote-read misses (a markdown table of paths) or be a live SQLite database: each is
     "nothing to scan", never a block (#113944). The same file *executed* still fails closed."""
-    from cron import lifecycle_guard
+    from hermes_agent.cron import lifecycle_guard
     from hermes_cli.sqlite_safe_read import connect_tracked
 
     minified = tmp_path / "minified.json"
@@ -87,7 +87,7 @@ def test_mentioned_data_file_that_cannot_be_scanned_is_not_a_verdict(tmp_path, m
 def test_mentioned_script_with_lifecycle_command_still_blocks(tmp_path):
     """The lenient path only covers "could not scan": a mentioned script whose text IS a lifecycle
     command is still a positive verdict, and the refusal reason stays empty (it is not a scan failure)."""
-    from cron import lifecycle_guard
+    from hermes_agent.cron import lifecycle_guard
 
     script = tmp_path / "restart.sh"
     script.write_text("#!/bin/sh\nhermes gateway restart\n", encoding="utf-8")
@@ -99,7 +99,7 @@ def test_mentioned_script_with_lifecycle_command_still_blocks(tmp_path):
 def test_unscannable_own_cron_script_raises_named_refusal(tmp_path, shape):
     """A cron job whose OWN script is oversized or a live SQLite database fails closed with the
     named "could not scan" refusal, never the misattributed "contains a gateway lifecycle command"."""
-    from cron.lifecycle_guard import GatewayLifecycleBlocked, check_gateway_lifecycle
+    from hermes_agent.cron.lifecycle_guard import GatewayLifecycleBlocked, check_gateway_lifecycle
     from hermes_cli.sqlite_safe_read import connect_tracked
 
     if shape == "oversized":

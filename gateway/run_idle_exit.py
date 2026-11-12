@@ -94,8 +94,8 @@ def _served_homes(runner) -> list[Path]:
 
 
 def _cron_busy(homes) -> str | None:
-    from cron.jobs import is_job_runnable, is_terminal_job, load_jobs, use_cron_store
-    from cron.scheduler import get_running_job_ids
+    from hermes_agent.cron.jobs import is_job_runnable, is_terminal_job, load_jobs, use_cron_store
+    from hermes_agent.cron.scheduler import get_running_job_ids
     if get_running_job_ids():
         return "cron job running"
     for home in homes:

@@ -11,8 +11,8 @@ No production code is exercised beyond the two ticker entry points:
   - gateway/run.py::_start_cron_ticker        (production gateway ticker)
   - hermes_cli/web_server.py::_start_desktop_cron_ticker  (desktop fallback)
 
-Both call `cron.scheduler.tick(...)` on a loop and exit when their stop_event
-is set. We patch `cron.scheduler.tick` (both tickers import it locally as
+Both call `hermes_agent.cron.scheduler.tick(...)` on a loop and exit when their stop_event
+is set. We patch `hermes_agent.cron.scheduler.tick` (both tickers import it locally as
 `cron_tick`, so the module-attribute patch is observed) and assert the loop
 drives it and stops promptly.
 """
@@ -40,7 +40,7 @@ def _wait_until(predicate, timeout=10.0, interval=0.005):
 
 
 def test_ticker_calls_tick_at_least_once_then_stops():
-    """The gateway in-process ticker loop calls cron.scheduler.tick repeatedly
+    """The gateway in-process ticker loop calls hermes_agent.cron.scheduler.tick repeatedly
     and exits promptly once the stop_event is set."""
     from gateway.run import _start_cron_ticker
 
@@ -51,7 +51,7 @@ def test_ticker_calls_tick_at_least_once_then_stops():
         calls.append(kwargs)
         return 0
 
-    with patch("cron.scheduler.tick", side_effect=fake_tick):
+    with patch("hermes_agent.cron.scheduler.tick", side_effect=fake_tick):
         # interval=0 keeps the loop tight; stop after the first observed tick.
         t = threading.Thread(
             target=_start_cron_ticker,
@@ -72,7 +72,7 @@ def test_ticker_calls_tick_at_least_once_then_stops():
 
 
 def test_desktop_ticker_calls_tick_then_stops():
-    """The desktop dashboard ticker loop calls cron.scheduler.tick and exits
+    """The desktop dashboard ticker loop calls hermes_agent.cron.scheduler.tick and exits
     once the stop_event is set. Desktop has no live adapters, so it ticks with
     no adapters/loop."""
     from hermes_cli.web_server import _start_desktop_cron_ticker
@@ -84,7 +84,7 @@ def test_desktop_ticker_calls_tick_then_stops():
         calls.append(kwargs)
         return 0
 
-    with patch("cron.scheduler.tick", side_effect=fake_tick):
+    with patch("hermes_agent.cron.scheduler.tick", side_effect=fake_tick):
         t = threading.Thread(
             target=_start_desktop_cron_ticker,
             args=(stop,),
@@ -113,7 +113,7 @@ def test_abc_growth_stays_additive():
     behavior belongs in non-abstract default methods so custom plugins do not
     break on import after an upgrade.
     """
-    from cron.scheduler_provider import CronScheduler
+    from hermes_agent.cron.scheduler_provider import CronScheduler
 
     abstract = set(getattr(CronScheduler, "__abstractmethods__", set()))
     assert abstract == {"name", "start"}, (
@@ -123,7 +123,7 @@ def test_abc_growth_stays_additive():
 
 
 def test_force_fire_capability_detects_legacy_override():
-    from cron.scheduler_provider import CronScheduler
+    from hermes_agent.cron.scheduler_provider import CronScheduler
 
     class Current(CronScheduler):
         @property
@@ -156,17 +156,17 @@ def test_force_fire_capability_detects_legacy_override():
 
 
 def test_inprocess_provider_ticks_and_stops():
-    """The built-in provider drives cron.scheduler.tick(sync=False) on a loop
+    """The built-in provider drives hermes_agent.cron.scheduler.tick(sync=False) on a loop
     and exits promptly when stop_event is set — same contract as the raw
     ticker characterized above."""
-    from cron.scheduler_provider import InProcessCronScheduler
+    from hermes_agent.cron.scheduler_provider import InProcessCronScheduler
 
     calls = []
     stop = threading.Event()
     prov = InProcessCronScheduler()
     assert prov.name == "builtin"
 
-    with patch("cron.scheduler.tick", side_effect=lambda *a, **k: calls.append(k) or 0):
+    with patch("hermes_agent.cron.scheduler.tick", side_effect=lambda *a, **k: calls.append(k) or 0):
         t = threading.Thread(
             target=prov.start, args=(stop,), kwargs={"interval": 0}, daemon=True
         )
@@ -202,11 +202,11 @@ def test_cron_provider_package_does_not_shadow_core_cron_package(monkeypatch):
     monkeypatch.syspath_prepend(str(repo_root))
     monkeypatch.syspath_prepend(str(repo_root / "plugins"))
 
-    cron_spec = PathFinder.find_spec("cron")
+    cron_spec = PathFinder.find_spec("hermes_agent.cron")
     assert cron_spec is not None
     assert Path(cron_spec.origin).resolve() == repo_root / "cron" / "__init__.py"
 
-    jobs_spec = PathFinder.find_spec("cron.jobs", [str(repo_root / "cron")])
+    jobs_spec = PathFinder.find_spec("hermes_agent.cron.jobs", [str(repo_root / "cron")])
     assert jobs_spec is not None
     assert Path(jobs_spec.origin).resolve() == repo_root / "cron" / "jobs.py"
 
@@ -214,7 +214,7 @@ def test_cron_provider_package_does_not_shadow_core_cron_package(monkeypatch):
 def test_resolve_defaults_to_builtin(monkeypatch):
     """Empty cron.provider → built-in."""
     import hermes_cli.config as cfg
-    from cron import scheduler_provider as sp
+    from hermes_agent.cron import scheduler_provider as sp
 
     monkeypatch.setattr(cfg, "load_config", lambda: {"cron": {"provider": ""}})
     prov = sp.resolve_cron_scheduler()
@@ -224,7 +224,7 @@ def test_resolve_defaults_to_builtin(monkeypatch):
 def test_resolve_no_cron_section_falls_back_to_builtin(monkeypatch):
     """Config with no cron section at all → built-in (cfg_get returns default)."""
     import hermes_cli.config as cfg
-    from cron import scheduler_provider as sp
+    from hermes_agent.cron import scheduler_provider as sp
 
     monkeypatch.setattr(cfg, "load_config", dict)
     prov = sp.resolve_cron_scheduler()
@@ -234,7 +234,7 @@ def test_resolve_no_cron_section_falls_back_to_builtin(monkeypatch):
 def test_resolve_unknown_provider_falls_back_to_builtin(monkeypatch):
     """A named provider that doesn't exist → built-in (cron never dies)."""
     import hermes_cli.config as cfg
-    from cron import scheduler_provider as sp
+    from hermes_agent.cron import scheduler_provider as sp
 
     monkeypatch.setattr(cfg, "load_config", lambda: {"cron": {"provider": "nope-not-real"}})
     prov = sp.resolve_cron_scheduler()
@@ -245,8 +245,8 @@ def test_resolve_unavailable_provider_falls_back(monkeypatch):
     """A provider that loads but reports is_available()==False → built-in."""
     import hermes_cli.config as cfg
     import plugins.cron_providers as pc
-    from cron import scheduler_provider as sp
-    from cron.scheduler_provider import CronScheduler
+    from hermes_agent.cron import scheduler_provider as sp
+    from hermes_agent.cron.scheduler_provider import CronScheduler
 
     class Unavailable(CronScheduler):
         @property
@@ -269,8 +269,8 @@ def test_resolve_available_provider_is_used(monkeypatch):
     """A provider that loads and is available is returned (not the fallback)."""
     import hermes_cli.config as cfg
     import plugins.cron_providers as pc
-    from cron import scheduler_provider as sp
-    from cron.scheduler_provider import CronScheduler
+    from hermes_agent.cron import scheduler_provider as sp
+    from hermes_agent.cron.scheduler_provider import CronScheduler
 
     class Fake(CronScheduler):
         @property
@@ -290,7 +290,7 @@ def test_resolve_available_provider_is_used(monkeypatch):
 
 
 def test_external_provider_falls_back_to_builtin_under_multiplex():
-    from cron.scheduler_provider import (
+    from hermes_agent.cron.scheduler_provider import (
         CronScheduler,
         InProcessCronScheduler,
         scheduler_for_profile_mode,
@@ -322,9 +322,9 @@ def test_external_provider_falls_back_to_builtin_under_multiplex():
 
 def test_fire_due_default_claims_then_runs(monkeypatch):
     """The default fire_due runs the exact owner-bearing CAS snapshot."""
-    from cron import jobs
-    import cron.scheduler as sched
-    from cron.scheduler_provider import InProcessCronScheduler
+    from hermes_agent.cron import jobs
+    import hermes_agent.cron.scheduler as sched
+    from hermes_agent.cron.scheduler_provider import InProcessCronScheduler
 
     ran = []
     claims = []
@@ -347,10 +347,10 @@ def test_fire_due_default_claims_then_runs(monkeypatch):
 
 
 def test_claim_fire_persists_attempt_before_fire_claimed(monkeypatch):
-    from cron import executions
-    from cron import jobs
-    import cron.scheduler as sched
-    from cron.scheduler_provider import InProcessCronScheduler
+    from hermes_agent.cron import executions
+    from hermes_agent.cron import jobs
+    import hermes_agent.cron.scheduler as sched
+    from hermes_agent.cron.scheduler_provider import InProcessCronScheduler
 
     events = []
     monkeypatch.setattr(
@@ -382,9 +382,9 @@ def test_claim_fire_persists_attempt_before_fire_claimed(monkeypatch):
 
 
 def test_fire_due_forwards_manual_force_to_store_claim(monkeypatch):
-    from cron import jobs
-    import cron.scheduler as sched
-    from cron.scheduler_provider import InProcessCronScheduler
+    from hermes_agent.cron import jobs
+    import hermes_agent.cron.scheduler as sched
+    from hermes_agent.cron.scheduler_provider import InProcessCronScheduler
 
     claims = []
     monkeypatch.setattr(
@@ -406,9 +406,9 @@ def test_fire_due_forwards_manual_force_to_store_claim(monkeypatch):
 def test_fire_due_lost_claim_does_not_run(monkeypatch):
     """If the CAS claim is lost (another machine/retry won), fire_due returns
     False and never runs the job."""
-    from cron import jobs
-    import cron.scheduler as sched
-    from cron.scheduler_provider import InProcessCronScheduler
+    from hermes_agent.cron import jobs
+    import hermes_agent.cron.scheduler as sched
+    from hermes_agent.cron.scheduler_provider import InProcessCronScheduler
 
     ran = []
     monkeypatch.setattr(
@@ -431,13 +431,13 @@ def test_fire_due_lost_claim_does_not_run(monkeypatch):
 def test_failing_tick_records_liveness_but_not_success():
     """A tick that raises bumps the liveness heartbeat but NOT the success
     marker — so status can distinguish 'alive but failing' from 'firing'."""
-    from cron.scheduler_provider import InProcessCronScheduler
+    from hermes_agent.cron.scheduler_provider import InProcessCronScheduler
 
     beats = []
     stop = threading.Event()
     prov = InProcessCronScheduler()
-    with patch("cron.scheduler.tick", side_effect=RuntimeError("every tick fails")), \
-         patch("cron.jobs.record_ticker_heartbeat",
+    with patch("hermes_agent.cron.scheduler.tick", side_effect=RuntimeError("every tick fails")), \
+         patch("hermes_agent.cron.jobs.record_ticker_heartbeat",
                side_effect=lambda success=False: beats.append(success)):
         t = threading.Thread(target=prov.start, args=(stop,), kwargs={"interval": 0}, daemon=True)
         t.start()
@@ -455,7 +455,7 @@ def test_failing_tick_records_liveness_but_not_success():
 def test_heartbeat_roundtrip_and_age(tmp_path, monkeypatch):
     """record_ticker_heartbeat writes fresh timestamps atomically; the age
     getters read them back as small positive ages."""
-    from cron import jobs
+    from hermes_agent.cron import jobs
 
     cron_dir = tmp_path / "cron"
     monkeypatch.setattr(jobs, "CRON_DIR", cron_dir)
@@ -490,7 +490,7 @@ class TestGuardJobCredentialExfil:
 
     def test_named_registry_provider_offhost_is_blocked(self):
         import pytest
-        from cron.scheduler import _guard_job_credential_exfil
+        from hermes_agent.cron.scheduler import _guard_job_credential_exfil
 
         job = {"id": "j1", "provider": "anthropic",
                "base_url": "https://evil.example/v1"}
@@ -500,14 +500,14 @@ class TestGuardJobCredentialExfil:
 
 
     def test_bare_custom_is_allowed(self):
-        from cron.scheduler import _guard_job_credential_exfil
+        from hermes_agent.cron.scheduler import _guard_job_credential_exfil
 
         job = {"id": "j4", "provider": "custom",
                "base_url": "https://anything.example/v1"}
         assert _guard_job_credential_exfil(job) is None
 
     def test_no_base_url_is_allowed(self):
-        from cron.scheduler import _guard_job_credential_exfil
+        from hermes_agent.cron.scheduler import _guard_job_credential_exfil
 
         assert _guard_job_credential_exfil({"id": "j5", "provider": "anthropic"}) is None
         assert _guard_job_credential_exfil({"id": "j6"}) is None
@@ -519,7 +519,7 @@ class TestGuardJobCredentialExfil:
         # fail-open `except Exception: err = None` path.
         import pytest
         import tools.cronjob_tools as ct
-        from cron.scheduler import _guard_job_credential_exfil
+        from hermes_agent.cron.scheduler import _guard_job_credential_exfil
 
         def _boom(provider, base_url):
             raise RuntimeError("validator blew up")
@@ -539,7 +539,7 @@ def test_multiplex_ticker_ticks_each_profile_once(tmp_path, monkeypatch):
     """The multiplex cron scheduler calls tick() once per profile home,
     scoped via use_cron_store, so secondary-profile jobs actually fire
     instead of languishing in an unticked store."""
-    from cron.scheduler_provider import InProcessCronScheduler
+    from hermes_agent.cron.scheduler_provider import InProcessCronScheduler
 
     # Set up two profile directories.
     p1 = tmp_path / "default"
@@ -559,8 +559,8 @@ def test_multiplex_ticker_ticks_each_profile_once(tmp_path, monkeypatch):
     stop = threading.Event()
     prov = InProcessCronScheduler()
 
-    with patch("cron.scheduler.tick", side_effect=_tracking_tick), \
-         patch("cron.jobs.record_ticker_heartbeat", lambda **kw: None):
+    with patch("hermes_agent.cron.scheduler.tick", side_effect=_tracking_tick), \
+         patch("hermes_agent.cron.jobs.record_ticker_heartbeat", lambda **kw: None):
         t = threading.Thread(
             target=prov.start,
             args=(stop,),
@@ -588,8 +588,8 @@ def test_multiplex_ticker_ticks_each_profile_once(tmp_path, monkeypatch):
 
 def test_multiplex_ticker_skips_deleted_profile_from_startup_snapshot(tmp_path):
     """A stale profile_homes entry must not recreate a deleted profile."""
-    from cron import jobs
-    from cron.scheduler_provider import InProcessCronScheduler
+    from hermes_agent.cron import jobs
+    from hermes_agent.cron.scheduler_provider import InProcessCronScheduler
 
     default_home = tmp_path / "default"
     (default_home / "cron").mkdir(parents=True)
@@ -607,7 +607,7 @@ def test_multiplex_ticker_skips_deleted_profile_from_startup_snapshot(tmp_path):
         return 0
 
     provider = InProcessCronScheduler()
-    with patch("cron.scheduler.tick", side_effect=_tracking_tick):
+    with patch("hermes_agent.cron.scheduler.tick", side_effect=_tracking_tick):
         thread = threading.Thread(
             target=provider.start,
             args=(stop,),
@@ -625,7 +625,7 @@ def test_multiplex_ticker_skips_deleted_profile_from_startup_snapshot(tmp_path):
 def test_existing_profile_homes_filters_deleted(tmp_path):
     """The existence filter keeps live homes and drops deleted ones, whether
     entries are (name, path) tuples or bare paths."""
-    from cron.scheduler_provider import _existing_profile_homes
+    from hermes_agent.cron.scheduler_provider import _existing_profile_homes
 
     live = tmp_path / "live"
     deleted = tmp_path / "deleted"
@@ -643,7 +643,7 @@ def _run_multiplex_capture(tmp_path, *, profile_adapters, shared_adapters):
     """Run the multiplex ticker one full cycle and return the ``adapters``
     object passed to ``tick()`` for the default profile and the secondary
     profile (in ``profile_homes`` order: default first, secondary second)."""
-    from cron.scheduler_provider import InProcessCronScheduler
+    from hermes_agent.cron.scheduler_provider import InProcessCronScheduler
 
     p_default = tmp_path / "default"
     p_sec = tmp_path / "home-ops"
@@ -659,8 +659,8 @@ def _run_multiplex_capture(tmp_path, *, profile_adapters, shared_adapters):
 
     stop = threading.Event()
     prov = InProcessCronScheduler()
-    with patch("cron.scheduler.tick", side_effect=_capturing_tick), \
-         patch("cron.jobs.record_ticker_heartbeat", lambda **kw: None):
+    with patch("hermes_agent.cron.scheduler.tick", side_effect=_capturing_tick), \
+         patch("hermes_agent.cron.jobs.record_ticker_heartbeat", lambda **kw: None):
         t = threading.Thread(
             target=prov.start,
             args=(stop,),
@@ -737,8 +737,8 @@ def test_multiplex_missing_secondary_does_not_fall_back_to_shared(tmp_path):
 def test_multiplex_ticker_isolates_profile_failures(tmp_path):
     """A failing profile's tick must not skip healthy siblings in the same
     cycle, nor darken their status (#74878)."""
-    from cron.jobs import get_ticker_last_error, record_ticker_error, use_cron_store
-    from cron.scheduler_provider import InProcessCronScheduler
+    from hermes_agent.cron.jobs import get_ticker_last_error, record_ticker_error, use_cron_store
+    from hermes_agent.cron.scheduler_provider import InProcessCronScheduler
     from hermes_constants import get_hermes_home
 
     failing_home = tmp_path / "failing"
@@ -760,7 +760,7 @@ def test_multiplex_ticker_isolates_profile_failures(tmp_path):
         return 0
 
     provider = InProcessCronScheduler()
-    with patch("cron.scheduler.tick", side_effect=_tick):
+    with patch("hermes_agent.cron.scheduler.tick", side_effect=_tick):
         thread = threading.Thread(
             target=provider.start,
             args=(stop,),
@@ -790,7 +790,7 @@ def test_multiplex_recovery_isolates_profile_failures(tmp_path):
     ticker thread before it ever ticks (#74878)."""
     import sqlite3
 
-    from cron.scheduler_provider import InProcessCronScheduler
+    from hermes_agent.cron.scheduler_provider import InProcessCronScheduler
     from hermes_constants import get_hermes_home
 
     failing_home = tmp_path / "failing"
@@ -818,7 +818,7 @@ def test_multiplex_recovery_isolates_profile_failures(tmp_path):
     provider = InProcessCronScheduler()
     with (
         patch.object(provider, "recover_interrupted", side_effect=_recover),
-        patch("cron.scheduler.tick", side_effect=_tick),
+        patch("hermes_agent.cron.scheduler.tick", side_effect=_tick),
     ):
         thread = threading.Thread(
             target=provider.start,
@@ -845,7 +845,7 @@ def test_multiplex_ticker_reenumerates_profiles_each_cycle(tmp_path):
     so a profile created after the multiplexer started gets its jobs fired without a restart."""
     import threading
     from unittest.mock import patch
-    from cron.scheduler_provider import InProcessCronScheduler
+    from hermes_agent.cron.scheduler_provider import InProcessCronScheduler
     from hermes_constants import get_hermes_home
 
     alpha = tmp_path / "alpha"
@@ -865,7 +865,7 @@ def test_multiplex_ticker_reenumerates_profiles_each_cycle(tmp_path):
         return 0
 
     provider = InProcessCronScheduler()
-    with patch("cron.scheduler.tick", side_effect=_tick):
+    with patch("hermes_agent.cron.scheduler.tick", side_effect=_tick):
         thread = threading.Thread(
             target=provider.start, args=(stop,),
             kwargs={"interval": 0, "profile_homes": lambda: list(homes)}, daemon=True,

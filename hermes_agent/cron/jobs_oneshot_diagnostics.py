@@ -1,14 +1,14 @@
 """Operator-visible traces left in a job's output dir when the due scan or the dispatch-limit
-guard removes a one-shot that never completed (``cron/jobs.py`` late-imports these)."""
+guard removes a one-shot that never completed (``hermes_agent/cron/jobs.py`` late-imports these)."""
 import logging
 from typing import Any
 
-logger = logging.getLogger("cron.jobs")
+logger = logging.getLogger("hermes_agent.cron.jobs")
 
 
 def _write(job: dict[str, Any], text: str, what: str) -> bool:
     """Best-effort operator-visible trace in the job's output dir; never breaks the caller."""
-    from cron.jobs import save_job_output
+    from hermes_agent.cron.jobs import save_job_output
 
     try:
         save_job_output(job.get("id", ""), text)
@@ -28,7 +28,7 @@ def write_wedged(job: dict[str, Any]) -> None:
     due, but a silent removal leaves the user with no output, no error, and no job record. Write a small
     diagnostic file into the job's output directory so the removal is observable and debuggable.
     """
-    from cron.jobs import _hermes_now
+    from hermes_agent.cron.jobs import _hermes_now
 
     if job.get("last_run_at") is not None:
         return  # a prior run was recorded — normal completion race, not a wedge
@@ -58,7 +58,7 @@ def write_wedged(job: dict[str, Any]) -> None:
 def write_missed(job: dict[str, Any], next_run: str) -> None:
     """Trace for a never-ran one-shot retired outside the grace window (else it would just vanish).
     """
-    from cron.jobs import ONESHOT_GRACE_SECONDS, _hermes_now
+    from hermes_agent.cron.jobs import ONESHOT_GRACE_SECONDS, _hermes_now
 
     _write(
         job,

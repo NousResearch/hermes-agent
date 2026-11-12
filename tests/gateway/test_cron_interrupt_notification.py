@@ -23,7 +23,7 @@ from tools import browser_session_lifecycle as bt_lifecycle
 
 @pytest.fixture(autouse=True)
 def _reset_cron_running_set():
-    import cron.scheduler as sched
+    import hermes_agent.cron.scheduler as sched
 
     sched._running_job_ids.clear()
     sched._interrupted_job_ids.clear()
@@ -59,8 +59,8 @@ class TestNotifyInterruptedCronJobs:
         _bind_notifier(runner)
         job = _telegram_job()
 
-        with patch("cron.jobs.get_job", return_value=job), \
-             patch("cron.scheduler._resolve_delivery_targets",
+        with patch("hermes_agent.cron.jobs.get_job", return_value=job), \
+             patch("hermes_agent.cron.scheduler._resolve_delivery_targets",
                    return_value=[_telegram_target()]):
             sent = await runner._notify_interrupted_cron_jobs([job["id"]])
 
@@ -81,8 +81,8 @@ class TestNotifyInterruptedCronJobs:
         runner, adapter = make_restart_runner()
         _bind_notifier(runner)
         job = _telegram_job()
-        with patch("cron.jobs.get_job", return_value=job), \
-             patch("cron.scheduler._resolve_delivery_targets",
+        with patch("hermes_agent.cron.jobs.get_job", return_value=job), \
+             patch("hermes_agent.cron.scheduler._resolve_delivery_targets",
                    return_value=[_telegram_target()]):
             sent = await runner._notify_interrupted_cron_jobs([job["id"]])
         expected = 0 if setting is True else 1
@@ -98,8 +98,8 @@ class TestNotifyInterruptedCronJobs:
         _bind_notifier(runner)
         job = {"id": "j1", "name": "local-job", "deliver": "local"}
 
-        with patch("cron.jobs.get_job", return_value=job), \
-             patch("cron.scheduler._resolve_delivery_targets", return_value=[]):
+        with patch("hermes_agent.cron.jobs.get_job", return_value=job), \
+             patch("hermes_agent.cron.scheduler._resolve_delivery_targets", return_value=[]):
             sent = await runner._notify_interrupted_cron_jobs(["j1"])
 
         assert sent == 0
@@ -112,8 +112,8 @@ class TestNotifyInterruptedCronJobs:
         runner.config.platforms[Platform.TELEGRAM].gateway_restart_notification = False
         job = _telegram_job()
 
-        with patch("cron.jobs.get_job", return_value=job), \
-             patch("cron.scheduler._resolve_delivery_targets",
+        with patch("hermes_agent.cron.jobs.get_job", return_value=job), \
+             patch("hermes_agent.cron.scheduler._resolve_delivery_targets",
                    return_value=[_telegram_target()]):
             sent = await runner._notify_interrupted_cron_jobs([job["id"]])
 
@@ -131,7 +131,7 @@ class TestNotifyInterruptedCronJobs:
         _bind_notifier(runner)
         job = dict(_telegram_job(), failure_deliver="local")
 
-        with patch("cron.jobs.get_job", return_value=job):
+        with patch("hermes_agent.cron.jobs.get_job", return_value=job):
             sent = await runner._notify_interrupted_cron_jobs([job["id"]])
 
         assert sent == 0
@@ -145,7 +145,7 @@ class TestNotifyInterruptedCronJobs:
         _bind_notifier(runner)
         job = _telegram_job()
 
-        with patch("cron.jobs.get_job", return_value=job):
+        with patch("hermes_agent.cron.jobs.get_job", return_value=job):
             sent = await runner._notify_interrupted_cron_jobs([job["id"]])
 
         assert sent == 1
@@ -171,8 +171,8 @@ class TestNotifyInterruptedCronJobs:
 
         adapter.send = _boom
 
-        with patch("cron.jobs.get_job", return_value=job), \
-             patch("cron.scheduler._resolve_delivery_targets",
+        with patch("hermes_agent.cron.jobs.get_job", return_value=job), \
+             patch("hermes_agent.cron.scheduler._resolve_delivery_targets",
                    return_value=[_telegram_target()]):
             sent = await runner._notify_interrupted_cron_jobs([job["id"]])
 
@@ -184,8 +184,8 @@ class TestNotifyInterruptedCronJobs:
         _bind_notifier(runner)
         job = _telegram_job()
 
-        with patch("cron.jobs.get_job", return_value=job), \
-             patch("cron.scheduler._resolve_delivery_targets",
+        with patch("hermes_agent.cron.jobs.get_job", return_value=job), \
+             patch("hermes_agent.cron.scheduler._resolve_delivery_targets",
                    return_value=[_telegram_target(), _telegram_target()]):
             sent = await runner._notify_interrupted_cron_jobs([job["id"]])
 
@@ -197,7 +197,7 @@ class TestShutdownDeliversNoticeBeforeDisconnect:
     async def test_notice_is_sent_while_the_adapter_is_still_connected(self, monkeypatch):
         """The whole point is ordering: a notice sent after teardown is lost,
         which is the bug."""
-        import cron.scheduler as sched
+        import hermes_agent.cron.scheduler as sched
         import tools.process_registry as _pr
         import tools.terminal_tool as _tt
 
@@ -226,9 +226,9 @@ class TestShutdownDeliversNoticeBeforeDisconnect:
 
         with patch("gateway.status.remove_pid_file"), \
              patch("gateway.status.publish_runtime_status"), \
-             patch("cron.scheduler.mark_job_run"), \
-             patch("cron.jobs.get_job", return_value=_telegram_job()), \
-             patch("cron.scheduler._resolve_delivery_targets",
+             patch("hermes_agent.cron.scheduler.mark_job_run"), \
+             patch("hermes_agent.cron.jobs.get_job", return_value=_telegram_job()), \
+             patch("hermes_agent.cron.scheduler._resolve_delivery_targets",
                    return_value=[_telegram_target()]):
             await runner.stop()
 

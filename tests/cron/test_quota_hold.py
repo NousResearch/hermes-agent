@@ -1,7 +1,7 @@
 """Provider quota windows park a cron job instead of re-firing into them (#89376;
 ai-velho-oy/chairman#3).
 
-Contract (cron/quota_hold.py): a failed run whose cause is a rate-limited ``AuthError`` with a
+Contract (hermes_agent/cron/quota_hold.py): a failed run whose cause is a rate-limited ``AuthError`` with a
 ``retry after <N>s`` hint parks a recurring job's ``next_run_at`` past the window and stamps
 ``quota_hold_until``; the stale-error re-arm leaves a held job alone; a run that reaches the
 model clears the marker. The hint is read only from the AuthError in the cause chain, never from
@@ -13,9 +13,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import cron.scheduler as sched
-from cron import quota_hold as qh
-from cron.jobs import (
+import hermes_agent.cron.scheduler as sched
+from hermes_agent.cron import quota_hold as qh
+from hermes_agent.cron.jobs import (
     _job_is_stale_error_recurring, create_job, get_due_jobs, get_job, mark_job_run, update_job,
 )
 from hermes_cli.auth import CODEX_RATE_LIMITED_CODE, AuthError
@@ -59,7 +59,7 @@ def test_weekly_cron_retries_when_quota_recovers_before_next_occurrence(
     it is not silently deferred until the following week's natural occurrence."""
     now = datetime(2026, 9, 18, 12, 1, tzinfo=UTC)
     natural_next = datetime(2026, 9, 25, 12, 0, tzinfo=UTC)
-    monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+    monkeypatch.setattr("hermes_agent.cron.jobs._hermes_now", lambda: now)
     monkeypatch.setattr(qh, "_hermes_now", lambda: now)
     job = create_job("weekly digest", "0 12 * * 5")
     assert datetime.fromisoformat(job["next_run_at"]) == natural_next
@@ -77,7 +77,7 @@ def test_weekly_cron_retries_when_quota_recovers_before_next_occurrence(
     edited = {**held, "schedule": {"kind": "cron", "expr": "0 9 * * *"}}
     assert not qh.is_recovery_fire(edited, edited["next_run_at"])
 
-    monkeypatch.setattr("cron.jobs._hermes_now", lambda: retry_at + timedelta(seconds=1))
+    monkeypatch.setattr("hermes_agent.cron.jobs._hermes_now", lambda: retry_at + timedelta(seconds=1))
     assert job["id"] in {due["id"] for due in get_due_jobs()}
 
 
@@ -116,14 +116,14 @@ def _raise_quota(**_kw):
 
 def _tick(job, home, deliveries, resolve):
     """One real scheduler tick (preflight ON) with the provider resolver replaced by *resolve*."""
-    with patch("cron.scheduler._hermes_home", home), \
-         patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
+    with patch("hermes_agent.cron.scheduler._hermes_home", home), \
+         patch("hermes_agent.cron.scheduler_delivery._resolve_origin", return_value=None), \
          patch("hermes_cli.env_loader.load_hermes_dotenv"), \
          patch("hermes_cli.env_loader.reset_secret_source_cache"), \
          patch("hermes_agent.hermes_state_registry.acquire", return_value=MagicMock()), \
          patch("tools.mcp_tool_discovery.discover_mcp_tools", return_value=[]), \
          patch("hermes_cli.runtime_provider.resolve_runtime_provider", side_effect=resolve), \
-         patch("cron.delivery_queue.enqueue",
+         patch("hermes_agent.cron.delivery_queue.enqueue",
                side_effect=lambda execution_id, jb, content, **kw: (
                    deliveries.append(content), {"status": "pending"})[1]), \
          patch("run_agent.AIAgent") as agent_cls:

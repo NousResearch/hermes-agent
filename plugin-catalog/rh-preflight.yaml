@@ -1,21 +1,20 @@
 name: rh-preflight
 repo: https://github.com/quotumorg/rh-preflight
-sha: 594a01f54de46691c1903589fa988dd347ff11ff
+sha: b0b784b0af00a32798ae6f7373a6a8c496a26706
 title: rh-preflight
-description: "rh-preflight by quotum with HEY Research Lab. Before Hermes acts on Robinhood Chain (chain 4663), a pre_tool_call hook reads HEY Research Lab's builder record and ten Robinhood Chain projects for the addresses, agent ids, pools or repositories in the call, then applies your own rules: go, ask (a human approval prompt) or stop when unattended. The card lists each source's line with its link; builder_card and /rh-preflight read a card without acting. Desktop page shows recent checks and human answers. Disclosure: sends only the identifiers you act on to the source hosts listed in the README, plus read-only Robinhood Chain RPC, DexScreener and GeckoTerminal reads; keyless and free, no payments, signatures, subprocesses or writes. Stores a local SQLite ledger of checks in its own plugin data folder. Source records describe what each project published; rh-preflight does not call a token good or bad."
+description: "rh-preflight by quotum with HEY Research Lab. Before Hermes acts on Robinhood Chain (chain 4663), a pre_tool_call hook reads HEY Research Lab's builder record and ten Robinhood Chain projects for the addresses, agent ids, pools or repositories in the call, then applies your own rules: go, ask (a human approval prompt) or stop in detected cron by default; other asks use Hermes approval, including its YOLO bypass. Unsigned transactions and wallet signing requests get a Toll simulation card with sender balance changes. The card lists each source's line with its link; builder_card and /rh-preflight read a card without acting. Desktop page shows recent checks and human answers. Disclosure: sends only the identifiers you act on to the source hosts listed in the README, plus read-only Robinhood Chain RPC, DexScreener and GeckoTerminal reads; when transaction simulation is on, the detected unsigned transaction or signing request goes to Toll and HookrRouter trades get a read-only Hookr pool check. Keyless and free (an optional TOLL_API_KEY is read only for Toll); no payments, signatures, subprocesses or writes. Stores a local SQLite ledger of checks in its own plugin data folder. Source records describe what each project published; rh-preflight does not call a token good or bad."
 maintainer: quotumorg
 tier: community
 category: tools
 requires_hermes: ">=0.23.0"
-version: "0.5.3"
-docs_url: https://github.com/quotumorg/rh-preflight/blob/594a01f54de46691c1903589fa988dd347ff11ff/README.md
-image: https://raw.githubusercontent.com/quotumorg/rh-preflight/594a01f54de46691c1903589fa988dd347ff11ff/docs/banner.png
+version: "0.5.4"
+docs_url: https://github.com/quotumorg/rh-preflight/blob/b0b784b0af00a32798ae6f7373a6a8c496a26706/README.md
+image: https://raw.githubusercontent.com/quotumorg/rh-preflight/b0b784b0af00a32798ae6f7373a6a8c496a26706/docs/banner.png
 readme: true
 platforms: [linux, macos]
 known_issues:
   - "Fail-closed: when a source does not answer inside the shared timeout (default 4 s), the card says so and your rule may ask instead of go."
   - "Detection covers up to five addresses per call in configured action tools; tool names are matched by the tool_patterns setting."
-  - "The approval adapter reads private Hermes approval helpers; tested on Hermes v0.23.0 and v0.23.1, the floor does not establish later compatibility."
 capabilities:
   provides_tools: [builder_card]
   provides_hooks: [pre_tool_call, transform_tool_result, post_approval_response]

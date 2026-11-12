@@ -3727,6 +3727,8 @@ export const jaOverrides = {
     zoomIn: '拡大',
     zoomOut: '縮小',
     resetZoom: 'ズームをリセット',
+    previousImage: '前の画像',
+    nextImage: '次の画像',
     imagePreviewFailed: '画像のプレビューに失敗しました',
     imageAttach: '画像を添付',
     imageWriteFailed: '画像のディスクへの書き込みに失敗しました。',

@@ -5516,6 +5516,8 @@ export const frOverrides = {
     imageDownloadFailed: "Échec du téléchargement de l'image",
     openImage: "Ouvrir l'image",
     downloadImage: "Télécharger l'image",
+    previousImage: 'Image précédente',
+    nextImage: 'Image suivante',
     savingImage: "Enregistrement de l'image en cours",
     imagePreviewFailed: "Échec de l'aperçu de l'image",
     imageAttach: 'Image jointe',

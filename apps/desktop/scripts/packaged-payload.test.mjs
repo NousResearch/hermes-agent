@@ -1,15 +1,16 @@
+import childProcess from 'node:child_process'
 import fs from 'node:fs'
-import { createRequire } from 'node:module'
+import { createRequire, syncBuiltinESMExports } from 'node:module'
 import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 
+import { Platform, PlatformPackager } from 'app-builder-lib'
 import { getFileMatchers } from 'app-builder-lib/internal'
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 
 import afterPack from './after-pack.mjs'
 import { resolvePackagedAsarPath } from './backend-ready-artifact.mjs'
-import { PACKED_PAYLOAD_CHANGES, payloadDifferences } from './packaged-payload.mjs'
 
 const require = createRequire(import.meta.url)
 // The extraResources copy itself (platformPackager.js calls it); the package exports no public alias.
@@ -22,6 +23,9 @@ const config = require('../electron-builder.config.cjs')
 
 const roots = []
 afterEach(() => {
+  vi.restoreAllMocks()
+  syncBuiltinESMExports()
+  vi.unstubAllEnvs()
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true })
 })
 
@@ -36,15 +40,18 @@ function write(file, contents = '') {
   fs.writeFileSync(file, contents)
 }
 
-// A linux appOutDir packed from a prepared payload, ready for the afterPack hook.
-function packContext() {
+// An appOutDir packed from a prepared payload, ready for the afterPack hook.
+function packContext(platform = 'linux') {
   const root = scratch()
   const projectDir = path.join(root, 'project')
-  const context = {
-    appOutDir: path.join(root, 'linux-unpacked'),
-    electronPlatformName: 'linux',
-    packager: { config, projectDir }
-  }
+  const packager = platform === 'darwin'
+    ? Object.assign(Object.create(PlatformPackager.prototype), {
+      platform: Platform.MAC,
+      appInfo: { productFilename: 'Hermes' },
+      info: { framework: { distMacOsAppName: 'Electron.app' }, config, projectDir }
+    })
+    : { config, projectDir }
+  const context = { appOutDir: path.join(root, `${platform}-unpacked`), electronPlatformName: platform, packager }
   const prepared = path.join(projectDir, 'build', 'agent-payload')
   write(path.join(prepared, 'hermes-agent', 'run_agent.py'), 'print("hermes")\n')
   write(path.join(prepared, 'hermes-agent', 'contributors', 'emails', 'someone@example.com'), 'someone\n')
@@ -96,24 +103,43 @@ it('lets an exact payload copy through afterPack and fails a lossy one, naming e
   }
 })
 
-it('lets signing rewrite binaries on macOS and Windows but still reports every lost entry', () => {
-  const root = scratch()
-  const prepared = path.join(root, 'prepared')
-  const packaged = path.join(root, 'packaged')
-  const app = path.join('tools', 'chromium', 'Chromium.app', 'Contents')
-  write(path.join(prepared, app, 'MacOS', 'Chromium'), 'mach-o')
-  write(path.join(prepared, 'tools', 'uv', 'uv.exe'), 'pe')
-  write(path.join(prepared, 'hermes-agent', 'contributors', 'emails', '.gitkeep'))
-  fs.cpSync(prepared, packaged, { recursive: true })
-  fs.appendFileSync(path.join(packaged, app, 'MacOS', 'Chromium'), ' and its signature')
-  fs.appendFileSync(path.join(packaged, 'tools', 'uv', 'uv.exe'), ' and its signature')
-  write(path.join(packaged, app, '_CodeSignature', 'CodeResources'), 'bundle seal')
-  fs.rmSync(path.join(packaged, 'hermes-agent', 'contributors', 'emails', '.gitkeep'))
-  const lost = 'missing file: hermes-agent/contributors/emails/.gitkeep'
-  expect(payloadDifferences(prepared, packaged, PACKED_PAYLOAD_CHANGES.darwin)).toEqual([lost])
-  expect(payloadDifferences(prepared, packaged, PACKED_PAYLOAD_CHANGES.win32)).toEqual([
-    lost,
-    'unexpected directory: tools/chromium/Chromium.app/Contents/_CodeSignature',
-    'unexpected file: tools/chromium/Chromium.app/Contents/_CodeSignature/CodeResources'
-  ])
+it('checks the macOS copy before signing repairs a flattened Chromium framework', async () => {
+  const chromium = path.join('tools', 'chromium-1208', 'Chromium.app')
+  const framework = path.join(chromium, 'Contents', 'Frameworks', 'F.framework')
+  const identity = '0123456789ABCDEF0123456789ABCDEF01234567'
+  const signed = []
+  vi.spyOn(childProcess, 'execFileSync').mockImplementation((command, args) => {
+    if (command === 'security') return `  1) ${identity} "Developer ID Application: Fixture (TEAM)"\n`
+    signed.push(args.at(-1))
+    return ''
+  })
+  syncBuiltinESMExports()
+  vi.stubEnv('CSC_NAME', undefined)
+  vi.stubEnv('CSC_KEYCHAIN', undefined)
+  const pack = () => {
+    const packed = packContext('darwin')
+    write(path.join(packed.prepared, framework, 'Versions', 'A', 'F'), 'mach-o')
+    write(path.join(packed.prepared, framework, 'Versions', 'A', 'Resources', 'Info.plist'), '<plist/>')
+    write(path.join(packed.prepared, framework, 'F'), 'mach-o')
+    write(path.join(packed.prepared, framework, 'Resources', 'Info.plist'), '<plist/>')
+    fs.cpSync(packed.prepared, packed.packaged, { recursive: true })
+    return packed
+  }
+
+  const exact = pack()
+  await expect(afterPack(exact.context)).resolves.toBeUndefined()
+  expect(fs.lstatSync(path.join(exact.packaged, framework, 'F')).isSymbolicLink()).toBe(true)
+  expect(signed).toEqual([path.join(exact.packaged, chromium)])
+
+  signed.length = 0
+  const lossy = pack()
+  fs.rmSync(path.join(lossy.packaged, 'hermes-agent', 'contributors', 'emails', '.gitkeep'))
+  fs.appendFileSync(path.join(lossy.packaged, framework, 'Versions', 'A', 'F'), ' and more')
+  const failure = await afterPack(lossy.context).catch(error => error)
+  expect(failure).toBeInstanceOf(Error)
+  expect(failure.message).toContain('missing file of 0 bytes: hermes-agent/contributors/emails/.gitkeep')
+  expect(failure.message).toContain(
+    `${framework.split(path.sep).join('/')}/Versions/A/F: file of 6 bytes became file of 15 bytes`
+  )
+  expect(signed).toEqual([])
 })

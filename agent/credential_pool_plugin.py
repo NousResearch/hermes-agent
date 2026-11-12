@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import time
+from copy import deepcopy
 from dataclasses import dataclass, field, fields, replace
 from urllib.parse import urlsplit
 from typing import TYPE_CHECKING, Any, Mapping, Optional, Tuple
@@ -159,6 +160,8 @@ def exact_https_origin(url: Any) -> Optional[str]:
     """``https://host`` for a complete host-only HTTPS URL; None for any path, query, port, userinfo."""
     if not isinstance(url, str) or not url or url != url.strip() or "\\" in url:
         return None
+    if any(ord(char) < 32 or ord(char) == 127 for char in url):
+        return None
     try:
         parts = urlsplit(url)
         port = parts.port
@@ -173,10 +176,11 @@ def exact_https_origin(url: Any) -> Optional[str]:
 
 
 def _allowed_origins(profile: Any) -> set[str]:
-    raw = getattr(profile, "credential_pool_base_urls", ()) or ()
-    if isinstance(raw, str):
+    raw = getattr(profile, "credential_pool_base_urls", ())
+    if not isinstance(raw, (tuple, list)):
         return set()
-    return {origin for origin in map(exact_https_origin, raw) if origin}
+    origins = {exact_https_origin(url) for url in raw}
+    return set() if None in origins else {origin for origin in origins if origin is not None}
 
 
 def _overrides(profile: Any, name: str) -> bool:
@@ -237,36 +241,50 @@ def prepare_runtime_entry(pool: CredentialPool, entry: Any, *, source_base_url: 
             return live if _serves_source(live, override, profile, source_base_url) else None
         if hasattr(live, "__dict__"):
             _install(live, None)  # a populated but invalidated override never bypasses preparation
-        grant = getattr(live, "access_token", None)
+        state = _runtime_state(live)
+        snapshot = deepcopy(live)
         pooled = any(e is live for e in pool._entries)
     if pool.provider == "nous" or profile is None or not _overrides(profile, "prepare_pool_entry"):
         usable = has_usable_secret(getattr(live, "runtime_api_key", ""))
         return live if usable and _serves_source(live, None, profile, source_base_url) else None
-    source_value = durable_runtime_key(live)
+    source_value = durable_runtime_key(snapshot)
     try:
-        result = profile.prepare_pool_entry(live, source_value)
+        result = profile.prepare_pool_entry(snapshot, source_value)
     except Exception as exc:  # health: allow BLE001 -- plugin hook boundary; exception text may carry secrets
         logger.debug("%s could not prepare pool row %s (%s)", pool.provider, live.id, type(exc).__name__)
         return None
+    legacy = isinstance(result, str)
+    candidate = snapshot if legacy else live
     origin = live.runtime_base_url if source_base_url is None else source_base_url
-    tentative = _tentative_override(live, result, profile=profile, source_base_url=origin)
-    if tentative is None or not _serves_source(live, tentative, profile, source_base_url):
+    tentative = _tentative_override(candidate, result, profile=profile, source_base_url=origin)
+    # Legacy hooks may mutate their endpoint without the typed-pair opt-in. Admit
+    # against the original route, then commit only their historical key/URL fields.
+    admission = None if legacy else tentative
+    if tentative is None or not _serves_source(live, admission, profile, source_base_url):
         logger.info("%s pool row %s prepared runtime credential refused", pool.provider, live.id)
         return None
     with pool._lock:
         # The hook ran unlocked: a concurrent renewal, grant rotation or removal wins over this result.
         if pooled and not any(e is live for e in pool._entries):
             return None
-        if getattr(live, "access_token", None) != grant or durable_runtime_key(live) != source_value:
-            return None
-        if hasattr(live, "__dict__") and live.__dict__.get("_runtime_override") is not None:
+        if _runtime_state(live) != state:
             current = active_runtime_override(live)
-            return live if current is not None and _serves_source(live, current, profile, source_base_url) else None
+            unchanged_grant = _runtime_state(live)[:3] == state[:3]
+            return live if unchanged_grant and current is not None and _serves_source(
+                live, current, profile, source_base_url) else None
+        if legacy:
+            live.access_token, live.base_url = snapshot.access_token, snapshot.base_url
         # Typed results declare derived credentials even when a faulty hook returns its input.
         # Preserve that provenance so explicit-key dispatch cannot mistake them for legacy identity strings.
         if tentative.api_key != source_value or tentative.base_url is not None or not isinstance(result, str):
             _install(live, tentative)
     return live
+
+
+def _runtime_state(entry: Any) -> tuple:
+    """Durable provenance and override identity form the unlocked hook transaction."""
+    return (entry.access_token, durable_runtime_key(entry), entry.base_url,
+            getattr(entry, "__dict__", {}).get("_runtime_override"))
 
 
 def _scoped_row(pool: CredentialPool, credential_id: Optional[str], api_key_hint: Optional[str]) -> Any:
@@ -284,20 +302,25 @@ def refresh_runtime_matching(pool: CredentialPool, *, credential_id: Optional[st
     """Re-mint the dispatched row's runtime credential; None declines without benching the row."""
     from agent.credential_auth_recovery import pool_runtime_refresh_profile
 
-    row = _scoped_row(pool, credential_id, api_key_hint)
-    profile = pool_runtime_refresh_profile(pool) if row is not None else None
+    with pool._lock:
+        row = _scoped_row(pool, credential_id, api_key_hint)
+        if row is None:
+            return None
+        state = _runtime_state(row)
+        snapshot = deepcopy(row)
+        source_base_url = row.runtime_base_url
+    profile = pool_runtime_refresh_profile(pool)
     if profile is None:
         return None
-    grant, source_base_url = row.access_token, row.runtime_base_url
     try:
-        result = profile.refresh_pool_runtime_credentials(row, reason=reason)
+        result = profile.refresh_pool_runtime_credentials(snapshot, reason=reason)
     except Exception as exc:  # health: allow BLE001 -- plugin hook boundary; exception text may carry secrets
         logger.debug("%s runtime renewal for row %s failed (%s)", pool.provider, row.id, type(exc).__name__)
         return None
     tentative = _tentative_override(row, result, profile=profile, source_base_url=source_base_url, typed_only=True)
     with pool._lock:
         live = pool._find(lambda e: e.id == row.id)
-        if tentative is None or live is not row or row.access_token != grant:
+        if tentative is None or live is not row or _runtime_state(row) != state:
             return None
         _install(row, tentative)
         pool._current_id = row.id

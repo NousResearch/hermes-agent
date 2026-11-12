@@ -555,9 +555,13 @@ A provider that exchanges a persisted login for a short-lived inference key shou
 `providers.base.PoolRuntimeCredential(api_key, base_url)` from `prepare_pool_entry(entry, api_key)`.
 The value validates `api_key` as `str` and `base_url` as `str | None`; its repr omits the key.
 A legacy string return remains supported, including an identity string when the persisted key
-already serves inference. A refresh-only profile likewise need not derive a key before dispatch.
+already serves inference. In-process legacy hooks may still update `entry.access_token` and
+`entry.base_url`: those two changes are committed together only if the original row, grant and
+runtime generation remain current. Their historical endpoint adoption does not require the typed
+origin opt-in. Hooks receive a private snapshot; typed returns never commit row mutations.
+A refresh-only profile likewise need not derive a key before dispatch.
 Declare extra pool-routing endpoints with the keyword-only constructor argument
-`credential_pool_base_urls=("https://gateway.example",)`. Runtime endpoint changes require both
+`credential_pool_base_urls=("https://gateway.example",)`. Typed runtime endpoint changes require both
 the source and destination to match an allowlisted **exact HTTPS origin**: no `/v1`, trailing slash,
 query, fragment, userinfo, or non-default port. These are routing hints, not permission to move
 credentials between accounts.

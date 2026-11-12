@@ -205,23 +205,21 @@ def test_profile_child_reasoning_is_the_target_profiles_resolved_setting(two_pro
 def test_profile_child_lease_and_schema_retry_run_inside_the_target_profile(two_profiles):
     """The startup lease (``_swap_credential`` reloads TLS/headers from config) and the output_schema retry turn
     are child work: they run as the routed profile, like the first conversation."""
-    from types import SimpleNamespace
-
     from tools.delegate_tool_child_run import _lease_child_credential, _validate_child_output_schema
 
     launch, coder = two_profiles
     seen = {}
 
-    class _Pool:
-        def acquire_lease(self, credential_id=None):
-            return "e1"
+    from agent.credential_pool import CredentialPool, PooledCredential
 
-        def entries(self):
-            return [SimpleNamespace(id="e1", base_url="https://coder.invalid/v1", last_status=None)]
+    pool = CredentialPool("custom", [PooledCredential(
+        provider="custom", id="e1", label="coder", auth_type="api_key", priority=0,
+        source="manual", access_token="coder-key", base_url="https://coder.invalid/v1",
+    )])
 
     class _Child:
         base_url, session_id, _delegate_profile_home = "https://coder.invalid/v1", "child-1", coder
-        _credential_pool, _delegate_output_schema = _Pool(), {"type": "object", "required": ["ok"]}
+        _credential_pool, _delegate_output_schema = pool, {"type": "object", "required": ["ok"]}
 
         def _swap_credential(self, entry):
             seen["lease"] = _snapshot()

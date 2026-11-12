@@ -945,7 +945,8 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                     voice_transcripts.append(f"[Voice] {transcript}")
                     logger.debug("[%s] Voice transcript: %s", self._log_tag, transcript)
                 else:
-                    logger.warning("[%s] Voice STT failed for %s", self._log_tag, url[:60])
+                    logger.warning("[%s] Voice STT failed (url_len=%d)", self._log_tag, len(url))
+                    logger.debug("[%s] Voice STT failed for %s", self._log_tag, url[:60])
                     voice_transcripts.append("[Voice] [语音识别失败]")
                 continue
 

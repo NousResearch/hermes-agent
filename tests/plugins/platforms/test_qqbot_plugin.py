@@ -140,3 +140,26 @@ async def test_qq_c2c_attachment_metadata_stays_out_of_info(caplog, monkeypatch)
         for r in caplog.records
         if r.name == "plugins.platforms.qqbot.adapter" and r.levelno == logging.DEBUG
     )
+
+
+@pytest.mark.asyncio
+async def test_qq_voice_stt_failure_keeps_the_attachment_url_out_of_info(caplog, monkeypatch):
+    """The STT-failure warning must not carry the inbound voice URL (#46006)."""
+    import logging
+    from unittest.mock import AsyncMock
+
+    from gateway.config import PlatformConfig
+    from plugins.platforms.qqbot.adapter import QQAdapter
+
+    adapter = QQAdapter(PlatformConfig(enabled=True, extra={}))
+    monkeypatch.setattr(adapter, "_stt_voice_attachment", AsyncMock(return_value=None))
+    url = "https://files.example.test/v?sig=private-sentinel"
+    caplog.set_level(logging.DEBUG, logger="plugins.platforms.qqbot.adapter")
+    result = await adapter._process_attachments([{"content_type": "voice", "url": url, "filename": "a.silk"}])
+    assert result["voice_transcripts"]
+    info = [
+        r.getMessage() for r in caplog.records
+        if r.name == "plugins.platforms.qqbot.adapter" and r.levelno >= logging.INFO
+    ]
+    assert any("Voice STT failed" in line for line in info), info
+    assert all("private-sentinel" not in line and "files.example.test" not in line for line in info), info

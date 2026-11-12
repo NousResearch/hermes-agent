@@ -48,3 +48,40 @@ def test_completion_echoes_output_only_when_no_target_received_it(deliver, echoe
     error, summary = _run_and_complete(deliver)
     assert (error is not None) == (BAD in deliver)
     assert ("THE REPORT" in summary) is echoed
+
+
+def test_a_partial_standalone_split_send_counts_as_reached(monkeypatch):
+    """The REAL Telegram standalone sender lands chunks 1-2 of a long report, then chunk 3 fails.
+    The report's head is already in the target chat, so the manual-run completion must not echo it
+    into the invoking conversation as if the delivery had reached nobody."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from plugins.platforms.telegram.standalone import _send_telegram
+    from tests.tools.test_telegram_send_message_chunk_mdv2 import _install_telegram_mock, _no_proxy
+
+    _no_proxy(monkeypatch)
+    bot = MagicMock()
+    bot.send_message = AsyncMock(side_effect=[SimpleNamespace(message_id=501), SimpleNamespace(message_id=502),
+                                              RuntimeError("transport refused final chunk")])
+    _install_telegram_mock(monkeypatch, MagicMock(return_value=bot))
+    deliver = f"telegram:{GOOD}"
+    job = {"id": "j1", "name": "nightly", "deliver": deliver, "origin": {"platform": "telegram", "chat_id": GOOD}}
+    config = MagicMock()
+    config.platforms = {Platform.TELEGRAM: PlatformConfig(enabled=True)}
+    config.get_home_channel = lambda p: None
+    stored: dict = {}
+
+    async def _send(platform, pconfig, chat_id, text, **kwargs):
+        return await _send_telegram("tok", chat_id, text)
+
+    with patch("gateway.config.load_gateway_config", return_value=config), \
+         patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+         patch("tools.send_message_tool._send_to_platform", _send), \
+         patch("cron.jobs.update_job", side_effect=lambda _id, values: stored.update(values)):
+        error = _deliver_result(job, "status line ok\n" * 700)
+    assert error and bot.send_message.await_count == 3
+    with patch("tools.cronjob_tools.get_job", return_value={**stored, "last_delivery_error": error}), \
+         patch("tools.cronjob_tools._latest_job_output_excerpt", return_value="THE REPORT"):
+        summary = _manual_run_completion({"success": True}, "j1", "nightly", deliver, 0.0)["summary"]
+    assert "THE REPORT" not in summary

@@ -88,9 +88,18 @@ def test_run_as_a_script_runs_the_moved_main_with_its_argv(repo, argv):
 def test_old_name_launch_repairs_a_torn_update_before_importing_hermes_agent(repo):
     # The entry's first import, hermes_bootstrap, repairs a killed update; a merge killed while writing
     # hermes_agent/ must not stop `python -m <old name>` from reaching it.
-    (repo / "hermes_agent/compat/moves.py").write_text('MOVES = {"oldpkg": "hermes_', encoding="utf-8")
+    (repo / "hermes_agent/compat/__init__.py").write_text("def install(", encoding="utf-8")
     assert "bootstrap ran" in _run(repo, "-m", "oldpkg.tool").stderr
-    assert "bootstrap ran" not in _run(repo, "-c", "import oldpkg").stderr  # a plain import stays light
+    plain = _run(repo, "-c", "import oldpkg")  # a plain import stays light and shows the real damage
+    assert "bootstrap ran" not in plain.stderr and "SyntaxError" in plain.stderr
+
+
+def test_old_name_launch_on_a_healthy_tree_does_not_run_the_bootstrap(repo):
+    # Light -m targets (an old updater's abort recovery, uninstall) never imported the bootstrap, so a
+    # bootstrap that fails (dependencies that do not activate) must not stop them.
+    (repo / "hermes_bootstrap.py").write_text("import sys\nsys.exit('bootstrap ran')\n", encoding="utf-8")
+    result = _run(repo, "-m", "oldpkg.tool", "a")
+    assert (result.returncode, result.stdout.strip()) == (0, "argv ['a']"), result.stderr
 
 
 def test_loaded_by_path_carries_the_moved_names(repo):

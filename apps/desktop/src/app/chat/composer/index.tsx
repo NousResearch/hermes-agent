@@ -102,7 +102,7 @@ import { useComposerScope, useComposerSurfaceId } from './scope'
 import { ComposerStatusStack } from './status-stack'
 import { CodingStatusRow } from './status-stack/coding-row'
 import { StatusDrawerContent, StatusDrawerToggle } from './status-stack/drawer'
-import { extractClipboardImageBlobs, openDirectiveScope } from './text-utils'
+import { extractClipboardImageBlobs, extractClipboardText, openDirectiveScope } from './text-utils'
 import { composerTextEntryProps, touchTapFocusHandlers } from './touch-text-entry'
 import { ComposerTriggerPopover } from './trigger-popover'
 import type { ChatBarProps } from './types'
@@ -580,12 +580,12 @@ export function ChatBar({
     // blank lines (common when selecting from terminals, code blocks, web pages)
     // doesn't dump multiline padding into the composer. Internal newlines are
     // preserved — only the edges are cleaned up.
-    const pastedText = sanitizeComposerInput(event.clipboardData.getData('text').trim())
+    const pastedText = sanitizeComposerInput(extractClipboardText(event.clipboardData).text.trim())
 
     if (!pastedText) {
-      event.preventDefault()
-
       if (imageBlobs.length > 0) {
+        event.preventDefault()
+
         return
       }
 
@@ -595,10 +595,22 @@ export function ChatBar({
       // process, which pulls the image straight off the Windows clipboard.
       // Silent so a genuinely-empty paste doesn't pop a "no image" warning.
       if (onPasteClipboardImage) {
+        event.preventDefault()
         triggerHaptic('selection')
         void onPasteClipboardImage({ silent: true })
+
+        return
       }
 
+      // Still nothing readable and no image: do NOT cancel the paste. WebKit
+      // hides rich pasteboards it cannot convert synchronously — the ChatGPT
+      // iOS app's "Copy" writes RTFD/HTML whose every DataTransfer flavor
+      // reads empty at event time — yet a NATIVE insertion converts that same
+      // pasteboard fine (it's the machinery behind "Paste and Match Style").
+      // preventDefault here deleted those pastes; letting the event land
+      // inserts the text. A truly-empty clipboard natively no-ops, so this
+      // pass-through costs nothing. Sibling of #132591 and of the flavor
+      // rescue above, which cannot help when every flavor reads empty.
       return
     }
 

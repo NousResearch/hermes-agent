@@ -12,7 +12,6 @@ export const ruPluginUpdateAll: PluginUpdateAllTranslations = {
   updateAllNone: 'Все плагины в актуальном состоянии',
   updateAllFailed: 'Не удалось обновить плагины',
   autoUpdate: 'Автообновление',
-  autoUpdateTip: (hours: number) =>
-    `Автоматически применять обновления плагинов при проверке шлюзом (каждые ${hours} ч). Новый код загружается в новых сессиях.`,
+  autoUpdateTip: (hours: number) => `Автоматически применять обновления плагинов при проверке шлюзом (каждые ${hours} ч). Новый код загружается в новых сеансах.`,
   autoUpdateFailed: 'Не удалось изменить автообновление плагинов'
 }

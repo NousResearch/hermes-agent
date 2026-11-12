@@ -3,7 +3,7 @@ import type { GatewayHostTranslations } from './types_gateway_host'
 // Settings → Gateways copy where the connection cannot change, spread into ru.ts.
 export const ruGatewayHost: GatewayHostTranslations = {
   unavailableTitle: 'Настройки шлюза недоступны',
-  unavailableDesc: 'IPC-мост приложения не предоставляет настройки шлюза.',
+  unavailableDesc: 'Настройки подключения можно изменить только в приложении Hermes Desktop на компьютере, где оно запущено.',
   webappHostTitle: 'Хост Hermes',
   webappHostDesc:
     'Webapp всегда работает на хосте Hermes, который её обслуживает. Сохранённые подключения ниже — список этого компьютера, общий с приложением Hermes Desktop; другие шлюзы доступны через этот хост.',

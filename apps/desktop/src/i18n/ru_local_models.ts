@@ -67,8 +67,7 @@ export const ruLocalModels: TranslationOverride<Translations['settings']['localM
   updateAction: 'Обновить движок',
   updating: 'Обновляем движок…',
   upToDateTitle: 'Движок обновлён',
-  upToDateDetail: (tag, backend) =>
-    `Работает llama.cpp ${tag} (${backend}) \u2014 самая свежая сборка, которую поставляет Hermes.`,
+  upToDateDetail: (tag, backend) => `Работает llama.cpp ${tag} (${backend}).`,
   activeDetail: 'Новые чаты используют эту модель — она загрузится, когда вы отправите первое сообщение',
   activeNotLoaded: 'Загрузится при первом сообщении',
   loadedPill: 'В памяти',

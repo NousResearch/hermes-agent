@@ -8,7 +8,7 @@ export const ruOnboarding: TranslationOverrides['onboarding'] = {
   setupSlowTitle: 'Настройка занимает больше времени, чем обычно.',
   setupSlowBody: 'Hermes всё ещё запускается в фоновом режиме.',
   continueWithoutSetup: 'Продолжить без настройки',
-  lookingUpProviders: 'Ищем провайдеров...',
+  lookingUpProviders: 'Ищем провайдеров…',
   collapse: 'Свернуть',
   otherProviders: 'Другие провайдеры',
   haveApiKey: 'У меня есть API-ключ',
@@ -35,14 +35,14 @@ export const ruOnboarding: TranslationOverrides['onboarding'] = {
     local: {
       short: 'свой сервер',
       description:
-        'Укажите Hermes локальный или self-hosted OpenAI-совместимый endpoint (vLLM, llama.cpp, Ollama и т.д.).'
+        'Укажите для Hermes локальную или размещённую на своём сервере OpenAI-совместимую конечную точку (vLLM, llama.cpp, Ollama и т. д.).'
     }
   },
   backToSignIn: 'Назад ко входу',
   getKey: 'Получить ключ',
   replaceCurrent: 'Заменить текущее значение',
   pasteApiKey: 'Вставьте API-ключ',
-  localApiKeyPlaceholder: 'API-ключ (необязательно — только если ваш endpoint его требует)',
+  localApiKeyPlaceholder: 'API-ключ (необязательно — только если ваша конечная точка его требует)',
   localModelNamePlaceholder: 'Название модели (например, command-a-plus-05-2026)',
   couldNotSave: 'Не удалось сохранить учётные данные.',
   connecting: 'Подключение',
@@ -52,10 +52,10 @@ export const ruOnboarding: TranslationOverrides['onboarding'] = {
     device_code: 'Откроет страницу подтверждения в браузере — Hermes подключится автоматически',
     external: 'Войдите один раз в терминале, затем вернитесь в чат'
   },
-  startingSignIn: provider => `Начинаем вход для ${provider}...`,
-  verifyingCode: provider => `Проверяем ваш код через ${provider}...`,
+  startingSignIn: provider => `Начинаем вход для ${provider}…`,
+  verifyingCode: provider => `Проверяем ваш код через ${provider}…`,
   connectedProvider: provider => `${provider} подключён`,
-  connectedPicking: provider => `${provider} подключён. Выбираем модель по умолчанию...`,
+  connectedPicking: provider => `${provider} подключён. Выбираем модель по умолчанию…`,
   signInFailed: 'Вход не удался. Попробуйте снова.',
   signInExpired: 'Время ожидания страницы входа истекло. Повторите попытку и завершите вход в браузере за несколько минут или воспользуйтесь API-ключом.',
   signInDidNotFinish: provider =>
@@ -70,7 +70,7 @@ export const ruOnboarding: TranslationOverrides['onboarding'] = {
   copyAuthCode: 'Скопируйте код авторизации и вставьте его ниже.',
   pasteAuthCode: 'Вставьте код авторизации',
   reopenAuthPage: 'Открыть страницу авторизации снова',
-  waitingAuthorize: 'Ждём вашей авторизации...',
+  waitingAuthorize: 'Ждём вашей авторизации…',
   externalPending: provider =>
     `${provider} входит через собственный CLI. Выполните эту команду в терминале, затем вернитесь и выберите «Я вошёл»:`,
   signedIn: 'Я вошёл',

@@ -1,0 +1,24 @@
+model_list:
+  - model_name: hermes-default
+    litellm_params:
+      model: openai/gpt-5
+      api_key: os.environ/LITELLM_UPSTREAM_API_KEY
+      api_base: os.environ/LITELLM_UPSTREAM_BASE_URL
+
+litellm_settings:
+  drop_params: true
+  turn_off_message_logging: true
+  cache: true
+  cache_params:
+    type: local
+    ttl: 600
+
+router_settings:
+  routing_strategy: simple-shuffle
+  num_retries: 2
+  retry_after: 1
+  timeout: 180
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  store_model_in_db: false

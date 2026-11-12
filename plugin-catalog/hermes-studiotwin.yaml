@@ -3,7 +3,7 @@ title: StudioTwin
 repo: https://github.com/realtwin/hermes-studiotwin-plugin
 sha: ed8021399fbb8dfa28703c566fc7a90ee40c7c2b
 version: "1.0.0"
-description: StudioTwin cloud images, environments, PBR materials, meshes, rigs, motion, sound effects and Concepts via remote MCP, with an optional Desktop media workspace.
+description: "StudioTwin cloud images, environments, PBR materials, meshes, rigs, motion, sound effects and Concepts via remote MCP, with an optional Desktop media workspace. Disclosure — Sends prompts and any media you upload to StudioTwin (api.studiotwin.ai; uploads and downloads via StudioTwin's Amazon S3 and assets.studiotwin.ai) with your StudioTwin API key, and StudioTwin passes jobs to its own model providers. Generation spends StudioTwin wallet credits with no plugin spend cap; paid, upload, cancel and delete tools go through Hermes approval. The optional Desktop backend can read media-type files anywhere in your home folder (except hidden folders) for its viewers and stores downloads in its plugin-data folder. The optional local helper scripts run Blender, ffmpeg and headless Chromium with its sandbox disabled, and on first preview download three.js 0.180.0 from npm (integrity-checked)."
 maintainer: realtwin
 tier: community
 category: desktop

@@ -1,7 +1,8 @@
 """A2A security primitives (adapter + client tools). A2A is a *network* surface: bind safety (no
 token => 127.0.0.1 only); peer identity from credentials, never the body (A2A_PEER_TOKENS
 token->name, shared A2A_BEARER_TOKEN => ip:<addr>); inbound injection filtering; outbound
-credential redaction; JSONL audit; trusted-peer allow-list; HMAC push signing; SSRF-safe URLs."""
+credential redaction; JSONL audit; trusted-peer allow-list; HMAC push signing; SSRF-safe URLs;
+peer Agent Card signature verification (A2A_TRUSTED_SIGNERS / A2A_REQUIRE_CARD_SIGNATURE)."""
 
 from __future__ import annotations
 
@@ -29,6 +30,21 @@ def _startup_env(name: str) -> str:
         from agent.secret_scope import get_secret
         return (get_secret(name) or "").strip()
     return os.getenv(name, "").strip()
+
+
+def verify_peer_card(card: dict) -> tuple[bool, str]:
+    """Verify a peer's Agent Card against the configured trust anchors (A2A v1.0 §8.4).
+
+    ``(trusted, reason)`` — ``trusted`` is False when the card's endpoints and skills must not be
+    used (a forged or unverifiable card). Inert until ``A2A_TRUSTED_SIGNERS`` (an inline JWKS or a
+    path to one) is configured; ``A2A_REQUIRE_CARD_SIGNATURE`` additionally refuses any card that
+    is not signed by a trusted signer. Read from the active profile's scope at call time, the same
+    way the other A2A settings are."""
+    from plugins.platforms.a2a import card_signature
+
+    trusted = card_signature.load_trusted_signers(_startup_env("A2A_TRUSTED_SIGNERS"))
+    require = _startup_env("A2A_REQUIRE_CARD_SIGNATURE").lower() in {"1", "true", "yes"}
+    return card_signature.verify_card_signatures(card if isinstance(card, dict) else {}, trusted, require=require)
 
 
 def _parse_peer_tokens(raw: str) -> dict[str, str]:

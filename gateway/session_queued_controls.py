@@ -22,6 +22,11 @@ from hermes_state_runtime import (
 # A steer carries plain text and its presentation only. Attachments, finite runs, classic-CLI turns,
 # native envelopes and automation rows are whole turns: neither verb may drop what they carry.
 _TEXT_ONLY = frozenset({'text', 'surface_v1', 'display_v1', 'local_operator_v1'})
+# Desktop and the Ink TUI declare ``clarify_batch`` on EVERY prompt.submit, so every queued row of theirs
+# carries ``cli_turn_v1 == {'clarify_batch': True}``. It only says how a turn's viewers answer a clarify;
+# a steer or replacement carries no turn of its own, so dropping it loses nothing. Any other
+# ``cli_turn_v1`` field (api_text, model_override, turn_author) is turn content and stays refused.
+_CLARIFY_BATCH_ONLY = {'clarify_batch': True}
 # Sessions launched from an interactive local surface (classic CLI, TUI, Desktop, ACP editor): their
 # plain-text rows are prompt.submit input, whose observers settle a ``steered``/``cancelled`` row.
 # ``desktop`` is the label a Desktop chat migrated from main keeps (hermes_state_local_migration).
@@ -54,7 +59,10 @@ def queued_controls(authority, row):
     lists none, so its clients show none)."""
     payload = row.get('payload') or {}
     text = payload.get('text')
-    if (row.get('status') != 'queued' or set(payload) - _TEXT_ONLY or not isinstance(text, str) or not text.strip()
+    extra = {key: value for key, value in payload.items() if key not in _TEXT_ONLY}
+    if extra.get('cli_turn_v1') == _CLARIFY_BATCH_ONLY:
+        del extra['cli_turn_v1']
+    if (row.get('status') != 'queued' or extra or not isinstance(text, str) or not text.strip()
             or (payload.get('display_v1') or {}).get('kind') == 'hidden'
             or not _interactive(authority, row['target_session_id'])):
         return []

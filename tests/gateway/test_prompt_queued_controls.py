@@ -12,7 +12,8 @@ from hermes_state_runtime import (
     begin_runtime_epoch, claim_session_input, find_session_admission, list_session_admissions,
     recover_session_inputs,
 )
-from tests.gateway.test_session_authority_cancel_settlement import REF, _authority, _submit
+from gateway.session_contract import Submission
+from tests.gateway.test_session_authority_cancel_settlement import ACTOR, REF, _authority, _submit
 
 
 class Agent:
@@ -249,3 +250,35 @@ async def test_pending_rows_name_the_controls_the_owner_serves(tmp_path, monkeyp
                                                      for r in authority._pending_rows(REF))}
     assert pending['follower'].get('controls') == ['steer', 'replace']
     assert not pending['head'].get('controls'), 'a started row has no queued-row controls'
+
+
+def _submit_with(authority, request_id, **payload):
+    return authority.submit(ACTOR, Submission(request_id=request_id, ref=REF,
+                                                  payload={'text': request_id, **payload}, intent='queue'))
+
+
+@pytest.mark.asyncio
+async def test_a_row_submitted_with_clarify_batch_keeps_steer_and_edit(tmp_path, monkeypatch):
+    """Desktop and Ink declare ``clarify_batch`` on every prompt.submit; that must not hide Steer / Edit.
+    Any other classic-CLI turn field is turn content a steer or edit would drop, so it still does."""
+    db, authority = _authority(tmp_path, monkeypatch)
+    interactive(db)
+    monkeypatch.setattr(authority, '_schedule', lambda ref: None)
+    with db:
+        await _submit(authority, 'head')
+        await _submit_with(authority, 'batch', clarify_batch=True)
+        await _submit_with(authority, 'api-text', clarify_batch=True, api_text='model-facing text')
+        await _submit_with(authority, 'override', model_override={'model': 'other-model'})
+        claim_session_input(db, epoch=authority.epoch, session_id='s')
+        pending = {row['input_id']: row for row in (asdict(authority._pending_receipt(r))
+                                                     for r in authority._pending_rows(REF))}
+        assert pending['batch'].get('controls') == ['steer', 'replace']
+        assert not pending['api-text'].get('controls')
+        assert not pending['override'].get('controls')
+
+        # The verb itself accepts the row the panel now offers: the edit replaces it at the FIFO tail.
+        conn = _connection(authority)
+        batch = find_session_admission(db, principal_id='human', session_id='s', request_id='batch')
+        reply = await _call(conn, 'prompt.replace_queued', admission_id=batch['admission_id'],
+                            submission_id='batch-edited', text='edited')
+        assert 'error' not in reply, reply

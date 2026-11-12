@@ -705,11 +705,16 @@ class GatewayTurnPersistenceMixin:
         keep-alive now. It refreshes until the handler returns, so hooks and transcript persistence
         after the agent finished kept "typing" on for a reply that never comes (#149948). Only inside
         the adapter's turn bracket (``_turn_marker_handoff``), whose ``finally`` lifts the pause; a turn
-        run outside it has no keep-alive, and a pause there would mute the chat's next turn."""
+        run outside it has no keep-alive, and a pause there would mute the chat's next turn. Keyed on
+        this turn's typing thread, as the adapter's loop computes it: another topic of the same chat
+        is still working and keeps its own "typing"."""
+        from gateway.platforms.helpers import typing_metadata_for_turn, typing_pause_key
         adapter = self._delivery_adapter_for(source)
-        if getattr(event, "_turn_marker_handoff", False) is True and callable(
-                getattr(type(adapter), "pause_typing_for_chat", None)):
-            adapter.pause_typing_for_chat(source.chat_id)
+        paused = getattr(adapter, "_typing_paused", None)
+        if getattr(event, "_turn_marker_handoff", False) is True and isinstance(paused, set):
+            metadata = typing_metadata_for_turn(adapter, source.chat_id, self._reply_anchor_for_event(event),
+                                                self._event_thread_metadata(event, event.source))
+            paused.add(typing_pause_key(source.chat_id, metadata))
 
     async def _hmwa_deliver_turn_response(
         self, event, source, session_entry, session_key, run_generation,

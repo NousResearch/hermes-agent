@@ -433,7 +433,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable
 if (_checkout_root := str(Path(__file__).resolve().parents[2])) not in sys.path:
     sys.path.append(_checkout_root)  # append, never prepend: never shadow same-named installed packages
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.helpers import fence_state_after, typing_metadata_for_turn
+from gateway.platforms.helpers import fence_state_after, typing_metadata_for_turn, typing_pause_key
 from gateway.platforms.base_post_delivery import run_post_delivery_callback
 from gateway.platforms.base_delivery_ledger import finalize_final_obligation, ledger_bracket, record_final_obligation
 from gateway.platforms.base_exec_approval import (
@@ -3282,7 +3282,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             while True:
                 if stop_event is not None and stop_event.is_set():
                     return
-                if chat_id not in self._typing_paused:
+                if chat_id not in self._typing_paused and typing_pause_key(chat_id, metadata) not in self._typing_paused:
                     try:  # asyncio.timeout: 3.11's wait_for swallows a same-tick cancel (stuck "typing")
                         async with asyncio.timeout(_send_typing_timeout):
                             await self.send_typing(chat_id, metadata=metadata)
@@ -3307,7 +3307,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         finally:
             # A send_typing after an outer stop_typing() may have recreated the platform loop.
             await self._stop_typing_quietly(chat_id, metadata)
-            self._typing_paused.discard(chat_id)
+            self._typing_paused.difference_update((chat_id, typing_pause_key(chat_id, metadata)))
             # getattr-guard: tests build adapters via object.__new__ without _status_text.
             getattr(self, "_status_text", {}).pop(str(chat_id), None)
 
@@ -3327,7 +3327,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
                     await asyncio.sleep(0)
                 await self._stop_typing_quietly(chat_id, metadata)
         finally:
-            self._typing_paused.discard(chat_id)
+            self._typing_paused.difference_update((chat_id, typing_pause_key(chat_id, metadata)))
 
     async def _stop_typing_quietly(self, chat_id: str, metadata=None) -> None:
         """Best-effort platform stop_typing; adapter errors are swallowed."""

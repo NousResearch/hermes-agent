@@ -227,6 +227,13 @@ def typing_metadata_for_turn(adapter: Any, chat_id: Any, anchor: Any, metadata: 
     return hook(adapter, str(chat_id), str(anchor), metadata)
 
 
+def typing_pause_key(chat_id: Any, metadata: Optional[dict]) -> tuple:
+    """``_typing_paused`` entry that pauses ONE turn's keep-alive: the chat plus the thread its
+    typing metadata (``typing_metadata_for_turn``) targets. A bare ``chat_id`` entry still pauses
+    every loop in the chat (approval waits); this one leaves a concurrent topic's typing alone."""
+    return chat_id, (metadata or {}).get("thread_id")
+
+
 # Inline markdown-stripping rules, applied in order: bold, italic, bold/italic
 # underscore, code fence markers, inline code, headings. Links and the newline
 # squeeze run after these, in that order (see ``strip_markdown``).

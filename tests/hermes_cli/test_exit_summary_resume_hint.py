@@ -123,3 +123,12 @@ class TestTuiExitSummaryResumeHint:
             "hermes_cli.profiles.get_active_profile_name", return_value="dev"
         ), patch("hermes_cli.main_tui_launch.t", side_effect=KeyboardInterrupt):
             _print_tui_exit_summary("20260524_000001_abc123")  # must not raise
+
+    def test_tui_exit_summary_survives_keyboard_interrupt_during_session_resolution(self, capsys):
+        """A ``KeyboardInterrupt`` landing mid-``_resolve_last_session`` (e.g. Ctrl-C while its
+        state.db/config lookup runs) must not escape either, when no explicit session id or
+        active-session file is available (#151431)."""
+        with patch(
+            "hermes_cli.main._resolve_last_session", side_effect=KeyboardInterrupt
+        ):
+            _print_tui_exit_summary(None)  # must not raise

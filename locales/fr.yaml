@@ -46,6 +46,7 @@ gateway:
   draining: "⏳ Vidage de {count} agent(s) actif(s) avant redémarrage..."
   goal_cleared: "✓ Objectif effacé."
   no_active_goal: "Aucun objectif actif."
+  stream_interruption_note: "⚠️ Interruption (erreur API) — reprise en cours…"
   config_read_failed: "⚠️ Impossible de lire config.yaml : {error}"
   config_save_failed: "⚠️ Impossible de sauvegarder la configuration : {error}"
   model:

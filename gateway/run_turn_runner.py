@@ -1105,6 +1105,16 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             if isinstance(fr, str) and fr.strip() and fr != "(empty)":
                 _final_for_stream = fr
         if _final_for_stream is None:
+            # Failed/interrupted turn with a live streamed preview: keep every visible
+            # character — append a short interruption note in place (no delete/replace);
+            # the failure notice and any retry result land as their own sends after.
+            if isinstance(result, dict) and (result.get("failed") or result.get("interrupted")):
+                _note = t("gateway.stream_interruption_note")
+                try:
+                    stream_consumer.finish(interrupt_note=_note)
+                except TypeError:  # test doubles / older consumers without the kwarg
+                    stream_consumer.finish()
+                return
             stream_consumer.finish()
             return
         # Duck-type safe: test doubles / older consumers may expose a zero-arg finish().

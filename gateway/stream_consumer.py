@@ -53,6 +53,7 @@ _TOOL_PROGRESS = object()
 _FINAL_TEXT = object()
 _FLUSH = object()
 _APPROVAL_BOUNDARY = object()
+_INTERRUPT_NOTE = object()
 _REOPEN_SEED = object()
 _FUTURE_TYPES = (asyncio.Future, concurrent.futures.Future)
 
@@ -89,6 +90,10 @@ class _Tick:
     got_reopen_seed: bool = False
     approval_boundary: Optional[tuple] = None  # (future, cancelled_flag)
     commentary_text: Optional[str] = None
+    # Interrupt note queued by finish(interrupt_note=...) just before _DONE: the turn
+    # died mid-stream (API error / interrupt) and the finalize must keep every visible
+    # character (append the note in place, never delete/replace the preview).
+    interrupt_note: Optional[str] = None
     # Set by _push_update for _finalize_turn / _end_segment.
     update_visible: bool = False
     draft_final_fresh_send: bool = False
@@ -179,6 +184,9 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # Per-run state, constructed fresh each turn, so a refusal can never
         # mute a healthy destination on a later turn.
         self._egress_declined = False
+        # Interrupted/cancelled finalize: never replace or delete the live preview (the
+        # fresh-final lane in _edit_existing honours this flag).
+        self._suppress_fresh_final = False
         self._use_native_streaming = False
         self._native_stream_opened = False  # seed sent: bubble open, zero content
         self._native_last_pushed_len = 0    # throttle under WeCom's 30 frames/min
@@ -195,6 +203,9 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
 
     def _reset_message_state(self) -> None:
         """Per-message (segment) state: fresh at construction and after each segment break."""
+        # Segment/turn boundary: a prior interrupt's fresh-final suppression dies with
+        # the message it protected — the next segment must finalize normally.
+        self._suppress_fresh_final = False
         self._message_id: Optional[str] = None
         self._message_created_ts: Optional[float] = None  # fresh-final age
         # ``_stream_ledger`` mirrors ``_accumulated`` but is NOT truncated when
@@ -557,16 +568,26 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         elif text is None:
             self.on_segment_break()
 
-    def finish(self, final_text: Optional[str] = None) -> None:
+    def finish(self, final_text: Optional[str] = None, *, interrupt_note: Optional[str] = None) -> None:
         """Signal stream completion.  ``final_text`` is the AUTHORITATIVE completed
         final_response (incl. post-stream augmentation the accumulator never saw); the drain
-        loop adopts it as the finalize payload.  Interrupt/error paths call ``finish()`` bare."""
+        loop adopts it as the finalize payload.  Interrupt/error paths call ``finish()`` bare,
+        or with ``interrupt_note`` so the finalize keeps the partial on screen and appends the
+        note in place instead of replacing/deleting the preview."""
         if final_text is not None:
             self._queue.put((_FINAL_TEXT, final_text))
+        if interrupt_note is not None:
+            self._queue.put((_INTERRUPT_NOTE, interrupt_note))
         self._queue.put(_DONE)
 
     async def run(self) -> None:
         """Async task that drains the queue and edits the platform message."""
+        # Per-run reset: an interrupt/cancel on a PREVIOUS run of this consumer
+        # (429 retry reusing the turn's consumer, boundary reopen) must not mute
+        # this run's fresh-final lane — a suppressed over-limit finalize degrades
+        # to a single edit the platform rejects ("message too long"), and the
+        # tail of the answer is never delivered.
+        self._suppress_fresh_final = False
         self._len_fn, self._safe_limit = self._resolve_length_budget()
         await self._start_transports()
         try:
@@ -588,6 +609,11 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
 
                 if tick.got_done:
                     self._flush_think_buffer()
+                    if tick.interrupt_note is not None:
+                        # Turn died mid-stream (API error / interrupt / retry): keep every
+                        # visible character — append the note in place, never delete.
+                        await self._finalize_interrupted(tick.interrupt_note)
+                        return
                     # A bare intentional-silence marker (NO_REPLY / [SILENT]): the
                     # gateway's whole-response filter runs too late for a streamed
                     # preview, so retract it here instead of finalizing.
@@ -702,6 +728,8 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             kind = item[0] if isinstance(item, tuple) and item else None
             if kind is _FINAL_TEXT:
                 self._adopt_final_text(item[1])
+            elif kind is _INTERRUPT_NOTE:
+                tick.interrupt_note = item[1]  # keep draining; takes effect at got_done
             elif kind is _TOOL_PROGRESS:  # keep draining to batch simultaneous lines
                 if self._use_native_streaming:
                     self._tool_progress_lines.append(item[1])
@@ -942,6 +970,69 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                                         label="Recovered reply")
             self._superseded_reply_ids.clear()
 
+    async def _finalize_interrupted(self, note: str) -> None:
+        """Turn died mid-stream (API error, interrupt, retry): the interim message the user
+        is reading must survive whole.  The note is APPENDED by editing the existing preview
+        in place — no fresh-final replacement, no preview deletion, no new message — and no
+        delivery flag is set (the gateway still owns the failure notice and the retry's
+        delivery; the retry result lands as the next message or a later edit)."""
+        self._suppress_fresh_final = True
+        visible = self._clean_for_display(self._accumulated).rstrip()
+        if self.cfg.cursor and visible.endswith(self.cfg.cursor):
+            visible = visible[: -len(self.cfg.cursor)].rstrip()
+        payload = f"{visible}\n\n{note}" if visible else note
+        if self._message_id and self._message_id != "__no_edit__" and self._edit_supported:
+            # Overflow: one edit over the platform limit is rejected ("message too
+            # long") and the exception path below would lose the note AND the tail.
+            # Split like the normal finalize instead — edit the visible head in
+            # place, send the remainder as continuation chunks. Never fresh-final,
+            # never delete, no delivery flag.
+            chunks = self._interrupt_payload_chunks(payload)
+            try:
+                await self._edit_message(message_id=self._message_id, content=chunks[0],
+                                         finalize=True)
+            except Exception as e:
+                logger.debug("Interrupted-stream note edit failed (best-effort, preview kept): %s", e)
+                return
+            reply_to: Optional[str] = self._message_id
+            for chunk in chunks[1:]:
+                new_id = await self._send_new_chunk(chunk, reply_to, final=True)
+                if not new_id or new_id == reply_to:
+                    break  # head failed: stop rather than send out of order
+                reply_to = None if new_id == "__no_edit__" else new_id
+            return
+        if self._use_native_streaming and self._native_stream_opened:
+            # Close the open typing bubble with the payload (best-effort), like the native
+            # fallback close: the content stays on screen, flags untouched.
+            await self._try_frame(self._send_frame(payload, finalize=True),
+                                  "Interrupted finalize frame failed: %s")
+            self._close_native_state()
+            return
+        if self._use_draft_streaming and self._message_id is None:
+            # Draft transport: one last frame carrying the note (client keeps the text).
+            await self._send_draft_frame(payload)
+            return
+        if visible and self._message_id is None:
+            # Streamed text but nothing editable on screen (overflow sealed the head and
+            # the tail never got an id, or the preview send timed out): deliver the
+            # partial + note as fresh chunks rather than dropping it on the floor.
+            for chunk in self._interrupt_payload_chunks(payload):
+                if await self._send_new_chunk(chunk, None, final=True) is None:
+                    break
+            return
+        logger.debug("Interrupted stream with no editable preview on screen (chat=%s)", self.chat_id)
+
+    def _interrupt_payload_chunks(self, payload: str) -> list[str]:
+        """Split an interrupted-finalize payload to the platform limit (single chunk when
+        it fits). Uses the adapter's canonical splitter; a malformed result falls back to
+        the fence-aware chunker so no text is ever silently dropped."""
+        if self._len_fn(payload) <= self._safe_limit:
+            return [payload]
+        chunks = self._truncate_for_stream(payload, self._safe_limit, self._len_fn)
+        if len(chunks) <= 1:
+            chunks = self._split_text_chunks(payload, self._safe_limit, self._len_fn)
+        return chunks or [payload]
+
     async def _finalize_edit_path(self, tick: _Tick) -> None:
         """Edit-transport finalize (the non-native got_done branches, in priority order)."""
         if self._fallback_final_send:
@@ -1013,6 +1104,9 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         search…", not the answer."""
         best_effort_ok = False
         if self._accumulated and self._message_id:
+            # Cancel mid-turn (interrupt/stop/shutdown): keep the partial on screen — the
+            # finalize edit must NOT take the fresh-final lane (fresh send + preview delete).
+            self._suppress_fresh_final = True
             with contextlib.suppress(Exception):
                 best_effort_ok = bool(await self._send_or_edit(
                     self._accumulated, finalize=True, is_turn_final=False))

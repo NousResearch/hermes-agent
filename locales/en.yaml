@@ -49,6 +49,7 @@ gateway:
   draining: "⏳ Draining {count} active agent(s) before restart..."
   goal_cleared: "✓ Goal cleared."
   no_active_goal: "No active goal."
+  stream_interruption_note: "⚠️ Interrupted (API error) — retrying…"
   config_read_failed: "⚠️ Could not read config.yaml: {error}"
   config_save_failed: "⚠️ Could not save config: {error}"
   model:

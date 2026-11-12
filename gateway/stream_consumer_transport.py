@@ -510,7 +510,7 @@ class StreamTransportMixin:
             hasattr(type(self.adapter), "prefers_fresh_final_streaming")
             or "prefers_fresh_final_streaming" in getattr(self.adapter, "__dict__", {}))
         prefers_fresh = self._adapter_prefers_fresh_final(text)  # probed every edit (hook contract)
-        if finalize and (
+        if finalize and not getattr(self, "_suppress_fresh_final", False) and (
             prefers_fresh or (not has_prefers_hook and self._should_send_fresh_final())
         ) and await self._try_fresh_final(text, is_turn_final=is_turn_final):
             return True

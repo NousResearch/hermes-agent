@@ -178,11 +178,12 @@ class TestCancelledBestEffortDeliveryFinalizes:
 
     @pytest.mark.asyncio
     async def test_cancel_with_fresh_final_enabled_delivers_and_flags_via_handler(self):
-        """With fresh_final_after_seconds enabled and an aged preview, the
-        finalized cancel-path delivery is eligible for fresh-final
-        (delete + fresh send). is_turn_final=False keeps _try_fresh_final
-        from setting the flags itself; the cancel handler sets them after
-        the successful delivery."""
+        """Cancel-path finalize with fresh_final_after_seconds enabled and an aged
+        preview: since the interrupted-preview patch (11/11) the cancel delivery
+        must NOT take the fresh-final lane (no delete + fresh send that could
+        drop the partial the user is reading) — it finalizes by EDITING the live
+        preview in place, and the cancel handler still sets the delivery flags
+        after a successful edit."""
         adapter = _make_adapter()
         adapter.REQUIRES_EDIT_FINALIZE = True
         adapter.send.side_effect = [
@@ -204,10 +205,10 @@ class TestCancelledBestEffortDeliveryFinalizes:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
 
-        # Fresh-final engaged: a second send replaced the stale preview.
-        assert adapter.send.call_count == 2
-        adapter.delete_message.assert_awaited_once_with("chat", "initial_preview")
-        # Flags were set by the cancel handler after successful delivery.
+        # Fresh-final suppressed on the cancel path: the preview survives.
+        assert adapter.send.call_count == 1
+        adapter.delete_message.assert_not_awaited()
+        # Flags were set by the cancel handler after the successful in-place edit.
         assert consumer.final_response_sent is True
         assert consumer.final_content_delivered is True
 

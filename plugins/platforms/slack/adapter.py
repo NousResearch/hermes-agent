@@ -4069,11 +4069,16 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         # the file object, or users.info — before the stamp.
         if str(channel_id).startswith("D") or event.get("channel_type") == "im":
             sharer_id = event.get("user_id") or file_obj.get("user", "")
-            sender_team = next((
-                v for v in (event.get("user_team"), event.get("team"), file_obj.get("user_team"))
-                if isinstance(v, str) and v.startswith("T")), "")
-            sender_team = sender_team or await self._resolve_author_team(
-                sharer_id, channel_id, team_id)
+            # `event.team` may name the receiving workspace rather than the actor.
+            # Check the sharer's actual workspace before using that routing hint.
+            sender_team = event.get("user_team", "")
+            if not (isinstance(sender_team, str) and sender_team.startswith("T")):
+                sender_team = await self._resolve_author_team(
+                    sharer_id, channel_id, team_id)
+            if not sender_team:
+                sender_team = next((
+                    v for v in (event.get("team"), file_obj.get("user_team"))
+                    if isinstance(v, str) and v.startswith("T")), "")
             if sender_team and team_id and sender_team != team_id:
                 logger.info(
                     "[Slack] Ignoring file share DM from external-org user %s (team %s) in %s",

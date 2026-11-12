@@ -360,6 +360,22 @@ async def test_file_share_dm_from_host_org_still_synthesizes(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_file_share_dm_host_event_team_cannot_mask_external_sharer(monkeypatch):
+    """`event.team` can name the receiving install, not the file sharer.
+    A host routing hint must not skip the actual external author's users.info lookup."""
+    adapter = _make_adapter()
+    client = _file_share_client(EXT_TEAM)
+    adapter._team_clients[HOST_TEAM] = client
+    handled = AsyncMock()
+    monkeypatch.setattr(adapter, "_handle_slack_message", handled)
+    event = _file_share_event()
+    event["team"] = HOST_TEAM
+    await adapter._handle_slack_file_shared(event, {"team_id": HOST_TEAM})
+    assert client.users_info.call_count == 1
+    assert not handled.called
+
+
+@pytest.mark.asyncio
 async def test_file_share_dm_with_injected_sender_team_refused(monkeypatch):
     """Wire shapes that DO carry a T… sender team are refused without any API call."""
     adapter = _make_adapter()

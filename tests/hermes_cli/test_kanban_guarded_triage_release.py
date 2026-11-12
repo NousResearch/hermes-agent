@@ -54,7 +54,7 @@ def test_guard_observes_protected_comment_committed_before_transaction_acquisiti
                     release_conn,
                     task_id,
                     guard=guard,
-                    author="office",
+                    author="operator",
                 )
         finally:
             release_finished.set()
@@ -145,7 +145,7 @@ def test_allowed_release_promotes_parent_free_task_in_same_transaction(kanban_ho
             guard=lambda _conn, _task_id: kb.TriageReleaseGuardResult(True),
             title="Refined idea",
             body="Complete body",
-            author="office",
+            author="operator",
         )
         task = kb.get_task(conn, task_id)
         comments = kb.list_comments(conn, task_id)

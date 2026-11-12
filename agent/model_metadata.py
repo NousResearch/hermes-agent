@@ -1960,18 +1960,18 @@ def _resolve_nous_context_length(model: str, base_url: str = "", api_key: str = 
 
 
 def _validate_cached_context_length(model: str, base_url: str, cached: int, *, api_key: str = "") -> Optional[int]:
-    """Step 1 of get_model_context_length: accept, repair, or drop a persisted entry. Returns the
-    value to use, or None to fall through to live resolution. Order matters: a value must be
-    rejected as bogus before any provider-specific handling."""
-    # Drop rules: (predicate, log level, message, shown value). 0/negative is always a bug (`0 is not
-    # None` would hand the compressor a zero window); Kimi/MiniMax are underreported as 32K by stale
-    # third-party metadata; pre-catalog leftovers persisted a shorter catch-all (see _PRE_CATALOG_STALE_KEYS).
+    """Step 1: reject invalid or stale cached windows before provider-specific handling;
+    return a validated persisted value, or None to re-resolve."""
+    # Drop invalid rows, known 32K underreports, pre-catalog leftovers, and xAI's old 2M Grok 4.20.
     drop_rules = (
         (cached <= 0, logger.warning, "Dropping non-positive cache entry %s@%s -> %s; re-resolving", cached),
         (cached <= 32768 and _model_name_suggests_stale_32k_underreport(model), logger.info,
          "Dropping stale cached context entry %s@%s -> %s (known 32K underreport); re-resolving via hardcoded defaults", f"{cached:,}"),
         (_stale_pre_catalog_cache_entry(model, cached), logger.info,
          "Dropping stale pre-catalog cache entry %s@%s -> %s; re-resolving via hardcoded defaults", f"{cached:,}"),
+        (cached == 2_000_000 and base_url_host_matches(base_url, "api.x.ai")
+         and _longest_key_match(DEFAULT_CONTEXT_LENGTHS, model.lower()) == ("grok-4.20", 1_000_000),
+         logger.info, "Dropping stale native xAI Grok 4.20 cache entry %s@%s -> %s", f"{cached:,}"),
     )
     for hit, log, msg, shown in drop_rules:
         if hit:

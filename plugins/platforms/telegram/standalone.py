@@ -333,6 +333,18 @@ def _telegram_mdv2(text, *, max_units=None):
     return None if max_units is not None and utf16_len(formatted) > max_units else formatted
 
 
+def _record_media_failure(error, media_path, warnings, last_msg):
+    """Warn about a failed upload; one that may have landed counts as sent (never a resend)."""
+    from plugins.platforms.telegram.telegram_media_retry import request_may_have_delivered
+    maybe = request_may_have_delivered(error)
+    warnings.append(_sanitize_error_text(
+        f"Failed to send media {media_path}: {error}" + (" (Telegram may still deliver it; do not resend)" if maybe else "")))
+    logger.error(warnings[-1])
+    if maybe:  # delivery unknown, never a hard failure a caller would answer with a resend
+        return last_msg or SimpleNamespace(message_id=None)
+    return last_msg
+
+
 async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False,
                          force_document=False, extra=None, notify=None):
     """One-shot Telegram Bot API send over the platform's ``extra`` (base_url, proxy, fallback IPs,
@@ -417,13 +429,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                     bot, int_chat_id, media_path, is_voice, caption=_tg_caption, parse_mode=send_parse_mode,
                     has_html=_has_html, thread_kwargs=thread_kwargs, force_document=force_document)
             except Exception as e:
-                from plugins.platforms.telegram.telegram_media_retry import request_may_have_delivered
-                maybe = request_may_have_delivered(e)
-                warnings.append(_sanitize_error_text(
-                    f"Failed to send media {media_path}: {e}" + (" (Telegram may still deliver it; do not resend)" if maybe else "")))
-                logger.error(warnings[-1])
-                if maybe:  # delivery unknown, never a hard failure a caller would answer with a resend
-                    last_msg = last_msg or SimpleNamespace(message_id=None)
+                last_msg = _record_media_failure(e, media_path, warnings, last_msg)
         if last_msg is None:
             return {"error": _NO_DELIVERABLE, **({"warnings": warnings} if warnings else {})}
         return _success(chat_id, warnings, **({"message_id": str(last_msg.message_id)}

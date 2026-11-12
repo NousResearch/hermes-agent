@@ -259,3 +259,23 @@ def test_a_provider_without_reuse_detection_gets_no_cached_success():
     owner.outcome = "expired"
     assert _refresh("dead-rt") is None and _refresh("dead-rt") is None
     assert owner.calls == 3
+
+
+def test_an_unrelated_logout_keeps_a_rotating_burst_on_one_rotation():
+    """Another login's logout during this burst's rotation must not make the burst's waiting
+    requests replay the consumed RT (reuse detection would end this login)."""
+    from tests.waiting import wait_until
+
+    owner = Provider("owner")
+    register_provider(owner)
+    owner.release.clear()
+    key = (id(owner), replay._digest("copied-rt"))
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        leader = pool.submit(_refresh)
+        assert owner.entered.wait(5)
+        follower = pool.submit(_refresh)
+        wait_until(lambda: replay._flights[key].users == 2, what="follower joined the flight")
+        replay.forget("another-logins-rt")
+        owner.release.set()
+        assert leader.result(5) is not None and follower.result(5) is not None
+    assert owner.calls == 1

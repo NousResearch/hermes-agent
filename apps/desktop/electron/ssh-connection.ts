@@ -257,6 +257,12 @@ function baseSshOptions(controlPath, connectTimeoutMs?) {
     'StrictHostKeyChecking=accept-new',
     '-o',
     'ExitOnForwardFailure=yes',
+    // Remote connections stream JSON (session lists, transcripts, dashboard
+    // traffic) through these SSH channels; compressing the transport cuts
+    // that several-fold for a little CPU. Near-free on fast links, cheap
+    // insurance on metered or slow ones. OpenSSH defaults it off.
+    '-o',
+    'Compression=yes',
     '-o',
     `ConnectTimeout=${connectSecs}`,
     // Keepalive: send a message every 15s, drop after 3 missed replies (45s)

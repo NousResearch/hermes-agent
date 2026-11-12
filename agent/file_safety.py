@@ -36,7 +36,8 @@ def _hermes_root_path() -> Path:
 
 
 def _profile_homes() -> list[Path]:
-    """Every named profile home under ``<root>/profiles``, the active one included.
+    """Every directory under ``<root>/profiles`` — the named profile homes, the active one
+    included, plus the ``.deleted`` tombstone (it still holds deleted profiles' stores).
 
     A box running several profiles keeps a FULL parallel store per profile —
     ``.env`` with every platform bot token and API key, ``auth.json``,

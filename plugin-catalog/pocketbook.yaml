@@ -2,11 +2,11 @@ name: pocketbook
 repo: https://github.com/MaanavD/pocketbook
 sha: bcb6829bf7d2c974aed863a98a278fa9fec7a8db
 title: Pocketbook
-description: 'Personal finance in Hermes: a Finance tab, bank/account controls, spending, budgets, net worth, investments, goals, transaction categories, CSV imports and 15 money tools. Disclosure: contacts Plaid with your own keys when connecting or syncing; reads user-selected CSV files up to 20 MB; stores financial data locally and access tokens through Hermes secret routes; offers optional scheduled alert blueprints and user-requested Amazon order collection through Hermes browser tools. No telemetry, money movement or shell subprocesses.'
+description: "Personal finance in Hermes: a Finance tab, bank/account controls, spending, budgets, net worth, investments, goals, transaction categories, CSV imports and 15 money tools. Disclosure — contacts Plaid (sandbox.plaid.com or production.plaid.com) with your own keys when connecting, syncing or disconnecting banks; each bank's Plaid access token is written to the profile's .env through Hermes' save_env_value and read back with the secret scope; reads user-selected CSV files up to 20 MB; stores financial data in the profile's plugin-data SQLite database; offers optional scheduled alert and digest blueprints, and on request has the agent read Amazon order history through Hermes browser tools signed in to your accounts; disconnecting a bank or removing an import from chat asks for Hermes approval. No telemetry, money movement or shell subprocesses."
 maintainer: MaanavD
 tier: community
 category: desktop
-requires_hermes: '>=0.23.0'
+requires_hermes: ">=0.23.0"
 version: "0.2.0"
 readme: true
 platforms:

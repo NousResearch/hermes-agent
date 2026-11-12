@@ -1238,6 +1238,17 @@ def profile_read_scope(policy, authority):
         _TURN_PROFILE.reset(token)
 
 
+def turn_model(policy, authority):
+    """The model this policy's turn resolved, for checks that run after ``policy_scope`` exits: a
+    hosted room member reads its owning profile only in turn scope, so an unscoped read would
+    report the frozen model and the post-turn fallback check would evict every switched agent."""
+    token = _TURN_PROFILE.set((policy, policy.read_profile(authority, for_turn=True)))
+    try:
+        return policy.current_model(authority)
+    finally:
+        _TURN_PROFILE.reset(token)
+
+
 def active_policy():
     """The frozen launch policy of the turn executing in this context, or ``None`` (standalone
     serve / messaging turns). Consumers read it instead of re-deriving from live config."""

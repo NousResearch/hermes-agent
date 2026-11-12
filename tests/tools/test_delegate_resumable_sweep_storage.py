@@ -124,3 +124,41 @@ def test_the_record_keeps_no_endpoint_credential_and_still_refuses_a_changed_end
         assert cont.get("status") == "dispatched", cont
         _completion(cont["delegation_id"])
     assert model.builds[-1]["base_url"] == secret_url  # the real URL comes back from the route, not the record
+
+
+@pytest.mark.parametrize("failing", ["first-write", "start-never-lands"])
+def test_a_failed_first_record_write_is_retried_whole_and_never_leaves_a_partial_row(failing):
+    from tools import delegate_tool_resumable as r
+    from tools.delegate_tool import delegate_task
+    real_upsert, calls = r._upsert, []
+
+    def flaky_upsert(conn, sid, record, **kw):
+        calls.append(kw["state"])
+        if len(calls) == 1 or (failing == "start-never-lands" and kw["state"] == "running"):
+            raise sqlite3.OperationalError("disk I/O error")
+        return real_upsert(conn, sid, record, **kw)
+
+    model = _FailingModel(resets_at=time.time() + 3600)
+    parent = _parent()
+    with patch("run_agent.AIAgent", side_effect=model), patch.object(r, "_upsert", side_effect=flaky_upsert):
+        out = json.loads(delegate_task(tasks=[{"goal": "write the parser"}], background=True, parent_agent=parent))
+        done = _completion(out["delegation_id"])
+    sid = out["subagent_ids"][0]
+    rows = _db_rows(parent)
+    if failing == "start-never-lands":  # the stop write would succeed, but only the full record may land
+        assert sid not in rows  # never a partial row ...
+        assert '"resume_mode"' not in json.dumps(done)  # ... nor a resume offer the parent cannot take
+        return
+    state, _pinned, record = rows[sid]
+    assert (state, record["resume_mode"]) == ("resumable", "AUTO_AT")
+    assert record["goal"] == "write the parser" and record["owners"] == [parent.session_id]
+    assert record["endpoint"] and isinstance(record["route_request"], dict)
+
+    _forget_process_state()
+    with patch("run_agent.AIAgent", side_effect=model):
+        cont = json.loads(delegate_task(action="continue", subagent_id=sid, message="go on", background=True,
+                                        parent_agent=parent))
+        assert cont.get("status") == "dispatched", cont
+        _completion(cont["delegation_id"])
+    assert _db_rows(parent)[sid][0] == "completed"
+    assert model.builds[-1]["session_id"] == model.turns[0]["session_id"]  # its own conversation

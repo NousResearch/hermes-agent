@@ -224,6 +224,7 @@ def assemble_api_request(
             static_system_prefix=(
                 _static_system_prefix if isinstance(_static_system_prefix, str) else None
             ),
+            session_system_prompt=agent._cached_system_prompt,
             direct_native_tool_cache=agent._direct_native_anthropic_tool_cache_capability(),
             # LiteLLM-style envelope routes forward part-level markers into
             # tool_result.content[] → non-retryable 400.

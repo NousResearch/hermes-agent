@@ -685,7 +685,7 @@ PLATFORM_HINTS = {
     "desktop": (
         # Every claim verified against the shipping renderer (inline-preview-directive.tsx). Widget text is
         # recipe-first: HOW (an inline widget IS a ::preview'd HTML file) and WHY (the frame injects the theme
-        # prelude first; width adopts the first measured span). setup_mcp is taught by its own tool schema.
+        # prelude first; the frame spans the column up to its cap). setup_mcp is taught by its own tool schema.
         "You are chatting inside the Hermes desktop app, a graphical chat surface. Markdown renders with full GitHub "
         "flavor (tables, syntax-highlighted code, math via $...$, task lists, callouts). Deliver files by writing "
         "MEDIA:/absolute/path/to/file — any file type: images/audio/video render inline, everything else becomes a "
@@ -695,11 +695,12 @@ PLATFORM_HINTS = {
         "frame already themes it — the app's live theme arrives as var(--foreground), var(--muted-foreground), "
         "var(--accent), var(--border), var(--card), plus the app font, zero margins, and a transparent background, "
         "injected before your styles — so use those vars for color and don't set your own background, font, or margins "
-        "(only a standalone PAGE — mockup, poster, game — overrides them). The frame sizes itself to your content: "
-        "height live, width from the content's first measured span — lay content flush left with no centering wrappers "
-        "or it measures full-bleed. Widgets talk back: data-hermes-send=\"prompt\" on any clickable element (or "
-        "window.hermes.send(\"prompt\")) sends that prompt as a hidden user turn — answer it by updating the widget's "
-        "file, not with prose."
+        "(only a standalone PAGE — mockup, poster, game — overrides them). The frame spans the chat column up to 960px "
+        "and follows it on resize, and its height follows your content live up to 1200px: lay content out fluidly and "
+        "flush left, with no centering wrappers, and size charts from the frame's current width, redrawing on resize. "
+        "Widgets talk back: data-hermes-send=\"prompt\" on any clickable "
+        "element (or window.hermes.send(\"prompt\")) sends that prompt as a hidden user turn — answer it by updating "
+        "the widget's file, not with prose."
     ),
     "api_server": (
         "You're responding through an API server. The rendering layer is unknown — assume plain text. No markdown "

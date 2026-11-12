@@ -151,7 +151,8 @@ def _codex_browser_login(
     if callback.get("error"):
         detail = callback.get("error_description") or callback["error"]
         raise _codex_err(f"OpenAI authorization failed: {detail}", "codex_browser_auth_denied")
-    if not hmac.compare_digest(str(callback.get("state") or ""), state):
+    # Compare as bytes: compare_digest raises TypeError on non-ASCII str, and the state is redirect input.
+    if not hmac.compare_digest(str(callback.get("state") or "").encode(), state.encode()):
         raise _codex_err(
             "Authorization callback state mismatch — the redirect did not come from this login. Aborting.",
             "codex_browser_state_mismatch")

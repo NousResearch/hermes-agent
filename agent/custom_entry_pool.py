@@ -11,7 +11,11 @@ built-in provider itself still loads, and persists, the whole pool.
 
 from __future__ import annotations
 
+import logging
+import threading
 from typing import Any, Callable, Optional
+
+logger = logging.getLogger(__name__)
 
 _DECLARED_CREDENTIAL_KEYS = ("api_key", "key_env", "api_key_env", "key_cmd")
 # The ``_primary_runtime`` field holding the owning entry's provenance (``runtime_entry_owner``).
@@ -64,10 +68,39 @@ def entry_scoped_pool(pool: Any, pool_key: str, entry: Optional[dict[str, Any]],
     if len(kept) == len(rows):
         return pool
     if not kept:
+        _warn_withheld_builtin_key(pool_key, entry, rows, target)
         return None
     view = CredentialPool(pool.provider, kept)
     view._persisted_token_pairs = pool._persisted_token_pairs
     return view
+
+
+_WARNED_WITHHELD: set[tuple[str, str]] = set()
+_WARNED_LOCK = threading.Lock()
+
+
+def _warn_withheld_builtin_key(pool_key: str, entry: dict[str, Any], rows: list[Any], target: str) -> None:
+    """Log once per process per entry when a key-less entry on its own address goes keyless because
+    the same-named built-in's keys are bound to the built-in's own host: before #130410 the entry
+    sent them, so the change must not surface only as the endpoint's 401. Names the variables and
+    the remedy, never a secret."""
+    from utils import base_url_hostname
+    builtin = builtin_pool_address(pool_key)
+    if builtin is None or entry_declares_credential(entry) or not rows or not target:
+        return
+    name = str(entry.get("name") or pool_key)
+    with _WARNED_LOCK:
+        if (pool_key, name) in _WARNED_WITHHELD:
+            return
+        _WARNED_WITHHELD.add((pool_key, name))
+    env_vars = sorted({src[4:] for src in (str(getattr(r, "source", "") or "") for r in rows) if src.startswith("env:")})
+    remedy = (f"set `key_env: {env_vars[0]}` on providers.{name}" if env_vars else
+              f"add the endpoint's key with `hermes auth add {pool_key}` while providers.{name} is configured")
+    logger.warning(
+        "providers.%s points at %s, not the built-in %s provider's own host, and declares no key: the "
+        "built-in's credentials%s are only sent to its own host, so this endpoint gets no key. To send "
+        "one here, %s.", name, base_url_hostname(target) or target, pool_key,
+        f" ({', '.join(env_vars)})" if env_vars else "", remedy)
 
 
 def _own_seeded_sources(entry: dict[str, Any]) -> set[str]:
@@ -208,6 +241,12 @@ def _custom_identity(provider: Optional[str], requested_provider: Optional[str],
     name = next((v for v in identities if v.startswith(CUSTOM_POOL_PREFIX)), None) or next(
         (v for v in identities if _names_entry(v)), None)
     return bool(name) or "custom" in identities, name
+
+
+def is_custom_runtime(provider: Optional[str], requested_provider: Optional[str], base_url: Optional[str]) -> bool:
+    """Whether a runtime's identity is a custom entry's (see ``_custom_identity``): its pool must come
+    from ``load_runtime_pool``, never a raw ``load_pool`` of the slug a built-in may share."""
+    return _custom_identity(provider, requested_provider, base_url)[0]
 
 
 def runtime_entry_owner(provider: Optional[str], requested_provider: Optional[str], base_url: Optional[str]) -> Optional[dict[str, Any]]:

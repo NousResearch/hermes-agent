@@ -243,3 +243,37 @@ def test_resolving_a_same_named_entry_never_moves_the_builtin_pool_to_the_entry_
     _set(providers={})
     after = resolve_runtime_provider(requested="deepseek")
     assert (after["base_url"], after["api_key"]) == ("https://api.deepseek.com/v1", BUILTIN)
+
+
+@pytest.mark.parametrize("key_env", [None, "ENTRY_KEY_VAR"])
+def test_delegated_child_on_a_builtin_named_entry_leases_no_builtin_key(_isolate_hermes_home, monkeypatch, key_env):
+    """``delegation.provider: deepseek`` with a ``providers.deepseek`` proxy: the child keeps the bare
+    slug, whose pool is also the built-in's. Its startup lease must not bind the built-in's
+    dashboard row or env key to the proxy, nor replace the entry's own key_env credential."""
+    from types import SimpleNamespace
+
+    from hermes_constants import get_hermes_home
+    from tools.delegate_tool_child_run import _lease_child_credential
+    from tools.delegate_tool_config import _resolve_child_credential_pool, _resolve_delegation_credentials
+    proxy = "https://proxy.example/v1"
+    monkeypatch.setenv("DEEPSEEK_API_KEY", BUILTIN)
+    monkeypatch.setenv("ENTRY_KEY_VAR", "sk-entry-0123456789")
+    (get_hermes_home() / "auth.json").write_text(json.dumps({"version": 1, "providers": {}, "credential_pool": {
+        "deepseek": [{"id": "dash01", "label": "dash", "auth_type": "api_key", "priority": 0,
+                      "source": "manual", "access_token": POOLED}]}}), encoding="utf-8")
+    _entry("deepseek", base_url=proxy, **({"key_env": key_env} if key_env else {}))
+    _set(delegation={"provider": "deepseek", "model": "m"})
+    from hermes_cli.config import load_config
+    parent = SimpleNamespace(provider="openrouter", requested_provider="openrouter", base_url="", _credential_pool=None, model="m")
+
+    creds = _resolve_delegation_credentials(load_config()["delegation"], parent)
+    assert (creds["provider"], creds["base_url"]) == ("deepseek", proxy)
+    assert creds["api_key"] == ("sk-entry-0123456789" if key_env else "no-key-required")
+    pool = _resolve_child_credential_pool(creds["provider"], parent, creds["base_url"], creds.get("requested_provider"))
+    swapped = []
+    child = SimpleNamespace(_credential_pool=pool, base_url=proxy, _swap_credential=lambda e: swapped.append(e.access_token))
+    for _ in range(3):
+        leased_pool, lease_id = _lease_child_credential(child)
+        if leased_pool is not None and lease_id:
+            leased_pool.release_lease(lease_id)
+    assert not {POOLED, BUILTIN} & set(swapped)

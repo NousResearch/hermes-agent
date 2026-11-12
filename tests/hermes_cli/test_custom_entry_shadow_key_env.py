@@ -137,6 +137,34 @@ def test_entry_without_key_env_uses_builtin_rows_only_on_their_own_origin(tmp_pa
     assert rp.resolve_runtime_provider(requested="custom:deepseek")["api_key"] == BUILTIN_KEY
 
 
+def test_withheld_builtin_key_is_reported_once_with_the_remedy_never_the_key(tmp_path, monkeypatch, caplog):
+    """Before #130410 a key-less ``providers.deepseek`` entry on another host sent DEEPSEEK_API_KEY;
+    it now goes keyless, which must be visible in the log (once) with the opt-in, not only as a 401."""
+    import logging
+
+    from agent import custom_entry_pool
+    monkeypatch.setattr(custom_entry_pool, "_WARNED_WITHHELD", set())
+    _home(tmp_path, monkeypatch, "deepseek", "DEEPSEEK_API_KEY", entry_extra={})
+    from hermes_cli import runtime_provider as rp
+
+    with caplog.at_level(logging.WARNING):
+        for _ in range(2):
+            assert rp.resolve_runtime_provider(requested="custom:deepseek")["api_key"] == "no-key-required"
+    warnings = [r.getMessage() for r in caplog.records if "providers.deepseek" in r.getMessage()]
+    assert len(warnings) == 1
+    assert "key_env: DEEPSEEK_API_KEY" in warnings[0]
+    assert BUILTIN_KEY not in caplog.text
+
+    # The documented opt-in restores the key on the entry's own host, and says nothing more.
+    caplog.clear()
+    monkeypatch.setattr(custom_entry_pool, "_WARNED_WITHHELD", set())
+    _edit_config(tmp_path / ".hermes", entry={"key_env": "DEEPSEEK_API_KEY"})
+    with caplog.at_level(logging.WARNING):
+        resolved = rp.resolve_runtime_provider(requested="custom:deepseek")
+    assert (resolved["base_url"], resolved["api_key"]) == (ENDPOINT, BUILTIN_KEY)
+    assert "providers.deepseek" not in caplog.text
+
+
 def test_non_shadowing_entry_sends_its_key_env(tmp_path, monkeypatch):
     _home(tmp_path, monkeypatch, "mydeep", "DEEPSEEK_API_KEY")
     from hermes_cli import runtime_provider as rp

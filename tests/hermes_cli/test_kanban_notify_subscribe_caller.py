@@ -70,3 +70,12 @@ def test_another_chat_and_an_explicit_id_are_left_alone(kanban_home):
         other = kb.create_task(conn, title="explicit", assignee="worker")
     _subscribe(other, "--platform", "telegram", "--chat-id", GROUP, "--user-id", "222")
     assert _row(other)["user_id"] == "222"
+
+
+def test_an_explicit_alternate_id_is_not_paired_with_the_callers_primary(kanban_home, monkeypatch):
+    """``--user-id-alt`` alone names another recipient: the caller's primary id is not stamped
+    beside it, or the row would pair two different people."""
+    monkeypatch.setenv("HERMES_SESSION_USER_ID_ALT", "caller-alt")
+    _subscribe(kanban_home, "--platform", "telegram", "--chat-id", GROUP, "--user-id-alt", "other-alt")
+    row = _row(kanban_home)
+    assert (row["user_id"], row["user_id_alt"]) == (None, "other-alt")

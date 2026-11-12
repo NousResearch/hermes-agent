@@ -11,6 +11,7 @@ These tests cover the two review models that must coexist:
 
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 
@@ -68,6 +69,36 @@ def _claimed_review(
     )
     assert review is not None
     return task_id, review
+
+
+def test_terminal_failure_diagnostics_are_saved_on_the_event_and_run(conn):
+    """A worker handoff must remain diagnosable after its claim is released."""
+    task_id = kb.create_task(conn, title="Budget-bound task", assignee="builder")
+    assert kb.claim_task(conn, task_id, claimer="builder:1") is not None
+
+    assert not kbd._record_task_failure(
+        conn,
+        task_id,
+        "Iteration budget exhausted (90/90)",
+        outcome="timed_out",
+        release_claim=True,
+        end_run=True,
+        event_payload_extra={
+            "budget_used": 90,
+            "budget_max": 90,
+            "last_action": "tool completed: terminal (1.2s)",
+        },
+    )
+
+    event = _event(kb.list_events(conn, task_id), "timed_out")
+    run = _run(kb.list_runs(conn, task_id), "timed_out")
+    expected = {
+        "budget_used": 90,
+        "budget_max": 90,
+        "last_action": "tool completed: terminal (1.2s)",
+    }
+    assert {key: event.payload[key] for key in expected} == expected
+    assert {key: run.metadata[key] for key in expected} == expected
 
 
 def test_same_card_review_supports_changes_and_approval_without_block_loop(conn):

@@ -45,7 +45,8 @@ def _assistant_row_missing_visible_text(msg: dict) -> bool:
 
 
 def _record_kanban_budget_exhausted(
-    kanban_task: str, api_call_count: int, max_iterations: int, logger: logging.Logger
+    kanban_task: str, api_call_count: int, max_iterations: int, logger: logging.Logger,
+    last_action: str = "",
 ) -> None:
     """Record a terminal ``timed_out`` outcome for a kanban worker out of budget.
 
@@ -63,6 +64,9 @@ def _record_kanban_budget_exhausted(
         from hermes_cli import kanban_db_dispatch as _kbd
         _conn = _kbc.connect()
         try:
+            diagnostics = {"budget_used": api_call_count, "budget_max": max_iterations}
+            if last_action:
+                diagnostics["last_action"] = last_action
             _kbd._record_task_failure(
                 _conn,
                 kanban_task,
@@ -73,7 +77,7 @@ def _record_kanban_budget_exhausted(
                 outcome="timed_out",
                 release_claim=True,
                 end_run=True,
-                event_payload_extra={"budget_used": api_call_count, "budget_max": max_iterations},
+                event_payload_extra=diagnostics,
             )
         finally:
             with suppress(Exception):
@@ -191,7 +195,10 @@ def _resolve_budget_fallback(
     # closed via ``_record_task_failure`` (compare-and-swap receipt path) which is a no-op if another path
     # closed it — the CAS invariant in ``_end_run`` (``WHERE ended_at IS NULL``) guarantees idempotence.
     if _kanban_task:
-        _record_kanban_budget_exhausted(_kanban_task, api_call_count, agent.max_iterations, logger)
+        _record_kanban_budget_exhausted(
+            _kanban_task, api_call_count, agent.max_iterations, logger,
+            getattr(agent, "_last_activity_desc", ""),
+        )
     return final_response, _turn_exit_reason, preserved_verification_fallback, interrupted
 
 

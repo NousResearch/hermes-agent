@@ -427,12 +427,14 @@ def _direct_endpoint_credentials(v: dict, explicit_request_overrides) -> dict:
         _merge_request_overrides(request_overrides, explicit_request_overrides),
     )
 
-def _runtime_provider_credentials(v: dict, explicit_request_overrides) -> dict:
-    """``delegation.provider`` branch: full bundle via the runtime provider system."""
+def _runtime_provider_credentials(v: dict, explicit_request_overrides, explicit_base_url: Optional[str] = None) -> dict:
+    """``delegation.provider`` branch: full bundle via the runtime provider system. ``explicit_base_url`` is handed
+    to the resolver the way the main agent hands it ``model.base_url``: the provider keeps its own key on it."""
     configured_provider = v["provider"]
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
-        runtime = resolve_runtime_provider(requested=configured_provider, target_model=v["model"])
+        endpoint = {"explicit_base_url": explicit_base_url} if explicit_base_url else {}
+        runtime = resolve_runtime_provider(requested=configured_provider, target_model=v["model"], **endpoint)
     except Exception as exc:
         raise ValueError(
             f"Cannot resolve delegation provider '{configured_provider}': {exc}. "
@@ -476,7 +478,7 @@ def _runtime_provider_credentials(v: dict, explicit_request_overrides) -> dict:
 def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     """Child credential bundle from the ``delegation`` config section. Three branches: ``base_url`` set → direct
     endpoint (``api_key`` None means inherit the parent's key, so providers keyed outside OPENAI_API_KEY work; a
-    named provider instead keeps its own scoped key, and only on its own endpoint);
+    named provider instead resolves its own key with base_url as the explicit endpoint);
     ``provider`` set → full bundle via the runtime provider system (same path as CLI/gateway startup); neither →
     None values, child inherits everything. ``request_overrides`` is honored on every branch. Raises ValueError
     with a user-facing message."""
@@ -487,15 +489,15 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
 
     if values["base_url"] and not is_native_sdk_provider:
         if (values["provider"] or "").lower() not in ("", "custom", "auto") and not values["api_key"]:
-            # A named provider's key belongs to its own endpoint, not the parent's route.
-            named = _runtime_provider_credentials(values, explicit_request_overrides)
-            if _normalized_runtime_url(named["base_url"]).lower() != _normalized_runtime_url(values["base_url"]).lower():
+            # The parent's key belongs to the parent's provider: a named provider resolves its own key for this URL.
+            named = _runtime_provider_credentials(values, explicit_request_overrides, values["base_url"])
+            if base_url_hostname(named["base_url"]) != base_url_hostname(values["base_url"]):
+                # The resolver ignored the override (provider without a base_url knob): don't silently reroute.
                 raise ValueError(
-                    f"delegation.base_url ({values['base_url']}) differs from provider '{values['provider']}' "
-                    f"endpoint ({named['base_url']}); refusing to send that provider's key elsewhere. Remove "
-                    f"delegation.base_url, or set delegation.api_key for a separate endpoint."
+                    f"Delegation provider '{values['provider']}' does not accept delegation.base_url "
+                    f"({values['base_url']}); it resolved to {named['base_url']}. Remove delegation.base_url, "
+                    f"or set delegation.api_key for a direct endpoint."
                 )
-            named["base_url"] = values["base_url"]
             if values["api_mode"]:
                 named["api_mode"] = values["api_mode"]
             return named

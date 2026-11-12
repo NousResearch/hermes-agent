@@ -1,63 +1,58 @@
-"""Named delegation providers keep their scoped keys on matching endpoints (#150172)."""
+"""A named delegation provider keeps its own key on delegation.base_url, never the parent's (#150172)."""
 
 from types import SimpleNamespace
-from unittest.mock import patch
 
 import pytest
 
 from tools.delegate_tool_config import _resolve_delegation_credentials
 
 
-@patch("hermes_cli.runtime_provider.resolve_runtime_provider")
-def test_named_provider_base_url_uses_scoped_key(mock_resolve):
-    endpoint = "https://token-plan-sgp.xiaomimimo.com/v1"
-    mock_resolve.return_value = {
-        "provider": "custom",
-        "base_url": endpoint,
-        "api_key": "xiaomi-scoped-key",
-        "api_mode": "chat_completions",
-    }
-    parent = SimpleNamespace(api_key="minimax-parent-key")
-    config = {
-        "provider": "xiaomi",
-        "model": "mimo-v2.6-pro",
-        "base_url": endpoint,
-    }
-
-    resolved = _resolve_delegation_credentials(config, parent)
-    assert resolved["provider"] == "xiaomi"
-    assert resolved["base_url"] == endpoint
-    assert resolved["api_key"] == "xiaomi-scoped-key"
-    assert resolved["api_key"] != parent.api_key
-    mock_resolve.assert_called_once_with(
-        requested="xiaomi", target_model="mimo-v2.6-pro"
-    )
-
-    # A differently configured host must not receive the scoped provider key.
-    with pytest.raises(ValueError, match="differs from provider 'xiaomi'"):
-        _resolve_delegation_credentials(
-            {**config, "base_url": "https://other-provider.invalid/v1"}, parent
-        )
+def _parent(key="parent-provider-key"):
+    return SimpleNamespace(api_key=key, request_overrides=None)
 
 
-def test_registry_provider_with_its_own_base_url_resolves_its_key(monkeypatch):
-    """Real resolution: a registry provider's key_env is used on its endpoint, never the parent's key."""
+def test_reporter_config_uses_xiaomi_key_on_token_plan_url(monkeypatch):
+    """The issue's exact config: provider xiaomi + token-plan URL, XIAOMI_API_KEY set, no XIAOMI_BASE_URL."""
     monkeypatch.setenv("XIAOMI_API_KEY", "xiaomi-env-key")
-    monkeypatch.setenv("XIAOMI_BASE_URL", "https://token-plan-sgp.xiaomimimo.com/v1")
-    parent = SimpleNamespace(api_key="minimax-parent-key", request_overrides=None)
-    config = {"provider": "xiaomi", "model": "mimo-v2.6-pro", "api_mode": "chat_completions",
-              "base_url": "https://token-plan-sgp.xiaomimimo.com/v1/"}
+    monkeypatch.delenv("XIAOMI_BASE_URL", raising=False)
+    config = {"provider": "xiaomi", "model": "mimo-v2.6-pro",
+              "base_url": "https://token-plan-sgp.xiaomimimo.com/v1"}
 
-    resolved = _resolve_delegation_credentials(config, parent)
+    resolved = _resolve_delegation_credentials(config, _parent("minimax-parent-key"))
 
-    assert (resolved["provider"], resolved["api_key"]) == ("xiaomi", "xiaomi-env-key")
-    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["provider"] == "xiaomi"
+    assert resolved["base_url"] == "https://token-plan-sgp.xiaomimimo.com/v1"
+    assert resolved["api_key"] == "xiaomi-env-key"
 
 
-def test_registry_provider_without_a_key_refuses_instead_of_inheriting(monkeypatch):
-    monkeypatch.delenv("XIAOMI_API_KEY", raising=False)
-    parent = SimpleNamespace(api_key="minimax-parent-key", request_overrides=None)
+def test_same_provider_alternate_path_keeps_working(monkeypatch):
+    """MiniMax parent delegating to MiniMax's /v1 (not its /anthropic default) gets the MiniMax key there."""
+    monkeypatch.setenv("MINIMAX_API_KEY", "minimax-env-key")
+    config = {"provider": "minimax", "model": "MiniMax-M2", "base_url": "https://api.minimax.io/v1"}
+
+    resolved = _resolve_delegation_credentials(config, _parent("minimax-env-key"))
+
+    assert (resolved["provider"], resolved["base_url"], resolved["api_key"]) == (
+        "minimax", "https://api.minimax.io/v1", "minimax-env-key")
+
+
+def test_parent_key_never_reaches_another_providers_base_url(monkeypatch):
+    """Parent on provider A, child pinned to provider B with B's URL: B's key or a refusal, never A's key."""
+    monkeypatch.setenv("XIAOMI_API_KEY", "xiaomi-env-key")
     config = {"provider": "xiaomi", "model": "mimo-v2.6-pro", "base_url": "https://api.xiaomimimo.com/v1"}
+    assert _resolve_delegation_credentials(config, _parent("minimax-parent-key"))["api_key"] == "xiaomi-env-key"
 
-    with pytest.raises(ValueError, match="XIAOMI_API_KEY"):
-        _resolve_delegation_credentials(config, parent)
+    monkeypatch.delenv("XIAOMI_API_KEY", raising=False)
+    with pytest.raises(ValueError, match="XIAOMI_API_KEY|no API key"):
+        _resolve_delegation_credentials(config, _parent("minimax-parent-key"))
+
+
+@pytest.mark.parametrize("provider", ["", "custom"])
+def test_unnamed_endpoint_still_inherits_parent_key(provider):
+    """Bare / custom base_url keeps the documented direct-endpoint behaviour (parent key filled in later)."""
+    config = {"provider": provider, "model": "m", "base_url": "https://llm.internal.example/v1"}
+
+    resolved = _resolve_delegation_credentials(config, _parent())
+
+    assert (resolved["provider"], resolved["base_url"], resolved["api_key"]) == (
+        "custom", "https://llm.internal.example/v1", None)

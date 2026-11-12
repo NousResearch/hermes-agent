@@ -151,3 +151,29 @@ def test_a_bump_to_one_platform_fork_moves_that_fork(tmp_path):
     core = lock(tmp_path / "core.lock", [("numpy", "1.26.5", win), ("numpy", "2.1.0", other)])
 
     assert ws.core_lock_upgrades(core, seed) == ["numpy==1.26.5; (sys_platform == 'win32')"]
+
+
+def test_a_bump_to_one_python_fork_moves_it_on_a_host_narrowed_generation(update):
+    """The generation's forks carry the host restriction core's lock does not; the bump still moves."""
+    from pm.environments import runtime_facts_path, venv_python
+    from pm.lock import Facts
+
+    core, _home, plugin, enable, sync, ship = update
+    _fixtures._wheel(core.parent / "wheels", "pkgb", "2.0")
+    manifest = core / "pyproject.toml"
+    forked = json.dumps(["pkgb>=1.2,<2; python_version >= '3.14'", "pkgb>=2,<3; python_version < '3.14'"])
+    manifest.write_text(manifest.read_text(encoding="utf-8").replace('dependencies=["pkga==1.0"]', f"dependencies={forked}"),
+                        encoding="utf-8")
+    subprocess.run([shutil.which("uv"), "lock", "--offline"], cwd=core, check=True, capture_output=True, timeout=120)
+    plugin("unrelated", "pkgc>=1,<2")
+    enable("unrelated")
+    assert sorted(_versions(sync(), "pkgb")) == ["1.2", "2.0"]
+
+    ship("pkgb", "1.3")
+    second = sync()
+
+    assert sorted(_versions(second, "pkgb")) == ["1.3", "2.0"]
+    environment = Path(Facts(runtime_facts_path(core), strict=True).get("venv")["environment"])
+    installed = subprocess.run([str(venv_python(environment)), "-I", "-c", "import pkgb; print(pkgb.__version__)"],
+                               check=True, capture_output=True, text=True, timeout=60).stdout.strip()
+    assert installed == ("1.3" if sys.version_info >= (3, 14) else "2.0")

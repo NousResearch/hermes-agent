@@ -715,6 +715,42 @@ def install_node_sidecar(
     return None
 
 
+def _conjuncts(marker: str) -> frozenset[str]:
+    """Top-level ``and`` terms of a PEP 508 marker; a marker with a top-level ``or`` stays one term."""
+    terms, depth, quote, start = [], 0, "", 0
+    for index, char in enumerate(marker):
+        if quote:
+            quote = "" if char == quote else quote
+        elif char in "'\"":
+            quote = char
+        elif char in "()":
+            depth += 1 if char == "(" else -1
+        elif depth == 0 and marker.startswith(" or ", index):
+            return frozenset({marker.strip()})
+        elif depth == 0 and marker.startswith(" and ", index):
+            terms.append(marker[start:index])
+            start = index + len(" and ")
+    terms.append(marker[start:])
+    return frozenset(term.strip() for term in terms)
+
+
+def _seed_fork_pins(forks: Mapping[tuple[str, tuple[str, ...]], list], name: str, markers: Sequence[str]) -> list:
+    """The seed's pins for the fork core's *markers* name, or ``[]`` when no seed fork matches.
+
+    A generation solves only its host (``_solve_only_for``), so each seed fork is core's fork
+    with the host terms ANDed on: a seed fork matches when it holds every term of a core marker.
+    """
+    if not markers:
+        return []
+    exact = forks.get((name, tuple(markers)))
+    if exact is not None:
+        return exact
+    wanted = [_conjuncts(marker) for marker in markers]
+    return [pin for (seed_name, seed_markers), pins in forks.items() if seed_name == name
+            and any(core <= _conjuncts(seed) for core in wanted for seed in seed_markers)
+            for pin in pins]
+
+
 def core_lock_upgrades(core_lock: Path, seed_lock: Path) -> list[str]:
     """``uv lock -P`` requirements moving a seeded generation onto core's newer pins.
 
@@ -753,7 +789,7 @@ def core_lock_upgrades(core_lock: Path, seed_lock: Path) -> list[str]:
         except (KeyError, InvalidVersion):
             continue
         # A platform fork compares against the seed's same fork, so a bump to one fork still moves.
-        prior = forks.get((name, tuple(package.get("resolution-markers", []))), seeded[name])
+        prior = _seed_fork_pins(forks, name, package.get("resolution-markers", [])) or seeded[name]
         if all(version > pinned for pinned in prior):
             # A name core forks by platform carries each fork's markers, or the exact pins clash.
             markers = " or ".join(f"({marker})" for marker in package.get("resolution-markers", []))

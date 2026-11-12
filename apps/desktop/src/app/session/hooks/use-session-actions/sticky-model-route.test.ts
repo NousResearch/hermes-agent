@@ -130,6 +130,7 @@ describe('a pick queued for the next turn', () => {
     { when: 'is refused after switching chats', then: () => refuse('busy', 'elsewhere'), launches: undefined },
     { when: 'is overtaken by a newer pick', then: () => (setCurrentModel('newer'), refuse()), launches: 'newer' },
     { when: 'is overtaken by its model on another provider', then: () => (setCurrentProvider('other'), refuse()), launches: 'queued' },
+    { when: "is replaced by another client's pick that is refused", then: () => verdict({ status: 'refused', target_model: 'other' }), launches: 'queued' },
     { when: 'has a same-model tile pick refused', then: async () => (await pick({ deferred: true }, 'queued', 'tile'), refuse('tile')), launches: 'queued' },
     {
       when: 'is followed by a tile pick on its session that is refused',
@@ -143,17 +144,23 @@ describe('a pick queued for the next turn', () => {
   })
 
   it.each([
-    { reloaded: false, switched: false, session: 'busy', launches: undefined },
-    { reloaded: true, switched: false, session: 'busy', launches: undefined },
-    { reloaded: true, switched: false, session: 'tile', launches: 'queued' },
-    { reloaded: false, switched: true, session: 'busy', launches: 'queued' }
-  ])('with its cost prompt declined (reloaded: $reloaded, owner switched: $switched, $session)', async ({ reloaded, switched, session, launches }) => {
+    { by: 'its chat', switched: false, launches: undefined },
+    { by: 'its chat', switched: true, launches: 'queued' },
+    // The same route queued from a tile whose chat is then opened in the main pane: the tile never saved it.
+    { by: 'a tile', switched: false, launches: 'queued' }
+  ])('queued by $by, with its cost prompt declined (owner switched: $switched)', async ({ by, switched, launches }) => {
     const answer = deferred<boolean>()
     confirm.mockReturnValueOnce(answer.promise)
-    // After a reload the gateway asks again for a pick this run never queued.
-    await (reloaded ? (setCurrentModel('queued'), setCurrentProvider('p')) : pick({ deferred: true }))
+    const session = by === 'a tile' ? 'tile' : 'busy'
+
+    if (by === 'a tile') {
+      setCurrentModel('queued')
+      setCurrentProvider('p')
+    }
+
+    await pick({ deferred: true }, 'queued', session)
     verdict({ committed_model: picked.model, confirm: 'token', payload: { model: 'queued', provider: 'p' },
-      status: 'confirmation_required' }, session)
+      status: 'confirmation_required' }, session, session)
 
     if (switched) {
       setComposerSelectionOwner('other-backend', 'other')

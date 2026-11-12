@@ -13,6 +13,7 @@ import {
   modelOptionsQueryKey,
   requestModelOptions
 } from '@/lib/model-options'
+import { noteQueuedLaunchPick } from '@/store/composer-queued-pick'
 import { notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile } from '@/store/profile'
 import {
@@ -35,13 +36,7 @@ import {
 } from '@/store/session'
 import { $sessionStates, sessionTileDelegate } from '@/store/session-states'
 
-import {
-  beginModelPick,
-  isPickSuperseded,
-  type ModelPickSnapshot,
-  noteQueuedLaunchPick,
-  settleModelPick
-} from './model-pick-ledger'
+import { beginModelPick, isPickSuperseded, type ModelPickSnapshot, settleModelPick } from './model-pick-ledger'
 
 interface ModelControlsOptions {
   cacheOwnerConnectionId?: string

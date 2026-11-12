@@ -40,8 +40,12 @@ def member_files(plugin_dir: Path) -> list[str]:
         path = plugin_dir / relative
         if relative and (path.is_symlink() or path.is_file()):
             files.add(Path(relative).as_posix())
-        elif path.is_dir():  # the walk, or a submodule or nested repository git lists as one entry
-            files.update(_walked(plugin_dir, path))
+        elif path.is_dir():  # git lists submodules as one directory entry
+            if relative and (path / ".git").exists():
+                # Honor the nested checkout's own ignores rather than copying its runtime data.
+                files.update((Path(relative) / child).as_posix() for child in member_files(path))
+            else:
+                files.update(_walked(plugin_dir, path))
     return sorted(files)
 
 

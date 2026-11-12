@@ -127,3 +127,36 @@ def test_member_snapshot_shares_its_blocks_on_apfs(tmp_path):
     member = ws._workspace_member(plugin, tmp_path / "generation", identity=plugin)
     assert (member / "model.bin").read_bytes() == (plugin / "model.bin").read_bytes()
     assert _device_offset(member / "model.bin") == _device_offset(plugin / "model.bin")
+
+
+def test_nested_git_submodule_does_not_copy_ignored_data(tmp_path):
+    """A tracked submodule must use its own ignore rules, not an unfiltered directory walk."""
+    env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+
+    def git(cwd, *args):
+        subprocess.run(["git", *args], cwd=cwd, env=env, check=True,
+                       capture_output=True, timeout=60)
+
+    source = tmp_path / "nested-source"
+    source.mkdir()
+    (source / ".gitignore").write_text("media/\n", encoding="utf-8")
+    (source / "module.py").write_text("VALUE = 1\n", encoding="utf-8")
+    git(source, "init", "-q")
+    git(source, "add", ".gitignore", "module.py")
+    git(source, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+        "commit", "-qm", "initial")
+
+    plugin = _plugin(tmp_path / "plugin")
+    git(plugin, "init", "-q")
+    git(plugin, "-c", "protocol.file.allow=always", "submodule", "add", "-q",
+        str(source), "vendor/nested")
+    ignored = plugin / "vendor" / "nested" / "media"
+    ignored.mkdir()
+    (ignored / "render.bin").write_bytes(b"before")
+    stamp = ws.members_stamp([plugin])
+    (ignored / "render.bin").write_bytes(b"after")
+    assert ws.members_stamp([plugin]) == stamp
+
+    member = ws._workspace_member(plugin, tmp_path / "generation", identity=plugin)
+    assert (member / "vendor" / "nested" / "module.py").read_text() == "VALUE = 1\n"
+    assert not (member / "vendor" / "nested" / "media").exists()

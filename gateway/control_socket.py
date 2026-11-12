@@ -1,8 +1,8 @@
 """Gateway control socket — the gateway-owned local coordination surface: a local-only socket answering
-versioned JSON verbs (``identify``, ``status``). A connectable socket with a well-formed ``identify``
+versioned JSON verbs (``identify``, ``status``, ``resolve-profile``, ``session-ticket``, ...). A connectable socket with a well-formed ``identify``
 answer IS liveness — no PID-reuse heuristics. Never a TCP port: filesystem/pipe ACLs are the auth
 boundary. POSIX: ``$HERMES_HOME/gateway.sock`` (or a temp-dir socket + ``gateway.sock.path`` pointer
-file when the home path exceeds ``sun_path``); Windows: named pipe ``\\\\.\\pipe\\hermes-gateway-<hash>``.
+file when the home path exceeds ``sun_path`` or its filesystem refuses sockets); Windows: named pipe ``\\\\.\\pipe\\hermes-gateway-<hash>``.
 Wire contract: ONE request per connection — one JSON line in, one out, then the server closes.
 Consumers PREFER the socket and fall back to the state-file/scan layer when it doesn't answer.
 """
@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import errno
 import hashlib
 import inspect
 import json
@@ -24,6 +25,8 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from gateway.control_dispatch import ControlRequestDispatcher
+
 logger = logging.getLogger(__name__)
 
 CONTROL_PROTOCOL_VERSION = 1
@@ -35,6 +38,10 @@ _MAX_UNIX_PATH = 100  # sun_path limit is 104 on macOS/BSD, 108 on Linux; margin
 _MAX_REQUEST_BYTES = 64 * 1024
 _MAX_RESPONSE_BYTES = 512 * 1024
 _DEFAULT_CLIENT_TIMEOUT = 2.0
+# What a filesystem that cannot host an AF_UNIX node answers: a Docker Desktop (virtiofs) bind mount
+# refuses the socket, and an inode a previous container left there can be neither stat'ed nor
+# removed from inside (#123761). Not EADDRINUSE: a live sibling must keep failing loudly.
+_SOCKET_UNSUPPORTED_ERRNOS = frozenset({errno.EOPNOTSUPP, errno.ENOTSUP})
 
 
 def _home_hash(home: Path) -> str:
@@ -91,6 +98,23 @@ def _squat_proof_fallback(bind_path: Path) -> Path:
     return path
 
 
+def _publish_pointer(pointer_file: Path, bind_path: Path) -> None:
+    """Replace ``pointer_file`` with one naming ``bind_path``, atomically: the listener is already
+    accepting, so a client polling for it may read the pointer at any instant, and an empty or
+    partial pointer is ``invalid_control_pointer`` to it, a refusal rather than "still starting".
+    The fresh mkstemp inode is 0600 and the rename replaces a symlink rather than following it,
+    which also heals an older gateway's leftover 0644 pointer."""
+    fd, tmp = tempfile.mkstemp(prefix=f".{pointer_file.name}.", dir=pointer_file.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as pointer:
+            pointer.write(str(bind_path))
+        os.replace(tmp, pointer_file)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+
+
 def resolve_server_socket_path(home: Path) -> tuple[Path, Optional[Path]]:
     """Return ``(bind_path, pointer_file)``; pointer_file is set only for the temp-dir fallback."""
     direct = Path(home) / _SOCKET_FILENAME
@@ -100,8 +124,9 @@ def resolve_server_socket_path(home: Path) -> tuple[Path, Optional[Path]]:
 def resolve_client_socket_path(home: Path) -> Optional[Path]:
     """Where a client should connect for ``home``, or None when nothing exists."""
     direct = Path(home) / _SOCKET_FILENAME
-    if direct.exists():
-        return direct
+    with contextlib.suppress(OSError):  # an un-stat-able stale inode (#123761) is absent, not an error
+        if direct.exists():
+            return direct
     with contextlib.suppress(OSError):
         pointer = Path(home) / _POINTER_FILENAME
         target = pointer.read_text(encoding="utf-8-sig").strip() if pointer.is_file() else ""
@@ -126,6 +151,15 @@ def _detect_supervisor() -> str:
     if env.get("HERMES_DESKTOP_MANAGED"):
         return "desktop"
     return "external" if "--external-supervisor" in sys.argv else "manual"
+
+
+def _structured_login_subject(value: str) -> bool:
+    """Whether ``value`` is ``authenticated_subject``'s namespaced login form
+    ``auth:v1:[provider, issuer, user]`` (gateway.session_identity) — the only identity
+    a same-user peer may forward a ticket for. Bare labels (``admin``, ``uid:501``) fail:
+    they can collide with another stored owner representation."""
+    from gateway.session_identity import parse_authenticated_subject
+    return parse_authenticated_subject(value) is not None
 
 
 def launch_supervisor(identity: dict[str, Any]) -> Optional[str]:
@@ -169,8 +203,8 @@ def build_status_payload() -> dict[str, Any]:
 
 class GatewayControlServer:
     """Gateway-owned control socket server (identify/status, v1): ``start()`` after the PID-file claim,
-    ``stop()`` on shutdown. All failures are non-fatal — the gateway never refuses to serve messaging
-    because its control socket couldn't bind; consumers fall back to the scan layer."""
+    ``stop()`` on shutdown. ``start()`` reports a bind failure as False and the gateway bootstrap
+    treats that as fatal: local clients attach only with tickets minted on this listener."""
 
     def __init__(self, home: Optional[Path] = None, *,
                  verb_handlers: Optional[dict[str, Callable[..., dict[str, Any]]]] = None) -> None:
@@ -181,9 +215,12 @@ class GatewayControlServer:
         # symlinked component, so an unresolved symlinked ~/.hermes would never mint tickets.
         self._home = Path(home).resolve()
         self.ticket_store = None
+        # ``resolve-profile`` (gateway.control_resolve); None keeps the unknown-verb answer.
+        self.resolve_handler: Optional[Callable[[dict, Path], dict[str, Any]]] = None
         self.private_handlers = {}
         self._server: Optional[asyncio.AbstractServer] = None
         self._pipe_server: Any = None  # Windows proactor pipe server
+        self._request_dispatch: ControlRequestDispatcher | None = None
         self._bind_path: Optional[Path] = None
         self._pointer_file: Optional[Path] = None
         self._fallback_root: Optional[Path] = None  # mkdtemp root created for a squatted fallback
@@ -197,11 +234,39 @@ class GatewayControlServer:
             return await (self._start_windows() if _IS_WINDOWS else self._start_posix())
         except Exception as exc:
             await self.stop()
-            logger.warning("Gateway control socket failed to start (non-fatal): %s", exc)
+            logger.warning("Gateway control socket failed to start: %s", exc)
             return False
 
     async def _start_posix(self) -> bool:
+        if self._request_dispatch is None:
+            self._request_dispatch = ControlRequestDispatcher()
         bind_path, pointer_file = resolve_server_socket_path(self._home)
+        try:
+            bind_path = await self._bind_posix(bind_path, pointer_file)
+        except OSError as exc:
+            # A home that fits sun_path can still refuse the socket (Docker Desktop bind mounts,
+            # #123761): listen on the same private temp-dir socket + pointer an over-long home uses.
+            if pointer_file is not None or exc.errno not in _SOCKET_UNSUPPORTED_ERRNOS:
+                raise
+            logger.warning("Control socket cannot be created in %s (%s); listening in a private temp directory",
+                           self._home, exc.strerror or exc)
+            pointer_file = Path(self._home) / _POINTER_FILENAME
+            bind_path = await self._bind_posix(_fallback_socket_path(self._home), pointer_file)
+        self._bind_path = bind_path
+        info = bind_path.lstat()
+        self._file_identities[bind_path] = (info.st_dev, info.st_ino)
+        if pointer_file is not None:
+            _publish_pointer(pointer_file, bind_path)
+            self._pointer_file = pointer_file
+        for path in filter(None, (self._bind_path, self._pointer_file)):
+            info = path.lstat()
+            self._file_identities[path] = (info.st_dev, info.st_ino)
+        logger.info("Gateway control socket listening at %s", bind_path)
+        return True
+
+    async def _bind_posix(self, bind_path: Path, pointer_file: Optional[Path]) -> Path:
+        """Bind the listener at ``bind_path`` (moved to a squat-proof root when its shared-temp
+        directory is not private) and return where it actually listens."""
         if pointer_file is not None:
             with contextlib.suppress(FileExistsError):
                 bind_path.parent.mkdir(mode=0o700)
@@ -227,22 +292,7 @@ class GatewayControlServer:
             os.umask(old_umask)
         with contextlib.suppress(OSError):
             os.chmod(bind_path, 0o600)
-        self._bind_path = bind_path
-        info = bind_path.lstat()
-        self._file_identities[bind_path] = (info.st_dev, info.st_ino)
-        if pointer_file is not None:
-            fd = os.open(pointer_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-            # O_CREAT's mode only applies to a NEW file; an older gateway's leftover pointer is 0644
-            # and clients refuse it, so restarting must heal the mode.
-            os.fchmod(fd, 0o600)
-            with os.fdopen(fd, "w", encoding="utf-8") as pointer:
-                pointer.write(str(bind_path))
-            self._pointer_file = pointer_file
-        for path in filter(None, (self._bind_path, self._pointer_file)):
-            info = path.lstat()
-            self._file_identities[path] = (info.st_dev, info.st_ino)
-        logger.info("Gateway control socket listening at %s", bind_path)
-        return True
+        return bind_path
 
     async def _start_windows(self) -> bool:
         from gateway.runtime_bootstrap_windows import NativeControlServer
@@ -261,6 +311,9 @@ class GatewayControlServer:
             with contextlib.suppress(Exception):
                 await asyncio.to_thread(self._pipe_server.close)
         self._server = self._pipe_server = None
+        if self._request_dispatch is not None:
+            self._request_dispatch.close()
+            self._request_dispatch = None
         self.cleanup_files()
 
     def cleanup_files(self) -> None:
@@ -293,6 +346,8 @@ class GatewayControlServer:
                     raise PermissionError("authenticated private request required")
                 response = {"ok": True, "protocol": CONTROL_PROTOCOL_VERSION,
                             "result": self.private_handlers[verb](request["params"], peer_subject)}
+            elif verb == "resolve-profile" and self.resolve_handler is not None:
+                response = {"ok": True, "protocol": CONTROL_PROTOCOL_VERSION, "result": self.resolve_handler(request, self._home)}
             elif verb == "session-ticket":
                 response = {"ok": True, "protocol": CONTROL_PROTOCOL_VERSION,
                             "result": self._session_ticket(request, peer_subject)}
@@ -330,12 +385,25 @@ class GatewayControlServer:
             raise PermissionError("invalid bootstrap envelope")
         params = request.get("params")
         if (not isinstance(params, dict) or not {"profile_id", "instance_id", "purpose"} <= set(params)
-                or set(params) - {"profile_id", "instance_id", "purpose", "scope"}):
+                or set(params) - {"profile_id", "instance_id", "purpose", "scope", "subject", "restart_wait"}
+                or params.get("restart_wait", "refuse") != "refuse"):
             raise PermissionError("invalid bootstrap parameters")
         if params["instance_id"] != self.ticket_store.instance_id:
             raise PermissionError("stale runtime instance")
-        ticket = self.ticket_store.mint(profile_id=params["profile_id"], subject=peer_subject,
-                                       purpose=params["purpose"], scope=params.get("scope", "profile"))
+        # A verified same-user peer may name the principal it acts for (a standalone dashboard
+        # forwarding a mutation for its authenticated user, #138915): the socket's peer gate
+        # stays the trust boundary — the forwarded subject only relabels who that same peer is,
+        # it never admits a less-verified caller. Only a structured login subject is nameable
+        # (``authenticated_subject``'s ``auth:v1:[provider, issuer, user]`` form); a bare label
+        # like ``admin`` could collide with another stored owner representation, so it fails closed.
+        subject = params.get("subject", peer_subject)
+        if not isinstance(subject, str) or not subject or len(subject) > 256:
+            raise PermissionError("invalid bootstrap subject")
+        if subject is not peer_subject and not _structured_login_subject(subject):
+            raise PermissionError("invalid bootstrap subject")
+        ticket = self.ticket_store.mint(profile_id=params["profile_id"], subject=subject,
+                                       purpose=params["purpose"], scope=params.get("scope", "profile"),
+                                       refuse_restart_wait="restart_wait" in params)
         return {"ticket": ticket, "expires_in_seconds": 30,
                 "instance_id": self.ticket_store.instance_id,
                 "profile_id": params["profile_id"], "runtime_protocol": 1}
@@ -361,10 +429,11 @@ class GatewayControlServer:
             raw = await asyncio.wait_for(reader.readline(), timeout=_DEFAULT_CLIENT_TIMEOUT)
             if not raw or len(raw) > _MAX_REQUEST_BYTES:
                 return
-            # Handlers read disk; keep that off the loop that drives every platform
-            # adapter so a fast-polling consumer can't stall heartbeats.
-            response = await asyncio.get_running_loop().run_in_executor(
-                None, self.handle_request_line, raw.rstrip(b"\n"), self._posix_peer_subject(writer))
+            dispatcher = self._request_dispatch
+            if dispatcher is None:
+                return  # listener shutdown won the race with this connection's read
+            response = await dispatcher.dispatch(
+                self.handle_request_line, raw.rstrip(b"\n"), self._posix_peer_subject(writer))
             writer.write(response)
             await asyncio.wait_for(writer.drain(), timeout=_DEFAULT_CLIENT_TIMEOUT)
         except (TimeoutError, ConnectionError, OSError):

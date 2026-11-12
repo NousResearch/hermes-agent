@@ -25,7 +25,7 @@ from agent.credential_pool import (  # custom_provider_pool_key_candidates is re
 from agent.secret_scope import get_secret_str
 from hermes_cli.auth import (  # resolve_external_process_provider_credentials is read via origin by runtime_provider_backends
     ACTUAL_LOCAL_NOAUTH_PLACEHOLDER, AuthError, DEFAULT_CODEX_BASE_URL, DEFAULT_QWEN_BASE_URL, DEFAULT_XAI_OAUTH_BASE_URL,
-    PROVIDER_REGISTRY, _agent_key_is_usable, _nous_inference_env_override, format_auth_error, resolve_provider,
+    PROVIDER_REGISTRY, _agent_key_is_usable, _nous_inference_env_override, _qwen_base_url, format_auth_error, resolve_provider,
     resolve_nous_runtime_credentials, resolve_codex_runtime_credentials, resolve_xai_oauth_runtime_credentials,
     resolve_qwen_runtime_credentials, resolve_api_key_provider_credentials,
     resolve_external_process_provider_credentials,
@@ -260,29 +260,39 @@ def _effective_model(model_cfg: dict[str, Any], target_model: Optional[str]) -> 
     return target_model or model_cfg.get("default") or ""
 
 
-def _copilot_runtime_api_mode(model_cfg: dict[str, Any], api_key: str, *, target_model: Optional[str] = None) -> str:
-    configured_mode = _configured_api_mode("copilot", model_cfg)
-    if configured_mode:
-        # A stale/incompatible explicit ``codex_responses`` must not override Copilot's hard
-        # per-model requirement. Copilot serves ``gpt-5-mini`` on chat completions only; a
-        # Responses-API request there silently succeeds but returns no reasoning/thinking
-        # content (#46527). The stale value commonly survives an ordinary flow: the Copilot
-        # OAuth setup writes ``api_mode: codex_responses`` (correct for the gpt-5.4-mini it
-        # initially selects), then the user switches to gpt-5-mini without the mode being
-        # recomputed. The check is the pure-regex Copilot exception — no network call; a
-        # legitimate ``codex_responses`` for GPT-5 variants like gpt-5.4-mini is still honored.
-        model_name = str(_effective_model(model_cfg, target_model)).strip()
-        if (configured_mode == "codex_responses" and model_name
-                and not _models._should_use_copilot_responses_api(model_name)):
-            return "chat_completions"
-        return configured_mode
+def _per_model_profile(provider: str) -> Any:
+    """The provider's profile when it routes ``api_mode`` per model (``ProviderProfile.api_mode_for_model``)."""
+    from providers import get_provider_profile
+    from providers.base import ProviderProfile
+
+    profile = get_provider_profile(provider) if provider else None
+    if profile is None or type(profile).api_mode_for_model is ProviderProfile.api_mode_for_model:
+        return None
+    return profile
+
+
+def _profile_runtime_api_mode(provider: str, model_cfg: dict[str, Any], api_key: str, *,
+                              target_model: Optional[str] = None) -> str:
+    """api_mode for a provider that routes per model: its hard per-model wire wins over a stale persisted
+    ``codex_responses`` (pure check, no network); otherwise the profile decides with the live key."""
+    from agent.provider_route_hooks import model_api_mode
+    profile = _per_model_profile(provider)
+    configured_mode = _configured_api_mode(provider, model_cfg)
     # Use the model being resolved, not the persisted default: a Claude MoA slot inheriting
     # codex_responses from a GPT-5 default fails with "model ... does not support Responses API".
     model_name = str(_effective_model(model_cfg, target_model)).strip()
-    try:
-        return _models.copilot_model_api_mode(model_name, api_key=api_key) if model_name else "chat_completions"
-    except Exception:
+    if configured_mode:
+        # A stale explicit ``codex_responses`` (written by setup for the model first picked, kept after a
+        # switch to a chat-only model) must not override the provider's per-model requirement: the
+        # Responses request silently succeeds but returns no reasoning content (#46527).
+        if (configured_mode == "codex_responses" and model_name and profile is not None
+                and model_api_mode(profile, model_name) == "chat_completions"):
+            return "chat_completions"
+        return configured_mode
+    if profile is None:
         return "chat_completions"
+    declared = profile.api_mode or "chat_completions"  # the hook's None means "keep the static api_mode"
+    return (model_api_mode(profile, model_name, api_key=api_key) or declared) if model_name else declared
 
 
 def _azure_inferred_api_mode(effective_model: str, api_mode: str) -> str:
@@ -314,8 +324,8 @@ def _configured_or_fallback_api_mode(provider: str, model_cfg: dict[str, Any], b
 def _api_key_provider_api_mode(provider: str, model_cfg: dict[str, Any], api_key: str, base_url: str, effective_model: Any, *,
                                opencode_by_model: bool) -> str:
     """api_mode for a registry ``api_key`` provider (explicit and env/config paths)."""
-    if provider == "copilot":
-        return _copilot_runtime_api_mode(model_cfg, api_key, target_model=effective_model)
+    if _per_model_profile(provider) is not None:
+        return _profile_runtime_api_mode(provider, model_cfg, api_key, target_model=effective_model)
     if provider == "xai":
         # Ramp Router: Responses-native host — /v1/chat/completions is only a minimal compatibility shim,
         # while reasoning and caching support live on /v1/responses (docs.router.com/api/endpoint). Mirrors
@@ -535,7 +545,10 @@ def resolve_requested_provider(requested: Optional[str] = None) -> str:
     cfg_provider = _get_model_config().get("provider")
     if isinstance(cfg_provider, str) and cfg_provider.strip():
         return cfg_provider.strip().lower()
-    return get_secret_str("HERMES_INFERENCE_PROVIDER", "").strip().lower() or "auto"
+    from agent.session_client_env import bound_client_env
+    client = bound_client_env()  # a local session's turn: its client's export, never the daemon's
+    requested = client.get("HERMES_INFERENCE_PROVIDER", "") if client is not None else get_secret_str("HERMES_INFERENCE_PROVIDER", "")
+    return requested.strip().lower() or "auto"
 
 
 # ── extracted collaborators (re-exported; see module docstring) ────────────────────────────
@@ -597,9 +610,10 @@ def _pool_entry_mode_and_url(provider, entry, model_cfg, effective_model, base_u
         return "anthropic_messages", _anthropic_cfg_base_url(model_cfg) or base_url or _ANTHROPIC_DEFAULT_BASE_URL
     if provider == "nous":
         return nous_api_mode(effective_model), (_nous_inference_env_override() or "") or base_url
-    if provider == "copilot":
-        api_mode = _copilot_runtime_api_mode(model_cfg, getattr(entry, "runtime_api_key", ""), target_model=effective_model)
-        return api_mode, base_url or PROVIDER_REGISTRY["copilot"].inference_base_url
+    if _per_model_profile(provider) is not None:
+        api_mode = _profile_runtime_api_mode(provider, model_cfg, getattr(entry, "runtime_api_key", ""),
+                                             target_model=effective_model)
+        return api_mode, base_url or PROVIDER_REGISTRY[provider].inference_base_url
     if provider == "azure-foundry":
         api_mode = "chat_completions"
         if _cfg_provider(model_cfg) == "azure-foundry":
@@ -621,9 +635,19 @@ def _resolve_runtime_from_pool_entry(*, provider: str, entry: PooledCredential, 
     model_cfg = model_cfg or _get_model_config()
     api_mode, base_url = _pool_entry_mode_and_url(provider, entry, model_cfg, _effective_model(model_cfg, target_model),
                                                   _pool_entry_base_url(entry).rstrip("/"))
+    declared, entry_key = _owned_url_credential(base_url, model_cfg, provider)
     base_url = _finalize_base_url(provider, api_mode, base_url)
+    if declared:  # the URL's owner supplies the key; the built-in's pool rows are another account's
+        return _runtime(provider, api_mode, base_url, entry_key, source="config:providers", requested_provider=requested_provider)
     return _runtime(provider, api_mode, base_url, _pool_entry_api_key(entry), source=getattr(entry, "source", "pool"),
                     credential_pool=pool, requested_provider=requested_provider)
+
+
+def _owned_url_credential(base_url: str, model_cfg: dict[str, Any], provider: str) -> tuple[bool, Any]:
+    """``(declared, key)`` when ``base_url`` came from ``model.base_url`` and a ``providers:`` entry
+    that owns it declares its own credential: a built-in env or pool key never goes to that URL."""
+    from hermes_cli.runtime_provider_custom import owned_config_url_credential
+    return owned_config_url_credential(base_url, model_cfg, provider)
 
 
 def _openrouter_should_use_pool(requested_provider, model_cfg, explicit_api_key, explicit_base_url) -> bool:
@@ -662,27 +686,6 @@ def _refresh_nous_pool_entry(pool: CredentialPool, entry: Any, pool_api_key: str
     return entry, pool_api_key
 
 
-def _exchange_copilot_pool_entry(entry: Any, pool_api_key: str) -> str:
-    """Exchange a copilot pool entry that still carries the RAW GitHub token.
-
-    The seeder skips the exchange while copilot is merely discovered (ambient gh login, not in
-    config); here copilot IS the runtime target (`/model copilot/… --session`, `--provider copilot`,
-    delegation/cron overrides), and a raw token routes to the language-server integrator whose
-    allowlist omits enterprise-only models (400 model_not_available_for_integrator)."""
-    from hermes_cli.copilot_auth import get_copilot_api_token, validate_copilot_token
-    if not pool_api_key or not validate_copilot_token(pool_api_key)[0]:
-        return pool_api_key  # already an exchanged API token
-    api_token, enterprise_base_url = get_copilot_api_token(pool_api_key)
-    if api_token == pool_api_key and not enterprise_base_url:
-        from agent.credential_pool import _warn_copilot_raw_degradation_once
-        _warn_copilot_raw_degradation_once(pool_api_key)
-        return pool_api_key
-    entry.access_token = api_token
-    if enterprise_base_url:
-        entry.base_url = enterprise_base_url
-    return api_token
-
-
 def _resolve_from_pool(provider: str, requested_provider: str, model_cfg: dict[str, Any], explicit_api_key, explicit_base_url,
                        target_model) -> Optional[dict[str, Any]]:
     """Runtime from the provider's credential pool, or None to continue down the ladder."""
@@ -700,8 +703,10 @@ def _resolve_from_pool(provider: str, requested_provider: str, model_cfg: dict[s
     pool_api_key = _pool_entry_api_key(entry)
     if provider == "nous":
         entry, pool_api_key = _refresh_nous_pool_entry(pool, entry, pool_api_key)
-    elif provider == "copilot":
-        pool_api_key = _exchange_copilot_pool_entry(entry, pool_api_key)
+    else:
+        from providers import get_provider_profile
+        if (profile := get_provider_profile(provider)) is not None:
+            pool_api_key = profile.prepare_pool_entry(entry, pool_api_key)
     if not has_usable_secret(pool_api_key):
         return None
     if pool_api_key and credential_pool_matches_provider(pool, provider, base_url=_pool_entry_base_url(entry)):
@@ -732,6 +737,14 @@ def _explicit_codex(requested_provider, model_cfg, api_key, explicit_base_url, t
     api_key, base_url, last_refresh = _creds_fallback(api_key, explicit_base_url, explicit_base_url or DEFAULT_CODEX_BASE_URL,
                                                       None, "last_refresh", resolve_codex_runtime_credentials)
     return _runtime("openai-codex", "codex_responses", base_url, api_key, source="explicit", last_refresh=last_refresh,
+                    requested_provider=requested_provider)
+
+
+def _explicit_qwen(requested_provider, model_cfg, api_key, explicit_base_url, target_model):
+    # A supplied token is the credential: the Qwen CLI login is read only when none was given.
+    api_key, base_url, expires_at_ms = _creds_fallback(api_key, explicit_base_url, explicit_base_url or _qwen_base_url(),
+                                                       None, "expires_at_ms", resolve_qwen_runtime_credentials)
+    return _runtime("qwen-oauth", "chat_completions", base_url, api_key, source="explicit", expires_at_ms=expires_at_ms,
                     requested_provider=requested_provider)
 
 
@@ -784,7 +797,7 @@ def _explicit_api_key_provider(provider, pconfig, requested_provider, model_cfg,
 # Providers with a dedicated explicit-credential builder; everything else goes through the
 # registry ``api_key`` path (or None when the provider takes no explicit creds).
 _EXPLICIT_RESOLVERS: dict[str, Callable[..., dict[str, Any]]] = {
-    "anthropic": _explicit_anthropic, "openai-codex": _explicit_codex, "nous": _explicit_nous,
+    "anthropic": _explicit_anthropic, "openai-codex": _explicit_codex, "nous": _explicit_nous, "qwen-oauth": _explicit_qwen,
     "azure-foundry": lambda rq, mc, key, url, tm: _resolve_azure_foundry_runtime(requested_provider=rq, model_cfg=mc,
                                                                                  explicit_api_key=key, explicit_base_url=url),
 }
@@ -873,6 +886,10 @@ def _anthropic_env_runtime(requested_provider: str, model_cfg: dict[str, Any], t
     """Native Anthropic (Messages API) from env/auth store; ``model.base_url`` honoured only when
     the configured provider is anthropic (else a Codex endpoint would leak into Anthropic requests)."""
     base_url = _anthropic_cfg_base_url(model_cfg) or _ANTHROPIC_DEFAULT_BASE_URL
+    declared, entry_key = _owned_url_credential(base_url, model_cfg, "anthropic")
+    if declared:  # the URL's owner supplies the key; ANTHROPIC_API_KEY / Claude OAuth are another account's
+        return _runtime("anthropic", "anthropic_messages", base_url, entry_key, source="config:providers",
+                        requested_provider=requested_provider)
     # Microsoft Foundry endpoints reject Claude Code OAuth tokens, which resolve_anthropic_token()
     # would return first — use the env key directly.
     if base_url_host_matches(base_url, "azure.com"):
@@ -886,7 +903,7 @@ def _anthropic_env_runtime(requested_provider: str, model_cfg: dict[str, Any], t
 
 
 def _api_key_provider_runtime(provider, pconfig, requested_provider, model_cfg, target_model) -> dict[str, Any]:
-    """Registry ``api_key`` providers (z.ai/GLM, Kimi, MiniMax, copilot, …) from env/config."""
+    """Registry ``api_key`` providers (z.ai/GLM, Kimi, MiniMax, …) from env/config."""
     creds = resolve_api_key_provider_credentials(provider)
     # Actual Computer: a loopback model_cfg base_url selects the daemon's no-auth local API; inject
     # the placeholder BEFORE the usable-secret gate (mirrors the env-driven path).
@@ -894,13 +911,19 @@ def _api_key_provider_runtime(provider, pconfig, requested_provider, model_cfg, 
         cfg_url = _config_base_url_for_provider(model_cfg, provider)
         if is_actual_local_base_url(normalize_actual_base_url(cfg_url or creds.get("base_url", "").rstrip("/"))):
             creds = {**creds, "api_key": ACTUAL_LOCAL_NOAUTH_PLACEHOLDER, "source": creds.get("source") or "local-offline"}
-    # An explicitly selected API-key provider is authoritative: an empty key would defer failure
-    # to the first request and make a later fallback look like a silent provider switch.
-    if not has_usable_secret(creds.get("api_key")):
-        hint = f" Set {', '.join(pconfig.api_key_env_vars)}." if pconfig.api_key_env_vars else ""
-        raise AuthError(f"No usable credentials found for provider '{provider}'.{hint}", provider=provider, code="missing_api_key")
     # Honour model.base_url when the configured provider matches (e.g. api.minimaxi.com China endpoint).
     base_url = _actual_url(provider, _config_base_url_for_provider(model_cfg, provider) or creds.get("base_url", "").rstrip("/"))
+    declared, entry_key = _owned_url_credential(base_url, model_cfg, provider)
+    if declared:  # the URL's owner supplies the key; the built-in's env key is another account's
+        creds = {**creds, "api_key": entry_key, "source": "config:providers"}
+    # An explicitly selected API-key provider is authoritative: an empty key would defer failure
+    # to the first request and make a later fallback look like a silent provider switch.
+    if not has_usable_secret(creds.get("api_key")) and not (declared and entry_key):
+        from hermes_cli.runtime_readiness import missing_credentials_suffix
+        from hermes_cli.runtime_provider_missing_key import named_profile_key_hint
+        hint = (f" Set {', '.join(pconfig.api_key_env_vars)}." if pconfig.api_key_env_vars else "") + missing_credentials_suffix(provider)
+        hint += named_profile_key_hint(pconfig.api_key_env_vars)
+        raise AuthError(f"No usable credentials found for provider '{provider}'.{hint}", provider=provider, code="missing_api_key")
     api_mode = _api_key_provider_api_mode(provider, model_cfg, creds.get("api_key", ""), base_url,
                                           target_model or model_cfg.get("default", ""), opencode_by_model=True)
     base_url = _finalize_base_url(provider, api_mode, base_url)
@@ -1054,6 +1077,8 @@ def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_ke
     target_model overrides model_cfg["default"] when computing provider-specific api_mode (e.g.
     OpenCode Zen/Go where different models route through different API surfaces)."""
     requested_provider = resolve_requested_provider(requested)
+    from hermes_cli.left_core_migration import recover_for_provider
+    recover_for_provider(requested_provider)  # a provider whose plugin left core: install it before resolving
     _raise_if_provider_disabled(requested_provider)
     # Same alias expansion the auxiliary client applies, so ``provider: openai`` means one thing on
     # every path (background review, curator, MoA slots, delegation) instead of "Unknown provider".
@@ -1074,6 +1099,9 @@ def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_ke
         logger.info("model.openai_runtime=codex_app_server overrides the %s runtime (source=%s); its credential/endpoint "
                     "is not used — the app-server authenticates with its own login", runtime.get("provider"), runtime.get("source"))
     runtime["api_mode"] = api_mode
+    from hermes_cli.runtime_provider_missing_key import raise_if_declared_key_missing
+    raise_if_declared_key_missing(requested_provider, runtime, _get_model_config(), _FROZEN_RUNTIME_CONFIG.get(),
+                                  explicit_api_key=explicit_api_key)
     return runtime
 
 
@@ -1165,19 +1193,14 @@ def resolve_runtime_with_fallback(config: Optional[dict[str, Any]], *, requested
         return resolve_runtime_provider(requested=requested, target_model=target_model,
                                         explicit_base_url=explicit_base_url, explicit_api_key=explicit_api_key), None
     except AuthError as primary_exc:
-        from hermes_cli.fallback_config import effective_runtime_provider, get_fallback_chain, resolve_entry_api_key
+        from hermes_cli.fallback_config import effective_runtime_provider, fallback_entry_runtime_kwargs, get_fallback_chain
         for entry in get_fallback_chain(config):
             provider = (entry.get("provider") or "").strip().lower()
             model = (entry.get("model") or "").strip()
             if not provider or not model:
                 continue
-            kwargs: dict[str, Any] = {"requested": provider, "target_model": model}
-            if entry.get("base_url"):
-                kwargs["explicit_base_url"] = entry["base_url"]
-            if entry_key := resolve_entry_api_key(entry):
-                kwargs["explicit_api_key"] = entry_key
             try:
-                runtime = resolve_runtime_provider(**kwargs)
+                runtime = resolve_runtime_provider(**fallback_entry_runtime_kwargs(entry))
             except AuthError as fb_exc:
                 logger.debug("Fallback entry %s/%s failed: %s", provider, model, fb_exc)
                 continue

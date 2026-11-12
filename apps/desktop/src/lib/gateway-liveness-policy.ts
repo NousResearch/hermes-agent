@@ -37,6 +37,21 @@
 /** Ping budget for a liveness probe (primary and secondary sockets share it). */
 export const LIVENESS_PROBE_TIMEOUT_MS = 5_000
 
+/**
+ * The probe's RPC. The backend's socket reader answers `gateway.ping` itself, while any other method
+ * waits behind the connection's serial control lane: probing with `ping` timed out behind a slow RPC
+ * (compression, a large resume) and closed a healthy socket (#145737). A backend older than the
+ * heartbeat answers -32601, which every probe site already treats as alive.
+ */
+const LIVENESS_PROBE_METHOD = 'gateway.ping'
+
+/** Send one liveness probe on `gateway`; resolves when the backend answers within the budget. */
+export function probeGatewayLiveness(gateway: {
+  request: (method: string, params: Record<string, unknown>, timeoutMs: number) => Promise<unknown>
+}): Promise<unknown> {
+  return gateway.request(LIVENESS_PROBE_METHOD, {}, LIVENESS_PROBE_TIMEOUT_MS)
+}
+
 /** Consecutive unanswered probes tolerated while work is in flight. */
 export const LIVENESS_PROBE_FAILURE_STREAK = 2
 

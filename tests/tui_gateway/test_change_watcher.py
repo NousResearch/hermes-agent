@@ -136,6 +136,25 @@ def test_unreadable_snapshot_never_authorizes_deletion(watcher_home, unreadable)
             writer.close()
 
 
+def test_missing_store_does_not_abort_sibling_deletion(watcher_home, monkeypatch):
+    """A missing DB must return without raising, and must not skip a later home."""
+    home, events = watcher_home
+    sibling = home / "profiles" / "work"
+    sibling.mkdir(parents=True)
+    monkeypatch.setattr(server, "_served_profile_homes", {sibling})
+    _seed_store(home / "state.db")
+    _seed_store(sibling / "state.db")
+    server._broadcast_watched_changes(now=0.0)
+    (home / "state.db").unlink()
+    _write(sibling / "state.db", "DELETE FROM sessions WHERE id='s1'")
+    events.clear()
+
+    assert server._session_db_content_sig(home / "state.db") is None
+    server._broadcast_watched_changes(now=1.0)
+
+    assert ("sessions.deleted", {"session_ids": ["s1"], "profile": "work"}) in events
+
+
 def test_first_sighting_seeds_without_broadcasting(watcher_home):
     home, events = watcher_home
     (home / "cron" / "jobs.json").write_text("[]")
@@ -566,3 +585,64 @@ def test_broken_probe_never_kills_the_pass(watcher_home, monkeypatch):
 
     # The broken cron probe is skipped; sessions still broadcasts.
     assert ("sessions.changed", {}) in events
+
+
+def test_skill_installed_from_another_terminal_broadcasts_skills_changed(watcher_home, monkeypatch):
+    """CFG-8: the gateway notices a new skill dir and tells attached clients to refetch
+    ``commands.catalog``; clients never rescan disk themselves."""
+    home, events = watcher_home
+    import tools.skills_tool as st
+    skills = home / "skills"
+    skills.mkdir()
+    monkeypatch.setattr(st, "SKILLS_DIR", skills)
+    server._broadcast_watched_changes(now=0.0)
+    assert not [e for e in events if e[0] == "skills.changed"]
+
+    skill = skills / "new-skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("---\nname: new-skill\ndescription: d\n---\nbody\n")
+    os.utime(skills, (time.time() + 5, time.time() + 5))
+    server._broadcast_watched_changes(now=10.0)
+
+    assert ("skills.changed", {}) in events
+
+
+def test_a_skill_installed_in_another_sessions_repo_broadcasts_skills_changed(watcher_home, monkeypatch, tmp_path):
+    """The gateway runs in repo A; a session's catalog resolved under repo B (its workspace, via the
+    session cwd). Installing a skill in B's ``.hermes/skills`` must still notify viewers: the watcher
+    signs every scope a session resolved commands in, not only the launch repo."""
+    import json
+    import agent.skill_commands as sc
+    import tools.skills_tool as st
+    from agent.runtime_cwd import reset_session_cwd, set_session_cwd
+    home, events = watcher_home
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    (home / "skills").mkdir()
+    monkeypatch.setattr(st, "SKILLS_DIR", home / "skills")
+    monkeypatch.setattr(sc, "_skill_commands_by_key", {})
+    monkeypatch.setattr(sc, "_skill_commands_sig_by_key", {})
+    repo_a, repo_b = tmp_path / "repo-a", tmp_path / "repo-b"
+    for repo in (repo_a, repo_b):
+        (repo / ".git").mkdir(parents=True)
+        (repo / ".hermes" / "skills").mkdir(parents=True)
+    (home / "config.yaml").write_text(json.dumps({"skills": {"trusted_project_dirs": [str(repo_a), str(repo_b)]}}))
+    monkeypatch.chdir(repo_a)
+    st.clear_skills_cache()
+    token = set_session_cwd(str(repo_b))
+    try:
+        assert "/workspace-only" not in sc.get_skill_commands()  # B's session catalog: publishes B's scope
+    finally:
+        reset_session_cwd(token)
+    server._broadcast_watched_changes(now=0.0)
+    assert not [e for e in events if e[0] == "skills.changed"]
+
+    skill = repo_b / ".hermes" / "skills" / "workspace-only"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("---\nname: workspace-only\ndescription: d\n---\nbody\n")
+    server._broadcast_watched_changes(now=10.0)
+    assert ("skills.changed", {}) in events
+    token = set_session_cwd(str(repo_b))
+    try:
+        assert "/workspace-only" in sc.get_skill_commands()
+    finally:
+        reset_session_cwd(token)

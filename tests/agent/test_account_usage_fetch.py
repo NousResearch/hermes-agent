@@ -123,6 +123,7 @@ def _register_profile(monkeypatch, profile):
 
     monkeypatch.setattr(providers, "_REGISTRY", dict(providers._REGISTRY))
     monkeypatch.setattr(providers, "_ALIASES", dict(providers._ALIASES))
+    monkeypatch.setattr(providers, "_PROVIDER_LIST_CACHE", None)  # else the fixture profile outlives the test
     providers.register_provider(profile)
 
 

@@ -17,11 +17,17 @@ from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import List, Tuple
 
+from tools.skills_guard_credentials import SKILL_ONLY_PATTERNS, code_views, raise_provider_key_reads
 
-SCANNER_VERSION = "skills-guard-v10"
+
+SCANNER_VERSION = "skills-guard-v11"
 
 # NVIDIA-verified skills each ship a signed `skill.oms.sig` + governance `skill-card.md`.
-TRUSTED_REPOS = {"openai/skills", "anthropics/skills", "huggingface/skills", "NVIDIA/skills"}
+TRUSTED_REPOS = {
+    "openai/skills", "anthropics/skills", "huggingface/skills", "NVIDIA/skills",
+    "wandb/skills", "qdrant/skills", "pinecone-io/skills",
+    "makenotion/skills", "Airtable/skills", "Shopify/Shopify-AI-Toolkit",
+}
 
 INSTALL_POLICY = {
     #                  safe      caution    dangerous
@@ -691,9 +697,10 @@ def _mask_prose_link_destinations(lines: list[str]) -> list[str]:
     return out
 
 
-def scan_file(file_path: Path, rel_path: str = "") -> list[Finding]:
+def scan_file(file_path: Path, rel_path: str = "", *, skill: bool = False) -> list[Finding]:
     """Threat-pattern + invisible-unicode scan of one file; *rel_path* is the display path (default: file
-    name). Regex findings dedupe per pattern per line; invisible chars yield one per line."""
+    name). Regex findings dedupe per pattern per line; invisible chars yield one per line. *skill* adds the
+    skill-only credential rules (``tools.skills_guard_credentials``)."""
     rel_path = rel_path or file_path.name
     if file_path.suffix.lower() not in SCANNABLE_EXTENSIONS and file_path.name != "SKILL.md":
         return []
@@ -705,15 +712,20 @@ def scan_file(file_path: Path, rel_path: str = "") -> list[Finding]:
     docstring_lines = _compute_docstring_lines(lines)  # so code patterns don't fire on prose
     traversal_lines = _mask_prose_link_destinations(lines) if file_path.suffix.lower() == ".md" else lines
     suffix, owners = file_path.suffix.lower(), _statement_owners(lines)  # per-file context for the demotion
-    for pattern, pid, severity, category, description in _COMPILED_THREAT_PATTERNS:
+    patterns = _COMPILED_THREAT_PATTERNS + (SKILL_ONLY_PATTERNS if skill else [])
+    views = code_views(lines) if skill and suffix == ".py" else None  # tokenized: code vs comment/string
+    for pattern, pid, severity, category, description in patterns:
         for i, line in enumerate(lines, start=1):
-            scan_line = traversal_lines[i - 1] if pid in _PATH_TRAVERSAL_PATTERN_IDS else line
+            scan_line = (traversal_lines[i - 1] if pid in _PATH_TRAVERSAL_PATTERN_IDS
+                         else views[0][i - 1] if views and pid == "hermes_env_dotenv" else line)
             if i not in docstring_lines and pattern.search(scan_line):
                 text = line.strip()
                 line_severity, line_description = _demote_inert_path_reference(
                     pid, severity, description, line, lines[owners[i - 1]], suffix)
                 findings.append(Finding(pid, line_severity, category, rel_path, i,
                                         text if len(text) <= 120 else text[:117] + "...", line_description))
+    if skill:
+        raise_provider_key_reads(findings, lines, views[1] if views else None)
     for i, line in enumerate(lines, start=1):
         if (char := next((c for c in INVISIBLE_CHARS if c in line), None)) is not None:
             name = _unicode_char_name(char)
@@ -750,9 +762,9 @@ def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
         findings.extend(_check_structure(skill_path, ignore=ignore))
         for f in skill_path.rglob("*"):
             if f.is_file() and not ignore(rel := str(f.relative_to(skill_path))):
-                findings.extend(scan_file(f, rel))
+                findings.extend(scan_file(f, rel, skill=True))
     elif skill_path.is_file():
-        findings.extend(scan_file(skill_path, skill_path.name))
+        findings.extend(scan_file(skill_path, skill_path.name, skill=True))
     if trust == "community":
         findings = [_community_note(f) for f in findings]
     verdict = _determine_verdict(findings)
@@ -793,7 +805,7 @@ def scan_skill_cached(skill_path: Path, source: str = "community", *, source_url
     source_identity = hashlib.sha256(f"{source}\0{source_url}".encode()).hexdigest()[:16]
     cache_file = cache_root / f"{digest}-{source_identity}.json"
     expected = {"bundle_hash": f"sha256:{digest}", "scanner_version": SCANNER_VERSION, "source": source,
-                "source_url": source_url}
+                "source_url": source_url, "trust_level": _resolve_trust_level(source)}
     cached = None
     with suppress(OSError, json.JSONDecodeError):
         cached = json.loads(cache_file.read_text(encoding="utf-8-sig"))

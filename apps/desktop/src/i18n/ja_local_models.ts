@@ -52,6 +52,8 @@ export const jaLocalModels: TranslationOverride<Translations['settings']['localM
   updateTitle: 'エンジンの更新があります',
   updateDetail: (next, current) =>
     `新しい llama.cpp ビルド（${next}）をインストールできます——現在は ${current} です。ダウンロード中もモデルは引き続き使えます。`,
+  updateSameBuildDetail: tag =>
+    `Hermes は llama.cpp ${tag} を実行に必要なファイル付きで提供するようになりました。更新するとエンジンを再ダウンロードします。ダウンロード中もモデルは引き続き使えます。`,
   updateAction: 'エンジンを更新',
   updating: 'エンジンを更新中…',
   upToDateTitle: 'エンジンは最新です',

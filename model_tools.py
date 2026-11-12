@@ -18,12 +18,13 @@ import threading
 import time
 from typing import Dict, Any, List, Optional, Tuple
 
-from tools.registry import CHECK_FN_CACHE_BYPASS, check_fn_cache_scope, discover_builtin_tools, registry, tool_error
+from tools.registry import (
+    CHECK_FN_CACHE_BYPASS, check_fn_cache_epoch, check_fn_cache_scope, check_fn_verdict_window, discover_builtin_tools,
+    registry, tool_error)
 from tools.registry import _MAX_TOOL_ERROR_CHARS as _TOOL_ERROR_MAX_LEN
 from toolsets import resolve_toolset, validate_toolset
 from tools.arg_coercion import coerce_tool_args
 from tools.todo_tool import TODO_LEGACY_ALIASES, TODO_SCHEMA
-from utils import file_signature
 
 logger = logging.getLogger(__name__)
 
@@ -181,8 +182,6 @@ _LEGACY_TOOLSET_MAP = {
     "vision_tools": ["vision_analyze"],
     "image_tools": ["image_generate"],
     "skills_tools": ["skills_list", "skill_view", "skill_manage"],
-    "browser_tools": ["browser_navigate", "browser_snapshot", "browser_click", "browser_type", "browser_scroll",
-                      "browser_back", "browser_press", "browser_get_images", "browser_vision", "browser_console"],
     "cronjob_tools": ["cronjob_manage"],
     "file_tools": ["read_file", "write_file", "patch", "search_files"],
     "tts_tools": ["text_to_speech"],
@@ -193,9 +192,13 @@ _LEGACY_TOOLSET_MAP = {
 # Memo for get_tool_definitions(), active only with quiet_mode=True (the
 # non-quiet path prints). Hot callers (gateway runner, AIAgent.__init__) hit it
 # every turn; a miss costs ~7 ms of registry walk + check_fn probing. The key
-# includes registry._generation (bumped on register/deregister/alias) so
-# invalidation is transparent; check_fn drift is handled by registry.py's 30 s TTL.
+# includes registry._generation (bumped on register/deregister/alias) and the
+# check_fn cache epoch (bumped by invalidate_check_fn_cache). An entry expires with
+# the earliest check_fn verdict it was filtered on (registry.check_fn_verdict_window):
+# a hit never re-runs the checks, so without that expiry an MCP server that dropped
+# and reconnected without re-registering would stay hidden for the life of the process.
 _tool_defs_cache: dict[tuple, list[dict[str, Any]]] = {}
+_tool_defs_expiry: dict[tuple, float] = {}  # cache key -> time.monotonic() deadline
 _tool_defs_cache_lock = threading.Lock()
 # FIFO cap: 8 covers a long-lived gateway's warm set of platform/toolset combos.
 # Hard cap on memoized get_tool_definitions() results. A long-lived Gateway process sees many distinct
@@ -210,6 +213,15 @@ def _clear_tool_defs_cache() -> None:
     """Drop memoized results when a dynamic-schema dependency changes (discord caps, sandbox mode)."""
     with _tool_defs_cache_lock:
         _tool_defs_cache.clear()
+        _tool_defs_expiry.clear()
+
+
+def _live_tool_defs_entry(cache_key: tuple) -> Optional[list[dict[str, Any]]]:
+    """The memoized list for *cache_key* unless missing or past its verdict expiry. Caller holds the lock."""
+    cached = _tool_defs_cache.get(cache_key)
+    if cached is None or time.monotonic() >= _tool_defs_expiry.get(cache_key, float("inf")):
+        return None
+    return cached
 
 
 def get_tool_definitions(enabled_toolsets: Optional[list[str]] = None, disabled_toolsets: Optional[list[str]] = None,
@@ -235,17 +247,21 @@ def get_tool_definitions(enabled_toolsets: Optional[list[str]] = None, disabled_
     # Gateway process doesn't accumulate entries unboundedly across the many distinct toolset/config
     # fingerprints it sees over its lifetime (#19251).
     with _tool_defs_cache_lock:
-        cached = _tool_defs_cache.get(cache_key) if cache_key is not None else None
+        cached = _live_tool_defs_entry(cache_key) if cache_key is not None else None
     if cached is None:
-        result = compute()
+        with check_fn_verdict_window() as verdict_expiry:
+            result = compute()
         if cache_key is None:
             return list(result)
         with _tool_defs_cache_lock:
-            cached = _tool_defs_cache.get(cache_key)  # another thread may have filled it meanwhile
+            cached = _live_tool_defs_entry(cache_key)  # another thread may have filled it meanwhile
             if cached is None:
-                if len(_tool_defs_cache) >= _TOOL_DEFS_CACHE_MAX:
-                    _tool_defs_cache.pop(next(iter(_tool_defs_cache)))
+                if cache_key not in _tool_defs_cache and len(_tool_defs_cache) >= _TOOL_DEFS_CACHE_MAX:
+                    evicted = next(iter(_tool_defs_cache))
+                    _tool_defs_cache.pop(evicted)
+                    _tool_defs_expiry.pop(evicted, None)
                 _tool_defs_cache[cache_key] = cached = result
+                _tool_defs_expiry[cache_key] = verdict_expiry[0]
     else:
         global _last_resolved_tool_names
         _last_resolved_tool_names = [t["function"]["name"] for t in cached]
@@ -260,23 +276,26 @@ def _tool_defs_cache_key(
     """Memo key for get_tool_definitions, or None when caching must be bypassed.
 
     Covers every argument plus everything that changes the result without one:
-    registry generation, config.yaml stat signature (dynamic schemas), kanban
-    context, profile scope. check_fn results are TTL-cached in the registry.
+    registry generation, check_fn cache epoch, config.yaml stat signature (dynamic
+    schemas), kanban context, profile scope. check_fn verdicts expire the entry
+    itself (see get_tool_definitions).
     """
     profile_scope = check_fn_cache_scope()
     if profile_scope == CHECK_FN_CACHE_BYPASS:
         return None
     try:
         from hermes_cli.config import get_config_path
-        cfg_stat = get_config_path().stat()
-        cfg_fp = file_signature(cfg_stat)
+        from hermes_cli.config_backend import config_version
+        cfg_fp = config_version(get_config_path())
     except (FileNotFoundError, OSError, ImportError):
         cfg_fp = None
+    from tools.environments.sandbox_scope import hosted_scope
     return (
         registry.current_scope_key(), frozenset(enabled_toolsets) if enabled_toolsets is not None else None,
         frozenset(disabled_toolsets) if disabled_toolsets else None, registry._generation, cfg_fp,
         bool(os.environ.get("HERMES_KANBAN_TASK")), bool(skip_tool_search_assembly),
-        _is_delegated_child_context(), _is_dispatcher_owned_worker(), profile_scope,
+        _is_delegated_child_context(), _is_dispatcher_owned_worker(), profile_scope, check_fn_cache_epoch(),
+        hosted_scope() is not None,
     )
 
 
@@ -367,17 +386,6 @@ def _discord_rewriter(schema_fn_name: str):
     return _rewrite
 
 
-def _rewrite_browser_navigate(td: dict[str, Any], available: set) -> Optional[dict[str, Any]]:
-    """Static schema is toolset-neutral; name the lightweight retrieval tools only when they are present
-    (#39797: a hard "prefer web_search" overrode the user's SOUL.md and was hallucinated when web was off)."""
-    web_tools = [name for name in ("web_search", "web_extract") if name in available]
-    if not web_tools:
-        return td
-    noun = "tool" if len(web_tools) == 1 else "tools"
-    hint = f" Available lightweight retrieval {noun}: {' and '.join(web_tools)}."
-    return _fn_def({**td["function"], "description": td["function"].get("description", "") + hint})
-
-
 def _rewrite_browser_cdp(td: dict[str, Any], available: set) -> Optional[dict[str, Any]]:
     """Same rule for the CDP docs pointer: mention web_extract only when the session has it."""
     if "web_extract" not in available:
@@ -391,6 +399,18 @@ def _rewrite_browser_exec(td: dict[str, Any], available: set) -> Optional[dict[s
     must not regain host execution via the browser toolset. Session-level gate rather
     than a check_fn because check_fns are TTL-cached process-wide across sessions."""
     return td if "terminal" in available else None
+
+
+def _rewrite_browser_exec_vision(td: dict[str, Any], available: set) -> Optional[dict[str, Any]]:
+    """Point a header that says screenshots are not attached at vision_analyze, only when the
+    session has it (an auxiliary vision route alone does not expose the tool)."""
+    from tools.browser_use_cli import SCREENSHOTS_DETACHED
+    fn = td["function"]
+    desc = fn.get("description", "")
+    if "vision_analyze" not in available or SCREENSHOTS_DETACHED not in desc:
+        return td
+    hint = " To inspect one, pass its capture_screenshot() path to vision_analyze."
+    return _fn_def({**fn, "description": desc.replace(SCREENSHOTS_DETACHED, SCREENSHOTS_DETACHED + hint, 1)})
 
 
 def _rewrite_delegate_task(td: dict[str, Any], available: set) -> Optional[dict[str, Any]]:
@@ -424,12 +444,14 @@ _VAULT_INPUT_TOOL_HINT = "the browser's input tool"
 
 
 def _rewrite_browser_vault(td: dict[str, Any], available: set) -> Optional[dict[str, Any]]:
-    """Name the concrete input tool for typing the login identifier: `fill_input` inside browser_exec code, or
-    browser_type on the built-in stack. Resolved here because the two live in different toolsets."""
+    """Name the concrete input tool for typing the login identifier (`fill_input` inside browser_exec code).
+    Resolved here because the two live in different toolsets."""
+    preview = "drive_preview" in available
     if "browser_exec" in available:
-        concrete = "`fill_input` inside browser_exec"
-    elif "browser_type" in available:
-        concrete = "browser_type"
+        concrete = "`fill_input` inside browser_exec" + (
+            " (or drive_preview action=type on the in-app browser)" if preview else "")
+    elif preview:
+        concrete = "drive_preview action=type"
     else:
         return td
     fn = td["function"]
@@ -448,7 +470,10 @@ def _rewrite_input_tool_for_vault(td: dict[str, Any], available: set) -> Optiona
     if "browser_vault" not in available:
         return td
     fn = td["function"]
-    return _fn_def({**fn, "description": fn.get("description", "") + _VAULT_NO_PASSWORD_NOTE})
+    note = _VAULT_NO_PASSWORD_NOTE
+    if fn["name"] == "drive_preview":
+        note += " For this in-app page pass target=preview (the default when no managed browser page is open)."
+    return _fn_def({**fn, "description": fn.get("description", "") + note})
 
 
 def _compose_rewriters(*fns):
@@ -465,11 +490,10 @@ _DYNAMIC_SCHEMA_REWRITERS = {
     "execute_code": _rewrite_execute_code,
     "discord": _discord_rewriter("get_dynamic_schema_core"),
     "discord_admin": _discord_rewriter("get_dynamic_schema_admin"),
-    "browser_navigate": _rewrite_browser_navigate,
     "browser_cdp": _rewrite_browser_cdp,
-    "browser_exec": _compose_rewriters(_rewrite_browser_exec, _rewrite_input_tool_for_vault),
-    "browser_type": _rewrite_input_tool_for_vault,
+    "browser_exec": _compose_rewriters(_rewrite_browser_exec, _rewrite_browser_exec_vision, _rewrite_input_tool_for_vault),
     "browser_vault": _rewrite_browser_vault,
+    "drive_preview": _rewrite_input_tool_for_vault,
     "delegate_task": _rewrite_delegate_task,
 }
 
@@ -538,7 +562,10 @@ def _compute_tool_definitions(enabled_toolsets: Optional[list[str]] = None, disa
     except Exception as e:  # pragma: no cover — never break tool loading
         logger.warning("Tool search assembly skipped: %s", e)
 
-    return filtered_tools
+    from tools.hosted_tool_policy import hosted_tool_refusal
+    # A hosted scope runs only its allowlist (the tool_search bridge included): advertising the
+    # rest would only earn refusals.
+    return [tool for tool in filtered_tools if hosted_tool_refusal(tool["function"]["name"]) is None]
 
 
 def _active_model_config() -> tuple[str, dict[str, Any]]:
@@ -647,6 +674,7 @@ class _CallIds:
     tool_call_id: Optional[str] = None
     turn_id: Optional[str] = None
     api_request_id: Optional[str] = None
+    conversation_id: Optional[str] = None  # compression-stable root (agent.prompt_cache_scope.conversation_id)
 
     def hook_kwargs(self) -> dict[str, str]:
         """Same fields with None -> "" (hook/middleware wire contract)."""
@@ -676,7 +704,7 @@ def _emit_post_tool_call_hook(
     task_id: Optional[str] = None, session_id: Optional[str] = None, tool_call_id: Optional[str] = None,
     turn_id: Optional[str] = None, api_request_id: Optional[str] = None, duration_ms: int = 0,
     status: Optional[str] = None, error_type: Optional[str] = None, error_message: Optional[str] = None,
-    middleware_trace: Optional[list[dict[str, Any]]] = None,
+    middleware_trace: Optional[list[dict[str, Any]]] = None, conversation_id: Optional[str] = None,
 ) -> None:
     """Emit the ``post_tool_call`` observer hook; gated on has_hook, and ok/error
     fields are derived from the result only past that gate when status is None."""
@@ -690,7 +718,7 @@ def _emit_post_tool_call_hook(
             status, error_type, error_message = _tool_result_observer_fields(function_name, result)
         invoke_hook(
             "post_tool_call", tool_name=function_name, args=function_args, result=result,
-            **_CallIds(task_id, session_id, tool_call_id, turn_id, api_request_id).hook_kwargs(),
+            **_CallIds(task_id, session_id, tool_call_id, turn_id, api_request_id, conversation_id).hook_kwargs(),
             duration_ms=duration_ms, status=status, error_type=error_type, error_message=error_message,
             middleware_trace=list(middleware_trace or []),
         )
@@ -727,7 +755,9 @@ def _dispatch_bridge_tool(function_name: str, function_args: dict[str, Any],
         return ts.dispatch_tool_search(args, current_tool_defs=current_defs, call=call), None
     if function_name == ts.TOOL_DESCRIBE_NAME:
         return ts.dispatch_tool_describe(args, current_tool_defs=current_defs, call=call), None
-    underlying_name, underlying_args, err = ts.resolve_underlying_call(args)
+    # Session-scoped names for the error path below: a core tool stripped from this
+    # session (clarify in a subagent) must not be told to "call it directly".
+    underlying_name, underlying_args, err = ts.resolve_underlying_call(args, ts.session_tool_names(current_defs))
     if err or not underlying_name:
         return tool_error(err or "tool_call could not be resolved"), None
     if underlying_name == ts.CONNECTOR_BATCH_SENTINEL:
@@ -739,9 +769,7 @@ def _dispatch_bridge_tool(function_name: str, function_args: dict[str, Any],
     # Session-gated GUI tools fail fast with their real reason (#120413):
     # tool_search can never surface them in this session.
     if underlying_name not in ts.scoped_deferrable_names(current_defs):
-        return tool_error(ts.out_of_scope_reason(underlying_name)
-                          or f"'{underlying_name}' is not available in this session. "
-                          "Use tool_search to find tools you can call."), None
+        return tool_error(ts.scope_block_reason(underlying_name)), None
     # Validate against the deferred tool's concrete schema — the generic
     # ``arguments: object`` bridge schema can't enforce it.
     probe_err = ts.validate_deferred_call_args(underlying_name, underlying_args)
@@ -824,7 +852,8 @@ def _execute_tool(function_name: str, function_args: dict[str, Any], original_ar
                   *, user_task: Optional[str], enabled_tools: Optional[list[str]], skip_tool_execution_middleware: bool) -> Any:
     """Run the registry handler (through tool-execution middleware unless skipped)
     with the approval observability context bound for the duration."""
-    dispatch_kwargs: dict[str, Any] = {"task_id": ids.task_id, "session_id": ids.session_id}
+    dispatch_kwargs: dict[str, Any] = {
+        "task_id": ids.task_id, "session_id": ids.session_id, "conversation_id": ids.conversation_id}
     if function_name == "execute_code":
         # Prefer the caller's list so subagents can't overwrite the parent's
         # tool set via the process-global.
@@ -877,10 +906,11 @@ def handle_function_call(
     skip_pre_tool_call_hook: bool = False, skip_tool_request_middleware: bool = False,
     skip_tool_execution_middleware: bool = False, tool_request_middleware_trace: Optional[list[dict[str, Any]]] = None,
     enabled_toolsets: Optional[list[str]] = None, disabled_toolsets: Optional[list[str]] = None,
+    conversation_id: Optional[str] = None,
 ) -> str:
     """Route a tool call through hooks/middleware to the registry; returns a JSON string.
 
-    task_id isolates terminal/browser sessions; user_task feeds browser_snapshot.
+    task_id isolates terminal/browser sessions; user_task is forwarded to every handler as a kwarg.
     enabled_tools picks execute_code's sandbox tools (default: the process-global
     ``_last_resolved_tool_names``). skip_pre_tool_call_hook: caller already fired
     it (single-fire contract). enabled/disabled_toolsets scope the Tool Search
@@ -891,8 +921,13 @@ def handle_function_call(
         function_args = {}
     trace = list(tool_request_middleware_trace or [])
     function_name = _LEGACY_TOOL_ALIASES.get(function_name, function_name)
-    ids = _CallIds(task_id, session_id, tool_call_id, turn_id, api_request_id)
+    ids = _CallIds(task_id, session_id, tool_call_id, turn_id, api_request_id, conversation_id)
     start = time.monotonic()
+    from tools.hosted_tool_policy import hosted_tool_refusal
+    if refusal := hosted_tool_refusal(function_name):
+        # Callers outside the agent loop (execute_code RPC, the session kernel, the MCP bridge,
+        # connector batches) meet the same allowlist before bridges, connectors or the registry.
+        return tool_error(refusal)
 
     def _emit(result: Any, **extra: Any) -> Any:
         """Emit post_tool_call with this call's identity fields; returns *result*."""

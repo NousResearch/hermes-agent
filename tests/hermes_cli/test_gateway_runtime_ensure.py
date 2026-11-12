@@ -10,6 +10,19 @@ import time
 
 import pytest
 
+import hermes_dir_acl
+from hermes_cli.gateway_runtime_service import remaining
+
+_REAL_PROCESS_IS_ELEVATED = hermes_dir_acl.process_is_elevated
+
+
+@pytest.fixture(autouse=True)
+def _non_elevated_client(monkeypatch):
+    """Every start here is a normal client's. An elevated one is refused before any spawn
+    (client_elevated, test_gateway_runtime_elevated_client.py), and hosted Windows runners are elevated."""
+    monkeypatch.setattr(hermes_dir_acl, "process_is_elevated", lambda: False)
+
+
 def test_unmanaged_runtime_drops_session_config_bypass_flags(tmp_path, monkeypatch):
     from types import SimpleNamespace
     from hermes_cli import gateway_runtime_start as start
@@ -283,7 +296,10 @@ def test_reserved_profile_without_pid_or_control_is_never_absent(tmp_path):
 
 
 @pytest.mark.platforms("windows")
-def test_native_windows_discovery_uses_same_user_pipe(tmp_path):
+def test_native_windows_discovery_uses_same_user_pipe(tmp_path, monkeypatch):
+    # The pipe server below runs on this process's own token, so both sides of the identity check
+    # read its real elevation: a pinned non-elevated client refuses its own elevated server.
+    monkeypatch.setattr(hermes_dir_acl, "process_is_elevated", _REAL_PROCESS_IS_ELEVATED)
     from gateway.runtime_bootstrap_windows import NativeControlServer
     from hermes_cli.gateway_runtime import discover_gateway_endpoint
     home = tmp_path.resolve()
@@ -317,6 +333,53 @@ def test_native_windows_spawn_never_retries_without_breakaway(tmp_path, monkeypa
         start.spawn_unmanaged_gateway(tmp_path, deadline=time.monotonic()+5)
     assert len(calls) == 1
     assert calls[0]["creationflags"] == windows_detach_flags()
+
+
+def _absent_owner_home(tmp_path, monkeypatch):
+    from hermes_cli import gateway_runtime as runtime, gateway_runtime_service as service
+    home = tmp_path / "home"
+    home.mkdir(mode=0o700)
+    monkeypatch.setattr(runtime, "discover_gateway_endpoint", lambda *a, **k: runtime.GatewayDiscovery("absent"))
+    monkeypatch.setattr(service, "discover_existing_gateway_service", lambda *a, **k: None)
+    return home
+
+
+@pytest.mark.platforms("windows")
+def test_breakaway_refusal_names_the_winerror(tmp_path, monkeypatch):
+    """A job that forbids breakaway reaches the client with the OS's own refusal, not a bare code."""
+    from hermes_cli import gateway_runtime as runtime, gateway_runtime_start as start
+    home = _absent_owner_home(tmp_path, monkeypatch)
+    def denied(argv, **kwargs):
+        raise OSError(13, "Access is denied", None, 5)  # CreateProcess in a job without BREAKAWAY_OK
+    monkeypatch.setattr(start.subprocess, "Popen", denied)
+    result = runtime.ensure_gateway_runtime(home, timeout=5)
+    assert (result.state, result.reason_code, result.detail) == (
+        "inaccessible", "windows_breakaway_unavailable", "WinError 5: Access is denied")
+
+
+def test_unopenable_stdio_log_is_not_a_breakaway_refusal(tmp_path, monkeypatch):
+    """Only CreateProcess's refusal is the job's verdict: a start that cannot open its log says so."""
+    from hermes_cli import gateway_runtime as runtime, gateway_runtime_start as start
+    home = _absent_owner_home(tmp_path, monkeypatch)
+    (home / "logs" / "gateway-stdio.log").mkdir(parents=True)  # a directory: open("ab") fails on every host
+    spawned = []
+    # macOS tries a launchd job first; this test is about the direct spawn on every host.
+    monkeypatch.setattr(start, "start_gateway_job", lambda *a, **k: None)
+    monkeypatch.setattr(start.subprocess, "Popen", lambda *a, **k: spawned.append(a))
+    result = runtime.ensure_gateway_runtime(home, timeout=5)
+    assert (result.state, result.reason_code) == ("inaccessible", "stdio_log_unavailable")
+    assert result.detail and not spawned
+
+
+def test_detached_restart_reports_a_spent_budget(monkeypatch, capsys, tmp_path):
+    """`gateway restart --detach` prints the deadline verdict, not a TimeoutError traceback, when its
+    budget runs out mid-start (spawn_unmanaged_gateway lets TimeoutError through for ensure)."""
+    from hermes_cli import gateway_runtime_start as start
+    def spent(*args, **kwargs):
+        raise TimeoutError
+    monkeypatch.setattr(start, "spawn_unmanaged_gateway", spent)
+    assert start.start_detached_replacement(tmp_path) == 1
+    assert "Could not start the gateway in the background: deadline" in capsys.readouterr().err
 
 
 @pytest.mark.platforms("macos")
@@ -437,6 +500,63 @@ def test_reserved_root_never_suppresses_a_standalone_profile_start(tmp_path, mon
     assert spawned == [home.resolve()]
 
 
+def _standalone_host(tmp_path, monkeypatch, record):
+    """A named profile whose root holds its gateway lock and has written *record* (or nothing)
+    to the root's real gateway_state.json; returns (home, spawned targets)."""
+    from hermes_cli import gateway_runtime as runtime, gateway_runtime_discovery as discovery
+    from hermes_cli import gateway_runtime_service as service, gateway_runtime_start as start
+
+    root = tmp_path / ".hermes"
+    home = root / "profiles" / "alpha"
+    home.mkdir(parents=True, mode=0o700)
+    if record is not None:
+        (root / "gateway_state.json").write_text(json.dumps(record), encoding="utf-8")
+    spawned = []
+    monkeypatch.setattr(runtime, "_update_fenced", lambda homes: False)
+    monkeypatch.setattr(runtime, "discover_gateway_endpoint", lambda *a, **k: runtime.GatewayDiscovery("absent"))
+    monkeypatch.setattr(discovery, "missing_owner_state", lambda path: "starting" if Path(path).resolve() == root.resolve() else "absent")
+    monkeypatch.setattr(service, "discover_existing_gateway_service", lambda *a, **k: None)
+    monkeypatch.setattr(start, "spawn_unmanaged_gateway", lambda target, **k: spawned.append(Path(target)))
+    return home, spawned
+
+
+_REASON = "duplicate Telegram token; run hermes gateway migrate --multiplex"
+
+
+def test_ensure_reports_a_standalone_host_reason_for_an_unserved_named_profile(tmp_path, monkeypatch):
+    """A live standalone host cannot later add this profile, so do not wait on its root lock: its
+    reason is read from the root's real gateway_state.json (path and key included)."""
+    from hermes_cli import gateway_runtime as runtime
+
+    home, spawned = _standalone_host(tmp_path, monkeypatch, {
+        "gateway_state": "running", "pid": os.getpid(), "served_profiles": [],
+        "multiplex_standalone_reason": _REASON})
+
+    result = runtime.ensure_gateway_runtime(home, timeout=1)
+
+    assert (result.state, result.reason_code, result.detail) == ("inaccessible", "profile_parked", _REASON)
+    assert spawned == []
+
+
+@pytest.mark.parametrize("record", [
+    None,  # the host has not written its state yet
+    {"gateway_state": "running", "pid": os.getpid()},  # a multiplexer: no refusal
+    {"gateway_state": "stopped", "pid": os.getpid(), "multiplex_standalone_reason": _REASON},
+    {"gateway_state": "running", "pid": 999_999_999, "multiplex_standalone_reason": _REASON},
+], ids=["no-state", "no-reason", "stopped", "dead-pid"])
+def test_a_reserved_root_without_a_live_refusal_is_still_awaited(tmp_path, monkeypatch, record):
+    """A held root lock with no LIVE standalone refusal is a multiplexer still starting: the named
+    profile waits for it (never parked on a stale reason, never a competing per-profile spawn)."""
+    from hermes_cli import gateway_runtime as runtime
+
+    home, spawned = _standalone_host(tmp_path, monkeypatch, record)
+
+    result = runtime.ensure_gateway_runtime(home, timeout=0.5)
+
+    assert (result.state, result.reason_code) == ("starting", "deadline")
+    assert spawned == []
+
+
 @pytest.mark.platforms("linux", "macos")
 def test_dead_unmanaged_start_is_a_prompt_terminal_verdict(tmp_path, monkeypatch):
     """The one start this call requested exited without leaving an owner: report it with the
@@ -466,3 +586,146 @@ def test_dead_unmanaged_start_is_a_prompt_terminal_verdict(tmp_path, monkeypatch
     assert "RuntimeError: boot failed with key" in result.detail, result.detail
     assert secret not in result.detail and "OLD_RUN_TRACEBACK" not in result.detail
     assert "gateway-stdio.log" in result.detail
+
+
+
+@pytest.fixture
+def fast_runway(monkeypatch):
+    """A real StartRunway on a sub-second scale: base 0.5 s, 0.2 s windows, cap 5 s."""
+    from hermes_cli import gateway_runtime as runtime, gateway_runtime_progress as progress
+    monkeypatch.setattr(runtime, "DEFAULT_ENSURE_TIMEOUT", 0.5)
+    monkeypatch.setattr(progress, "PROGRESS_WINDOW_S", 0.2)
+    monkeypatch.setattr(progress, "_SAMPLE_EVERY_S", 0.05)
+    monkeypatch.setattr(progress, "_LEAD_S", 1.0)
+    monkeypatch.setattr(progress, "MAX_ADAPTIVE_TIMEOUT", 5.0)
+    # The owner is found only where the real lookup would look: a home this call waits on, or its child.
+    # Like the real lookup, an owner only where this call waits: a home it names, or its own child.
+    monkeypatch.setattr(progress, "_starting_owner_pid", lambda homes, child: 4242 if homes or child else None)
+    monkeypatch.setattr(runtime, "_update_fenced", lambda homes: False)
+    return runtime, progress
+
+
+def _a_probe_spends_the_budget(runtime, ready_after, *, seen_starting=True):
+    """A start this call waits on (first probe: ``starting``) whose next probe uses the whole budget
+    on a starved control loop. ``seen_starting=False``: the owner is never seen starting."""
+    probes = []
+    start = time.monotonic()
+
+    def observe(home, deadline, replaced):
+        remaining(deadline)  # like the real probe: an exhausted budget is the deadline verdict
+        probes.append(time.monotonic() - start)
+        if len(probes) == 1 and seen_starting:
+            return runtime.GatewayDiscovery("starting")
+        if len(probes) <= 2:
+            time.sleep(max(0.0, deadline - time.monotonic()))  # health: allow HX013 -- the probe using its whole budget IS the case under test
+            return runtime.GatewayDiscovery("inaccessible", reason_code="control_timeout")
+        return runtime.GatewayDiscovery("ready" if time.monotonic() - start >= ready_after else "starting")
+    return observe
+
+
+def test_a_progressing_start_whose_probe_spends_the_budget_is_still_awaited(fast_runway, tmp_path, monkeypatch):
+    runtime, progress = fast_runway
+    monkeypatch.setattr(runtime, "_observe_replacing_stale", _a_probe_spends_the_budget(runtime, ready_after=1.0))
+    monkeypatch.setattr(progress, "_cpu_seconds", lambda pid: time.monotonic())  # always burning CPU
+    assert runtime.ensure_gateway_runtime(tmp_path).state == "ready"
+
+
+def test_a_stalled_start_whose_probe_times_out_is_still_a_deadline(fast_runway, tmp_path, monkeypatch):
+    runtime, progress = fast_runway
+    monkeypatch.setattr(runtime, "_observe_replacing_stale", _a_probe_spends_the_budget(runtime, ready_after=60.0))
+    monkeypatch.setattr(progress, "_cpu_seconds", lambda pid: 2.0)  # stopped: no CPU progress
+    before = time.monotonic()
+    result = runtime.ensure_gateway_runtime(tmp_path)
+    assert (result.state, result.reason_code) == ("starting", "deadline")
+    assert time.monotonic() - before < 2.0
+
+
+def test_a_wedged_owner_never_seen_starting_is_a_deadline_however_hard_it_spins(fast_runway, tmp_path,
+                                                                               monkeypatch):
+    """A READY gateway whose control loop stopped answering is not a start: its CPU (a spin loop)
+    never extends the wait past the base deadline, as on main."""
+    runtime, progress = fast_runway
+    monkeypatch.setattr(runtime, "_observe_replacing_stale",
+                        _a_probe_spends_the_budget(runtime, ready_after=60.0, seen_starting=False))
+    monkeypatch.setattr(progress, "_cpu_seconds", lambda pid: time.monotonic())  # spinning
+    before = time.monotonic()
+    result = runtime.ensure_gateway_runtime(tmp_path)
+    assert (result.state, result.reason_code) == ("starting", "deadline")
+    assert time.monotonic() - before < 2.0
+
+
+def _probes(runtime, *answers, ready_after):
+    """Primary probes answering ``answers`` in order ("budget": spend the whole budget, then answer
+    ``starting`` as a multiplexer's swallowed timeout does; "timeout": the same as control_timeout),
+    then ``ready`` once ``ready_after`` seconds passed (``starting`` until then)."""
+    start = time.monotonic()
+    queue = list(answers)
+
+    def observe(home, deadline, replaced):
+        remaining(deadline)  # like the real probe: an exhausted budget is the deadline verdict
+        answer = queue.pop(0) if queue else None
+        if answer in ("budget", "timeout"):
+            time.sleep(max(0.0, deadline - time.monotonic()))  # health: allow HX013 -- the probe using its whole budget IS the case under test
+            return runtime.GatewayDiscovery("inaccessible", reason_code="control_timeout") if answer == "timeout" \
+                else runtime.GatewayDiscovery("starting")
+        if answer is not None:
+            return runtime.GatewayDiscovery(answer)
+        return runtime.GatewayDiscovery("ready" if time.monotonic() - start >= ready_after else "starting")
+    return observe
+
+
+def _no_spawn_targets(monkeypatch, runtime, *, reserved=None, second="absent"):
+    from hermes_cli import gateway_runtime_multiplex as multiplex, gateway_runtime_service as service
+    monkeypatch.setattr(runtime, "_starting_multiplexer_root", lambda home: reserved)
+    monkeypatch.setattr(runtime, "_standalone_multiplexer_reason", lambda root: None)
+    monkeypatch.setattr(multiplex, "multiplexer_serves_home", lambda home: None)
+    monkeypatch.setattr(multiplex, "implied_host_root", lambda home: None)
+    monkeypatch.setattr(service, "discover_existing_gateway_service", lambda *a, **k: None)
+    monkeypatch.setattr(runtime, "discover_gateway_endpoint", lambda home, timeout: runtime.GatewayDiscovery(second))
+    monkeypatch.setattr(runtime, "_missing_owner_verdict", lambda home: runtime.GatewayDiscovery(second))
+
+
+def test_a_start_seen_only_by_the_race_closing_probe_is_still_sampled(fast_runway, tmp_path, monkeypatch):
+    runtime, progress = fast_runway
+    _no_spawn_targets(monkeypatch, runtime, second="starting")
+    monkeypatch.setattr(runtime, "_observe_replacing_stale", _probes(runtime, "absent", "timeout", ready_after=1.0))
+    monkeypatch.setattr(progress, "_cpu_seconds", lambda pid: time.monotonic())
+    assert runtime.ensure_gateway_runtime(tmp_path).state == "ready"
+
+
+def test_a_profile_awaiting_its_multiplexer_samples_the_root_not_itself(fast_runway, tmp_path, monkeypatch):
+    """A named profile waiting on its root's pending reservation: the ROOT is the progressing owner."""
+    runtime, progress = fast_runway
+    root = tmp_path / "root"
+    _no_spawn_targets(monkeypatch, runtime, reserved=root)
+    monkeypatch.setattr(progress, "_starting_owner_pid", lambda homes, child: 4242 if root in homes else None)
+    monkeypatch.setattr(runtime, "_observe_replacing_stale", _probes(runtime, "absent", "timeout", ready_after=1.0))
+    monkeypatch.setattr(progress, "_cpu_seconds", lambda pid: time.monotonic())
+    assert runtime.ensure_gateway_runtime(tmp_path / "profile").state == "ready"
+
+
+def test_a_probe_that_spends_the_budget_without_a_control_timeout_still_gets_a_verdict_sample(
+        fast_runway, tmp_path, monkeypatch):
+    """A multiplexer's control timeout reaches the loop as ``starting`` (its root timeout is swallowed):
+    the exhausted budget still gets one progress sample before the deadline verdict, even when the
+    last sample is younger than the sampling interval."""
+    runtime, progress = fast_runway
+    monkeypatch.setattr(progress, "_SAMPLE_EVERY_S", 10.0)
+    monkeypatch.setattr(runtime, "_observe_replacing_stale", _probes(runtime, "starting", "budget", ready_after=1.0))
+    monkeypatch.setattr(progress, "_cpu_seconds", lambda pid: time.monotonic())
+    assert runtime.ensure_gateway_runtime(tmp_path).state == "ready"
+
+
+def test_a_root_that_refuses_after_the_profile_joined_it_parks_the_profile(fast_runway, tmp_path, monkeypatch):
+    """A root reserves before publishing its standalone refusal: the profile that joined it in between
+    gets ``profile_parked`` when the refusal appears, not the root's (sampled, busy) adaptive wait."""
+    runtime, progress = fast_runway
+    root = tmp_path / "root"
+    _no_spawn_targets(monkeypatch, runtime, reserved=root)
+    joined = time.monotonic()
+    monkeypatch.setattr(runtime, "_standalone_multiplexer_reason",
+                        lambda r: "standalone" if r == root and time.monotonic() - joined > 0.3 else None)
+    monkeypatch.setattr(runtime, "_observe_replacing_stale", _probes(runtime, "absent", ready_after=60.0))
+    monkeypatch.setattr(progress, "_cpu_seconds", lambda pid: time.monotonic())  # the root keeps burning CPU
+    result = runtime.ensure_gateway_runtime(tmp_path / "profile")
+    assert (result.state, result.reason_code, result.detail) == ("inaccessible", "profile_parked", "standalone")

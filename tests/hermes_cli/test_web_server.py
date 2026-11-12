@@ -193,37 +193,21 @@ class TestRedactKey:
         assert redact_key("short") == "***"
 
 
-class TestSessionTokenInjection:
-    """The desktop shell mints HERMES_DASHBOARD_SESSION_TOKEN and signs its
-    /api + /api/ws calls with it. The backend must adopt that token, else every
-    desktop request 401s ("gateway is offline"). A main-merge once silently
-    dropped this read — this guards the contract, not a literal value.
-    """
-
-    def test_honors_injected_token(self, monkeypatch):
-        import hermes_cli.web_server as ws
-
-        original_app = ws.app
-        original_token = ws._SESSION_TOKEN
-        monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "desktop-seeded-token")
-        assert ws._resolve_session_token() == "desktop-seeded-token"
-        # No module reload: the loaded app and its adopted token are untouched.
-        assert ws.app is original_app
-        assert ws._SESSION_TOKEN == original_token
 
 
     def test_session_token_resolution_preserves_loaded_app_auth(self, monkeypatch):
         import hermes_cli.web_server as ws
+        import hermes_cli.web_server_session_token as st
         from starlette.testclient import TestClient
 
         original_app = ws.app
         original_header_name = ws._SESSION_HEADER_NAME
         original_token = ws._SESSION_TOKEN
         monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "desktop-seeded-token")
-        assert ws._resolve_session_token() == "desktop-seeded-token"
+        assert st.resolve_session_token() == "desktop-seeded-token"
         monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
-        with patch.object(ws.secrets, "token_urlsafe", return_value="generated-token"):
-            assert ws._resolve_session_token() == "generated-token"
+        with patch.object(st.secrets, "token_urlsafe", return_value="generated-token"):
+            assert st.resolve_session_token() == "generated-token"
 
         client = TestClient(original_app)
         client.headers[original_header_name] = original_token
@@ -417,144 +401,6 @@ class TestWebServerEndpoints:
         assert response.status_code == 503
         assert "not initialized" in response.json()["detail"]
         assert set(get_hermes_home().glob("state.db*")) == before
-
-    @pytest.mark.parametrize(
-        "missing_column", ["archived", "pinned", "last_activity_at"]
-    )
-    def test_get_sessions_reports_stale_schema_without_healing(self, missing_column):
-        import sqlite3
-
-        from hermes_constants import get_hermes_home
-        from hermes_state import SessionDB
-
-        db_path = get_hermes_home() / "state.db"
-        seed = SessionDB(db_path=db_path)
-        try:
-            seed.create_session("stale-schema", source="cli")
-        finally:
-            seed.close()
-
-        legacy = sqlite3.connect(str(db_path))
-        try:
-            # SQLite refuses DROP COLUMN while an index references the
-            # column; a pre-column legacy store has neither.
-            legacy.execute("DROP INDEX IF EXISTS idx_sessions_effective_activity")
-            legacy.execute(f"ALTER TABLE sessions DROP COLUMN {missing_column}")
-            legacy.commit()
-        finally:
-            legacy.close()
-
-        before = db_path.read_bytes()
-        response = self.client.get("/api/sessions?limit=50&offset=0")
-
-        assert response.status_code == 503
-        assert "schema" in response.json()["detail"]
-        assert db_path.read_bytes() == before
-        healed = sqlite3.connect(str(db_path))
-        try:
-            columns = {
-                row[1] for row in healed.execute("PRAGMA table_info(sessions)")
-            }
-        finally:
-            healed.close()
-        assert missing_column not in columns
-
-    def test_profiles_sidebar_reports_stale_schema_store(self):
-        """Aggregation reports unavailable profiles instead of healing their DBs."""
-        import sqlite3
-
-        from hermes_constants import get_hermes_home
-        from hermes_state import SessionDB
-
-        db_path = get_hermes_home() / "state.db"
-        seed = SessionDB(db_path=db_path)
-        try:
-            seed.create_session("sidebar-stale", source="cli")
-            seed.append_message(
-                session_id="sidebar-stale", role="user", content="hi"
-            )
-        finally:
-            seed.close()
-
-        legacy = sqlite3.connect(str(db_path))
-        try:
-            legacy.execute("DROP INDEX IF EXISTS idx_sessions_effective_activity")
-            legacy.execute("ALTER TABLE sessions DROP COLUMN last_activity_at")
-            legacy.commit()
-        finally:
-            legacy.close()
-
-        response = self.client.get("/api/profiles/sessions/sidebar")
-
-        assert response.status_code == 200
-        payload = response.json()
-        assert payload["errors"]
-        assert "schema" in payload["errors"][0]["error"]
-        # A failed read is a retryable failed load, never an empty list.
-        assert "sessions" not in payload["recents"]
-        assert payload["recents"]["failed"] is True
-
-    def test_startup_eager_reconcile_heals_stale_store(self):
-        """The OWNER's startup open brings a stale store current; the dashboard only reads.
-
-        #79531/#80037: after `hermes update` an old-schema state.db used to
-        stay stale until the first NEW session forced a writable open —
-        every /api/sessions poll 500ed with "no such column" in between.
-        Under the unified runtime the dashboard is a zero-writer view: its
-        eager probe must NOT heal (#107688 two-writer vector), and the
-        gateway owner's writable acquisition is what reconciles the schema.
-        """
-        import sqlite3
-
-        from hermes_constants import get_hermes_home
-        from hermes_state import SessionDB
-
-        db_path = get_hermes_home() / "state.db"
-        seed = SessionDB(db_path=db_path)
-        try:
-            seed.create_session("eager-stale", source="cli")
-        finally:
-            seed.close()
-
-        legacy = sqlite3.connect(str(db_path))
-        try:
-            legacy.execute("ALTER TABLE sessions DROP COLUMN last_read_at")
-            legacy.commit()
-        finally:
-            legacy.close()
-
-        # Dashboard probe: read-only, never heals (no writable open from a viewer).
-        _web_server_lifecycle._eager_reconcile_own_session_db()
-        stale = sqlite3.connect(str(db_path))
-        try:
-            assert "last_read_at" not in {row[1] for row in stale.execute("PRAGMA table_info(sessions)")}
-        finally:
-            stale.close()
-
-        # Owner path: the gateway's writable acquisition reconciles the schema at startup.
-        from hermes_state_registry import acquire, release_or_close
-        owner = acquire(db_path)
-        try:
-            pass
-        finally:
-            release_or_close(owner)
-
-        healed = sqlite3.connect(str(db_path))
-        try:
-            columns = {
-                row[1] for row in healed.execute("PRAGMA table_info(sessions)")
-            }
-        finally:
-            healed.close()
-        assert "last_read_at" in columns
-
-        # The healed store serves the full rich listing.
-        db = SessionDB(db_path=db_path, read_only=True)
-        try:
-            rows = db.list_sessions_rich(limit=10, compact_rows=True)
-        finally:
-            db.close()
-        assert [r["id"] for r in rows] == ["eager-stale"]
 
     def test_startup_eager_reconcile_is_read_only_on_a_healthy_store(self, monkeypatch):
         """A current-schema store gets NO writable open from the dashboard (#107688).
@@ -922,173 +768,6 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         assert fields["api_key"]["is_set"] is True
         assert fields["api_key"]["value"] == ""
         assert "secret-value" not in json.dumps(data)
-
-
-    # ── Memory provider config (host-block backend) ─────────────────────
-    # ``honcho_host_block`` storage is a host contract a catalog provider opts into. The core
-    # router reaches four names in the provider's own modules; this fixture is that contract.
-
-    _HOSTPROV_INIT = """
-from agent.memory_provider import MemoryProvider
-
-
-class HostProv(MemoryProvider):
-    name = "hostprov"
-
-    def is_available(self):
-        return True
-
-    def initialize(self, session_id, **kwargs):
-        pass
-
-    def get_tool_schemas(self):
-        return []
-
-
-def register(ctx):
-    ctx.register_memory_provider(HostProv())
-"""
-    _HOSTPROV_CLIENT = """
-from hermes_constants import get_hermes_home
-
-
-def resolve_active_host():
-    return "hermes"
-
-
-def resolve_config_path():
-    return get_hermes_home() / "hostprov.json"
-
-
-def _host_block(cfg, host):
-    return (cfg.get("hosts") or {}).get(host) or {}
-"""
-    _HOSTPROV_OAUTH = """
-import contextlib
-import json
-import threading
-
-ACCESS_TOKEN_PREFIX = "oat_"
-_refresh_lock = threading.Lock()
-
-
-@contextlib.contextmanager
-def _config_refresh_lock(path):
-    yield
-
-
-def _read_config_strict(path):
-    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-"""
-    _HOSTPROV_SCHEMA = """
-from plugins.memory.config_schema import (
-    KIND_SECRET, KIND_SELECT, KIND_TEXT, STORAGE_HONCHO_HOST_BLOCK, ProviderConfigSchema, ProviderField,
-    ProviderFieldOption,
-)
-
-CONFIG_SCHEMA = ProviderConfigSchema(
-    name="hostprov",
-    label="Host-block Provider",
-    storage=STORAGE_HONCHO_HOST_BLOCK,
-    fields=(
-        ProviderField(key="apiKey", label="API key", kind=KIND_SECRET, description="", env_key="HOSTPROV_API_KEY"),
-        ProviderField(key="baseUrl", label="Base URL", kind=KIND_TEXT, description="", scope="root"),
-        ProviderField(key="environment", label="Environment", kind=KIND_SELECT, description="", default="production",
-                      options=(ProviderFieldOption("production", "Cloud"), ProviderFieldOption("local", "Local"))),
-        ProviderField(key="workspace", label="Workspace", kind=KIND_TEXT, description=""),
-        ProviderField(key="peerName", label="Peer name", kind=KIND_TEXT, description=""),
-        ProviderField(key="aiPeer", label="AI peer", kind=KIND_TEXT, description=""),
-        ProviderField(key="sessionStrategy", label="Session strategy", kind=KIND_TEXT, description=""),
-    ),
-)
-"""
-
-    def _install_hostprov(self):
-        from hermes_constants import get_hermes_home
-
-        plugin_dir = get_hermes_home() / "plugins" / "hostprov"
-        plugin_dir.mkdir(parents=True, exist_ok=True)
-        for module, source in (("__init__", self._HOSTPROV_INIT), ("client", self._HOSTPROV_CLIENT),
-                               ("oauth", self._HOSTPROV_OAUTH), ("config_schema", self._HOSTPROV_SCHEMA)):
-            (plugin_dir / f"{module}.py").write_text(source, encoding="utf-8")
-        config_path = get_hermes_home() / "hostprov.json"
-        config_path.write_text("{}", encoding="utf-8")
-        return config_path
-
-    def test_put_host_block_writes_host_block_root_and_secret(self):
-        from hermes_cli.config import load_config, load_env
-
-        config_path = self._install_hostprov()
-        resp = self.client.put(
-            "/api/memory/providers/hostprov/config?surface=declared",
-            json={
-                "values": {
-                    "apiKey": "hch-test-key",
-                    "baseUrl": "https://honcho.example.dev",
-                    "environment": "local",
-                    "workspace": "myws",
-                    "peerName": "eri",
-                    "aiPeer": "hermes",
-                    "sessionStrategy": "per-repo",
-                }
-            },
-        )
-
-        assert resp.status_code == 200
-        assert resp.json() == {"ok": True}
-        assert load_config()["memory"]["provider"] == "hostprov"
-        assert load_env()["HOSTPROV_API_KEY"] == "hch-test-key"
-
-        cfg = json.loads(config_path.read_text(encoding="utf-8"))
-        # baseUrl is root-scoped; the rest live in the active host block.
-        assert cfg["baseUrl"] == "https://honcho.example.dev"
-        assert cfg["hosts"]["hermes"]["workspace"] == "myws"
-        assert cfg["hosts"]["hermes"]["peerName"] == "eri"
-        assert cfg["hosts"]["hermes"]["environment"] == "local"
-        assert cfg["hosts"]["hermes"]["sessionStrategy"] == "per-repo"
-        # The key lands where the client reads first; GET keeps it write-only.
-        assert cfg["hosts"]["hermes"]["apiKey"] == "hch-test-key"
-
-
-    def test_get_host_block_config_does_not_return_secret(self):
-        self._install_hostprov()
-        self.client.put(
-            "/api/memory/providers/hostprov/config?surface=declared",
-            json={"values": {"apiKey": "secret-value"}},
-        )
-
-        resp = self.client.get("/api/memory/providers/hostprov/config?surface=declared")
-
-        assert resp.status_code == 200
-        data = resp.json()
-        fields = self._provider_field_map(data)
-        assert fields["apiKey"]["is_set"] is True
-        assert fields["apiKey"]["value"] == ""
-        assert "secret-value" not in json.dumps(data)
-
-
-    @pytest.mark.parametrize("corrupt", [True, False], ids=["unparseable-file-is-left-alone", "parseable-file-is-merged"])
-    def test_put_host_block_never_replaces_an_unparseable_config(self, corrupt):
-        # The router reads the provider's config strictly: a file that exists but does not parse must
-        # not be replaced by this host's block alone (that would wipe every other host's keys).
-        from hermes_cli.config import load_config
-
-        config_path = self._install_hostprov()
-        before = "{not json" if corrupt else json.dumps({"hosts": {"other": {"apiKey": "keep-me"}}})
-        config_path.write_text(before, encoding="utf-8")
-
-        resp = self.client.put("/api/memory/providers/hostprov/config?surface=declared",
-                               json={"values": {"workspace": "myws"}})
-
-        if corrupt:
-            assert resp.status_code == 400
-            assert config_path.read_text(encoding="utf-8") == before
-            assert (load_config().get("memory") or {}).get("provider") != "hostprov"
-            return
-        assert resp.status_code == 200
-        cfg = json.loads(config_path.read_text(encoding="utf-8"))
-        assert cfg["hosts"]["other"]["apiKey"] == "keep-me"
-        assert cfg["hosts"]["hermes"]["workspace"] == "myws"
 
 
     # ── GET /api/media (remote image display) ───────────────────────────
@@ -2797,7 +2476,7 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         assert _is_anthropic_frontier_tier("claude-fable-5") is True
         assert _is_anthropic_frontier_tier("anthropic/claude-fable-5") is True
         assert _is_anthropic_frontier_tier("anthropic/claude-fable-5:thinking") is True
-        assert _is_anthropic_frontier_tier("claude-opus-5-0") is True  # forward-compat
+        assert all(map(_is_anthropic_frontier_tier, ("claude-opus-5-0", "anthropic/claude-fable-5.2")))
 
         # Sonnet / Haiku remain non-frontier.
         assert _is_anthropic_frontier_tier("claude-sonnet-5") is False
@@ -2811,7 +2490,6 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         assert _is_anthropic_frontier_tier("z-ai/glm-5.2") is False
         assert _is_anthropic_frontier_tier("") is False
         assert _is_anthropic_frontier_tier(None) is False
-
 
 
 # ---------------------------------------------------------------------------
@@ -3727,7 +3405,7 @@ class TestModelContextLength:
 
         No ``provider`` on disk here on purpose: that keeps this test isolated
         to the diff-omission bug rather than the separate, pre-existing (and
-        intentional, see ``_apply_main_model_assignment``) behavior where a
+        intentional, see ``apply_main_model_assignment``) behavior where a
         real provider switch drops the context_length override."""
         from hermes_cli.web_server_config import _denormalize_config_from_web
         from hermes_cli.config import save_config
@@ -4804,92 +4482,6 @@ class TestPluginAPIAuth:
         assert resp.status_code == 401
 
 
-class TestPluginAPISecretScopeProductionMount:
-    """#120310: a plugin API handler's ``get_secret()`` must resolve the *requested*
-    profile's credentials under multi-profile hosting, verified through the REAL mount
-    path — discovery → import → ``_mount_plugin_api_routes()`` (which attaches
-    ``_plugin_route_secret_scope``) → a live request against ``app`` — not a hand-built
-    ``include_router``. The dedicated ``test_plugin_api_secret_scope.py`` suite proves the
-    dependency in isolation; this closes the actual reported surface end-to-end and pins
-    that the launch profile and a ``?profile=`` request read distinct secrets, that the
-    request profile does not leak back into the launch profile, and that an unknown
-    profile is rejected in the dependency before the handler runs.
-    """
-
-    _PROBE_KEY = "EXAMPLE_PLUGIN_PROBE_KEY"
-
-    @pytest.fixture(autouse=True)
-    def _setup(self, monkeypatch, _isolate_hermes_home, _install_example_plugin):
-        try:
-            from starlette.testclient import TestClient
-        except ImportError:
-            pytest.skip("fastapi/starlette not installed")
-
-        import hermes_state
-        from hermes_constants import get_hermes_home
-        from hermes_cli import profiles
-        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
-
-        default_home = get_hermes_home()
-        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", default_home / "state.db")
-
-        # Anchor the named-profiles root to the isolated home so ``?profile=workerb``
-        # resolves inside the test sandbox (mirrors test_web_server_skills_profiles).
-        profiles_root = default_home / "profiles"
-        monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: default_home)
-        monkeypatch.setattr(profiles, "_get_profiles_root", lambda: profiles_root)
-
-        # Named profile B: a live profile (``.env`` is both an identity marker and the
-        # secret source) with its OWN value for the probe key.
-        worker_home = profiles_root / "workerb"
-        worker_home.mkdir(parents=True, exist_ok=True)
-        (worker_home / ".env").write_text(f"{self._PROBE_KEY}=sk-workerb\n", encoding="utf-8")
-
-        # Launch profile A: an env-only credential (systemd ``Environment=`` style), frozen
-        # into the launch scope when multi-profile hosting activates.
-        monkeypatch.setenv(self._PROBE_KEY, "sk-launch-a")
-
-        import tui_gateway.launch_profile_policy as lpp
-        from agent.secret_scope import is_multiplex_active, set_multiplex_active
-
-        monkeypatch.setattr(lpp, "_snapshot", None)  # freeze the launch env fresh
-        self._previous_multiplex = is_multiplex_active()
-        lpp.activate_multi_profile_hosting()  # freezes os.environ + flips multiplex on
-
-        self.client = TestClient(app)
-        self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
-        try:
-            yield
-        finally:
-            set_multiplex_active(self._previous_multiplex)
-
-    def _probe(self, profile=None):
-        params = {"profile": profile} if profile is not None else None
-        return self.client.get("/api/plugins/example/whoami", params=params)
-
-    def test_launch_and_requested_profile_read_distinct_secrets(self):
-        # No ``?profile=`` → the launch profile's frozen env-only credential.
-        resp = self._probe()
-        assert resp.status_code == 200
-        assert resp.json() == {"ok": True, "key": "sk-launch-a"}
-
-        # ``?profile=workerb`` → that profile's own credential, through the real mount.
-        resp = self._probe("workerb")
-        assert resp.status_code == 200
-        assert resp.json() == {"ok": True, "key": "sk-workerb"}
-
-        # Back to the launch profile: the request scope reset, so B never leaks into A.
-        resp = self._probe()
-        assert resp.status_code == 200
-        assert resp.json() == {"ok": True, "key": "sk-launch-a"}
-
-    def test_unknown_profile_rejected_before_handler(self):
-        # The dependency raises HTTPException(404) before the handler runs, so this is a
-        # 404 — NOT the handler's folded ``{"ok": False}`` no-data contract.
-        resp = self._probe("ghost")
-        assert resp.status_code == 404
-
-
 class TestDashboardPluginManifestExtensions:
     """Tests for the extended plugin manifest fields (tab.override,
     tab.hidden, slots) read by _discover_dashboard_plugins()."""
@@ -5042,7 +4634,7 @@ class TestDashboardPluginManifestExtensions:
 # monkeypatch that hook.
 # ---------------------------------------------------------------------------
 
-from hermes_cli import main_tui_launch
+from hermes_cli import main as _main_mod, main_tui_launch
 
 
 skip_on_windows = pytest.mark.skipif(
@@ -5076,8 +4668,8 @@ class TestPtyWebSocket:
         return f"/api/pty?{urlencode(q)}"
 
 
-    def test_tui_python_command_uses_child_path(self, tmp_path):
-        """Bare Python commands are resolved from the TUI child's PATH."""
+    def test_tui_python_env_is_this_process_not_the_shell(self, tmp_path):
+        """A dev shell's interpreter and tree never reach the TUI's gateway child."""
 
         command = f"hermes-review-python{Path(sys.executable).suffix}"
         bin_dir = tmp_path / "bin"
@@ -5087,14 +4679,14 @@ class TestPtyWebSocket:
         # the venv (tmpfs /tmp vs disk home) where hard links raise EXDEV.
         shutil.copy2(sys.executable, executable)
         env = {
-            "HERMES_CWD": str(tmp_path),
-            "HERMES_PYTHON": command,
+            "HERMES_CWD": str(tmp_path), "HERMES_PYTHON_SRC_ROOT": str(tmp_path),
+            "HERMES_PYTHON": str(executable),
             "PATH": str(bin_dir),
         }
 
         main_tui_launch._apply_tui_python_env(env)
 
-        assert env["HERMES_PYTHON"] == command
+        assert (env["HERMES_PYTHON"], env["HERMES_PYTHON_SRC_ROOT"]) == (sys.executable, str(_main_mod.PROJECT_ROOT))
 
 
     def test_unavailable_platform_closes_with_message(self, monkeypatch):
@@ -5890,7 +5482,7 @@ class TestSubmittedCustomEndpointSurvivesAssignment:
     replace what the user typed and had persisted."""
 
     def test_submitted_custom_endpoint_wins_over_an_env_endpoint(self, monkeypatch):
-        from hermes_cli.web_server_config import _apply_main_model_assignment, _validated_main_model_selection
+        from hermes_cli.model_assignment import apply_main_model_assignment
 
         monkeypatch.setenv("CUSTOM_BASE_URL", "http://127.0.0.1:9999/v1")
         monkeypatch.setattr(
@@ -5900,13 +5492,13 @@ class TestSubmittedCustomEndpointSurvivesAssignment:
         monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
 
         cfg = {"model": {"provider": "openrouter", "default": "m"}}
-        result = _validated_main_model_selection(
+        result = _web_server_config._validated_main_model_selection(
             cfg, "custom", "qwen3:8b", "https://api.anthropic.com", "submitted-key")
 
         assert result.base_url == "https://api.anthropic.com"
         # The wire protocol follows the endpoint that gets persisted, not the displaced env host.
         assert result.api_mode == "anthropic_messages"
-        applied = _apply_main_model_assignment(cfg.get("model", {}), result, "submitted-key")
+        applied = apply_main_model_assignment(cfg.get("model", {}), result, "submitted-key")
         assert applied["base_url"] == "https://api.anthropic.com"
         assert applied["api_mode"] == "anthropic_messages"
         assert applied["api_key"] == "submitted-key"

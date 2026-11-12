@@ -11,6 +11,7 @@ from __future__ import annotations
 from pydantic import Field
 
 from .base import JsonValue, Params, Result, WireEnum
+from .common import UndoRollbackHint
 from .registry import canonical_method, method
 
 
@@ -237,6 +238,11 @@ class CommandsCatalogResult(Result):
     skills: dict[str, SkillCatalogEntry] = Field(default_factory=dict)
     skill_count: int = 0
     warning: str = ""
+    # Non-empty when plugin command discovery failed: the plugin list is unknown, not empty.
+    plugin_discovery_error: str = ""
+    # Every plugin command (name without ``/`` -> description), also one a display row such as Ink's
+    # ``/logs`` hides from ``categories``: route on this, not on the display list.
+    plugin_commands: dict[str, str] = Field(default_factory=dict)
 
 
 method("commands.catalog", params=CommandsCatalogParams, result=CommandsCatalogResult,
@@ -362,6 +368,12 @@ method("config.show", params=ConfigShowParams, result=ConfigShowResult,
 class RollbackListParams(Params):
     session_id: str
     profile: str | None = None
+    # Epoch seconds an /undo's span began (``tools/checkpoint_undo_hint.py::undo_span_start``): the result
+    # then carries ``undo_hint`` naming the files that span changed.
+    undo_since: float | None = None
+    # The rewound user row's id (``session.mutate`` rewind's ``target_message.id``): the kept rows before it
+    # bound the span, so a turn another viewer starts after the rewind cannot move it.
+    undo_message_id: int | None = None
 
 
 class RollbackCheckpoint(Result):
@@ -373,6 +385,7 @@ class RollbackCheckpoint(Result):
 class RollbackListResult(Result):
     enabled: bool
     checkpoints: list[RollbackCheckpoint] = Field(default_factory=list)
+    undo_hint: UndoRollbackHint | None = None
 
 
 method("rollback.list", params=RollbackListParams, result=RollbackListResult,
@@ -384,6 +397,9 @@ class RollbackRestoreParams(Params):
     hash: str
     file_path: str | None = None
     profile: str | None = None
+    # A whole-tree restore keeps the user's hand-edits (``CheckpointManager.restore(safe=True)``, as the
+    # gateway text command and the in-process CLI do); ``all`` reverts them too (main's ``--all``).
+    all: bool | None = None
 
 
 class RollbackRestoreResult(_Open):
@@ -528,14 +544,11 @@ class BrowserAction(WireEnum):
     status = "status"
     connect = "connect"
     disconnect = "disconnect"
-    use = "use"
 
 
 class BrowserManageParams(Params):
     action: BrowserAction = BrowserAction.status
     url: str | None = None
-    # ``use`` only: True selects Browser Use mode (browser_exec), False the built-in browser tools.
-    enabled: bool | None = None
     session_id: str | None = None
     profile: str | None = None
 
@@ -544,10 +557,7 @@ class BrowserManageResult(Result):
     connected: bool
     url: str | None = None
     messages: list[str] | None = None
-    # ``status`` / ``use``: whether new agents for this profile get browser_exec.
-    browser_use: bool | None = None
 
 
 method("browser.manage", params=BrowserManageParams, result=BrowserManageResult,
-       doc="Inspect, attach to, or drop the CDP browser the tools use, or switch Browser Use mode "
-           "(``use``, applies to new sessions); ``messages`` narrate a connect.")
+       doc="Inspect, attach to, or drop the CDP browser the tools use; ``messages`` narrate a connect.")

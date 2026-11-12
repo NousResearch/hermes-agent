@@ -116,7 +116,7 @@ def test_messaging_card_for_the_default_home_rekeys_by_the_profile_not_the_dirna
     # A launch-service gateway's record fails the own-rung argv check (inline ``-c``), so the card
     # falls through to the multiplexer rung — mirrored here by an absent own record.
     monkeypatch.setattr(messaging, "read_runtime_status", lambda *a, **k: None)
-    monkeypatch.setattr(messaging, "multiplexer_liveness_for_profile", lambda home: (os.getpid(), record))
+    monkeypatch.setattr(status, "multiplexer_liveness_for_profile", lambda home: (os.getpid(), record))
     monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: "hermes gateway run")
     monkeypatch.setattr(messaging, "_platform_enablement", lambda *a, **k: (True, True, None))
     entry = {"id": "telegram", "name": "Telegram", "description": "", "docs_url": "", "env_vars": [],
@@ -187,3 +187,69 @@ def test_messaging_card_keeps_a_live_own_gateway_record_over_the_multiplexer(ser
     [payload] = messaging._platform_payloads(alpha, [entry])
     assert payload["gateway_running"] is True
     assert payload["state"] == "retrying", payload
+
+
+
+@pytest.mark.parametrize(("relay_url", "alpha_yaml", "expected"), [
+    # Hosted: the container env enables Relay for every profile; the default's adapter serves it.
+    ("https://connector.example", "", "connected"),
+    # The profile opted out: the live shared adapter must not paint its saved Disable over.
+    ("https://connector.example", "platforms:\n  relay:\n    enabled: false\n", "disabled"),
+    # A self-hosted secondary that never set Relay up stays as it was.
+    (None, "", "disabled"),
+])
+def test_served_profile_mirrors_the_default_relay(served_root, monkeypatch, relay_url, alpha_yaml, expected):
+    """Relay is process-level shared ingress: the default's one adapter serves every profile, and
+    the multiplexer stamps no ``<profile>:relay`` entry when it does. A profile with Relay on must
+    read the default's live state, not fall through to ``pending_restart`` ("Restart needed"
+    forever for a channel that is answering), and the profile's own enable/disable still decides."""
+    from gateway.status import profile_platforms_from_multiplexer, resolve_gateway_liveness
+    from hermes_cli.web_routers import messaging
+    if relay_url:
+        monkeypatch.setenv("GATEWAY_RELAY_URL", relay_url)
+    else:
+        monkeypatch.delenv("GATEWAY_RELAY_URL", raising=False)
+    record = json.loads((served_root / "gateway_state.json").read_text(encoding="utf-8"))
+    record["platforms"]["relay"] = {"state": "connected"}
+    (served_root / "gateway_state.json").write_text(json.dumps(record), encoding="utf-8")
+    alpha = served_root / "profiles" / "alpha"
+    (alpha / "config.yaml").write_text(alpha_yaml, encoding="utf-8")
+    live = resolve_gateway_liveness(profile_dir=alpha, health_probe=None, use_cache=False)
+    plats = profile_platforms_from_multiplexer(live.runtime, "alpha")
+    assert plats["relay"]["state"] == "connected"
+    assert plats["relay"]["mirrored_from"] == "default"
+    assert plats["relay"]["ingress_url"] is None  # no per-profile URL: the connector routes it
+
+    entry = {"id": "relay", "name": "Relay", "description": "", "docs_url": "", "env_vars": [],
+             "required_env": []}
+    with messaging._profile_scope("alpha") as scoped_dir:  # the route's own scoping
+        [payload] = messaging._platform_payloads(scoped_dir, [entry])
+    assert payload["state"] == expected, payload
+    assert payload["enabled"] is (expected == "connected"), payload
+    assert payload["error_code"] is None, payload
+
+
+@pytest.mark.parametrize(("alpha_yaml", "expected_state", "expected_error"), [
+    ("", "fatal", "relay_auth_failed"),
+    # A profile that switched Relay off shows Disabled, without the default's failure banner.
+    ("platforms:\n  relay:\n    enabled: false\n", "disabled", None),
+])
+def test_served_profile_reads_a_dead_default_relay_as_its_own_failure(
+    served_root, monkeypatch, alpha_yaml, expected_state, expected_error,
+):
+    """The default's Relay adapter serves every profile, so when it is fatal the served profile's
+    Relay is too: show that failure, not "Restart needed" (a restart of the profile changes nothing)."""
+    from hermes_cli.web_routers import messaging
+    monkeypatch.setenv("GATEWAY_RELAY_URL", "https://connector.example")
+    record = json.loads((served_root / "gateway_state.json").read_text(encoding="utf-8"))
+    record["platforms"]["relay"] = {"state": "fatal", "error_code": "relay_auth_failed",
+                                    "error_message": "connector refused the gateway"}
+    (served_root / "gateway_state.json").write_text(json.dumps(record), encoding="utf-8")
+    (served_root / "profiles" / "alpha" / "config.yaml").write_text(alpha_yaml, encoding="utf-8")
+    entry = {"id": "relay", "name": "Relay", "description": "", "docs_url": "", "env_vars": [],
+             "required_env": []}
+    with messaging._profile_scope("alpha") as scoped_dir:
+        [payload] = messaging._platform_payloads(scoped_dir, [entry])
+    assert payload["state"] == expected_state, payload
+    assert payload["error_code"] == expected_error, payload
+    assert (payload["error_message"] is None) is (expected_error is None), payload

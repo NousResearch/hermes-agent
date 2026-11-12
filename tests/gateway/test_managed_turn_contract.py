@@ -31,9 +31,11 @@ def assignment(tmp_path, monkeypatch, *, finite=True, unattended=False, yolo=Fal
 def test_child_executes_under_finite_policy_and_preserves_receipt(tmp_path, monkeypatch, unattended):
     from agent import managed_worker as worker
     from gateway.session_finite import finite_turn_required, unattended_turn
+    from hermes_scope import Fence, current_scope
     from tools.approval import _yolo_active, clear_session
     frame, _ = assignment(tmp_path, monkeypatch, unattended=unattended)
-    observed, frames = [], []
+    frame['scope'].update(epoch=3, generation=8)  # distinct, so a swapped fence is caught
+    observed, frames, scopes = [], [], []
 
     class Agent:
         def __init__(self, **kwargs):
@@ -42,6 +44,7 @@ def test_child_executes_under_finite_policy_and_preserves_receipt(tmp_path, monk
             self.session_completion_tokens = 20
         def run_conversation(self, text, **kwargs):
             observed.append((finite_turn_required(), unattended_turn(), _yolo_active()))
+            scopes.append(current_scope())
             self.kwargs['tool_start_callback']('call-1', 'read_file', {'path': 'report.txt'})
             self.kwargs['tool_complete_callback']('call-1', 'read_file', {'path': 'report.txt'},
                                                  '{"error":"file missing"}')
@@ -71,7 +74,7 @@ def test_child_executes_under_finite_policy_and_preserves_receipt(tmp_path, monk
     monkeypatch.setattr(worker, 'discover_profile_mcp', lambda policy: None)
     monkeypatch.setattr(worker, 'retire_agent', lambda agent: None)
     monkeypatch.setattr(worker, 'WorkerControls', Controls)
-    monkeypatch.setattr('agent.runtime_session_store.WorkerRPC', lambda home: lambda *a, **k: {'owner_epoch': 1})
+    monkeypatch.setattr('agent.runtime_session_store.WorkerRPC', lambda home: lambda *a, **k: {'owner_epoch': 3})
     monkeypatch.setattr('agent.runtime_session_store.RuntimeSessionStore', Store)
     monkeypatch.setattr('tools.process_registry.process_registry.recover_from_checkpoint', lambda: None)
     monkeypatch.setattr('run_agent.AIAgent', Agent)
@@ -79,6 +82,8 @@ def test_child_executes_under_finite_policy_and_preserves_receipt(tmp_path, monk
     clear_session('managed-contract')  # the child owns a fresh approval registry
     worker.execute(frame, SimpleNamespace(send=lambda kind, **payload: frames.append({'type': kind, **payload})))
     assert observed == [(True, unattended, unattended)]
+    # The worker's one turn runs under the fence its owner claimed it with.
+    assert [(s.session, s.turn, s.fence) for s in scopes] == [('sid', 'x', Fence(3, 8))]
     receipt = next(f for f in frames if f['type'] == 'result')
     assert receipt['result']['completed'] is False
     assert receipt['result']['estimated_cost_usd'] == .02
@@ -144,6 +149,7 @@ async def test_stop_during_environment_preparation_prevents_bootstrap(tmp_path, 
     class Worker:
         def __init__(self, process):
             self.stop = asyncio.Event()
+            self.stop_cause = None
         def interrupt(self):
             self.stop.set()
         async def next_frame(self, *args, **kwargs):

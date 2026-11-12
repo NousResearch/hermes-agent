@@ -56,7 +56,7 @@ _DESKTOP_APPLY_MODES = {
 _EXCEPTION_STOP_REASON = re.compile(r"([A-Z][A-Za-z0-9_]*):(?: |$)")
 # pm's own failure types (pm/package.py, pm/environment.py, pm/downloader.py, pm/lock.py, ...).
 _PM_ERROR_TYPES = frozenset({
-    "BuildFailure", "DownloadError", "DownloadPaused", "DownloadTransportError", "FeatureProbeError",
+    "BuildFailure", "DownloadError", "DownloadPaused", "DownloadTransportError", "FeatureProbeError", "MirrorRefused",
     "HashError", "InstallError", "PinMismatch", "ResolutionConflict", "StaleLockRow",
 })
 # Built-in OSError and its subclasses (disk full, permissions, a file held open on Windows).

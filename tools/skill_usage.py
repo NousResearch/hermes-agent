@@ -176,7 +176,7 @@ def _read_hub_installed_names() -> set[str]:
             except (OSError, ValueError):
                 continue
             if (resolved / "SKILL.md").exists():
-                names.add(_read_skill_name(resolved / "SKILL.md", fallback=resolved.name))
+                names.add(read_skill_name(resolved / "SKILL.md", fallback=resolved.name))
         return names
     except (OSError, json.JSONDecodeError) as e:
         logger.debug("Failed to read hub lock file: %s", e)
@@ -217,7 +217,7 @@ def _iter_skill_mds(base: Path, *, local_only: bool) -> Iterator[tuple[str, Path
     external skill dirs mounted below the tree (curation must not touch them)."""
     for skill_md in base.rglob("SKILL.md"):
         if not (is_excluded_skill_path(skill_md) or (local_only and is_external_skill_path(skill_md))):
-            yield _read_skill_name(skill_md, fallback=skill_md.parent.name), skill_md
+            yield read_skill_name(skill_md, fallback=skill_md.parent.name), skill_md
 
 
 def _scan_local_skills(keep: Callable[[str, Path, set[str], dict[str, Any]], bool]) -> list[str]:
@@ -243,7 +243,7 @@ def list_archived_skill_names() -> list[str]:
     return sorted({p.name for p in root.iterdir() if p.is_dir()}) if root.exists() else []
 
 
-def _read_skill_name(skill_md: Path, fallback: str) -> str:
+def read_skill_name(skill_md: Path, fallback: str) -> str:
     """The frontmatter ``name:`` field of a SKILL.md (first 4000 chars), else *fallback*."""
     try:
         lines = [line.strip() for line in skill_md.read_text(encoding="utf-8-sig", errors="replace")[:4000].split("\n")]
@@ -577,6 +577,31 @@ def set_pinned(skill_name: str, pinned: bool) -> bool:
     return _set_field(skill_name, "pinned", bool(pinned))
 
 
+def set_locked(skill_name: str, locked: bool) -> bool:
+    """User declaration (``hermes curator lock``) that the autonomous passes — background review and
+    curator — must not change this skill's content. NOT curation-gated: hand-written, bundled and
+    hub skills can all be locked; archival eligibility is the separate ``pinned`` axis. True when
+    the write landed."""
+    return bool(_mutate(skill_name, lambda rec: rec.update({"locked": bool(locked)}) or True))
+
+
+def is_locked(skill_name: str) -> bool:
+    """``locked`` flag of *skill_name*. Strict on purpose: a corrupt or unreadable sidecar RAISES
+    instead of reading as "unlocked" (``load_usage`` returns {} there), so the write guard can fail
+    closed rather than silently relax a lock the user set."""
+    path = _usage_file()
+    if not path.exists():
+        return False
+    data = json.loads(path.read_text(encoding="utf-8-sig"))
+    rec = data.get(skill_name) if isinstance(data, dict) else None
+    return bool(rec.get("locked")) if isinstance(rec, dict) else False
+
+
+def locked_skill_names() -> list[str]:
+    """Names carrying ``locked: true`` (best-effort listing; empty on a corrupt sidecar)."""
+    return sorted(name for name, rec in load_usage().items() if rec.get("locked"))
+
+
 def forget(skill_name: str) -> None:
     if skill_name:
         _locked_update(skill_name, lambda d: (None, d.pop(skill_name, None) is not None), "skill_usage.forget(%s) failed: %s")
@@ -663,7 +688,7 @@ def restore_skill(skill_name: str) -> tuple[bool, str]:
     candidates = [p for p in dirs if p.name == skill_name] or sorted(
         (p for p in dirs if p.name.startswith(prefix) and len(p.name) - len(prefix) == 14
          and p.name[len(prefix):].isdigit()), reverse=True) or [
-        p for p in dirs if (p / "SKILL.md").is_file() and _read_skill_name(p / "SKILL.md", fallback=p.name) == skill_name]
+        p for p in dirs if (p / "SKILL.md").is_file() and read_skill_name(p / "SKILL.md", fallback=p.name) == skill_name]
     if not candidates:
         return False, f"skill '{skill_name}' not found in archive"
     if (dest := _skills_dir() / skill_name).exists():
@@ -672,7 +697,7 @@ def restore_skill(skill_name: str) -> tuple[bool, str]:
 
 
 def _match_skill_dir(skill_mds: Iterable[Path], skill_name: str) -> Optional[Path]:
-    return next((p.parent for p in skill_mds if _read_skill_name(p, fallback=p.parent.name) == skill_name), None)
+    return next((p.parent for p in skill_mds if read_skill_name(p, fallback=p.parent.name) == skill_name), None)
 
 
 def _find_skill_dir(skill_name: str) -> Optional[Path]:
@@ -721,7 +746,7 @@ def _external_skill_names() -> set:
             continue
         for skill_md in base.rglob("SKILL.md"):
             if not is_excluded_skill_path(skill_md):
-                names.add(_read_skill_name(skill_md, fallback=skill_md.parent.name))
+                names.add(read_skill_name(skill_md, fallback=skill_md.parent.name))
     return names
 
 
@@ -740,9 +765,16 @@ def provenance(skill_name: str) -> str:
 
 
 def usage_report() -> list[dict[str, Any]]:
-    """Usage rows for EVERY skill on disk (built-ins and hub included); ``curated_report()`` is the managed subset."""
-    if not (base := _skills_dir()).exists():
-        return []
+    """Usage rows for EVERY skill on disk (built-ins and hub included) plus the enabled plugins' skills;
+    ``curated_report()`` is the managed subset."""
     data = load_usage()
-    return [_report_row(n, data.get(n), provenance=provenance(n), _persisted=n in data)
-            for n in sorted({name for name, _md in _iter_skill_mds(base, local_only=False)})]
+    names = ({name for name, _md in _iter_skill_mds(base, local_only=False)}
+             if (base := _skills_dir()).exists() else set())
+    rows = [_report_row(n, data.get(n), provenance=provenance(n), _persisted=n in data) for n in names]
+    # Plugin skills live in the plugin's own directory and are counted under their qualified name
+    # ("meshy:meshy-3d"), so a walk of the skills directory never sees them.
+    from hermes_cli.plugins import discover_plugins, get_plugin_manager
+    discover_plugins()
+    rows += [_report_row(n, data.get(n), provenance="plugin", _persisted=n in data)
+             for n in (meta["name"] for meta in get_plugin_manager().list_plugin_skill_metadata()) if n not in names]
+    return sorted(rows, key=lambda r: r["name"])

@@ -108,6 +108,16 @@ def _repo_host(repo: object) -> str:
     return (urlsplit(repo).hostname or "").lower() if isinstance(repo, str) else ""
 
 
+def _is_docs_url(value: str) -> bool:
+    """https with a real hostname; ``https://:443/x`` and ``https://user@/x`` pass the regex but carry no host."""
+    if not re.fullmatch(r"https://[^\s/?#]+\S*", value):
+        return False
+    try:
+        return bool(urlsplit(value).hostname)
+    except ValueError:
+        return False
+
+
 def _check_page_fields(data: dict, errors: list[str]) -> None:
     """``screenshots``, ``docs_url`` and ``readme`` feed the entry's page at /docs/plugins/<name>; all optional (README on by default)."""
     shots = data.get("screenshots")
@@ -121,7 +131,7 @@ def _check_page_fields(data: dict, errors: list[str]) -> None:
     # The site renders docs_url as an <a href>; empty means "no docs link".
     docs_url = data.get("docs_url")
     if docs_url is not None and not (
-        isinstance(docs_url, str) and (not docs_url.strip() or re.fullmatch(r"https://[^\s/?#]+\S*", docs_url.strip()))
+        isinstance(docs_url, str) and (not docs_url.strip() or _is_docs_url(docs_url.strip()))
     ):
         errors.append(f"docs_url {docs_url!r} must be an https:// URL (the docs site renders it as a link)")
     readme = data.get("readme")

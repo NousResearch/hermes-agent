@@ -3883,8 +3883,43 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
             client, channel_id, msg_ts, event, team_id, explicit_allowlist)
         if thread_ts is None:
             return
-        await self._handle_slack_message(
-            self._synthetic_reaction_event(event, action, thread_ts, team_id))
+        synthetic = self._synthetic_reaction_event(event, action, thread_ts, team_id)
+        # The synthetic event stamps the install team, so without the reactor's own
+        # workspace an external-org user reacting in a DM would pass the prefilter's
+        # external-DM gate and get the refused DM thread hydrated (#143792).
+        if str(channel_id).startswith("D"):
+            reactor_team = await self._resolve_author_team(user_id, channel_id, team_id)
+            if reactor_team:
+                synthetic["user_team"] = reactor_team
+        await self._handle_slack_message(synthetic)
+
+    async def _resolve_author_team(self, user_id: str, channel_id: str, team_id: str) -> str:
+        """``T…`` home workspace of ``user_id`` via cached ``users.info``, or "" when unknown.
+        Used to stamp synthetic DM events so the _prefilter_inbound external-DM gate can judge
+        them. Lookup failure returns "" — the gate's documented empty-author fail-open."""
+        if not user_id:
+            return ""
+        # Lazily created: tests build adapters via object.__new__.
+        cache = getattr(self, "_user_team_cache", None)
+        if cache is None:
+            cache = self._user_team_cache = {}
+        key = (str(team_id), str(user_id))
+        if key in cache:
+            return cache[key]
+        try:
+            client = self._team_clients.get(team_id) if team_id else None
+            payload = _slack_response_payload(
+                await (client or self._get_client(channel_id)).users_info(user=user_id))
+        except Exception as exc:
+            logger.debug("[Slack] users.info team lookup for %s failed: %s", user_id, exc,
+                         exc_info=exc)
+            return ""
+        user_team = (payload.get("user") or {}).get("team_id")
+        if not (isinstance(user_team, str) and user_team.startswith("T")):
+            return ""
+        cache[key] = user_team
+        self._trim_oldest_dict_entries(cache, self._USER_NAME_CACHE_MAX)
+        return user_team
 
     def _synthetic_reaction_event(
         self, event: dict, action: str, thread_ts: str, team_id: str) -> dict:
@@ -4033,30 +4068,12 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         # payload carries no sender team, so resolve the sharer from the event fields,
         # the file object, or users.info — before the stamp.
         if str(channel_id).startswith("D") or event.get("channel_type") == "im":
-            sender_team = ""
-            for field in ("user_team", "team"):
-                value = event.get(field)
-                if isinstance(value, str) and value.startswith("T"):
-                    sender_team = value
-                    break
-            if not sender_team:
-                file_team = file_obj.get("user_team")
-                if isinstance(file_team, str) and file_team.startswith("T"):
-                    sender_team = file_team
             sharer_id = event.get("user_id") or file_obj.get("user", "")
-            if not sender_team and sharer_id:
-                try:
-                    client = self._team_clients.get(team_id) if team_id else None
-                    user_resp = await (client or self._get_client(channel_id)).users_info(user=sharer_id)
-                    user_team = ((user_resp or {}).get("user") or {}).get("team_id")
-                    if isinstance(user_team, str) and user_team.startswith("T"):
-                        sender_team = user_team
-                except Exception as exc:
-                    # Best-effort sharer resolution: fail-open (documented) but keep
-                    # the traceback so a silent API failure stays diagnosable.
-                    logger.debug(
-                        "[Slack] users.info for file_shared %s failed: %s", file_id, exc,
-                        exc_info=exc)
+            sender_team = next((
+                v for v in (event.get("user_team"), event.get("team"), file_obj.get("user_team"))
+                if isinstance(v, str) and v.startswith("T")), "")
+            sender_team = sender_team or await self._resolve_author_team(
+                sharer_id, channel_id, team_id)
             if sender_team and team_id and sender_team != team_id:
                 logger.info(
                     "[Slack] Ignoring file share DM from external-org user %s (team %s) in %s",
@@ -4553,7 +4570,9 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
             if isinstance(value, str) and value.startswith("T"):
                 author_team = value
                 break
-        is_dm_event = event.get("channel_type") == "im" or str(channel_id).startswith("D")
+        is_dm_event = (
+            event.get("channel_type") == "im" or str(channel_id).startswith("D")
+            or str(event.get("_hermes_reaction_source_channel", "")).startswith("D"))
         if is_dm_event and author_team and dedup_team_id and author_team != dedup_team_id:
             logger.info(
                 "[Slack] Ignoring DM from external-org user %s (team %s) in %s",

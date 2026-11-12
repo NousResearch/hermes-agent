@@ -377,3 +377,60 @@ def _async_return(value):
     future = asyncio.get_event_loop().create_future()
     future.set_result(value)
     return future
+
+
+# ---------------------------------------------------------------------------
+# Tests: a reaction_triggers turn cannot re-enter an external-org DM
+# (the synthetic reaction event stamps the install team, like file_shared)
+# ---------------------------------------------------------------------------
+
+
+def _reaction_adapter(reactor_team: str):
+    adapter = _make_adapter()
+    adapter.config.extra["reaction_triggers"] = "thumbsup"
+    adapter._channel_team = {}
+    adapter._reaction_handler = None
+    client = adapter._team_clients[HOST_TEAM]
+    client.conversations_replies = AsyncMock(return_value={"messages": [
+        {"ts": "100.1", "user": "U_EXT_USER", "text": "secret ask"}]})
+    client.users_info = AsyncMock(return_value={"user": {"is_bot": False, "team_id": reactor_team}})
+    adapter._drop_bot_sender = AsyncMock(return_value=False)
+    accepted = []
+
+    async def _impl(event, payload=None):
+        accepted.append(await adapter._prefilter_inbound(event, payload))
+
+    adapter._handle_slack_message = _impl
+    return adapter, accepted
+
+
+def _dm_reaction():
+    return {"type": "reaction_added", "user": "U_EXT_USER", "reaction": "thumbsup",
+            "item_user": "U_EXT_USER", "item": {"type": "message", "channel": "D_INBOX_1",
+                                                "ts": "100.1"}, "event_ts": "200.2"}
+
+
+@pytest.mark.asyncio
+async def test_reaction_in_dm_from_external_org_is_refused():
+    """An allowlisted reaction by an external-org user in a DM must hit the same
+    external-DM refusal as their messages (#143792)."""
+    adapter, accepted = _reaction_adapter(EXT_TEAM)
+    await adapter._handle_slack_reaction(_dm_reaction())
+    assert accepted == [None]
+
+
+@pytest.mark.asyncio
+async def test_reaction_in_dm_from_host_org_still_routes():
+    adapter, accepted = _reaction_adapter(HOST_TEAM)
+    await adapter._handle_slack_reaction(_dm_reaction())
+    assert len(accepted) == 1 and accepted[0] is not None
+
+
+@pytest.mark.asyncio
+async def test_reaction_handoff_from_external_dm_is_refused():
+    """A configured handoff target replaces the DM channel; the reaction's DM source
+    still decides whether the gate applies."""
+    adapter, accepted = _reaction_adapter(EXT_TEAM)
+    adapter.config.extra["reaction_trigger_target"] = "C_HANDOFF"
+    await adapter._handle_slack_reaction(_dm_reaction())
+    assert accepted == [None]

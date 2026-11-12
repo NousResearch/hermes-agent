@@ -133,10 +133,10 @@ class SessionTitlesMixin:
             cleared = self._resolve_title_conflict(conn, session_id, title)
             if cleared:
                 affected.append(cleared)
-        # CAS on the values just read (``IS`` is NULL-safe): a concurrent write between
-        # the SELECT and here loses instead of being overwritten.
+        # Compare-and-swap against the values read above using NULL-safe equality,
+        # so a concurrent update is not overwritten.
         changed = conn.execute(
-            "UPDATE sessions SET title = ?, title_source = ? WHERE id = ? AND title IS ? AND title_source IS ?",
+            "UPDATE sessions SET title = ?, title_source = ? WHERE id = ? AND title IS NOT DISTINCT FROM ? AND title_source IS NOT DISTINCT FROM ?",
             (title, source if title else None, session_id, current["title"], current["title_source"]),
         ).rowcount
         return [*affected, session_id] if changed else affected

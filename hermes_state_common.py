@@ -59,14 +59,17 @@ def escape_like(text: str) -> str:
     return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
-_PREVIEW_CONTENT_SQL = "REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' ')"
+_PREVIEW_CONTENT_SQL = "REPLACE(REPLACE(m.content, '\n', ' '), '\r', ' ')"
 # User-invoked and gateway auto-load scaffolds both get the head+tail excerpt window:
 # the typed request sits at the tail (auto-load) or behind the instruction marker.
 # No LIKE wildcards in either prefix, so no ESCAPE clause is needed.
 _PREVIEW_SCAFFOLDED_SQL = (
     f"(m.content LIKE '{SKILL_SCAFFOLD_SQL_LIKE}'"
     f" OR m.content LIKE '{AUTO_LOAD_SCAFFOLD_SQL_LIKE}')")
-_SQL_WHITESPACE = "CHAR(9) || CHAR(10) || CHAR(13) || CHAR(32)"
+# Strip set: the TAB, LF, CR and SPACE control characters. The literal must carry the real
+# bytes: SQL string literals in neither SQLite nor PostgreSQL interpret backslash escapes,
+# so an escaped sequence would be stripped as the letters t, n, r and backslash.
+_SQL_WHITESPACE = "'" + "\t\n\r " + "'"
 
 
 def _sql_literal(text: str) -> str:
@@ -91,10 +94,41 @@ def _sql_json_extract(expression: str, path: str) -> str:
     """Build a non-throwing JSON marker lookup for a JSON TEXT column."""
 
     safe_json = (
-        f"(CASE WHEN json_valid({expression}) "
-        f"THEN {expression} ELSE json_object() END)"
+        f"(CASE WHEN json_valid({expression}) <> 0 "
+        f"THEN {expression} ELSE 'null' END)"
     )
     return f"json_extract({safe_json}, {_sql_literal(path)})"
+
+
+def _sql_model_only_truthy(expression: str, key: str) -> str:
+    """Portable type-aware marker test for ``<key>`` with Python-truthy semantics.
+
+    The row is model-only exactly when the marker value is JSON ``true``, a non-empty JSON
+    string, a non-zero JSON number, or a non-empty JSON object/array; ``false``, ``0`` /
+    ``0.0``, JSON ``null``, a missing key, and invalid JSON all read as absent. This is the
+    SQL twin of ``SessionDB._is_model_only_row``: the type comes from ``json_type``
+    (SQLite builtin; the PostgreSQL shim mirrors the SQLite type vocabulary) and the value
+    from the extracted scalar's text, so both dialects agree on every shape (the numeric
+    ``NOT IN`` set covers both zero spellings; ``real``/``number`` are the same type in
+    each dialect's vocabulary)."""
+    safe_json = (
+        f"(CASE WHEN json_valid({expression}) <> 0 "
+        f"THEN {expression} ELSE 'null' END)"
+    )
+    path = _sql_literal(f"$.{key}")
+    type_of = f"json_type({safe_json}, {path})"
+    value_of = f"COALESCE(CAST(json_extract({safe_json}, {path}) AS TEXT), '')"
+    # CASE WHEN normalizes the OR-chain to 0/1 on both dialects (a missing key or
+    # invalid JSON leaves the chain NULL: the CASE takes the ELSE branch, and a
+    # bare NULL predicate would wrongly filter the row out of a display read).
+    return (
+        f"CASE WHEN ({type_of} = 'true' "
+        f"OR ({type_of} = 'boolean' AND {value_of} = 'true') "
+        f"OR ({type_of} = 'text' AND {value_of} <> '') "
+        f"OR ({type_of} IN ('integer', 'real', 'number') AND {value_of} NOT IN ('0', '0.0', '-0.0')) "
+        f"OR ({type_of} IN ('object', 'array') AND {value_of} NOT IN ('{{}}', '[]'))) "
+        "THEN 1 ELSE 0 END"
+    )
 
 
 def _sql_ltrim_whitespace(expression: str) -> str:

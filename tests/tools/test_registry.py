@@ -173,6 +173,16 @@ class TestGetDefinitions:
                         "function": {"name": "bad", "parameters": ["x"]}},
             )
 
+    def test_openai_envelope_with_non_dict_function_is_rejected(self):
+        """A malformed envelope must fail at registration, not advertise an empty tool."""
+        reg = ToolRegistry()
+        with pytest.raises(ValueError, match=r"schema\['function'\] must be an object"):
+            reg.register(
+                name="broken", toolset="probe", handler=_dummy_handler,
+                schema={"type": "function", "function": ["not", "an", "object"]},
+            )
+        assert reg.get_entry("broken") is None
+
 
 
 

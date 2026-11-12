@@ -8931,6 +8931,18 @@
               }
             ],
             "default": null
+          },
+          "source_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source Label"
           }
         },
         "title": "CanonicalCreateParams",

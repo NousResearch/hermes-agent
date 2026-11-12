@@ -110,6 +110,22 @@ class TestClassification:
             assert not is_deferrable_tool_name(name), name
             assert name not in _HERMES_CORE_TOOLS
 
+    def test_homeassistant_toolset_never_defers(self):
+        """The native HA tools are a direct surface: voice/Assist queries must reach
+        them without a discovery round trip, so the homeassistant toolset stays eager."""
+        from tools.registry import registry
+        from tools.tool_search import _DIRECT_SURFACE_TOOLSETS, is_deferrable_tool_name
+
+        assert "homeassistant" in _DIRECT_SURFACE_TOOLSETS
+        name = "ha_probe_list"
+        registry.register(
+            name=name,
+            handler=lambda args, **kw: "{}",
+            schema=_td(name, "Probe HA tool")["function"],
+            toolset="homeassistant",
+        )
+        assert not is_deferrable_tool_name(name)
+
 
     def test_defer_override_restores_legacy_direct_gui(self):
         """tools.tool_search.defer: [] restores the everything-eager legacy:

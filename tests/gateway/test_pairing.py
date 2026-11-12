@@ -597,6 +597,27 @@ class TestRevoke:
             assert store.approve_code("telegram", stale_code) is None
             allowlist_remove.assert_called_once_with("telegram", "user1")
 
+    def test_unreadable_pending_file_still_revokes_and_kills_stale_codes(self, tmp_path):
+        """A pending file revoke can't read must neither block the revoke nor leave a
+        pre-revoke code that approves once the file reads again."""
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path), \
+                patch("gateway.pairing._sync_allowlist_add"), patch("gateway.pairing._sync_allowlist_remove"):
+            store = PairingStore()
+            store._approve_user("telegram", "user1")
+            stale_code = store.generate_code("telegram", "user1", "Alice")
+            pending_path, real_read = store._pending_path("telegram"), Path.read_text
+
+            def deny_pending(path, *args, **kwargs):
+                if path == pending_path:
+                    raise PermissionError("not readable")
+                return real_read(path, *args, **kwargs)
+
+            with patch.object(Path, "read_text", deny_pending):
+                assert store.revoke("telegram", "user1") is True
+
+            assert store.is_approved("telegram", "user1") is False
+            assert store.approve_code("telegram", stale_code) is None
+
     @pytest.mark.parametrize("approve_via", ["code", "request_id"])
     def test_revoke_from_other_store_invalidates_codes_for_both_approval_paths(self, tmp_path, approve_via):
         """The CLI revokes while the dashboard holds its own store: neither the DM'd code nor

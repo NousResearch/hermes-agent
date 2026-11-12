@@ -275,6 +275,17 @@ def _load_json_file(path: Path) -> dict:
         return {}
 
 
+def _read_pending_strict(path: Path) -> tuple[dict, bool]:
+    """(pending, readable): readable is False when the file exists but can't be read as an object."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except FileNotFoundError:
+        return {}, True
+    except (OSError, ValueError):
+        return {}, False
+    return (data, True) if isinstance(data, dict) else ({}, False)
+
+
 def _save_json_file(path: Path, data: dict) -> None:
     atomic_json_write(path, data, mode=0o600)
 
@@ -453,14 +464,19 @@ class PairingStore:
             # approval either lands before this (and is revoked) or finds no entry.
             # Written before the approved record so a failed write leaves revoke retryable.
             pending_path = self._pending_path(platform)
-            pending = self._load_json(pending_path)
+            pending, readable = _read_pending_strict(pending_path)
             stale = [
                 entry_id for entry_id, entry in pending.items()
                 if isinstance(entry, dict) and _user_ids_match(platform, entry.get("user_id", ""), user_id)
             ]
             for entry_id in stale:
                 del pending[entry_id]
-            if stale:
+            if not readable:
+                # Can't tell which codes are this user's, and they would approve again once the
+                # file is readable. Every other writer already treats it as empty, so reset it.
+                logger.warning("Revoking %s on %s: %s is unreadable; discarding all pending codes",
+                               user_id, platform, pending_path)
+            if stale or not readable:
                 self._save_json(pending_path, pending)
             for approved_user_id in matching_ids:
                 del approved[approved_user_id]

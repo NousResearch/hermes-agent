@@ -317,6 +317,11 @@ def _handle_control_action(action: str, subagent_id: Optional[str], message: Opt
         return tool_error(f"action='{action}' requires subagent_id (from the spawn dispatch response or action='list').")
     with _active_subagents_lock:
         record = _active_subagents.get(sid)
+    if record is None and action == "stop":
+        from tools.delegate_tool_auto_resume import dismiss
+        if dismiss(parent_agent, sid):  # not running, waiting to resume: it never resumes, its pin is released
+            return json.dumps({"action": "stop", "subagent_id": sid, "status": "dismissed",
+                               "note": "It will not resume automatically; its worktree is no longer kept."})
     if record is None or not _owns_subagent_record(record, parent_agent):
         return tool_error(
             f"No live subagent '{sid}' in this conversation's spawn tree. It "

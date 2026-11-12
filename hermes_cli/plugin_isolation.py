@@ -20,6 +20,7 @@ cannot drift apart.
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import importlib.util
 import logging
 import os
@@ -96,11 +97,25 @@ def _plugins_config(config: Optional[Mapping[str, Any]] = None) -> Mapping[str, 
 # every loader there imports directly (a host must never spawn a host of its own).
 HOST_PROCESS_ENV = "HERMES_PLUGIN_HOST_PROCESS"
 
+_host_required: contextvars.ContextVar[bool] = contextvars.ContextVar("hermes_plugin_host_required", default=False)
+
+
+@contextlib.contextmanager
+def require_plugin_host():
+    """Require the existing profile host for this operation, including nested plugin discovery."""
+    token = _host_required.set(True)
+    try:
+        yield
+    finally:
+        _host_required.reset(token)
+
 
 def isolation_mode(config: Optional[Mapping[str, Any]] = None) -> str:
-    """``plugins.isolation`` for the active profile; an unknown value warns and means in-process."""
+    """Effective isolation for this operation; an unknown config value means in-process."""
     if os.environ.get(HOST_PROCESS_ENV) == "1":
         return ISOLATION_IN_PROCESS
+    if _host_required.get():
+        return ISOLATION_HOST
     raw = _plugins_config(config).get("isolation", ISOLATION_IN_PROCESS)
     mode = str(raw or ISOLATION_IN_PROCESS).strip().lower().replace("-", "_")
     if mode not in _ISOLATION_MODES:
@@ -132,7 +147,8 @@ def in_process_import_refusal(what: str, *, source: str = "user",
     if source == "bundled" or isolation_mode(config) != ISOLATION_HOST:
         return None
     return (f"{what} runs only in-process, and plugins.isolation is 'host' (third-party plugin code "
-            f"never runs inside the Hermes process); set plugins.isolation: in_process to load it")
+            f"never runs inside the Hermes process); run this profile in its own process with "
+            f"plugins.isolation: in_process to load it")
 
 
 def import_user_code(path: Any, module_name: str) -> Optional[ModuleType]:

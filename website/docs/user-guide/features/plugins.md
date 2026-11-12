@@ -913,6 +913,12 @@ class declares (a secret source's `fetch()` gets a `Path` and returns a `FetchRe
 In-process dashboard API handlers share the gateway's event loop, so they must not block it (see
 [Don't block the event loop](extending-the-dashboard.md#dont-block-the-event-loop)).
 
+When the cron ticker visits another profile's home, that profile's Python plugins require its own
+plugin host even if its config says `in_process`. A home scope separates registries, not Python import
+or `register()` side effects. Host-compatible blueprints, tools and hooks remain available through the
+existing host. Plugins requiring in-process APIs must run in that profile's own gateway instead;
+changing the foreign profile's isolation setting cannot make those APIs safe during a foreign tick.
+
 On a gateway serving several profiles, every profile other than the one the gateway started with runs
 its own dashboard plugins (installed under its own `plugins/` folder or the root `~/.hermes/plugins/`,
 the profile's own copy winning a same-name conflict, and enabled in its own config) in its own plugin

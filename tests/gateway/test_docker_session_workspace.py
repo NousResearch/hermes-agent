@@ -427,3 +427,37 @@ def test_named_launch_profiles_managed_worker_turn_keeps_its_sessions_workspace_
     with policy_scope(policy):
         session_kanban.run_worker_turns(Agent(), frame, [])
     assert seen['key'] == session_key
+
+
+def test_desktop_session_container_binds_its_workspace_not_the_backend_launch_dir(home, tmp_path, monkeypatch):
+    """#119170: persistent Docker gives a Desktop session with a workspace its own ``:ws:`` container,
+    which must bind that workspace, not the backend's launch dir (``$HOME``, so ``~/.ssh`` in the
+    sandbox). No gateway policy scope here: the Desktop backend's TERMINAL_CWD is its own launch dir."""
+    from gateway.session_context import clear_session_vars, set_session_vars
+    from tools import terminal_tool
+    from tui_gateway import server
+    launch_home = tmp_path / 'user-home'
+    (launch_home / '.ssh').mkdir(parents=True)
+    ws1, ws2 = tmp_path / 'ws1', tmp_path / 'ws2'
+    ws1.mkdir(), ws2.mkdir()
+    for name, value in (('TERMINAL_ENV', 'docker'), ('TERMINAL_CONTAINER_PERSISTENT', 'true'),
+                        ('TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE', 'true'), ('TERMINAL_CWD', str(launch_home))):
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(terminal_tool, '_terminal_config_bridge_attempted', True)
+    plans = {}
+    for sid, ws in (('desktop-a', ws1), ('desktop-b', ws2), ('desktop-none', None)):
+        tokens = set_session_vars(session_key=sid, profile='')
+        try:
+            if ws is not None:
+                vars(server)['_register_session_cwd'](
+                    {'session_key': sid, 'cwd': str(ws), 'explicit_cwd': True, 'source': 'desktop'})
+            terminal_tool.register_container_alias(f'{sid}-child', sid)
+            plans[sid] = _plan(sid)
+            assert _plan(f'{sid}-child') == plans[sid]  # a delegate child runs in its parent's container
+        finally:
+            clear_session_vars(tokens)
+    # Each workspace-keyed container binds its own workspace (main: both bound the launch home).
+    assert ':ws:' in plans['desktop-a'][0] and plans['desktop-a'][0] != plans['desktop-b'][0]
+    assert (plans['desktop-a'][1], plans['desktop-b'][1]) == (str(ws1), str(ws2))
+    # The profile container, shared by every session without a workspace, keeps the legacy mount.
+    assert plans['desktop-none'] == ('default', str(launch_home))

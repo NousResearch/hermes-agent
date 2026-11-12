@@ -681,27 +681,16 @@ def _lookup_active_env(effective_task_id: str, task_id: Optional[str]):
     return None
 
 
-def _resolve_task_host_cwd(config: dict[str, Any], task_id: Optional[str]) -> Optional[str]:
-    """Host directory to bind into *task_id*'s container.
+def _session_workspace_mount_source(task_id: Optional[str]) -> Optional[str]:
+    """The host directory THIS session chose as its workspace, or None.
 
-    Single owner of the cwd-mount policy for every creation site. Shared-
-    container mode: the ``TERMINAL_CWD``-derived ``config["host_cwd"]``.
-    Per-session isolation (docker + ``container_persistent: false``): only
-    the SESSION's own registered workspace may mount — the process env var is
-    a launch artifact that outlives the session that set it, so deriving a
-    fresh session's mount from it would leak the previous session's directory.
-    Overrides tagged ``cwd_source: "process"`` are refused for the same reason;
-    ``cwd_source: "session"`` or untagged (ACP/RL) overrides mount.
-    A Windows drive path is not a mount source while the cwd-to-/workspace flag
-    is off. A raw host override must stay out of ``docker run -w`` and fall
-    back to the sanitized config cwd. The Windows bind, including when
-    ``/workspace`` is already claimed, is the volume mount, not this override.
+    The workspace picker records the user's choice as a ``cwd`` override tagged
+    ``cwd_source: "session"``. A ``"process"``-tagged override is a launch artifact
+    (a ``TERMINAL_CWD``/``terminal.cwd`` fallback that outlives the session that set
+    it), never a workspace the user picked. Untagged overrides (ACP ``session/load``
+    project-root switching, RL/benchmark envs) are the session's own, matching the
+    rule the isolation branch already applies.
     """
-    if config.get("env_type") != "docker" or not config.get("docker_mount_cwd_to_workspace"):
-        return None
-    # Top-level CLI parent ("default") is a single-session process — legacy behavior.
-    if not _docker_session_isolation_enabled() or _resolve_container_task_id(task_id) == "default":
-        return config.get("host_cwd")
     overrides = resolve_task_overrides(task_id)
     candidate = overrides.get("cwd")
     if overrides.get("cwd_source") == "process" or not isinstance(candidate, str) or not candidate.strip():
@@ -711,6 +700,46 @@ def _resolve_task_host_cwd(config: dict[str, Any], task_id: Optional[str]) -> Op
     if not os.path.isdir(candidate) or candidate.startswith(("/workspace", "/root")):
         return None
     return candidate
+
+
+def _resolve_task_host_cwd(config: dict[str, Any], task_id: Optional[str]) -> Optional[str]:
+    """Host directory to bind-mount at ``/workspace`` for *task_id*'s container.
+
+    Single owner of the cwd-mount policy for every creation site. Shared-
+    container mode: the ``TERMINAL_CWD``-derived ``config["host_cwd"]``, unless the
+    container is keyed to the session's own workspace (below). Per-session isolation
+    (docker + ``container_persistent: false``): only the SESSION's own registered
+    workspace may mount — the process env var is a launch artifact that outlives
+    the session that set it, so deriving a fresh session's mount from it would
+    leak the previous session's directory.
+    Overrides tagged ``cwd_source: "process"`` are refused for the same reason;
+    ``cwd_source: "session"`` or untagged (ACP/RL) overrides mount.
+
+    Shared mode keys a session that registered a workspace to its own ``:ws:<digest>``
+    container (:func:`_workspace_container_key`); that container must bind the workspace it
+    is keyed to, not the backend process cwd (a desktop backend launched from ``$HOME``
+    bound the whole home, ``~/.ssh`` included). Any other shared key is reused by every
+    session landing on it, so it keeps the process cwd.
+
+    A Windows drive path is not a mount source while the cwd-to-/workspace flag
+    is off. A raw host override must stay out of ``docker run -w`` and fall
+    back to the sanitized config cwd. The Windows bind, including when
+    ``/workspace`` is already claimed, is the volume mount, not this override.
+    """
+    if config.get("env_type") != "docker" or not config.get("docker_mount_cwd_to_workspace"):
+        return None
+    # Top-level CLI parent ("default") is a single-session process — legacy behavior.
+    if not _docker_session_isolation_enabled() or _resolve_container_task_id(task_id) == "default":
+        # A shared container is reused by every session resolving to its key: bind a session's
+        # workspace only into the container keyed to that workspace (a delegate child resolves
+        # its parent's), or a sibling session in another folder would be handed this one's files.
+        key = _resolve_container_task_id(task_id)
+        for owner in dict.fromkeys((task_id, _resolve_container_alias(task_id) if task_id else None)):
+            source = _session_workspace_mount_source(owner)
+            if source and key.endswith(f":ws:{workspace_key_for(source)}"):
+                return source
+        return config.get("host_cwd")
+    return _session_workspace_mount_source(task_id)
 
 
 # One-shot guard for the config-fallback bridge: after the first attempt

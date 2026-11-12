@@ -191,6 +191,27 @@ def test_damaged_checkout_inside_a_git_managed_home_never_touches_the_home_repo(
     assert _git(tmp_path, "stash", "list") == ""
 
 
+def test_rerun_with_an_exported_git_dir_never_touches_that_repo(tmp_path):
+    """A GIT_DIR/GIT_WORK_TREE from the user's shell must not retarget the rerun's stash/reset (#146032)."""
+    origin = _origin(tmp_path / "origin")
+    assert _stage(tmp_path, origin).returncode == 0
+    _commit(origin, "two")
+    home = tmp_path / "dotfiles"
+    _origin(home, "home")
+    _git(home, "remote", "add", "origin", origin.as_posix())
+    head = _git(home, "rev-parse", "HEAD")
+    (home / "README").write_text("edited")
+    (home / "notes.txt").write_text("untracked")
+    result = _stage(tmp_path, origin, extra_env={"GIT_DIR": (home / ".git").as_posix(),
+                                                  "GIT_WORK_TREE": home.as_posix()})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (tmp_path / "install" / "README").read_text() == "two"
+    assert _git(home, "rev-parse", "HEAD") == head
+    assert (home / "README").read_text() == "edited"
+    assert (home / "notes.txt").read_text() == "untracked"
+    assert _git(home, "stash", "list") == ""
+
+
 def test_unmerged_index_is_cleared_then_stashed(tmp_path):
     origin = _origin(tmp_path / "origin")
     assert _stage(tmp_path, origin).returncode == 0

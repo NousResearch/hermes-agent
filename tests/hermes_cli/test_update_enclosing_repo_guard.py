@@ -105,3 +105,18 @@ def test_pinned_feed_update_refuses_a_plugin_dir_git_resolves_to_an_enclosing_re
     assert 'not its own git checkout' in _foreign_checkout_error('git', plugin)
     git(plugin, 'init', '-q')
     assert _foreign_checkout_error('git', plugin) == ''
+
+
+def test_plugin_guard_ignores_an_inherited_git_dir(tmp_path, monkeypatch):
+    """GIT_DIR disables discovery, so the toplevel would be the plugin dir even when git acts on another repo."""
+    from hermes_cli.plugins_cmd_git import _foreign_checkout_error
+
+    home = tmp_path / 'home'
+    plugin = home / 'plugins' / 'demo'
+    plugin.mkdir(parents=True)
+    git(home, 'init', '-q')
+    (plugin / '.git').mkdir()
+    monkeypatch.setenv('GIT_DIR', str(home / '.git'))
+    monkeypatch.setenv('GIT_WORK_TREE', str(plugin))
+
+    assert 'not its own git checkout' in _foreign_checkout_error('git', plugin)

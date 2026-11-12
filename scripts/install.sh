@@ -539,6 +539,14 @@ emit_manifest() {
 
 git_runs() { command -v git >/dev/null 2>&1 && git --version >/dev/null 2>&1; }
 
+# An exported GIT_DIR/GIT_WORK_TREE (a dotfiles alias, a git hook) retargets every
+# `git -C "$INSTALL_DIR"` at the user's other repo, and the rerun's stash/reset would act on
+# it (#146032). Stages run in a subshell (run_stage), so this stays local to the stage.
+drop_git_location_env() {
+    unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY \
+        GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE
+}
+
 # macOS ships /usr/bin/git as a stub until Apple's Command Line Tools are
 # installed: it is on PATH, but every call fails ("see man xcode-select").
 # Prefer Homebrew (headless); else open Apple's install dialog and wait for the
@@ -712,6 +720,7 @@ stable_unreachable() {
 
 stage_repository() {
     local pinned=false channel="" release="" origin
+    drop_git_location_env
     # An interrupted clone from an older installer can leave a .git with no
     # initial commit, where stash/checkout abort ("You do not have the
     # initial commit yet", #40998); a killed update or a sync tool can leave
@@ -1179,6 +1188,7 @@ stage_gateway() {
 
 stage_complete() {
     local commit
+    drop_git_location_env
     commit="$INSTALL_COMMIT"
     [ -n "$commit" ] || commit=$(git -C "$INSTALL_DIR" rev-parse HEAD 2>/dev/null) || commit=""
     if [ -n "$commit" ]; then

@@ -1,0 +1,51 @@
+name: redactgate
+repo: https://github.com/ctmakc/hermes-redactgate
+sha: d4bb87d78381d0514cd8dd74525fea98a5b46d62
+description: >-
+  Reversible PII pseudonymization at the model boundary. Names, e-mails, phones, payment cards,
+  IBANs and national IDs (CA, US, EU, UA) become [[TYPE_xxxxxx]] placeholders in every main-loop
+  model request, across all roles, tool-call arguments, tool results and the system prompt
+  (Chat Completions, Anthropic Messages and Responses shapes). Real values come back in the
+  reply (transform_llm_output with hold_stream) and in the arguments of local tools only
+  (terminal, file tools, execute_code, memory, clarify); web, browser, MCP, other plugins' tools
+  and subagents keep placeholders. Checksum-validated detection (Luhn, mod-97), offset-preserving
+  Unicode normalization, HMAC placeholders per session kept in memory, fail-closed on error,
+  hash-chained audit journal, /redact command (status, what the model received, dry run, audit,
+  verify, custom terms). Flags auxiliary calls that carried personal data, and /redact harden
+  turns off model-made session titles. Disclosure — no network calls, no model downloads, no
+  shell commands, subprocesses, background threads, credentials or telemetry; standard library
+  only. Writes only in its plugin data folder: audit.jsonl (entity type counts, tool names,
+  provider host, hashed session ids; never values) and its state.json (random HMAC secret,
+  user-added terms). Reads the merged Hermes config read-only; writes Hermes config only when
+  the user runs /redact harden (auxiliary.title_generation.model_upgrade_enabled = false). The
+  transform_llm_output hook holds the reply stream until values are restored, so commentary
+  between tool calls is not shown on streaming surfaces. Detection core vendored from
+  RedactGate (same author, AGPL-3.0); see DISCLOSURE.md for what predates the hackathon.
+maintainer: ctmakc
+tier: community
+category: tools
+docs_url: https://github.com/ctmakc/hermes-redactgate#readme
+version: "1.0.0"
+requires_hermes: ">=0.23.0"
+image: https://raw.githubusercontent.com/ctmakc/hermes-redactgate/d4bb87d78381d0514cd8dd74525fea98a5b46d62/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/ctmakc/hermes-redactgate/d4bb87d78381d0514cd8dd74525fea98a5b46d62/docs/screenshots/01-status-harden.png
+  - https://raw.githubusercontent.com/ctmakc/hermes-redactgate/d4bb87d78381d0514cd8dd74525fea98a5b46d62/docs/screenshots/02-write-file-real-values.png
+  - https://raw.githubusercontent.com/ctmakc/hermes-redactgate/d4bb87d78381d0514cd8dd74525fea98a5b46d62/docs/screenshots/03-redact-last.png
+  - https://raw.githubusercontent.com/ctmakc/hermes-redactgate/d4bb87d78381d0514cd8dd74525fea98a5b46d62/docs/screenshots/04-audit-verify.png
+platforms: []
+known_issues:
+  - "Hermes runs auxiliary model calls (titles, context compression, vision) without request middleware; RedactGate flags them and /redact harden turns off model-made titles, but cannot rewrite those calls."
+  - "Person names are found from cue words, honorifics and a first-name list; an unusual name with no cue is missed until it is caught once in the session or added with /redact terms add."
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+    - transform_llm_output
+    - pre_auxiliary_call
+    - post_compaction
+    - on_session_delete
+  provides_middleware:
+    - llm_request
+    - tool_request
+  requires_env: []

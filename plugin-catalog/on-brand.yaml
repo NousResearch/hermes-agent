@@ -1,0 +1,24 @@
+name: on-brand
+repo: https://github.com/Mhiah/On-Brand
+sha: bd53e9d2fa62898a4fc3cd36da9f977dd8e1ef9b
+title: On-Brand
+description: "Brand voice and compliance rules Hermes can't break. Per-brand profiles (person, tone, banned words, exact spellings, required tags, length/emoji/hashtag limits) plus crypto and health compliance packs. A deterministic linter scores every ```copy draft 0-100 before you see it; failing drafts are rewritten by your active model and re-checked until they pass, and off-brand posts sent through outbound tools are blocked with the fixes Hermes needs. /onbrand, four agent tools (check, rules, learn, voiceover), a Desktop pane with a live fix/block feed and a status-bar chip. Disclosure — no network calls, telemetry or credentials of its own; drafts that need fixing, the brand rules and samples given to onbrand_learn go to the user's active Hermes model through ctx.llm. While a brand is active it rewrites ```copy blocks in replies (autofix can be turned off) and refuses outbound tool calls (names containing send, post, tweet, publish, reply, cast, dm, broadcast, announce, webhook, create_message, discord, telegram, slack) whose copy breaks a hard rule (gate can be turned off). Optional hold_stream setting (off by default) holds every reply in the profile until it has been checked. Stores profiles, settings and the last 60 checks (draft text up to 600 characters each) in HERMES_HOME/plugin-data/on-brand/. No shell commands, background processes or self-update."
+maintainer: Mhiah
+tier: community
+category: general
+requires_hermes: ">=0.22.7"
+docs_url: https://github.com/Mhiah/On-Brand
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools:
+    - onbrand_check
+    - onbrand_rules
+    - onbrand_learn
+    - onbrand_voiceover
+  provides_hooks:
+    - pre_llm_call
+    - transform_llm_output
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

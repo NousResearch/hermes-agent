@@ -1,0 +1,37 @@
+name: write-gate
+title: Write Gate
+repo: https://github.com/2vic1/hermes-write-gate
+sha: dedc9220d9bce5fb395fe61a8ab0c0cdcf85f6b6
+description: >-
+  Deterministic pre-write content gate for Hermes Agent. A pre_tool_call hook
+  parses the exact bytes about to be written as JSON, TOML or Python (stdlib
+  parsers), rejects NUL bytes, oversized content and user-declared regex
+  contracts, and short-circuits invalid writes with a precise line/column error
+  returned to the model as a tool-call error, so the agent fixes the content in
+  the same tool-calling loop instead of leaving a broken file behind. Also adds
+  a write_gate_check preflight tool, a /writegate slash command and Settings ->
+  Plugins config. Patch/replacement fragments are never parsed as whole
+  documents: NUL, size and regex contracts still run on the fragment, and the
+  reconstructed post-edit file is parsed when it can be rebuilt. Disclosure —
+  no network calls, no shell commands, no subprocesses, no background
+  processes, no credentials, no telemetry; reads the in-memory arguments of
+  the tool call it gates, one optional user-specified JSON rules file named in
+  the rules_file setting, and (for fragment edits only) the size-capped target
+  file named in that same tool call, read-only; persists
+  three integer counters in profile-scoped plugin state; never auto-approves
+  or bypasses Hermes's approval gate; fails open on any internal error.
+maintainer: 2vic1
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+version: "1.0.0"
+docs_url: https://github.com/2vic1/hermes-write-gate#readme
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - write_gate_check
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

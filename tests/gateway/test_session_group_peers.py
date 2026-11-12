@@ -104,7 +104,8 @@ def test_room_link_is_enabled_only_when_this_gateway_can_host_a_member(gateway, 
     named = gateway.home / 'profiles' / 'helper'
     named.mkdir(parents=True)
     named_link = room_link(SimpleNamespace(profile_id=str(named), runner=authority.runner))
-    assert named_link == {'enabled': False, 'reason': 'default_profile_required'}
+    # A named profile is lendable too (test_session_group_named_lender.py): here it lacks the endpoint.
+    assert named_link == {'enabled': False, 'reason': 'endpoint_required'}
     assert room_link(authority) == {'enabled': False, 'reason': 'endpoint_required'}
     monkeypatch.setenv('HERMES_ROOM_LINK_URL', 'http://127.0.0.1:9')
     durable = adapter._run_idempotency_store

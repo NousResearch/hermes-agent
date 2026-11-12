@@ -63,9 +63,7 @@ def _make_runner(
     r = gr.GatewayRunner(config or GatewayConfig())
     r.adapters = {}
     r._running_agents = {}
-    r._running_agents_ts = {}
     r._pending_messages = {}
-    r._pending_approvals = {}
     r._is_user_authorized = lambda s: True
     r._set_session_env = lambda c: None
     r._handle_active_session_busy_message = AsyncMock(return_value=False)

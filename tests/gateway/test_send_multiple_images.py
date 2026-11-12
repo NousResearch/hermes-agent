@@ -127,6 +127,37 @@ class TestTelegramMultiImage:
         sizes = [len(c.kwargs["media"]) for c in adapter._bot.send_media_group.await_args_list]
         assert sizes == [10, 5]
 
+    @pytest.mark.parametrize("body,sends,ambiguous", [("json", 2, None), ("html", 1, True)])
+    def test_album_on_a_5xx_resends_only_telegrams_json_answer(self, adapter, body, sends, ambiguous):
+        """Telegram's JSON 502 (PTB's unchained ``NetworkError('Bad Gateway')``) was not posted: the
+        same sendMediaGroup goes again, as text does. A proxy's HTML 502 page (PTB's NetworkError
+        chained to the failed body parse) may follow a posted album: one request, ambiguous."""
+        import json
+        import telegram
+        from telegram.error import NetworkError, TelegramError
+        telegram.InputMediaPhoto = MagicMock(side_effect=lambda media, caption=None: {"media": media})
+        if body == "json":
+            first = NetworkError("Bad Gateway")
+        else:
+            try:
+                try:
+                    json.loads("<html>")
+                except ValueError as parse:
+                    raise TelegramError("Invalid server response") from parse
+            except TelegramError as invalid:
+                first = NetworkError("Bad Gateway (502). Parsing the server response b'<html>' failed")
+                first.__cause__ = invalid
+        adapter._bot.send_media_group = AsyncMock(side_effect=[first, [MagicMock(message_id=1)]])
+        adapter.send_image = AsyncMock()
+
+        with patch("asyncio.sleep", new=AsyncMock()):
+            result = _run(adapter.send_multiple_images("12345", [(f"https://x.com/{i}.png", "") for i in range(2)]))
+
+        assert result.success is True
+        assert adapter._bot.send_media_group.await_count == sends
+        assert (result.raw_response or {}).get("ambiguous") is ambiguous
+        adapter.send_image.assert_not_awaited()
+
 
 # ---------------------------------------------------------------------------
 # Discord

@@ -1010,10 +1010,15 @@ def test_managed_writes_refuse_sensitive_paths_through_symlinks(forced_files_cli
     config = root / "config.yaml"
     config.symlink_to(store)
 
-    for target in (alias, config, "config.yaml"):
-        assert _refused_writes(client, target) == (403, 403), target
+    for target in (alias, config, "config.yaml", "config.yaml ", f"{config} "):
+        assert _refused_writes(client, target) == (403, 403), repr(target)
         deleted = client.request("DELETE", "/api/files", json={"path": str(target), "recursive": False})
-        assert deleted.status_code == 403, target
+        assert deleted.status_code == 403, repr(target)
+
+    dangling = root / "draft.txt"
+    dangling.symlink_to(root / ".env")  # .env is missing: the resolver keeps the link as target
+    assert _refused_writes(client, dangling) == (403, 403)
+    assert not (root / ".env").exists()
 
     assert secret.read_text() == "SECRET=1"
     assert store.read_text() == "model: safe\n"

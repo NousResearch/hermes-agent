@@ -646,9 +646,10 @@ def test_fs_write_text_refuses_sensitive_files_through_symlinks(client, tmp_path
     config = tmp_path / "config.yaml"
     config.symlink_to(store)
 
-    for target in (str(alias), str(config), config.as_uri()):
+    encoded = f"{tmp_path.as_uri()}/config%2Eyaml"  # only the decode turns this into the link's name
+    for target in (str(alias), str(config), f"{config} ", config.as_uri(), encoded, f"{encoded} "):
         response = client.post("/api/fs/write-text", json={"path": target, "content": "EVIL=1"})
-        assert response.status_code == 403, target
+        assert response.status_code == 403, repr(target)
     assert secret.read_text() == "SECRET=1"
     assert store.read_text() == "model: safe\n"
 

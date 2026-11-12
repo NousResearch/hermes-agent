@@ -124,6 +124,7 @@ def _refuse_sensitive_write(target: Path, requested: str) -> None:
     *target* is the resolver's (symlink-resolved) path and *requested* the client's path as sent:
     a write through a link replaces the file it points at, and a credential name that is itself a
     link (``config.yaml -> settings-store``) resolves to an ordinary-looking backing file."""
+    requested = requested.strip()  # both resolvers strip it before the lookup: "config.yaml " is config.yaml
     if requested.lower().startswith("file:"):
         # The spot editor accepts file: URLs (its resolver already refused a malformed one);
         # the managed routes take the text verbatim, so a URL they cannot parse stays as sent.

@@ -174,3 +174,17 @@ def test_held_row_with_commentary_and_no_content_stays_hidden():
     row = _held_tool_round_row(_make_agent(), "", commentary="Checking the inbox.")
 
     assert row["display_kind"] == "hidden"
+
+
+def test_clarify_context_drops_echoed_memory_block():
+    """With interim messages off (email), prose beside a clarify call is sent before the card."""
+    agent = _make_agent()
+    seen = []
+    agent.interim_assistant_callback = None
+    agent.clarify_context_callback = lambda text, *, already_streamed=False: seen.append(text)
+    clarify = {"id": "c1", "type": "function", "function": {"name": "clarify", "arguments": "{}"}}
+
+    for content in (f"Two options first.\n\n{ECHOED_BLOCK}", ECHOED_BLOCK):
+        agent._emit_interim_assistant_message({"role": "assistant", "content": content, "tool_calls": [clarify]})
+
+    assert seen == ["Two options first."]

@@ -265,8 +265,8 @@ class StreamDeliveryMixin:
         # Prefer the draft in content over an unrelated phase=commentary item.
         clarify_fallback = (asks_clarify and getattr(self, "interim_assistant_callback", None) is None
                             and getattr(self, "clarify_context_callback", None) is not None)
-        clarify_content = (self._strip_think_blocks(flatten_message_text(assistant_msg.get("content"))).strip()
-                           if clarify_fallback else "")
+        clarify_content = (fence_recalled_context(self._strip_think_blocks(
+            flatten_message_text(assistant_msg.get("content"))).strip()) if clarify_fallback else "")
         visible = clarify_content or (
             "\n\n".join(undelivered_parts).strip() if commentary_parts else self._interim_assistant_visible_text(assistant_msg)
         )

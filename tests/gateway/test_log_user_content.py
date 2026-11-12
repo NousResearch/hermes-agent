@@ -1,10 +1,14 @@
 """Gateway logs at INFO+ carry no verbatim user content (#46006): `hermes debug share` uploads them."""
 
+import hashlib
 import logging
+import os
+import stat
 
 import pytest
 
 from gateway.config import PlatformConfig
+from gateway.platforms import helpers
 from gateway.platforms.helpers import hash_for_log
 from gateway.platforms.webhook import WebhookAdapter
 
@@ -30,3 +34,41 @@ async def test_webhook_log_delivery_keeps_the_body_out_of_info(caplog, deliver):
     info = [r.getMessage() for r in caplog.records if r.levelno >= logging.INFO]
     assert info and not any("PIN" in m or "alice@" in m for m in info), info
     assert any(_SECRET_TEXT in r.getMessage() for r in caplog.records if r.levelno == logging.DEBUG)
+
+
+def _fresh_home(tmp_path, monkeypatch, name):
+    home = tmp_path / name
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(helpers, "_LOG_HASH_SALTS", {})
+    return home
+
+
+def test_hash_for_log_is_salted_per_install(tmp_path, monkeypatch):
+    phone = "+15551234567"
+    home_a = _fresh_home(tmp_path, monkeypatch, "a")
+    digest_a = hash_for_log(phone)
+    assert digest_a == hash_for_log(phone)
+    assert digest_a != "h:" + hashlib.sha256(phone.encode()).hexdigest()[:10]
+    assert len((home_a / "log_hash_salt").read_bytes()) == 32
+    monkeypatch.setattr(helpers, "_LOG_HASH_SALTS", {})  # a new process on the same install
+    assert hash_for_log(phone) == digest_a
+    _fresh_home(tmp_path, monkeypatch, "b")
+    assert hash_for_log(phone) != digest_a
+
+
+@pytest.mark.platforms("posix")  # POSIX permission bits
+def test_hash_for_log_salt_is_private_and_unwritable_home_falls_back(tmp_path, monkeypatch):
+    home = _fresh_home(tmp_path, monkeypatch, "posix")
+    hash_for_log("x")
+    assert stat.S_IMODE((home / "log_hash_salt").stat().st_mode) == 0o600
+    if os.geteuid() == 0:
+        return  # root ignores directory modes; the fallback half needs a real permission error
+    home = _fresh_home(tmp_path, monkeypatch, "ro")
+    home.chmod(0o500)
+    try:
+        digest = hash_for_log("alice@example.com")
+        assert digest == hash_for_log("alice@example.com") and "alice" not in digest
+        assert not (home / "log_hash_salt").exists()
+    finally:
+        home.chmod(0o700)

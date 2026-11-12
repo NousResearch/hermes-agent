@@ -88,9 +88,68 @@ async def test_typing_stops_once_a_silent_turn_returns(monkeypatch, tmp_path, an
     release_agent.set()
     await async_wait_until(in_hook.is_set, what="the agent:end hook to start", timeout=10)
     paused.armed = True  # the keep-alive gets three full iterations while the hook runs
-    await async_wait_until(lambda: paused.checks >= 3, what="keep-alive iterations during the hook", timeout=10)
+    await async_wait_until(lambda: paused.checks >= 6, what="keep-alive iterations during the hook", timeout=10)
     release_hook.set()
     await asyncio.wait_for(turn, 10)
 
     assert (ticks.count("hook") > 0) is typing_after_agent
     assert "-1001" not in adapter._typing_paused  # the turn's finally lifted the pause
+
+
+@pytest.mark.asyncio
+async def test_a_silent_topic_leaves_another_topics_typing_on(monkeypatch, tmp_path):
+    """The pause is the silent turn's own: a second forum topic of the same chat whose agent is
+    still working keeps refreshing "typing" while the silent turn runs its hooks."""
+    runner = _runner(monkeypatch, tmp_path)
+    adapter = _Adapter(PlatformConfig(enabled=True, token="t"), Platform.TELEGRAM)
+    adapter.gateway_runner = runner
+    runner._delivery_adapter_for = lambda _source: adapter
+    adapter._typing_paused = paused = _CountingPaused(adapter._typing_paused)
+    keep_typing = adapter._keep_typing
+    adapter._keep_typing = lambda chat_id, **kw: keep_typing(chat_id, interval=0.05, **kw)
+    ticks, in_hook, release_hook, release_agent = [], asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def send_typing(chat_id, metadata=None):
+        if in_hook.is_set():
+            ticks.append((metadata or {}).get("thread_id"))
+
+    adapter.send_typing = send_typing
+
+    async def run_agent(**_kwargs):
+        await release_agent.wait()
+        return _result("[SILENT]")
+
+    async def agent_end_hook(event_type, _ctx):
+        if event_type == "agent:end":
+            in_hook.set()
+            await release_hook.wait()
+
+    runner._run_agent = AsyncMock(side_effect=run_agent)
+    runner.hooks.emit = AsyncMock(side_effect=agent_end_hook)
+    working_done = asyncio.Event()
+
+    async def handler(ev):
+        if ev.source.thread_id == "working":
+            await working_done.wait()
+            return None
+        return await runner._handle_message_with_agent(ev, ev.source, KEY, 1)
+
+    adapter._message_handler = handler
+    silent, working = _event(reply_expected=False), _event(reply_expected=True)
+    silent.source.thread_id, working.source.thread_id = "silent", "working"
+    adapter._active_sessions[KEY] = asyncio.Event()
+    adapter._active_sessions[KEY + ":working"] = asyncio.Event()
+    other = asyncio.create_task(adapter._process_message_background(working, KEY + ":working"))
+    turn = asyncio.create_task(adapter._process_message_background(silent, KEY))
+    try:
+        release_agent.set()
+        await async_wait_until(in_hook.is_set, what="the silent turn's agent:end hook", timeout=10)
+        paused.armed = True
+        await async_wait_until(lambda: paused.checks >= 8, what="both loops checking the pause", timeout=10)
+        assert "working" in ticks and "silent" not in ticks
+    finally:
+        release_hook.set()
+        await asyncio.wait_for(turn, 10)
+        working_done.set()
+        await asyncio.wait_for(other, 10)
+    assert not adapter._typing_paused  # both turns' finally lifted their pauses

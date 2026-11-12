@@ -1,13 +1,13 @@
 name: jev-effort-router
 repo: https://github.com/AlphaPerseii3000/jev-effort-router
-sha: 482f51d2dfd411ab25550e9d58e19d6e2fa4eec8
-description: "Per-turn model AND reasoning-effort routing, decided by TypeSafe Jev, which rewrites the outgoing Ollama:Cloud provider request itself via the llm_request middleware. Most catalog routers decide one half — a model or an effort level; this one decides both per turn, with a measured six-model grid, a confidence guard, per-surface policy and an audit trail that reports what was applied. Ollama:Cloud only — no other provider is routed, and every failure path leaves the request byte-identical to a plugin-disabled run. Disclosure — sends the current user message and up to 4 previous turns to the Decisions surface selected by the key present (Requesty /v1/systemone with typesafe/jev-1.14.0, or OpenRouter /api/alpha/decisions with typesafe/jev-1.13), billed to that account; credentials are read through Hermes' profile secret scope; the local audit file keeps decisions and turn identifiers, message text only when explicitly enabled; no telemetry."
+sha: fe80d876ea669420751f4387b96d89c8e6342802
+description: "Per-turn model AND reasoning-effort routing, decided by TypeSafe Jev, which rewrites the outgoing chat_completions provider request itself via the llm_request middleware. The six measured criteria are capability slots; a built-in Ollama:Cloud profile ships, and provider_profiles maps the slots to another active provider's models. Most catalog routers decide one half — a model or an effort level; this one decides both per turn, with a measured grid, a confidence guard, per-surface policy and an audit trail that reports what was applied. Ollama:Cloud is the shipped profile; another chat_completions provider is routed only when the operator declares a profile, and the router never switches providers. Every failure path leaves the request byte-identical to a plugin-disabled run. Disclosure — sends the current user message and up to 4 previous turns to the Decisions surface selected by the key present (Requesty /v1/systemone with typesafe/jev-1.14.0, or OpenRouter /api/alpha/decisions with typesafe/jev-1.13), billed to that account; credentials are read through Hermes' profile secret scope; the local audit file keeps decisions and turn identifiers, message text only when explicitly enabled; no telemetry."
 maintainer: AlphaPerseii3000
 tier: community
 category: models
 requires_hermes: ">=0.21.4"
 docs_url: https://github.com/AlphaPerseii3000/jev-effort-router
-version: "0.3.2"
+version: "0.4.0"
 platforms: []
 capabilities:
   provides_tools:

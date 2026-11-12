@@ -1,16 +1,35 @@
 'use strict'
 
-// Historical native URLs are a compatibility layout, not a channel registry.
-/** @param {string} channel @param {boolean} light */
-function darwinFeed(channel, light = false) {
+/** @param {string} channel */
+function channelName(channel) {
   if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(channel) || channel.length > 32 ||
       /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/.test(channel)) {
     throw new TypeError('Invalid channel name')
   }
+  return channel
+}
+
+// Historical native URLs are a compatibility layout, not a channel registry.
+/** @param {string} channel @param {boolean} light */
+function darwinFeed(channel, light = false) {
+  channelName(channel)
   return {
     directory: `releases/darwin/${light ? 'light/' : ''}${channel}`,
     channel,
     fileName: `${channel}-mac.yml`,
+    allowPrerelease: channel !== 'stable'
+  }
+}
+
+// electron-updater names Linux feeds <channel>-linux.yml on x64 and adds the arch elsewhere
+// (Provider.getChannelFilePrefix); electron-builder writes the same names (getArchPrefixForUpdateFile).
+/** @param {string} channel @param {string} arch */
+function linuxFeed(channel, arch) {
+  channelName(channel)
+  return {
+    directory: `releases/linux/${channel}`,
+    channel,
+    fileName: `${channel}-linux${arch === 'x64' ? '' : `-${arch}`}.yml`,
     allowPrerelease: channel !== 'stable'
   }
 }
@@ -37,4 +56,4 @@ function feedBaseUrl(raw) {
   return canonical
 }
 
-module.exports = { darwinFeed, feedBaseUrl }
+module.exports = { darwinFeed, linuxFeed, feedBaseUrl }

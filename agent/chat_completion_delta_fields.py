@@ -3,8 +3,9 @@
 from typing import Any
 
 # Fields an adapter relays in its chunk unchanged (the MoA aggregator's one-chunk stream) and the
-# stream consumer sets on the assembled message, where ``normalize_response`` reads them.
-RELAYED_MESSAGE_FIELDS = ("stop_details",)
+# stream consumer sets on the assembled message, where ``normalize_response`` reads them: an Anthropic
+# refusal's reason and the ordered blocks of a turn interleaving signed thinking with tool_use.
+RELAYED_MESSAGE_FIELDS = ("stop_details", "anthropic_content_blocks")
 
 
 def collect_delta_extras(delta: Any, refusal_parts: list[str], relayed: dict[str, Any]) -> None:

@@ -15,13 +15,18 @@ def anthropic_chat_choice(response: Any, normalized: Any, model: str) -> SimpleN
     """``choices[0]`` for a normalized Anthropic response.
 
     A refusal's reason (``stop_details``: category, explanation) rides on the message, where the
-    chat-completions normalizer reads it; without it MoA and aux refusals report no reason.
+    chat-completions normalizer reads it; without it MoA and aux refusals report no reason. Signed
+    thinking does too (``reasoning_details``, plus the ordered ``anthropic_content_blocks`` when it
+    interleaves with tool_use), so the MoA aggregator can replay it signed instead of as plain text.
     """
-    stop_details = (normalized.provider_data or {}).get("stop_details")
+    provider_data = normalized.provider_data or {}
+    stop_details = provider_data.get("stop_details")
     if normalized.finish_reason == "content_filter":
         logger.warning("Anthropic declined an auxiliary request: model=%s stop_reason=%s stop_details=%s",
                        model, getattr(response, "stop_reason", None), stop_details)
     # ToolCall already duck-types as OpenAI shape via properties.
     message = SimpleNamespace(content=normalized.content, tool_calls=normalized.tool_calls,
-                              reasoning=normalized.reasoning, stop_details=stop_details)
+                              reasoning=normalized.reasoning, stop_details=stop_details,
+                              reasoning_details=provider_data.get("reasoning_details"),
+                              anthropic_content_blocks=provider_data.get("anthropic_content_blocks"))
     return SimpleNamespace(index=0, message=message, finish_reason=normalized.finish_reason)

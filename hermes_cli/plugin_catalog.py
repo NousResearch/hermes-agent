@@ -228,13 +228,41 @@ def get_catalog_entry(name: str, catalog_dir: Optional[Path] = None) -> Optional
     return next((e for e in load_catalog(catalog_dir) if e.name == name), None)
 
 
+_SEARCH_SPLIT = re.compile(r"[\s\-_/.,:;]+")
+
+
+def _search_terms(query: str) -> list[str]:
+    """The query as lowercase words: whitespace and the separators catalog names use ('-', '_')
+    are boundaries, so 'make plain' and 'hermes-make-plain' share the same terms."""
+    return [term for term in _SEARCH_SPLIT.split((query or "").strip().lower()) if term]
+
+
+def _entry_search_texts(entry: PluginCatalogEntry) -> tuple[str, ...]:
+    """The fields the query is matched against, lowercased; the name's '-' and '_' become spaces so
+    a query word can straddle them."""
+    name = re.sub(r"[-_]+", " ", entry.name).lower()
+    return (name, entry.description.lower(), *(tool.lower() for tool in entry.capabilities.provides_tools))
+
+
 def filter_entries(entries: list[PluginCatalogEntry], query: str) -> list[PluginCatalogEntry]:
-    """Case-insensitive substring match over name, description and declared tools; empty query = all."""
-    q = (query or "").strip().lower()
-    if not q:
+    """Case-insensitive word match over name, description and declared tools; empty query = all.
+
+    Every word of the query must appear in one of the fields (in any order), so 'make plain' finds
+    'hermes-make-plain'. Entries whose name matches rank before entries matched only through the
+    description or a tool, so a short query is not buried by long description hits."""
+    terms = _search_terms(query)
+    if not terms:
         return entries
-    return [e for e in entries
-            if any(q in h.lower() for h in (e.name, e.description, *e.capabilities.provides_tools))]
+    ranked = []
+    for order, entry in enumerate(entries):
+        texts = _entry_search_texts(entry)
+        if not all(any(term in text for text in texts) for term in terms):
+            continue
+        name = texts[0]
+        rank = 0 if all(term in name for term in terms) else (1 if any(term in name for term in terms) else 2)
+        ranked.append((rank, order, entry))
+    ranked.sort(key=lambda row: (row[0], row[1]))
+    return [entry for _rank, _order, entry in ranked]
 
 
 def search_catalog(query: str) -> list[PluginCatalogEntry]:

@@ -15,6 +15,7 @@ from agent.message_metadata import (
 from hermes_state_common import _id_chunks, _placeholders
 from hermes_state_identity import _fill_missing_tool_call_uids, _restore_row_identity
 from hermes_state_messages import _MESSAGE_WRITE_COLUMNS, SessionMessagesMixin
+from hermes_state_reasoning import row_as_written
 
 
 # Durable payload columns a row-addressed rewrite may change: every INSERT column except row identity,
@@ -56,11 +57,14 @@ def transcript_row_snapshot(row: Mapping[str, Any]) -> str:
     Callers pass rows read back from SQLite, never Python bind values: column affinity rewrites values on
     storage (int ``platform_message_id`` -> TEXT, float ``token_count`` -> INTEGER), so hashing bind values
     would never match the stored version. A digest rather than a row copy: the value rides on live message
-    dicts, so a full copy would double transcript memory and anything that prices dict bytes.
+    dicts, so a full copy would double transcript memory and anything that prices dict bytes. The row is hashed
+    as this build writes it: a row an older build stored with its reasoning in both columns and this build's
+    copy of it (a compaction carry) are one version, never a foreign write.
     """
     digest = hashlib.blake2b(digest_size=16)
+    written = row_as_written(row)
     for column in _OWNED_COLUMNS:
-        value = row[column]
+        value = written[column]
         if value is None:
             digest.update(b"N")
             continue
@@ -168,9 +172,10 @@ def _same_as_stored(
 
     The row is seen through the restore lens (``_loaded_view_content``: user/assistant text sanitized and
     stripped on load), because that is what the dict was rebuilt from; the dict's own content is never
-    normalized, so text that differs after the lens is an edit and inserts.
+    normalized, so text that differs after the lens is an edit and inserts. Its reasoning pair is seen as this
+    build writes it, so a row an older build stored with the text in both columns still matches.
     """
-    for row in rows:
+    for row in map(row_as_written, rows):
         serialized = dict(serialize_message_fn(msg, float(row["timestamp"])))
         for column, key in _RESTORE_MAY_OMIT:
             if not msg.get(key):
@@ -255,7 +260,9 @@ def resolve_and_repair_transcript_batch(
                     # Replays never decode token_count (the agent flush row sets it to None): None means
                     # "unknown", not NULL.
                     serialized = {**serialized, "token_count": target_row["token_count"]}
-                if any(target_row[column] != serialized[column] for column in _OWNED_COLUMNS):
+                # Compared as written: a row an older build stored with reasoning in both columns is not a change.
+                written = row_as_written(target_row)
+                if any(written[column] != serialized[column] for column in _OWNED_COLUMNS):
                     _rewrite_row(conn, session_id, target_row, serialized)
                     wrote = True
                 hand_back = True
@@ -392,20 +399,23 @@ def _active_message_row(conn: sqlite3.Connection, session_id: str, row_id: int, 
     # messages. Legacy rows without an indexed identity cannot be resolved safely, so retain the addressed row.
     if row["display_identity"] is None:
         return row
-    payload_predicates = " AND ".join(f"{column} IS ?" for column in _REPAIR_COLUMNS)
-    clones = conn.execute(
+    # ``reasoning`` is compared as written: a carried copy of a row an older build wrote stores that text once.
+    exact = tuple(column for column in _REPAIR_COLUMNS if column != "reasoning")
+    payload_predicates = " AND ".join(f"{column} IS ?" for column in exact)
+    reasoning = row_as_written(row)["reasoning"]
+    clones = [clone for clone in conn.execute(
         "SELECT * FROM messages WHERE session_id = ? AND active = 1 AND role = ? "
         "AND display_identity IS ? AND timestamp IS ? AND id != ? AND "
-        f"{payload_predicates} ORDER BY id DESC LIMIT 2",
+        f"{payload_predicates} ORDER BY id DESC",
         (
             session_id,
             role,
             row["display_identity"],
             row["timestamp"],
             row["id"],
-            *(row[column] for column in _REPAIR_COLUMNS),
+            *(row[column] for column in exact),
         ),
-    ).fetchall()
+    ).fetchall() if row_as_written(clone)["reasoning"] == reasoning]
     return clones[0] if len(clones) == 1 else row
 
 

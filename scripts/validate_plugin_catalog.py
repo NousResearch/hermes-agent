@@ -109,7 +109,7 @@ def _repo_host(repo: object) -> str:
 
 
 def _check_page_fields(data: dict, errors: list[str]) -> None:
-    """``screenshots`` and ``readme`` feed the entry's page at /docs/plugins/<name>; both optional (README on by default)."""
+    """``screenshots``, ``docs_url`` and ``readme`` feed the entry's page at /docs/plugins/<name>; both optional (README on by default)."""
     shots = data.get("screenshots")
     if shots is not None:
         if not isinstance(shots, list) or not all(isinstance(s, str) and _is_allowed_image_url(s) for s in shots):
@@ -118,6 +118,12 @@ def _check_page_fields(data: dict, errors: list[str]) -> None:
             )
         elif len(shots) > MAX_SCREENSHOTS:
             errors.append(f"screenshots lists {len(shots)} URLs; at most {MAX_SCREENSHOTS} are shown")
+    # The site renders docs_url as an <a href>; empty means "no docs link".
+    docs_url = data.get("docs_url")
+    if docs_url is not None and not (
+        isinstance(docs_url, str) and (not docs_url.strip() or re.fullmatch(r"https://\S+", docs_url.strip()))
+    ):
+        errors.append(f"docs_url {docs_url!r} must be an https:// URL (the docs site renders it as a link)")
     readme = data.get("readme")
     if readme is not None:
         if not isinstance(readme, bool):
@@ -203,13 +209,6 @@ def validate_entry(data: object) -> tuple[list[str], list[str]]:
     version = data.get("version")
     if version is not None and (not isinstance(version, str) or not VERSION_RE.match(version)):
         errors.append(f"version {version!r} must be 1-32 chars of [A-Za-z0-9._+-] (quote it in YAML)")
-
-    docs_url = data.get("docs_url")
-    if docs_url is not None and (not isinstance(docs_url, str) or docs_url.strip()) and (
-        not isinstance(docs_url, str)
-        or not re.fullmatch(r"https://\S+", docs_url.strip())
-    ):
-        errors.append(f"docs_url {docs_url!r} must be an https:// URL (the docs site renders it as a link)")
 
     image = data.get("image")
     if image is not None and (not isinstance(image, str) or not _is_allowed_image_url(image)):

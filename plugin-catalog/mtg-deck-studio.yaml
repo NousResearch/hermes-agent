@@ -1,6 +1,6 @@
 name: mtg-deck-studio
 repo: https://github.com/GillesGaelBERNARD/mtg-deck-studio
-sha: 26d4e4d82f5ccf7f68465219f6b31969b7337896
+sha: 67ca7bd5c286528990c5c6f1cc53ec8ab7b60c4d
 subdir: plugin
 title: MTG Deck Studio
 description: >-
@@ -21,18 +21,18 @@ maintainer: GillesGaelBERNARD
 tier: community
 category: desktop
 requires_hermes: ">=0.22.7"
-version: "0.3.0"
+version: "0.3.1"
 docs_url: https://github.com/GillesGaelBERNARD/mtg-deck-studio#readme
 readme: true
 platforms: [windows]
-image: https://raw.githubusercontent.com/GillesGaelBERNARD/mtg-deck-studio/26d4e4d82f5ccf7f68465219f6b31969b7337896/assets/banner.png
+image: https://raw.githubusercontent.com/GillesGaelBERNARD/mtg-deck-studio/67ca7bd5c286528990c5c6f1cc53ec8ab7b60c4d/assets/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/GillesGaelBERNARD/mtg-deck-studio/26d4e4d82f5ccf7f68465219f6b31969b7337896/assets/screenshots/table.png
-  - https://raw.githubusercontent.com/GillesGaelBERNARD/mtg-deck-studio/26d4e4d82f5ccf7f68465219f6b31969b7337896/assets/screenshots/effects.png
-  - https://raw.githubusercontent.com/GillesGaelBERNARD/mtg-deck-studio/26d4e4d82f5ccf7f68465219f6b31969b7337896/assets/screenshots/links.png
-  - https://raw.githubusercontent.com/GillesGaelBERNARD/mtg-deck-studio/26d4e4d82f5ccf7f68465219f6b31969b7337896/assets/screenshots/stats.png
-  - https://raw.githubusercontent.com/GillesGaelBERNARD/mtg-deck-studio/26d4e4d82f5ccf7f68465219f6b31969b7337896/assets/screenshots/strategy.png
-  - https://raw.githubusercontent.com/GillesGaelBERNARD/mtg-deck-studio/26d4e4d82f5ccf7f68465219f6b31969b7337896/assets/screenshots/sideboard.png
+  - https://raw.githubusercontent.com/GillesGaelBERNARD/mtg-deck-studio/67ca7bd5c286528990c5c6f1cc53ec8ab7b60c4d/assets/screenshots/table.png
+  - https://raw.githubusercontent.com/GillesGaelBERNARD/mtg-deck-studio/67ca7bd5c286528990c5c6f1cc53ec8ab7b60c4d/assets/screenshots/effects.png
+  - https://raw.githubusercontent.com/GillesGaelBERNARD/mtg-deck-studio/67ca7bd5c286528990c5c6f1cc53ec8ab7b60c4d/assets/screenshots/links.png
+  - https://raw.githubusercontent.com/GillesGaelBERNARD/mtg-deck-studio/67ca7bd5c286528990c5c6f1cc53ec8ab7b60c4d/assets/screenshots/stats.png
+  - https://raw.githubusercontent.com/GillesGaelBERNARD/mtg-deck-studio/67ca7bd5c286528990c5c6f1cc53ec8ab7b60c4d/assets/screenshots/strategy.png
+  - https://raw.githubusercontent.com/GillesGaelBERNARD/mtg-deck-studio/67ca7bd5c286528990c5c6f1cc53ec8ab7b60c4d/assets/screenshots/sideboard.png
 capabilities:
   provides_tools:
     - mtg_deck_studio_state

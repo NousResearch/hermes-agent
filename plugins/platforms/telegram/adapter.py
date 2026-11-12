@@ -333,7 +333,7 @@ from plugins.platforms.telegram.telegram_markdown import (
     degrade_unrenderable_links, escape_rich_currency_dollars, normalize_rich_latex, to_markdown_v2)
 from plugins.platforms.telegram.rich_markdown import (
     RICH_EMAIL_TOKEN_RE, escape_literal_hash_prefixes, rich_normalize_linebreaks)
-from plugins.platforms.telegram.rich_parts import edit_rich_parts, send_rich_parts
+from plugins.platforms.telegram.rich_parts import edit_rich_parts, resume_rich_parts, send_rich_parts
 
 
 def _strip_mdv2(text: str) -> str:
@@ -3523,6 +3523,8 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         """Send only the chunks a partial ``send()`` could not deliver (``undelivered_chunks``, or the never-attempted
         ``unattempted_chunks``), continuing the message-id sequence; ``None`` when no tail is certain-undelivered."""
         raw = result.raw_response if isinstance(result.raw_response, dict) else {}
+        if raw.get("undelivered_rich_parts") and self._bot:  # a rich part that never left: resend it rich
+            return await resume_rich_parts(self, chat_id, result, metadata)
         undelivered = raw.get("undelivered_chunks") or raw.get("unattempted_chunks")
         if not undelivered or not self._bot:
             return None
@@ -3608,8 +3610,6 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             rich_result = await edit_rich_parts(self, chat_id, message_id, content, metadata)
             if rich_result is not None:
                 return rich_result
-        # Pre-flight: over-limit content is split-and-delivered on finalize; mid-stream we truncate instead
-        # (splitting moves the edit target to a continuation → infinite duplication loop).
         # Pre-flight: if content already exceeds the limit, split-and-deliver without round-tripping a
         # doomed edit. During streaming (finalize=False) we truncate instead of splitting — splitting
         # creates continuation messages whose IDs become the new edit target, and on the next token chunk

@@ -1202,7 +1202,7 @@ def _(rid, params: dict) -> dict:
         {"title": "Model", "rows": [
             ["Model", _resolve_model()], ["Base URL", base_url or "(default)"], ["API Key", masked]]},
         {"title": "Agent", "rows": [
-            ["Max Turns", str(_cfg_max_turns(cfg, 500))],
+            ["Max Turns", _tools_mod("hermes_cli.config_turn_limit").turn_limit_label(_cfg_max_turns(cfg))],
             ["Toolsets", ", ".join(cfg.get("enabled_toolsets", [])) or "all"],
             ["Verbose", str(cfg.get("verbose", False))]]},
         {"title": "Environment", "rows": [["Working Dir", os.getcwd()], ["Config File", str(_active_config_path())]]},

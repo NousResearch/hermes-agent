@@ -125,3 +125,28 @@ def test_a_dead_owner_in_this_namespace_is_still_reclaimed(tmp_path, monkeypatch
     lock_path.write_text(json.dumps({**status._build_pid_record(), "pid": dead.pid}))
     acquired, _existing = status.acquire_scoped_lock("telegram-bot-token", "123:fixture")
     assert acquired
+
+
+def test_a_successor_on_the_same_home_does_not_keep_a_dead_owners_token(namespaced_holder, monkeypatch, tmp_path):
+    """The namespaced owner dies; another gateway starts on that home (its token changed) and holds the
+    home's flock. That flock is the successor's, not the old token's owner: the old token is free."""
+    _held, home, locks, end_holder = namespaced_holder
+    end_holder()
+    root = Path(__file__).resolve().parents[2]
+    # The successor holds the home's flock under its own token (no pid file: the dead owner left one).
+    hold = _HOLD.replace('"123:fixture"', '"456:successor"').replace("status.write_pid_file()", "")
+    successor = subprocess.Popen(
+        [sys.executable, "-c", hold, str(root)],
+        env={**os.environ, "HERMES_HOME": str(home), "HERMES_GATEWAY_LOCK_DIR": str(locks)},
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        line = successor.stdout.readline()
+        assert line and json.loads(line)["ok"], successor.stderr.read()
+        other = tmp_path / "other-home"
+        other.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(other))
+        monkeypatch.setattr(status, "_looks_like_gateway_process", lambda pid: True)
+        acquired, _existing = status.acquire_scoped_lock("telegram-bot-token", "123:fixture")
+        assert acquired, "a successor on the dead owner's home kept its old token reserved"
+    finally:
+        _end(successor)

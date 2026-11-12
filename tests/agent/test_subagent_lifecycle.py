@@ -334,6 +334,57 @@ def test_routing_unknown_provider_refuses_before_registration(routing_lifecycle,
     resolve.assert_called_once_with(requested="fixture-missing", target_model=None)
 
 
+_BEDROCK = {"provider": "bedrock", "model": "global.anthropic.claude-opus-5-5"}
+
+
+def _exhausted_anthropic_resolver(**kwargs):
+    """``resolve_runtime_provider`` where the Anthropic pool's only entry is benched (the real cooldown error)
+    and Bedrock resolves."""
+    from unittest.mock import patch
+    from hermes_cli.runtime_provider import _anthropic_token_or_raise
+
+    if kwargs["requested"] == "anthropic":
+        with patch("agent.anthropic_credentials.resolve_anthropic_token",
+                   lambda model=None: None if model else "sk-ant...odel"):
+            _anthropic_token_or_raise(model=kwargs["target_model"])
+    return {"provider": kwargs["requested"], "model": kwargs["target_model"],
+            "base_url": "https://bedrock-runtime.us-west-2.amazonaws.com", "api_key": "aws-sdk",
+            "api_mode": "anthropic_messages"}
+
+
+@pytest.mark.parametrize("request_model", [None, "claude-opus-5-5"])
+def test_config_route_resolve_fallback_spawns_on_the_chain(routing_lifecycle, request_model):
+    """delegation.provider anthropic in 429 cooldown with a Bedrock chain: the spawn runs on Bedrock."""
+    service, build, config, resolve = routing_lifecycle
+    config.return_value = {"provider": "anthropic", "model": "claude-opus-5-5", "fallback_providers": [dict(_BEDROCK)]}
+    resolve.side_effect = _exhausted_anthropic_resolver
+    handle = service.launch(SubagentLaunchRequest(goal="route", model=request_model))
+    assert service.wait(handle, timeout_seconds=2).state is SubagentState.SUCCEEDED
+    kwargs = build.call_args.kwargs
+    assert (kwargs["override_provider"], kwargs["model"]) == ("bedrock", "global.anthropic.claude-opus-5-5")
+    assert kwargs["override_base_url"] == "https://bedrock-runtime.us-west-2.amazonaws.com"
+    assert kwargs["routing_cfg"]["fallback_providers"] == []
+    assert [c.kwargs["requested"] for c in resolve.call_args_list] == ["anthropic", "bedrock"]
+
+
+def test_request_provider_resolve_fallback_still_refuses(routing_lifecycle):
+    """A request.provider route carries no chain and never borrows the parent's, so it refuses as today."""
+    from agent.subagent_lifecycle import _REGISTRY
+
+    service, build, config, resolve = routing_lifecycle
+    config.return_value = {"provider": "nous", "fallback_providers": [dict(_BEDROCK)]}
+    resolve.side_effect = _exhausted_anthropic_resolver
+    records = dict(_REGISTRY.records)
+    with pytest.raises(SubagentLifecycleError) as raised:
+        service.launch(SubagentLaunchRequest(goal="route", provider="anthropic", model="claude-opus-5-5"))
+    assert str(raised.value).startswith("Cannot resolve delegation provider 'anthropic': Anthropic credentials "
+                                        "are rate-limited for claude-opus-5-5")
+    assert "fallback" not in str(raised.value).lower()
+    assert _REGISTRY.records == records
+    build.assert_not_called()
+    resolve.assert_called_once_with(requested="anthropic", target_model="claude-opus-5-5")
+
+
 def test_plugin_toolsets_are_known_toolsets(lifecycle, monkeypatch):
     monkeypatch.setattr("toolsets._get_plugin_toolset_names", lambda: {"plugin-tools"})
     parent = SimpleNamespace(session_id="parent-plugin", enabled_toolsets=["file", "plugin-tools"])

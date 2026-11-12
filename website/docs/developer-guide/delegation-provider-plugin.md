@@ -133,8 +133,8 @@ A non-profile route without `fallback_providers` of its own gets `delegation.fal
 
 A `DelegationRouteError` from `route_task`, a parameter your backend did not declare, a value outside
 your parameter's `enum`, an unknown
-`reasoning_effort`, a tier the route does not offer, or a credential the route cannot resolve refuses
-**that task only**: no child is built for it, its result entry is
+`reasoning_effort`, a tier the route does not offer, or a credential the route cannot resolve
+(after the route's own `fallback_providers` were tried) refuses **that task only**: no child is built for it, its result entry is
 `{"status": "error", "error": "<your message>", "route": {"backend": "<name>", "refused": true}}`, and
 the other tasks run. A background call lists refused entries under `refused` in its dispatch payload.
 The call is a tool error only when every task is refused.
@@ -149,8 +149,9 @@ Every result entry of a task routed by a non-default backend carries `route`: th
           "reasoning_effort": "high", "service_tier": "fast"}
 ```
 
-`reasoning_effort` is `null` when the provider's default applies; `fallback_activated: true` is added
-when a fallback provider took over. The `default` backend's children leave the result entry unchanged.
+`reasoning_effort` is `null` when the provider's default applies (`fallback_activated: true` when a
+fallback provider took over mid-run; a route whose primary refused at credential resolution reports the
+fallback entry's provider and model). The `default` backend's children leave the result entry unchanged.
 
 ## Picker metadata and switching backends
 

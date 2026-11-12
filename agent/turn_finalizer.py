@@ -683,10 +683,16 @@ def finalize_turn(
 
     # Sibling producers (``turn_recovery``, ``codex_runtime``) return ``completed=False`` for an
     # interrupted turn; the gateway stream gate and the API run status rely on that contract.
+    # A vetoed turn never ran the model, so the work was not done either: keep it out of
+    # ``completed`` so unattended callers (``hermes -z`` exit code, cron, API run status) can
+    # tell a block from a successful answer (#154234). ``failed`` stays False — the turn is not
+    # a provider/loop failure, and gateway settlement, ACP and the F-only consumers keep their
+    # current behavior for a block.
     completed = (
         final_response is not None
         and not failed
         and not interrupted
+        and not vetoed
         and (api_call_count < agent.max_iterations or str(_turn_exit_reason).startswith("text_response("))
     )
 

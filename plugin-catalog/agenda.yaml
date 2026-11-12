@@ -1,14 +1,14 @@
 name: agenda
 title: Agenda
 repo: https://github.com/zzzubair/hermes-agenda
-sha: "d5a34a747d5d6e98cd2e398514544db6fa9d41a1"
-version: "1.0.0"
+sha: "58890ceb7e262c70de7f0cd79a8730ef7f7ccfb3"
+version: "1.0.1"
 description: "Your agent's own todo list, brought up in conversation when items are due. Disclosure: adds due items to each turn (pre_llm_call, capped by max_tokens); stores items in plaintext under $HERMES_HOME/agenda/; runs the wake CLI or hermes cron only for deadline reminders; no network calls, telemetry or credentials."
 maintainer: zzzubair
 tier: community
 category: automation
 requires_hermes: ">=0.23.0"
-docs_url: https://github.com/zzzubair/hermes-agenda/blob/d5a34a747d5d6e98cd2e398514544db6fa9d41a1/README.md
+docs_url: https://github.com/zzzubair/hermes-agenda/blob/58890ceb7e262c70de7f0cd79a8730ef7f7ccfb3/README.md
 readme: true
 platforms: [linux, macos]
 capabilities:

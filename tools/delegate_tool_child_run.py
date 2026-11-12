@@ -798,6 +798,22 @@ def _build_child_goal_message(goal: str, images: list[str], child) -> Any:
         return goal
 
 
+def _checkpointing(inner: Any, checkpoint: Any) -> Any:
+    """``inner`` plus a durable cwd checkpoint after each finished tool call, so a hard kill between heartbeats
+    still knows where the child was (a write only when the cwd moved). Keeps the ``_flush`` contract."""
+    if not callable(inner):
+        return inner
+
+    def _cb(event_type, *args, **kwargs):
+        inner(event_type, *args, **kwargs)
+        if event_type == "tool.completed":
+            with _quiet("Durable subagent checkpoint failed: %s"):
+                checkpoint()
+    if hasattr(inner, "_flush"):
+        _cb._flush = inner._flush
+    return _cb
+
+
 @dataclass
 class _ChildRun:
     """State of one child run, shared by every phase of ``_run_single_child``.
@@ -844,8 +860,11 @@ class _ChildRun:
         if info is None:
             return redact_child_result(entry_dict, getattr(self.child, "_delegate_output_schema", None), force=False)
         from tools import subagent_worktree
+        from tools.delegate_tool_resumable import keeps_worktree
         try:
-            entry_dict["worktree"] = subagent_worktree.finalize_subagent_worktree(info)
+            # A child that may be continued keeps its tree (pinned until its record expires; the sweep then archives).
+            entry_dict["worktree"] = subagent_worktree.finalize_subagent_worktree(
+                info, prune=not keeps_worktree(self, entry_dict))
         except Exception as e:
             # State is unknown: emit the SAME flagged schema the parent expects,
             # via the shared factory so the two producers never drift.
@@ -894,6 +913,7 @@ class _ChildRun:
             record_start(self)
             if self.heartbeat is not None:
                 self.heartbeat.checkpoint = lambda: checkpoint(self)
+            self.child.tool_progress_callback = _checkpointing(self.child.tool_progress_callback, lambda: checkpoint(self))
 
     def finish_failed(
         self, entry: dict[str, Any], late_steer: Optional[str], *, preview: str, summary: str = "", status: Optional[str] = None,

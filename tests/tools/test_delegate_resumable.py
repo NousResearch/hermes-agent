@@ -10,6 +10,7 @@ import json
 import os
 import subprocess
 import time
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -131,6 +132,59 @@ def _git(*args, cwd):
     subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True,
                    env={**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
                         "GIT_COMMITTER_EMAIL": "t@t"})
+
+
+def test_a_resumable_childs_isolation_worktree_survives_its_stop_and_continue_runs_there(tmp_path, monkeypatch):
+    """Found live: the stop path archived and removed the worktree of a child that was about to be continued."""
+    import threading
+
+    from tools.async_delegation import interrupt_all
+    from tools.delegate_tool import delegate_task
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git("init", "-q", "-b", "main", cwd=repo)
+    (repo / "a.txt").write_text("a")
+    _git("add", "a.txt", cwd=repo)
+    _git("commit", "-qm", "init", cwd=repo)
+    monkeypatch.setattr("tools.delegate_tool._get_worktree_isolation", lambda: True)
+    monkeypatch.setattr("tools.delegate_tool._resolve_workspace_hint", lambda _p: str(repo))
+    started, release = threading.Event(), threading.Event()
+    model = _ScriptedModel()
+
+    def build(**kw):
+        child = model(**kw)
+        ok = child.run_conversation.side_effect
+
+        def run_conversation(user_message, **rest):
+            from tools.terminal_tool import get_session_cwd
+            model.turns.append({"cwd": get_session_cwd(rest.get("task_id"))})
+            if len(model.builds) == 1:
+                (Path(get_session_cwd(rest.get("task_id"))) / "a.txt").write_text("child edit")
+                started.set()
+                release.wait(10)
+                ok(user_message, **rest)
+                return {"final_response": "Operation interrupted.", "interrupted": True, "completed": False}
+            return ok(user_message, **rest)
+        child.run_conversation.side_effect = run_conversation
+        return child
+
+    parent = _parent()
+    with patch("run_agent.AIAgent", side_effect=build):
+        out = json.loads(delegate_task(tasks=[{"goal": "edit"}], background=True, parent_agent=parent))
+        sid = out["subagent_ids"][0]
+        assert started.wait(10)
+        interrupt_all(reason="gateway shutdown (test)", resumable=True)
+        release.set()
+        _completion(out["delegation_id"])
+        tree = Path(_db_rows(parent)[sid][2]["worktree"]["path"])
+        assert (tree / "a.txt").read_text() == "child edit"  # kept, edit and all
+
+        _forget_process_state()
+        cont = json.loads(delegate_task(action="continue", subagent_id=sid, message="go on", background=True,
+                                        parent_agent=parent))
+        _completion(cont["delegation_id"])
+    assert os.path.realpath(model.turns[-2]["cwd"]) == os.path.realpath(tree)
 
 
 def test_crashed_childs_worktree_survives_the_sweep_until_its_record_expires(tmp_path):

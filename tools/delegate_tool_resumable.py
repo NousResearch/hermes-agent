@@ -282,6 +282,13 @@ def stop_cause_live(run: Any) -> Optional[str]:
     return None
 
 
+def keeps_worktree(run: Any, entry: dict[str, Any]) -> bool:
+    """Whether the stopped child is resumable, so its isolation worktree must survive the stop."""
+    if not run.subagent_id or not isinstance(getattr(run.child, "_delegate_durable", None), dict):
+        return False
+    return classify(entry, stop_cause_live(run))[0] == "resumable"
+
+
 def stamp_entry(run: Any, entry: dict[str, Any]) -> None:
     """The result entry says how this stopped child may resume (absent when it completed or a person stopped it)."""
     durable = getattr(run.child, "_delegate_durable", None)

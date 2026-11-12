@@ -7,7 +7,8 @@ import path from 'node:path'
 // The message itself goes to stderr a moment before the trap, and every Linux
 // launcher (.desktop entry, Omarchy's hermes-desktop wrapper) discards stderr.
 // Route Chromium's own log to a file next to desktop.log and let Crashpad keep
-// local minidumps, so the next crash carries its FATAL line with it.
+// local minidumps, so the next crash carries its FATAL line with it. Windows
+// needs the same local evidence because packaged GUI launches have no stderr.
 
 export interface LinuxCrashDiagnostics {
   /** Chromium command-line switches, applied before `app` is ready. */
@@ -26,7 +27,7 @@ export function linuxCrashDiagnostics(
   logsDir: string,
   platform: NodeJS.Platform = process.platform
 ): LinuxCrashDiagnostics | null {
-  if (platform !== 'linux') {
+  if (platform !== 'linux' && platform !== 'win32') {
     return null
   }
 

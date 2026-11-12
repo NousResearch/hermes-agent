@@ -124,6 +124,17 @@ def _dispatch(mgr, arg):
     return dispatch_goal_command(mgr, arg, authorize_gate=lambda: None)
 
 
+def test_gateway_goal_turn_budget_reaches_manager(monkeypatch):
+    goals._DB_CACHE.clear()
+    mgr = goals.GoalManager(session_id='gateway-turn-budget')
+    prompts = []
+    execute = _surface('gateway', mgr, monkeypatch, prompts)
+    output = execute('--turns 60 ship the thing')
+    assert (mgr.state.goal, mgr.state.max_turns) == ('ship the thing', 60)
+    assert '60-turn budget' in output
+    assert prompts == ['ship the thing']
+
+
 @pytest.mark.parametrize('command, paused, status', [
     ('resume last goal', False, 'active'), ('continue the work', True, 'active'),
     ('pause for now', False, 'paused'), ('status please', False, 'active'),

@@ -242,7 +242,9 @@ THREAT_PATTERNS = [
     # ── Exfiltration: markdown/link based ──
     (r'!\[.*\]\(https?://[^\)]*\$\{?',
      "md_image_exfil", "high", "exfiltration", "markdown image URL with variable interpolation (image-based exfil)"),
-    (r'\[.*\]\(https?://[^\)]*\$\{?', "md_link_exfil", "high", "exfiltration", "markdown link with variable interpolation"),
+    # `[^\[]*`, not `.*`: a match exists iff the LAST `[` before `](` matches, so this is the same
+    # set of lines in one pass. `.*` retried every `]` from every `[` (quadratic on minified JSON).
+    (r'\[[^\[]*\]\(https?://[^\)]*\$\{?', "md_link_exfil", "high", "exfiltration", "markdown link with variable interpolation"),
     # ── Prompt injection ──
     (r'ignore\s+(?:\w+\s+)*(previous|all|above|prior)\s+instructions',
      "prompt_injection_ignore", "critical", "injection", "prompt injection: ignore previous instructions"),
@@ -703,7 +705,7 @@ def scan_file(file_path: Path, rel_path: str = "", *, skill: bool = False) -> li
     skill-only credential rules (``tools.skills_guard_credentials``)."""
     rel_path = rel_path or file_path.name
     if file_path.suffix.lower() not in SCANNABLE_EXTENSIONS and file_path.name != "SKILL.md":
-        return []
+        return _unscanned_text_padded_code(file_path, rel_path)
     try:
         lines = file_path.read_text(encoding='utf-8-sig').split('\n')
     except (UnicodeDecodeError, OSError):
@@ -732,7 +734,44 @@ def scan_file(file_path: Path, rel_path: str = "", *, skill: bool = False) -> li
             findings.append(Finding("invisible_unicode", "high", "injection", rel_path, i,
                                     f"U+{ord(char):04X} ({name})",
                                     f"invisible unicode character {name} (possible text hiding/injection)"))
+    if suffix not in _PADDED_CODE_EXEMPT_SUFFIXES:
+        findings.extend(_padded_code_findings(lines, rel_path))
     return findings
+
+
+# Code pushed off-screen: a run of 200+ spaces/tabs, then 40+ characters on the same line. An editor or
+# GitHub's diff shows the line ending at the padding, so a loader appended there (a known campaign
+# infecting developers' machines and appending to their `vite.config.js` / `init`) is invisible to a
+# reviewer. Prose formats (Markdown tables pad cells) are exempt; across every catalog pin no other code
+# file has such a line.
+_PADDED_CODE = re.compile(r"(?<![ \t])[ \t]{200,}+(?=\S[^\n]{39})")
+_PADDED_CODE_EXEMPT_SUFFIXES = {".md", ".txt", ".html", ".xml", ".tex", ".css"}
+# The hidden tail must hold a word; a saved traceback's `~~~^^^` underline after its indent is not code.
+_CODE_WORD = re.compile(r"[A-Za-z_$][\w$]{2,}")
+
+
+def _padded_code_findings(lines: list[str], rel_path: str) -> list[Finding]:
+    out = []
+    for i, line in enumerate(lines, start=1):
+        if (m := _PADDED_CODE.search(line)) is not None and _CODE_WORD.search(hidden := line[m.end():]):
+            out.append(Finding("hidden_padded_code", "critical", "obfuscation", rel_path, i,
+                               f"{m.end() - m.start()} blank chars then: {hidden[:80]}",
+                               "code hidden after a long run of whitespace (off-screen in editors and diffs)"))
+    return out
+
+
+def _unscanned_text_padded_code(file_path: Path, rel_path: str) -> list[Finding]:
+    """Files outside SCANNABLE_EXTENSIONS (extensionless ``init``, ``.mjs``/``.cjs``/``.tsx``) get only the
+    padded-code check: the other rules were never tuned for them, so turning those on would move verdicts."""
+    if file_path.suffix.lower() in _PADDED_CODE_EXEMPT_SUFFIXES or file_path.stat().st_size > 2_000_000:
+        return []
+    try:
+        data = file_path.read_bytes()
+        if b"\0" in data[:8192]:
+            return []  # binary
+        return _padded_code_findings(data.decode("utf-8-sig").split("\n"), rel_path)
+    except (UnicodeDecodeError, OSError):
+        return []
 
 
 # Findings that only inform on a COMMUNITY skill install, where the matched text cannot act:

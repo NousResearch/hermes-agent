@@ -418,12 +418,19 @@ export function ChatSidebar({
   // below the built-ins with the same chrome; active = at their route.
   const navContributions = useContributions(SIDEBAR_NAV_AREA)
 
-  const contributedNav = useMemo<SidebarNavItem[]>(
+  const contributedNav: SidebarNavItem[] = useMemo(
     () =>
       navContributions.flatMap(c => {
         const data = c.data as Partial<SidebarNavContribution> | undefined
 
         if (!data?.path?.startsWith('/') || !data.label) {
+          return []
+        }
+
+        // Filter out plugin nav items that were removed but may still
+        // appear from cached gateway contributions.
+        const HIDDEN_NAV_IDS = new Set(['welcome', 'visuel-setup'])
+        if (HIDDEN_NAV_IDS.has(c.id) || HIDDEN_NAV_IDS.has((data.path || '').replace(/^\//, ''))) {
           return []
         }
 

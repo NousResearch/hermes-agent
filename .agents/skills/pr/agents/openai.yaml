@@ -1,0 +1,3 @@
+interface:
+  display_name: "PR"
+  short_description: "Write a PR body that's fast to review"

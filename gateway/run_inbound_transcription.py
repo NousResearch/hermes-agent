@@ -182,12 +182,15 @@ class GatewayInboundTranscriptionMixin:
         return prefix
 
     @staticmethod
-    def _untranscribed_audio_note(path: str) -> str:
+    def _agent_audio_path(path: str) -> str:
+        from tools.credential_files import to_agent_visible_cache_path
+        return to_agent_visible_cache_path(os.path.abspath(path))
+
+    @classmethod
+    def _untranscribed_audio_note(cls, path: str) -> str:
         """One minimal neutral marker for every STT failure. Never mention "no STT provider" or setup
         steps — persisted in history they make the model keep volunteering STT-setup advice."""
-        from tools.credential_files import to_agent_visible_cache_path
-        agent_path = to_agent_visible_cache_path(os.path.abspath(path))
-        return f"[voice message could not be transcribed automatically; the audio is available at: {agent_path}]"
+        return f"[voice message could not be transcribed automatically; the audio is available at: {cls._agent_audio_path(path)}]"
 
     async def _transcribe_one_clip(self, path: str, transcribe_audio, transcribe_audio_local_fallback) -> tuple[Optional[str], str]:
         """``(transcript_or_None, note)`` for one clip via configured STT with local fallback."""
@@ -212,5 +215,7 @@ class GatewayInboundTranscriptionMixin:
                 "to resend or type it out.]"
             )
         # Plain quoted line: a "The user sent a voice message..." wrapper read as a meta-instruction
-        # and made the LLM comment on voice mode instead.
-        return transcript, f'"{transcript}"'
+        # and made the LLM comment on voice mode instead. The path follows on its own line, as every
+        # failure branch keeps it: ``content`` is the only record of where the audio lives, in
+        # ``_build_media_placeholder``'s marker grammar so a consumer parsing media markers finds it.
+        return transcript, f'"{transcript}"\n[User sent audio: {self._agent_audio_path(path)}]'

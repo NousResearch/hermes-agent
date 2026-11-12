@@ -111,6 +111,53 @@ def _external_process_cli_command(provider_id: str, default: str) -> str:
     return default
 
 
+def _unitalk_clerk_status() -> dict[str, Any]:
+    """Status for the Unitalk Cloud card: read the Clerk session token from
+    auth.json and validate it against the Clerk JWKS endpoint. The Desktop
+    stores the token after a successful Clerk SSO flow via the localhost
+    callback server; this status function tells the dashboard whether a
+    valid token exists."""
+    try:
+        from hermes_cli.auth import _load_auth_store
+        auth_store = _load_auth_store()
+        providers = auth_store.get("providers", {})
+        unitalk_entry = providers.get("unitalk", {}) if isinstance(providers, dict) else {}
+    except Exception:
+        return dict(_LOGGED_OUT)
+
+    token = unitalk_entry.get("access_token", "") if isinstance(unitalk_entry, dict) else ""
+
+    if not token or not isinstance(token, str) or not token.strip():
+        return dict(_LOGGED_OUT)
+
+    # Validate the token without blocking on network errors
+    try:
+        from agent.clerk_auth import validate_clerk_token, CLERK_ISSUER
+        user_info = validate_clerk_token(token)
+    except Exception:
+        # JWKS fetch failed — report the token as present but unvalidated
+        return {
+            "logged_in": True,
+            "source": "clerk_oauth",
+            "source_label": "Clerk SSO (unvalidated — JWKS unreachable)",
+            "token_preview": _truncate_token(token),
+            "expires_at": None,
+            "has_refresh_token": False,
+        }
+
+    if user_info is None:
+        return dict(_LOGGED_OUT)
+
+    return {
+        "logged_in": True,
+        "source": "clerk_oauth",
+        "source_label": f"Clerk SSO ({user_info.email or user_info.user_id})",
+        "token_preview": _truncate_token(token),
+        "expires_at": None,
+        "has_refresh_token": False,
+    }
+
+
 # Hand-tuned OAuth/account cards: the bits not derivable from the unified provider catalog
 # (``flow``, ``status_fn``, ``cli_command``, display order). OVERRIDE BASE for
 # ``_build_oauth_catalog()``, which unions them with every accounts-tab provider so new
@@ -120,6 +167,12 @@ def _external_process_cli_command(provider_id: str, default: str) -> str:
 # ``flow``: ``device_code`` = show code + URL + poll; ``external`` = delegated to a terminal/CLI.
 _OAUTH_PROVIDER_CATALOG: tuple[dict[str, Any], ...] = (
     # status_fn None → dispatched via auth.get_<provider>_auth_status.
+    # Unitalk Cloud: Clerk SSO in the system browser; the Desktop starts the flow locally
+    # (not through /api/providers/oauth/unitalk/start). flow='external' prevents the
+    # dashboard from offering a Connect button that would dead-end.
+    {"id": "unitalk", "name": "Unitalk Cloud", "flow": "external",
+     "cli_command": "hermes auth add unitalk", "docs_url": "https://unitalk.ai",
+     "status_fn": _unitalk_clerk_status},
     {"id": "nous", "name": "Nous Portal", "flow": "device_code", "cli_command": "hermes auth add nous",
      "docs_url": "https://portal.nousresearch.com", "status_fn": None},
     {"id": "openai-codex", "name": "ChatGPT or Codex Subscription", "flow": "device_code",

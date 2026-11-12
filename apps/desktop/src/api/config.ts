@@ -395,3 +395,24 @@ export function cancelOAuthSession(sessionId: string, profile?: ProfileScope): P
     method: 'DELETE'
   })
 }
+
+export function submitClerkToken(token: string, profile?: ProfileScope): Promise<{
+  ok: boolean
+  email?: string
+  name?: string
+  provider: string
+  user_id: string
+}> {
+  return window.hermesDesktop.api<{
+    ok: boolean
+    email?: string
+    name?: string
+    provider: string
+    user_id: string
+  }>({
+    ...capabilityScoped(profile),
+    path: '/api/providers/oauth/unitalk/submit-token',
+    method: 'POST',
+    body: { token }
+  })
+}

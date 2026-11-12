@@ -1,0 +1,5 @@
+interface:
+  display_name: "Ask Matt"
+  short_description: "Find the right skill or workflow"
+policy:
+  allow_implicit_invocation: false

@@ -305,7 +305,7 @@ from gateway.platforms.helpers import (
     MessageDeduplicator, ThreadParticipationTracker, convert_table_to_bullets, is_discord_channel_obfuscated,
     numbered_clarify_choices,
 )
-from gateway.platforms.helpers import cancel_task
+from gateway.platforms.helpers import cancel_task, inline_document_text
 from utils import atomic_json_write, env_float
 from gateway.platforms.base import (
     BasePlatformAdapter, ExecApprovalPrompt, SendResult, unauthorized_action_notice,
@@ -317,8 +317,8 @@ from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from tools.url_safety import is_safe_url
 from gateway.platforms._shared import (
     decode_json_list_literal as _decode_json_list_literal, env_is_connected as _env_is_connected,
-    extra_or_secret as _extra_or_secret, platform_gate_env as _scoped_gate_env, send_error,
-    yaml_env_setter as _yaml_env_setter
+    extra_or_secret as _extra_or_secret, platform_gate_env as _scoped_gate_env, request_never_left,
+    send_error, yaml_env_setter as _yaml_env_setter
 )
 
 
@@ -1175,10 +1175,11 @@ from plugins.platforms.discord.adapter_authorization import DiscordAuthorization
 from plugins.platforms.discord.adapter_slash_auth import DiscordSlashAuthMixin
 from plugins.platforms.discord.adapter_thread_titles import DiscordThreadTitlesMixin, SemanticThreadRenames
 from plugins.platforms.discord.adapter_voice_info import DiscordVoiceInfoMixin
+from plugins.platforms.discord.adapter_reactions import DiscordReactionsMixin
 
 
 class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceInfoMixin,
-                     DiscordSlashAuthMixin, BasePlatformAdapter):
+                     DiscordSlashAuthMixin, DiscordReactionsMixin, BasePlatformAdapter):
     """Discord bot adapter: guild/DM messages, threads, slash commands, button approvals, reactions."""
 
     MAX_MESSAGE_LENGTH = 2000
@@ -3114,53 +3115,6 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             summary["updated"] += 1
         summary["total"] = len(desired_payloads)
         return summary
-
-    async def _add_reaction(self, message: Any, emoji: str) -> bool:
-        """Add an emoji reaction to a Discord message."""
-        if not message or not hasattr(message, "add_reaction"):
-            return False
-        try:
-            await message.add_reaction(emoji)
-            return True
-        except Exception as e:
-            logger.debug("[%s] add_reaction failed (%s): %s", self.name, emoji, e)
-            return False
-
-    async def _remove_reaction(self, message: Any, emoji: str) -> bool:
-        """Remove the bot's own emoji reaction from a Discord message."""
-        if not message or not hasattr(message, "remove_reaction") or not self._client or not self._client.user:
-            return False
-        try:
-            await message.remove_reaction(emoji, self._client.user)
-            return True
-        except Exception as e:
-            logger.debug("[%s] remove_reaction failed (%s): %s", self.name, emoji, e)
-            return False
-
-    def _reactions_enabled(self) -> bool:
-        """Reactions enabled via ``extra.reactions`` (YAML, per profile) or ``DISCORD_REACTIONS``."""
-        return self._extra_or_env_flag("reactions", "DISCORD_REACTIONS", "true", truthy=False)
-
-    async def on_processing_start(self, event: MessageEvent) -> None:
-        """Add an in-progress reaction and record durable handling state."""
-        message = event.raw_message
-        acked = False
-        if self._reactions_enabled() and hasattr(message, "add_reaction"):
-            acked = await self._add_reaction(message, "👀")
-        await asyncio.to_thread(self._record_discord_processing_start, event, emoji_ack=acked)
-
-    async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
-        """Swap the in-progress reaction for final reaction and durable state."""
-        await asyncio.to_thread(self._record_discord_processing_complete, event, outcome)
-        if not self._reactions_enabled():
-            return
-        message = event.raw_message
-        if hasattr(message, "add_reaction"):
-            await self._remove_reaction(message, "👀")
-            if outcome == ProcessingOutcome.SUCCESS:
-                await self._add_reaction(message, "✅")
-            elif outcome == ProcessingOutcome.FAILURE:
-                await self._add_reaction(message, "❌")
 
     @staticmethod
     def _message_reference_from_ids(message_id, channel) -> discord.MessageReference:
@@ -6236,9 +6190,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         )
         media_urls, media_types, media_text_inlined, pending_text_injection = await self._collect_attachment_media(
             all_attachments)
-        event_text = normalized_content
-        if pending_text_injection:
-            event_text = f"{pending_text_injection}\n\n{event_text}" if event_text else pending_text_injection
+        event_text, media_text_inlined = inline_document_text(normalized_content, pending_text_injection, media_text_inlined)
         # ── History backfill ─────────────────────────────────────────
         # With require_mention, messages between bot turns never reach the transcript; fetch
         # history after the bot's last message (cold start: last N, stop at first self-message)
@@ -6978,7 +6930,8 @@ async def _standalone_response_json_or_error(resp: Any, error_prefix: str):
     with the (size-capped) body text appended to ``error_prefix``."""
     if resp.status not in {200, 201}:
         body = await _standalone_read_text_limited(resp, _DISCORD_STANDALONE_ERROR_BODY_LIMIT_BYTES)
-        return None, send_error(f"{error_prefix} ({resp.status}): {body}")
+        # A 4xx (429 too) is a refusal: nothing posted, and no caller has landed a message yet. 5xx stays unmarked.
+        return None, send_error(f"{error_prefix} ({resp.status}): {body}", nothing_sent=400 <= resp.status < 500)
     return await _standalone_read_json_limited(resp, _DISCORD_STANDALONE_JSON_BODY_LIMIT_BYTES), None
 
 
@@ -7027,15 +6980,14 @@ async def _standalone_send(
         from agent.secret_scope import get_secret
         token = (get_secret("DISCORD_BOT_TOKEN", "") or "").strip()
     if not token:
-        return send_error("Discord standalone send: DISCORD_BOT_TOKEN is not set")
+        return send_error("Discord standalone send: DISCORD_BOT_TOKEN is not set", nothing_sent=True)
     from gateway.platforms.base import describe_proxy_error, resolve_proxy_url, proxy_kwargs_for_aiohttp
-    _proxy = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
+    _proxy, last_data = resolve_proxy_url(platform_env_var="DISCORD_PROXY"), None
     try:
         _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
         auth_headers = {"Authorization": f"Bot {token}"}
         json_headers = {**auth_headers, "Content-Type": "application/json"}
         media_files = media_files or []
-        last_data = None
         warnings = []
         if thread_id:
             url = f"https://discord.com/api/v10/channels/{thread_id}/messages"
@@ -7152,7 +7104,7 @@ async def _standalone_send(
         # Include the exception type: str(TimeoutError()) is empty. The text may echo the proxy URL.
         shown = describe_proxy_error(e, _proxy)
         logger.error("Discord standalone send failed%s", f": {shown}" if shown else "", exc_info=not shown)
-        return send_error(f"Discord send failed: {shown or f'{type(e).__name__}: {e}'}")
+        return send_error(f"Discord send failed: {shown or f'{type(e).__name__}: {e}'}", nothing_sent=last_data is None and request_never_left(e))
 
 
 # ── Plugin entry point ────────────────────────────────────────────────────────

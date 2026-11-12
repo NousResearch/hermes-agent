@@ -140,6 +140,7 @@ function ChatHeader({
   onToggleSelectedPin,
   selectedSessionId
 }: ChatHeaderProps) {
+  const { t } = useI18n()
   const sessions = useStore($sessions)
   const pinnedSessionIds = useStore($pinnedSessionIds)
   const profiles = useStore($profiles)
@@ -149,7 +150,7 @@ function ChatHeader({
       sessions.find(session => sessionMatchesStoredId(session, selectedSessionId || activeSessionId || ''))) ||
     null
 
-  const title = activeStoredSession ? sessionTitle(activeStoredSession) : NEW_SESSION_TITLE
+  const title = activeStoredSession ? sessionTitle(activeStoredSession) : t.keybinds.actions['session.new']
 
   // Which agent/persona owns this chat — glanceable in the header once a
   // second profile exists, so the open session's ownership is never ambiguous

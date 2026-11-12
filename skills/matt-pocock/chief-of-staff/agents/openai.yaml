@@ -1,0 +1,5 @@
+interface:
+  display_name: "Chief Of Staff"
+  short_description: "Pursue a long-running goal in a single session by co-ordinating subagents"
+policy:
+  allow_implicit_invocation: false

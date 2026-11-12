@@ -37,7 +37,7 @@ import { afterOnboardingSurfaceClear, onboardingSurfaceOpen } from '@/store/onbo
 import { captureOnboardingScope, type OnboardingScope } from '@/store/onboarding-scope'
 import { requestRoute } from '@/store/recovery-requests'
 import { setModelPickerOpen } from '@/store/session'
-import { startClerkAuth } from '@/store/unitalk-auth'
+import { startClerkAuth, getClerkToken, clearClerkToken } from '@/store/unitalk-auth'
 import type { AppHandoffStatus, OAuthPollResponse, OAuthProvider, OAuthStartResponse } from '@/types/hermes'
 
 type PkceStart = Extract<OAuthStartResponse, { flow: 'pkce' }>
@@ -999,8 +999,9 @@ export async function startProviderOAuth(provider: OAuthProvider, ctx: Onboardin
   clearPoll()
 
   // Unitalk Cloud: Clerk SSO in the system browser, not a backend OAuth session.
-  // The token arrives via the Electron 'unitalk-oauth-callback' IPC channel;
-  // completeWithModelConfirm runs when the callback store fires the token.
+  // The token arrives via the localhost callback server (or Electron deep-link
+  // fallback). After capture, it is submitted to the gateway for JWT validation
+  // and persistent storage in auth.json.
   if (provider.id === 'unitalk') {
     setFlow({ status: 'starting', provider })
 
@@ -1011,10 +1012,23 @@ export async function startProviderOAuth(provider: OAuthProvider, ctx: Onboardin
         return
       }
 
-      // Open onboarding to the success state — the IPC callback in
-      // unitalk-auth.ts will persist the token and we treat it as
-      // an approved credential. Mark success immediately; the model
-      // confirm step loads the provider's default.
+      // Submit the captured token to the gateway for validation + storage
+      const token = getClerkToken()
+      if (!token) {
+        setFlow({ status: 'error', provider, message: 'Sign-in completed but no token was returned.' })
+        return
+      }
+
+      try {
+        await submitClerkToken(token, ctx.scope)
+      } catch (submitError) {
+        // Token validation failed (invalid, expired, JWKS unreachable).
+        // Clear the bad token and show an error.
+        clearClerkToken()
+        setFlow({ status: 'error', provider, ...signInDidNotFinish(provider, submitError) })
+        return
+      }
+
       setFlow({ status: 'success', provider })
       await completeWithModelConfirm(
         ctx,

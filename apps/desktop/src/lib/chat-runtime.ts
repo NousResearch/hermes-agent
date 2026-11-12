@@ -68,7 +68,7 @@ export function sessionTitle(session: SessionInfo): string {
 
 /** What a session is called before it has been sent — and before its composer
  *  has been typed into, which is the only thing that can name it earlier. */
-export const NEW_SESSION_TITLE = 'New session'
+export const NEW_SESSION_TITLE = 'Nouvelle session'
 
 export function coerceGatewayText(value: unknown): string {
   if (typeof value === 'string') {

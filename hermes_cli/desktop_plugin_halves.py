@@ -179,12 +179,17 @@ def publish_desktop_tree(source_dir: Path, target: Path, marker: dict | None, ig
     staged = staging / target.name
     try:
         shutil.copytree(source_dir, staged, symlinks=True, ignore=ignore)
+        # A read-only source (the Nix store, a deb/rpm install) copies as 0555 folders, which take no marker.
+        for folder, _dirs, _files in os.walk(staged):
+            os.chmod(folder, os.stat(folder).st_mode | stat.S_IWUSR)
         if marker is None:
             # Only an installer writes the marker or the origin: one shipped in the repository would
             # claim another package's agent half, or a catalog entry (Electron drops both too).
             (staged / PACKAGE_MARKER).unlink(missing_ok=True)
             write_install_origin(staged, origin)
         else:
+            # A marker shipped in a read-only package copies as 0444, which takes no overwrite.
+            (staged / PACKAGE_MARKER).unlink(missing_ok=True)
             _write_marker(staged, marker)
         if _is_link(target):
             target.unlink()
@@ -192,7 +197,7 @@ def publish_desktop_tree(source_dir: Path, target: Path, marker: dict | None, ig
             rmtree_readonly(target)
         os.rename(staged, target)
     finally:
-        shutil.rmtree(staging, ignore_errors=True)
+        rmtree_readonly(staging, ignore_errors=True)
 
 
 def _desktop_entry(package_dir: Path, name: str) -> tuple[Path, os.stat_result] | None:

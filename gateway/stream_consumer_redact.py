@@ -38,7 +38,7 @@ _NON_KEY_CHAR_RE = re.compile(r"[^A-Za-z0-9_\-]")
 _HEX_ID_TAIL_RE = re.compile(r"(?<![A-Za-z0-9_.-])[0-9a-f]{8,32}\Z")
 
 _KW = r"(?:key|token|secret|passw(?:or)?d|pass(?:phrase)?|pwd|pw|credentials?|auth\w*|cookie|sig\w*|bearer)"
-_OPEN_VALUE = r"(?:\\?[\"'][^\"'\n]*|\S*)"  # an open quoted value or a still-arriving token
+_OPEN_VALUE = r"(?:\\?\"[^\"\n]*|\\?'[^'\n]*|\S*)"  # an open quoted value (to its own quote) or a token
 # A CLI flag's quoted value may span lines (agent.redact._QUOTED_FLAG_VALUE): hold to its closing quote.
 _OPEN_FLAG_VALUE = r"(?:\\?\"(?:\\[\s\S]|[^\"\\]){0,512}\\?|\\?'(?:'\\''|[^']){0,512}|\S*)"
 _OPEN_TAIL_RE = re.compile(

@@ -272,3 +272,12 @@ async def test_a_zhipu_key_id_is_not_shown_while_the_key_arrives():
     await _stream(adapter, "Your zhipu key is ", *key, " - keep it safe.")
     shown = [content for _op, _id, content in adapter.ops]
     assert not _raw_runs(shown, key[:32])
+
+
+@pytest.mark.asyncio
+async def test_a_double_quoted_value_holding_an_apostrophe_is_held_to_its_closing_quote():
+    # Only a double quote closes it: the apostrophe plus a later space must not release the hold.
+    value = "alpha'" + "bravo charlie delta"
+    adapter = _adapter()
+    await _stream(adapter, *('Config: {"pass' + 'word": "' + value + '", "user": "bob"} done'))
+    assert not _raw_runs([content for _op, _id, content in adapter.ops], value)

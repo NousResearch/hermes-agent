@@ -15,8 +15,8 @@ from pathlib import Path
 
 import pytest
 
-import tools.working_diff as working_diff
 from hermes_cli._subprocess_compat import FILTER_DISCOVERY_FAILED
+from tools import working_diff
 from tools.working_diff import collect_working_diff
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git required")

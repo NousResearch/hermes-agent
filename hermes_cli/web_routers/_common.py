@@ -14,8 +14,7 @@ from typing import Any, Callable, Dict, Optional
 
 from fastapi import HTTPException
 
-from hermes_cli.config_backend import CONFIG_MUTATION_LOCK, ConfigLockedError, ConfigValueError, ConfigWriteError
-from hermes_cli.config_worker_save import USER_CONFIG_IGNORED
+from hermes_cli.config_backend import CONFIG_MUTATION_LOCK, ConfigWriteError, config_refusal_status
 from hermes_cli.web_deps import late
 from hermes_cli.web_server_profiles import _profile_cli_args
 
@@ -92,14 +91,8 @@ def config_refusal_http(exc: ConfigWriteError) -> Optional[HTTPException]:
     caller's to fix, and their messages are ours or the config plane's own refusal text (a path
     and the level that locks it; never a value or a credential), so they pass through (design
     §4.3: v1 shows the server's 403 message). Anything else stays opaque."""
-    if isinstance(exc, ConfigLockedError):
-        return HTTPException(status_code=403, detail=str(exc))
-    if isinstance(exc, ConfigValueError):
-        status = 413 if exc.code in ("config_level_too_large", "config_body_too_large") else 400
-        return HTTPException(status_code=status, detail=str(exc))
-    if exc.code in ("config_version_conflict", USER_CONFIG_IGNORED):
-        return HTTPException(status_code=409, detail=str(exc))
-    return None
+    status = config_refusal_status(exc)
+    return HTTPException(status_code=status, detail=str(exc)) if status is not None else None
 
 
 def config_failure_http(exc: ConfigWriteError) -> HTTPException:

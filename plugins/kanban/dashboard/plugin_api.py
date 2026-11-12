@@ -1689,9 +1689,7 @@ def set_orchestration_settings(payload: OrchestrationSettingsBody):
     # Field order == write order (profiles validated first, then the booleans).
     for key, value in payload.model_dump(exclude_none=True).items():
         kanban_section[key] = _validated_profile_name(value, profiles_mod) if key in _PROFILE_SETTINGS else bool(value)
-    from hermes_cli.web_routers._common import http_failure
-    with http_failure("failed to save orchestration config", 500, detail="Internal server error"):
-        save_config(cfg)
+    save_config(cfg)  # typed config errors reach the host dashboard's common handler
     return get_orchestration_settings()  # callers re-render from the resolved state
 
 

@@ -5,6 +5,8 @@ from unittest.mock import patch
 
 from hermes_cli.config import TURN_LIMIT_UNLIMITED
 from tui_gateway import server
+from tui_gateway.agent_factory import _make_agent
+from tui_gateway.method_ctx import rebind
 
 
 def _stub_make_agent(monkeypatch, cfg):
@@ -27,7 +29,7 @@ def _stub_make_agent(monkeypatch, cfg):
 def test_an_unset_max_turns_gives_the_tui_agent_an_unlimited_budget(monkeypatch):
     _stub_make_agent(monkeypatch, {})
     with patch("run_agent.AIAgent") as agent:
-        server._make_agent("sid", "key")
+        rebind(_make_agent, server.__dict__)("sid", "key")
     assert agent.call_args.kwargs["max_iterations"] == TURN_LIMIT_UNLIMITED
 
 

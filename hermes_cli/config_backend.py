@@ -148,6 +148,9 @@ class ConfigBackendUnavailable(SystemExit):
     backend's config is exactly the silent failure this must not become."""
 
 
+USER_CONFIG_IGNORED = "config_user_ignored"
+
+
 class ConfigWriteError(RuntimeError):
     """A config write the backend refused or could not complete; nothing was changed. ``code`` is
     a machine code (the plane's ``error`` for a remote refusal)."""
@@ -171,6 +174,18 @@ class ConfigValueError(ConfigWriteError):
 
     def __init__(self, message: str, *, code: str = "config_value_invalid") -> None:
         super().__init__(message, code=code)
+
+
+def config_refusal_status(exc: ConfigWriteError) -> Optional[int]:
+    """The status for a known actionable write refusal; None means an unexpected backend failure.
+    HTTP replies and partial-success warnings share this classification, not their presentation."""
+    if isinstance(exc, ConfigLockedError):
+        return 403
+    if isinstance(exc, ConfigValueError):
+        return 413 if exc.code in ("config_level_too_large", "config_body_too_large") else 400
+    if exc.code in ("config_version_conflict", USER_CONFIG_IGNORED):
+        return 409
+    return None
 
 
 class FileBackend:

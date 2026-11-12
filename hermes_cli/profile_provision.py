@@ -25,8 +25,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Literal, Optional
 
-from hermes_cli.config_backend import ConfigWriteError
-from hermes_cli.config_worker_save import USER_CONFIG_IGNORED, saving_raw_file
+from hermes_cli.config_backend import ConfigWriteError, config_refusal_status
+from hermes_cli.config_worker_save import saving_raw_file
 
 logger = logging.getLogger(__name__)
 
@@ -244,7 +244,7 @@ def provision_profile(request: ProfileCreateRequest) -> ProvisionResult:
             return fn()
         except ConfigWriteError as exc:
             logger.warning("profile %s: %s config save failed", request.name, label, exc_info=True)
-            detail = str(exc) if exc.code == USER_CONFIG_IGNORED else "Configuration could not be saved."
+            detail = _config_save_warning(exc)
             result.warnings.append(f"{label}: {detail}")
             return default
         except Exception as exc:
@@ -264,7 +264,8 @@ def provision_profile(request: ProfileCreateRequest) -> ProvisionResult:
     if request.mirror_credentials:
         from hermes_cli.auth import _global_auth_file_path
         kept_root = step("launch credentials", lambda: mirror_launch_credentials(
-            path, result.mirrored, share_auth=request.share_auth, clone_channels=request.clone_channels), default=())
+            path, result.mirrored, share_auth=request.share_auth, clone_channels=request.clone_channels,
+            config_warnings=result.warnings), default=())
         if kept_root and _global_auth_file_path() is not None:
             # A named launch profile's own subscription logins can't be copied (single-use refresh
             # tokens); the copy reads the default profile's for those providers instead.
@@ -405,9 +406,18 @@ def write_profile_mcp_servers(profile_dir: Path, servers: list) -> int:
     return written
 
 
-def _try(label: str, fn: Callable[[], Any], default: Any) -> Any:
+def _config_save_warning(exc: ConfigWriteError) -> str:
+    return str(exc) if config_refusal_status(exc) is not None else "Configuration could not be saved."
+
+
+def _try(label: str, fn: Callable[[], Any], default: Any, *, config_warnings: Optional[list[str]] = None) -> Any:
     try:
         return fn()
+    except ConfigWriteError as exc:
+        logger.warning("profile-create %s config save failed", label, exc_info=True)
+        if config_warnings is not None:
+            config_warnings.append(f"{label}: {_config_save_warning(exc)}")
+        return default
     except Exception:
         logger.warning("profile-create %s failed", label, exc_info=True)
         return default
@@ -483,7 +493,8 @@ def inherit_launch_model(path: Path) -> bool:
 
 
 def mirror_launch_credentials(path: Path, mirrored: dict[str, Any], *, share_auth: bool = False,
-                              clone_channels: bool = False) -> tuple[str, ...]:
+                              clone_channels: bool = False,
+                              config_warnings: Optional[list[str]] = None) -> tuple[str, ...]:
     """Copy the launch profile's .env / auth.json / voice sections into a new profile, recording each
     item in ``mirrored`` (best-effort per item). ``share_auth`` skips the auth copy when the launch
     profile is the root: the new profile then reads the root's auth.json, i.e. the launch logins. From a
@@ -512,5 +523,6 @@ def mirror_launch_credentials(path: Path, mirrored: dict[str, Any], *, share_aut
                 stripped = strip_cloned_single_use_oauth_grants(path)
                 return tuple(sorted({*stripped["pool"], *stripped["providers"]}))
             kept_root = _try("OAuth grant strip", _strip_grants, ()) or ()
-    mirrored["voice"] = _try("voice sections", lambda: _mirror_voice_sections(path), False)
+    mirrored["voice"] = _try("voice sections", lambda: _mirror_voice_sections(path), False,
+                             config_warnings=config_warnings)
     return kept_root

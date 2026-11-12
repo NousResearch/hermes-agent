@@ -18,7 +18,7 @@ import copy
 from pathlib import Path
 from typing import Any, Iterator
 
-USER_CONFIG_IGNORED = "config_user_ignored"
+from hermes_cli.config_backend import USER_CONFIG_IGNORED
 USER_CONFIG_IGNORED_MESSAGE = (
     "This change was not saved: --ignore-user-config is set, so the loaded config is defaults, "
     "not your file. Explicit single-setting edits and raw-file edits remain available "

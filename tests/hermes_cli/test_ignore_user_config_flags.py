@@ -410,7 +410,8 @@ class TestRefusalReachesTheUserCleanly:
         assert "Traceback" not in err
         assert path.read_bytes() == before
 
-    def test_the_bare_chat_path_reports_a_refusal_the_same_way(self, tmp_path, monkeypatch, capsys):
+    @pytest.mark.parametrize("fast", [False, True])
+    def test_the_bare_chat_path_reports_a_refusal_the_same_way(self, tmp_path, monkeypatch, capsys, fast):
         """Drive main -> no-subcommand dispatch -> _default_to_chat; only the provider launch and
         host maintenance are stubbed, not the dispatch or its error reporter."""
         import sys
@@ -418,8 +419,9 @@ class TestRefusalReachesTheUserCleanly:
         from hermes_cli.config_backend import ConfigWriteError
 
         self._home(tmp_path, monkeypatch)
-        for name in ("_try_termux_fast_tui_launch", "_try_termux_fast_cli_launch",
-                     "_try_fast_serve_launch", "_try_fast_chat_launch"):
+        monkeypatch.setenv("HERMES_DISABLE_FAST_CHAT_LAUNCH", "0" if fast else "1")
+        monkeypatch.setattr(main_mod, "_wants_tui_early", lambda *args: False)
+        for name in ("_try_termux_fast_tui_launch", "_try_termux_fast_cli_launch", "_try_fast_serve_launch"):
             monkeypatch.setattr(main_mod, name, lambda: False)
         for name in ("_set_process_title", "_warn_if_unsupervised_pid1", "_advertise_agent_env",
                      "_cleanup_quarantined_exes", "_sweep_stale_bytecode_if_checkout_changed",

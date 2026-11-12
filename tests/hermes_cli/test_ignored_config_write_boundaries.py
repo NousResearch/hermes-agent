@@ -213,3 +213,75 @@ def test_local_model_background_error_is_opaque_and_logged(monkeypatch, caplog):
     assert job["status"] == "error"
     assert "backend-private-detail" not in job["error"]
     assert "backend-private-detail" in caplog.text
+
+
+@pytest.mark.parametrize("code,status", [(USER_CONFIG_IGNORED, 409), ("config_write_failed", 500)])
+def test_kanban_mounted_route_uses_host_handler(ignored_home, monkeypatch, caplog, code, status):
+    import importlib.util
+    import sys
+    from pathlib import Path
+    from fastapi import FastAPI
+    from starlette.testclient import TestClient
+    from hermes_cli import config, web_server
+    path = Path(__file__).resolve().parents[2] / "plugins/kanban/dashboard/plugin_api.py"
+    spec = importlib.util.spec_from_file_location("kanban_refusal_probe", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, module)
+    spec.loader.exec_module(module)
+    app = FastAPI()
+    app.add_exception_handler(ConfigWriteError, web_server._config_write_error_response)
+    app.include_router(module.router, prefix="/api/plugins/kanban")
+    def fail(*args, **kwargs):
+        raise ConfigWriteError("backend-private-detail", code=code)
+    monkeypatch.setattr(config, "save_config", fail)
+    response = TestClient(app, raise_server_exceptions=False).put("/api/plugins/kanban/orchestration", json={})
+    assert response.status_code == status, response.text
+    if status == 500:
+        assert "backend-private-detail" not in response.text
+        assert "backend-private-detail" in caplog.text
+
+
+@pytest.mark.parametrize("expected", [True, False])
+def test_voice_copy_returns_a_warning_without_failing_profile_creation(ignored_home, monkeypatch, caplog, expected):
+    from hermes_cli import profile_provision
+    from hermes_cli.config_backend import ConfigLockedError
+    from hermes_cli import auth
+    error = ConfigLockedError("voice.reply", "managed") if expected else ConfigWriteError("backend-private-detail")
+    def fail(*args):
+        raise error
+    monkeypatch.setattr(profile_provision, "_mirror_secret", lambda *args: False)
+    monkeypatch.setattr(profile_provision, "_mirror_voice_sections", fail)
+    monkeypatch.setattr(auth, "_global_auth_file_path", lambda: None)
+    warnings, mirrored = [], {}
+    profile_provision.mirror_launch_credentials(ignored_home, mirrored, config_warnings=warnings)
+    assert mirrored["voice"] is False
+    assert len(warnings) == 1
+    if expected:
+        assert str(error) in warnings[0]
+    else:
+        assert "backend-private-detail" not in warnings[0]
+        assert "backend-private-detail" in caplog.text
+
+
+@pytest.mark.parametrize("kind", ["locked", "value", "conflict", "unexpected"])
+def test_post_create_step_preserves_actionable_refusals(ignored_home, monkeypatch, kind):
+    from hermes_cli import profile_provision, profiles
+    from hermes_cli.config_backend import ConfigLockedError, ConfigValueError
+    errors = {"locked": ConfigLockedError("model", "managed"), "value": ConfigValueError("invalid model"),
+              "conflict": ConfigWriteError("reload before saving", code="config_version_conflict"),
+              "unexpected": ConfigWriteError("backend-private-detail")}
+    error = errors[kind]
+    monkeypatch.setattr(profiles, "create_profile", lambda **kwargs: ignored_home)
+    def fail(*args):
+        raise error
+    monkeypatch.setattr(profile_provision, "_pin_model", fail)
+    request = profile_provision.ProfileCreateRequest(name="probe", clone_from="source", alias=False,
+        mirror_credentials=False, provider="custom", model="model")
+    result = profile_provision.provision_profile(request)
+    assert result.path == ignored_home and result.model_set is False
+    assert len(result.warnings) == 1
+    if kind == "unexpected":
+        assert "backend-private-detail" not in result.warnings[0]
+    else:
+        assert str(error) in result.warnings[0]

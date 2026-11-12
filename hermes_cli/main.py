@@ -3388,14 +3388,16 @@ def main():
 
         logging.getLogger(__name__).debug("pm startup check failed", exc_info=True)
 
-    if _try_termux_fast_tui_launch():
-        return
-    if _try_termux_fast_cli_launch():
-        return
-    if _try_fast_serve_launch():
-        return
-    if _try_fast_chat_launch():
-        return
+    from hermes_cli.main_dispatch import config_refusals_reported
+    with config_refusals_reported():
+        if _try_termux_fast_tui_launch():
+            return
+        if _try_termux_fast_cli_launch():
+            return
+        if _try_fast_serve_launch():
+            return
+        if _try_fast_chat_launch():
+            return
 
     parser, subparsers = _build_cli_parser()
 
@@ -3434,7 +3436,7 @@ def main():
     from hermes_cli.observability.shared_metrics_disabled import set_process_surface
     set_process_surface(args.command)
     # No subcommand (optionally with top-level --resume / --continue) → chat.
-    from hermes_cli.main_dispatch import config_refusals_reported, run_subcommand
+    from hermes_cli.main_dispatch import run_subcommand
     if args.command is None:
         with config_refusals_reported():
             _default_to_chat(args)

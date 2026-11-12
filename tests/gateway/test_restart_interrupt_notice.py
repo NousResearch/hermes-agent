@@ -19,7 +19,7 @@ from gateway.session_settlement_recovery import (
     SHUTDOWN_INTERRUPT_NOTICE,
     _publish_completion,
 )
-from tui_gateway.contracts.registry import EVENTS
+from hermes_agent.tui_gateway.contracts.registry import EVENTS
 
 
 def test_restart_drain_timeout_default_stays_zero():

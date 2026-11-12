@@ -631,7 +631,7 @@ async def pty_ws(ws: WebSocket) -> None:
 
 
 # --- /api/ws: JSON-RPC sidecar for the Chat tab. Drives the same
-# tui_gateway.dispatch surface Ink uses over stdio so the dashboard can render
+# hermes_agent.tui_gateway.dispatch surface Ink uses over stdio so the dashboard can render
 # structured metadata next to the xterm; both transports bind to the same
 # session id, so agent emits fan out to both sinks.
 
@@ -652,7 +652,7 @@ async def gateway_ws(ws: WebSocket) -> None:
     if not await _close_unless_sidecar_allowed(ws, allow_internal=True, socket=GATEWAY_SOCKET):
         return
     from hermes_cli.mcp_startup import start_deferred_mcp_discovery_now
-    from tui_gateway.ws import handle_ws
+    from hermes_agent.tui_gateway.ws import handle_ws
 
     # First chat client of a standalone dashboard: fire the discovery armed at boot (no-op
     # otherwise). Off-loop: the first act is a config read + the ~350 ms `mcp` SDK import.
@@ -707,7 +707,7 @@ async def gateway_ws(ws: WebSocket) -> None:
         )
 
 
-# --- /api/pub + /api/events: the PTY-side tui_gateway.entry opens /api/pub
+# --- /api/pub + /api/events: the PTY-side hermes_agent.tui_gateway.entry opens /api/pub
 # (HERMES_TUI_SIDECAR_URL from /api/pty's env) and writes every dispatcher emit
 # through it; the dashboard fans frames out to /api/events subscribers on the
 # same channel — the React sidebar's tool-call feed without touching the PTY

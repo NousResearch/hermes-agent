@@ -285,7 +285,7 @@ def test_gateway_watcher_sweeps_each_served_ledger_in_its_own_scope(tmp_path, mo
 
 def test_tui_notification_poller_sweeps_under_its_session_profile(tmp_path, monkeypatch):
     """The desktop/TUI delivery loop runs the (throttled) sweep in the session's own profile scope."""
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     home_b = tmp_path / "b"
     home_b.mkdir()
@@ -315,7 +315,7 @@ def test_offer_dropped_by_a_session_that_cannot_own_it_is_re_offered_to_the_owne
     async delegation drops its copy while the durable row stays pending, so the offer must not
     suppress the next sweep: the owning session, live later, still gets the row without a restart."""
     from tools.process_registry_notifications import format_process_notification
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     home = tmp_path / "home"
     delegation_id = _orphan(home)
@@ -351,7 +351,7 @@ def test_offer_dropped_by_a_session_that_cannot_own_it_is_re_offered_to_the_owne
 def test_offer_released_after_a_failed_tui_turn_is_re_offered(tmp_path, monkeypatch):
     """The TUI poller releases its claim and discards its copy when the turn cannot start; the row is
     pending again with one attempt spent, so the sweep offers it again instead of skipping it."""
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     home = tmp_path / "home"
     delegation_id = _orphan(home)

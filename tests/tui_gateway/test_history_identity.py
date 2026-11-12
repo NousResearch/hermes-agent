@@ -1,5 +1,5 @@
 """Repeated content cannot stand in for persisted transcript identity."""
-from tui_gateway.server import _reconcile_display_with_live
+from hermes_agent.tui_gateway.server import _reconcile_display_with_live
 
 
 def test_repeated_answer_keeps_later_unflushed_turn_by_row_identity():

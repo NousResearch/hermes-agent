@@ -12,7 +12,7 @@ import pytest
 
 import hermes_cli.models as models_mod
 from hermes_cli.models_catalog_static import PREFERRED_SILENT_DEFAULT_MODEL
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 @pytest.fixture

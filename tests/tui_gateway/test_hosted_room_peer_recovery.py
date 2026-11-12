@@ -6,8 +6,8 @@ from types import SimpleNamespace
 import pytest
 
 from gateway import hosted_room_driver as driver
-from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
-from tui_gateway.hosted_room_service import HostedRoomService
+from hermes_agent.tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
+from hermes_agent.tui_gateway.hosted_room_service import HostedRoomService
 
 from tests.tui_gateway.test_hosted_room_driver_runtime import (
     db as db_fixture,
@@ -19,7 +19,7 @@ from tests.tui_gateway.test_hosted_room_driver_runtime import (
 from gateway import hosted_rooms
 from gateway.hosted_room_peer import GatewayRoomCatalog, catalog_mapping
 from tests.tui_gateway.test_hosted_room_service import _FakePeerClient, _server
-from tui_gateway.hosted_room_peer_transport import PeerMemberRoute
+from hermes_agent.tui_gateway.hosted_room_peer_transport import PeerMemberRoute
 
 
 def _peer_service(db: Path, peer: _FakePeerClient, *, grant="signed.room.grant") -> HostedRoomService:

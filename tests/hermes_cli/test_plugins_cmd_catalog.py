@@ -418,7 +418,7 @@ def test_dashboard_enable_of_an_installed_recalled_plugin_is_refused(world, tmp_
 
 
 def test_tui_plugin_toggle_of_an_installed_recalled_plugin_is_refused(world, tmp_path, monkeypatch):
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     _recall_after_install(world, tmp_path, monkeypatch)
     reply = server.handle_request({"id": "1", "method": "plugins.manage",
                                    "params": {"action": "toggle", "key": "killed", "enable": True}})

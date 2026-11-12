@@ -1055,7 +1055,7 @@ def test_specify_resolves_each_profiles_key_under_multiplex(kanban_home, tmp_pat
     from fastapi import Depends
     from hermes_cli import profiles
     from hermes_cli.web_server_dashboard import _plugin_route_secret_scope
-    from tui_gateway import launch_profile_policy
+    from hermes_agent.tui_gateway import launch_profile_policy
     from unittest.mock import MagicMock
 
     (kanban_home / ".env").write_text("KANBAN_AUX_SCOPE_TEST_KEY=key-of-launch-a\n")

@@ -7,9 +7,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from tui_gateway import prompt_turn, session_notifications
-from tui_gateway.method_ctx import rebind
-from tui_gateway.session_lifecycle import _session_turn_admission
+from hermes_agent.tui_gateway import prompt_turn, session_notifications
+from hermes_agent.tui_gateway.method_ctx import rebind
+from hermes_agent.tui_gateway.session_lifecycle import _session_turn_admission
 
 
 @pytest.mark.parametrize('kind', ['async_delegation', 'completion'])

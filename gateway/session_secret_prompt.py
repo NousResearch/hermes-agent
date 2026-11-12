@@ -5,7 +5,7 @@ Main's classic CLI registered ``set_secret_capture_callback`` in process: a skil
 value was saved to the profile ``.env`` (``save_env_value_secure``) without ever reaching the model.
 On the session authority the skill runs in the gateway, where a gateway surface only got the
 "secret entry is not available" hint. For a local viewer's turn the owner now sends main's ``secret``
-server→client request (``tui_gateway/contracts/server_requests.py``: ``SecretRequestParams`` →
+server→client request (``hermes_agent/tui_gateway/contracts/server_requests.py``: ``SecretRequestParams`` →
 ``ValueResult``) to the attached viewers, saves a non-empty answer in this profile's ``.env`` here,
 and returns main's callback result. The value travels only in the viewer's response frame.
 """

@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from hermes_agent.hermes_state import SessionDB
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 TURN = f"pid={os.getpid()}:turn=tui:platform=tui"
 

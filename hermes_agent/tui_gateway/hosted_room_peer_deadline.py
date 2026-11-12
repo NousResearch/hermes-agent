@@ -91,7 +91,7 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 def _fetch(request, budget):
     from agent.ssl_verify import install_truststore
-    from tui_gateway.hosted_room_peer_http import (
+    from hermes_agent.tui_gateway.hosted_room_peer_http import (
         MAX_PEER_ERROR_RESPONSE_BYTES, MAX_PEER_RESPONSE_BYTES, _read_bounded_response)
 
     install_truststore()

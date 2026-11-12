@@ -1,5 +1,5 @@
 """Pure pet spritesheet helpers (revision id, per-row frame counts, row taxonomy, payload clone) for
-the ``pet.*`` RPCs in ``tui_gateway.server``."""
+the ``pet.*`` RPCs in ``hermes_agent.tui_gateway.server``."""
 
 from __future__ import annotations
 

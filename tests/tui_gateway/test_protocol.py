@@ -25,7 +25,7 @@ def _restore_stdout():
 @pytest.fixture()
 def server():
     # The sys.modules mocks only need to cover the *initial* import — once
-    # tui_gateway.server is cached, they are inert. Keeping them active for
+    # hermes_agent.tui_gateway.server is cached, they are inert. Keeping them active for
     # the whole test poisons any module first imported inside a test body:
     # e.g. hermes_cli.active_sessions would bind the mocked get_hermes_home
     # (a fixed shared path) forever, leaking active-session registry entries
@@ -33,12 +33,12 @@ def server():
     #
     # Import server_requests (pure stdlib) and transport BEFORE the window: the patch drops every module first
     # imported inside it, so otherwise the module server.py binds its sinks on (write/emit/answerable) would vanish
-    # from sys.modules and a test's own ``from tui_gateway import server_requests`` would get a fresh,
+    # from sys.modules and a test's own ``from hermes_agent.tui_gateway import server_requests`` would get a fresh,
     # unbound copy whose default sinks drop frames and treat every client as answerable. Likewise a test's
-    # ``from tui_gateway.transport import bind_transport`` would bind a fresh module's ContextVar that the
+    # ``from hermes_agent.tui_gateway.transport import bind_transport`` would bind a fresh module's ContextVar that the
     # server's ``current_transport()`` never reads (first-in-process test sees ``_stdio_transport`` as caller).
-    import tui_gateway.server_requests
-    import tui_gateway.transport
+    import hermes_agent.tui_gateway.server_requests
+    import hermes_agent.tui_gateway.transport
     import hermes_constants  # real get_process_hermes_home: a mocked one put state.db under the cwd (repo)
     with patch.dict("sys.modules", {
         "hermes_constants": MagicMock(get_hermes_home=MagicMock(return_value="/tmp/hermes_test"),
@@ -48,7 +48,7 @@ def server():
         "hermes_agent.hermes_state": MagicMock(),
     }):
         import importlib
-        mod = importlib.import_module("tui_gateway.server")
+        mod = importlib.import_module("hermes_agent.tui_gateway.server")
 
     # Snapshot the RPC registry: several tests below stub handlers
     # ("slash.exec", "fast.ping", ...) directly in the module-level dict,
@@ -67,7 +67,7 @@ def server():
     mod._real_stdout = real_stdout
     for sid in list(mod._sessions):
         mod._close_session_by_id(sid, end_reason="test_cleanup")
-    from tui_gateway import server_requests
+    from hermes_agent.tui_gateway import server_requests
     server_requests.reset_for_tests()
     mod._live_transports.clear()
 
@@ -189,7 +189,7 @@ def test_live_session_payload_replays_pending_approval(server, monkeypatch):
 def test_live_session_payload_replays_open_requests(server):
     """A reattached client receives the server→client request still blocking the session (a clarify sent
     while detached), scoped to the owning runtime session only, as a snapshot not a live reference."""
-    from tui_gateway import server_requests
+    from hermes_agent.tui_gateway import server_requests
     session = {
         "agent": types.SimpleNamespace(), "cols": 80, "created_at": 1.0, "history": [],
         "history_lock": threading.Lock(), "running": True, "session_key": "stored-session",
@@ -251,7 +251,7 @@ def _wait_open(server_requests, buf=None, timeout=10.0, windows=()):
 def test_server_request_round_trip_uses_response_frame(capture):
     """The backend sends a real JSON-RPC request (string id, method, params.session_id) and the client's
     response frame — not a method call — resolves it; the response frame itself gets no reply."""
-    from tui_gateway import server_requests
+    from hermes_agent.tui_gateway import server_requests
     server, buf = capture
     box = {}
     thread = threading.Thread(target=lambda: box.__setitem__("r", server._ask("sudo", "s1", {}, timeout=5)), daemon=True)
@@ -277,7 +277,7 @@ def test_server_request_round_trip_uses_response_frame(capture):
 ])
 def test_settlement_wins_over_a_later_cancel(capture, method, qids, settle, expected):
     """A response and cancellation may race; the first settlement owns the result."""
-    from tui_gateway import server_requests
+    from hermes_agent.tui_gateway import server_requests
 
     req = server_requests.ServerRequest("s1", method, {}, qids=qids)
     with server_requests._lock:
@@ -294,7 +294,7 @@ def test_send_returns_an_answer_committed_after_the_deadline_expired(capture, mo
     """An answer accepted by resolve_response is never reported as a timeout (#112548): the
     response frame can land after event.wait() gave up and before send() withdraws the request,
     and the renderer must not get a bogus request.cancel for a card the user just answered."""
-    from tui_gateway import server_requests
+    from hermes_agent.tui_gateway import server_requests
 
     cancels: list[dict] = []
     monkeypatch.setattr(server_requests, "_emit", lambda event, sid, payload: cancels.append(payload))
@@ -317,7 +317,7 @@ def test_send_returns_an_answer_committed_after_the_deadline_expired(capture, mo
 
 def _silent_ws():
     """A WebSocket client build that predates server→client requests: receives the frame, never answers."""
-    from tui_gateway.ws import WSTransport
+    from hermes_agent.tui_gateway.ws import WSTransport
 
     class _SilentWS(WSTransport):
         def __init__(self):
@@ -343,7 +343,7 @@ def test_server_request_fails_fast_for_a_ws_client_that_never_advertised(server)
     """A WebSocket client that never sent ``client.capabilities`` cannot answer, so send() returns the
     error-response shape (None) at once instead of stalling the agent for the deadline (#112548).
     The frame is never written; nothing is left open for a reconnect replay."""
-    from tui_gateway import server_requests
+    from hermes_agent.tui_gateway import server_requests
 
     peer = _silent_ws()
     _ws_session(server, "ws-old", peer)
@@ -362,8 +362,8 @@ def test_server_request_fails_fast_for_a_ws_client_that_never_advertised(server)
 def test_server_request_waits_for_a_ws_client_that_advertised(server):
     """``client.capabilities {server_requests: true}`` on the connection marks it answerable: the frame is
     written and the wait is a real one (here: answered by the response frame)."""
-    from tui_gateway import server_requests
-    from tui_gateway.transport import bind_transport, reset_transport
+    from hermes_agent.tui_gateway import server_requests
+    from hermes_agent.tui_gateway.transport import bind_transport, reset_transport
 
     peer = _silent_ws()
     _ws_session(server, "ws-new", peer)
@@ -391,7 +391,7 @@ def test_server_request_waits_for_a_ws_client_that_advertised(server):
 def test_server_request_error_response_fails_fast(server):
     """A client that advertised but has no handler for the method answers -32601: that error frame settles
     send() to None at once instead of the agent waiting for the deadline."""
-    from tui_gateway import server_requests
+    from hermes_agent.tui_gateway import server_requests
 
     box = {}
     thread = threading.Thread(target=lambda: box.setdefault("result", server_requests.send("sudo", "s1", {}, timeout=5)),
@@ -409,8 +409,8 @@ def _two_window_session(server, sid):
     """A session two advertised Desktop windows are attached to (a FanoutTransport of WS peers)."""
     import asyncio
 
-    from tui_gateway import server_requests
-    from tui_gateway.transport import FanoutTransport
+    from hermes_agent.tui_gateway import server_requests
+    from hermes_agent.tui_gateway.transport import FanoutTransport
 
     # The fake implements the same guarded batch boundary as a real WS peer.
     loop = asyncio.new_event_loop()
@@ -426,14 +426,14 @@ def _two_window_session(server, sid):
 
 
 def _not_shown(req):
-    from tui_gateway import server_requests
+    from hermes_agent.tui_gateway import server_requests
     return {"jsonrpc": "2.0", "id": req.id, "error": {"code": server_requests.NOT_SHOWN_CODE, "message": "not here"}}
 
 
 def test_window_owned_request_refuses_at_once_when_no_window_shows_the_session(server):
     """#119333: every attached window says it does not show the session → preview.read resolves with the
     distinct not-shown refusal now, instead of the agent waiting out the 45s bridge deadline."""
-    from tui_gateway import server_requests
+    from hermes_agent.tui_gateway import server_requests
 
     windows = _two_window_session(server, "s-none")
     box = {}
@@ -456,7 +456,7 @@ def test_window_owned_request_refuses_at_once_when_no_window_shows_the_session(s
 def test_window_owned_request_decline_does_not_beat_the_owner_window(server):
     """#113348 stays fixed: one bystander window declining leaves the request open for the window that
     shows the session, and its answer is the result."""
-    from tui_gateway import server_requests
+    from hermes_agent.tui_gateway import server_requests
 
     bystander, owner = _two_window_session(server, "s-own")
     box = {}
@@ -474,7 +474,7 @@ def test_window_owned_request_decline_does_not_beat_the_owner_window(server):
 
 
 def test_client_capabilities_advertises_counting_not_shown_declines(server):
-    from tui_gateway.transport import bind_transport, reset_transport
+    from hermes_agent.tui_gateway.transport import bind_transport, reset_transport
 
     peer = _silent_ws()
     token = bind_transport(peer)
@@ -487,7 +487,7 @@ def test_client_capabilities_advertises_counting_not_shown_declines(server):
 
 @pytest.mark.parametrize("method", ["secret", "sudo", "terminal.read", "tour"])
 def test_server_request_timeout_emits_one_request_cancel(capture, method):
-    from tui_gateway import server_requests
+    from hermes_agent.tui_gateway import server_requests
     _server, buf = capture
     assert server_requests.send(method, "s1", {}, timeout=0) is None
     request, cancel = _frames(buf)
@@ -507,7 +507,7 @@ def test_late_response_and_lock_are_dropped_quietly(server):
 
 
 def _start_batch_clarify(server, buf, qids, timeout=None):
-    from tui_gateway import server_requests
+    from hermes_agent.tui_gateway import server_requests
     box = {}
     normalized = [{"qid": q, "id": "", "question": q, "choices": None, "choices_offered": [], "multi_select": False}
                   for q in qids]
@@ -567,7 +567,7 @@ def test_clarify_batch_cancel_all_is_a_response_without_answers(capture):
 
 
 def test_clear_pending_cancels_only_that_session(capture):
-    from tui_gateway import server_requests
+    from hermes_agent.tui_gateway import server_requests
     server, buf = capture
     a = threading.Thread(target=lambda: server_requests.send("sudo", "sid-a", {}, timeout=None), daemon=True)
     b = threading.Thread(target=lambda: server_requests.send("sudo", "sid-b", {}, timeout=None), daemon=True)
@@ -1948,8 +1948,8 @@ def test_approval_that_ends_before_its_settle_hook_attaches_is_still_withdrawn(s
     """The client can answer (``approval.respond`` RPC, or another surface) between the frame going out and
     the settle hook attaching; ``register_gateway_settle`` then reports the entry gone. The sent request must
     still be withdrawn, or every later ``session.resume`` replays a prompt nobody is waiting on."""
-    from tui_gateway import server_requests
-    from tui_gateway.transport import bind_transport, reset_transport
+    from hermes_agent.tui_gateway import server_requests
+    from hermes_agent.tui_gateway.transport import bind_transport, reset_transport
 
     peer = _silent_ws()
     _ws_session(server, "ws-raced", peer)

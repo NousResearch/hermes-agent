@@ -6,7 +6,7 @@ import pytest
 
 from gateway.session_controls import AuthorityConnection
 from tests.gateway.test_local_source_labels import _authority, _create
-from tui_gateway.contracts.registry import CANONICAL_METHODS
+from hermes_agent.tui_gateway.contracts.registry import CANONICAL_METHODS
 
 
 @pytest.mark.asyncio

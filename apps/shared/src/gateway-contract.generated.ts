@@ -540,7 +540,7 @@ export interface ConfigSetResult {
   history_reset?: boolean | null
   info?: SessionLiveInfo | null
 }
-/** ``tui_gateway/server.py::_session_info`` — the ``session.info`` event and the ``info`` field of ``session.create`` / ``session.resume`` / ``session.activate`` results. */
+/** ``hermes_agent/tui_gateway/server.py::_session_info`` — the ``session.info`` event and the ``info`` field of ``session.create`` / ``session.resume`` / ``session.activate`` results. */
 export interface SessionLiveInfo {
   model?: string
   provider?: string
@@ -574,14 +574,14 @@ export interface SessionLiveInfo {
   lazy?: boolean | null
   [key: string]: unknown
 }
-/** ``tui_gateway/server.py::_project_info_for_cwd``. */
+/** ``hermes_agent/tui_gateway/server.py::_project_info_for_cwd``. */
 export interface ProjectRef {
   id: string
   slug: string
   name: string
   primary_path?: string | null
 }
-/** ``tui_gateway/server.py::_get_usage`` + ``agent/context_breakdown.py::context_usage_fields``. */
+/** ``hermes_agent/tui_gateway/server.py::_get_usage`` + ``agent/context_breakdown.py::context_usage_fields``. */
 export interface Usage {
   model?: string
   input?: number
@@ -4348,7 +4348,7 @@ export interface McpCatalogEntry {
 export interface McpServersListResult {
   servers: McpServerSummary[]
 }
-/** ``tui_gateway/mcp_rpc_helpers.summarize_server`` — a server's config without secret values. */
+/** ``hermes_agent/tui_gateway/mcp_rpc_helpers.summarize_server`` — a server's config without secret values. */
 export interface McpServerSummary {
   name: string
   transport: string
@@ -4962,7 +4962,7 @@ export interface SessionCreateDescriptor {
   sources: string[]
   parameters: string[]
 }
-/** ``tui_gateway/change_watcher.py::resolve_skin`` — the resolved active skin (``HermesSkin``). ``{}`` when the skin engine failed to load. Colour maps are token → colour string. */
+/** ``hermes_agent/tui_gateway/change_watcher.py::resolve_skin`` — the resolved active skin (``HermesSkin``). ``{}`` when the skin engine failed to load. Colour maps are token → colour string. */
 export interface SkinPayload {
   name?: string
   description?: string
@@ -5645,7 +5645,7 @@ export interface SetupBuildAnswer {
   build: string
   label?: string | null
 }
-/** ``tui_gateway/server.py::_approval_request_payload`` — the command is redacted server-side. */
+/** ``hermes_agent/tui_gateway/server.py::_approval_request_payload`` — the command is redacted server-side. */
 export interface ApprovalRequestParams {
   session_id: string
   request_id: string
@@ -5830,7 +5830,7 @@ export interface DisplayInstallDonePayload {
   code: number
   status: DisplayStatus
 }
-/** ``tui_gateway/entry.py`` (stdio) / ``tui_gateway/ws.py`` (WebSocket) first frame. */
+/** ``hermes_agent/tui_gateway/entry.py`` (stdio) / ``hermes_agent/tui_gateway/ws.py`` (WebSocket) first frame. */
 export interface GatewayReadyPayload {
   skin: SkinPayload
   change_events: boolean
@@ -5864,7 +5864,7 @@ export interface SetupReadyPayload {
 export interface ErrorPayload {
   message: string
 }
-/** ``tui_gateway/model_switch.py`` capability-refresh notice. */
+/** ``hermes_agent/tui_gateway/model_switch.py`` capability-refresh notice. */
 export interface NoticePayload {
   message: string
 }

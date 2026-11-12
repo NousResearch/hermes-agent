@@ -13,8 +13,8 @@ from types import SimpleNamespace
 
 import pytest
 
-import tui_gateway.server as srv
-from tui_gateway import methods_groups, owner_forward
+import hermes_agent.tui_gateway.server as srv
+from hermes_agent.tui_gateway import methods_groups, owner_forward
 
 MEMBERS = [{"member_id": "default", "profile": "default", "handle": "hermes"},
            {"member_id": "ops", "profile": "ops", "handle": "ops"}]
@@ -58,7 +58,7 @@ def _hand_room_to_gateway(monkeypatch):
 
 def test_every_gateway_room_method_reaches_the_owning_gateway(home, monkeypatch):
     from gateway.session_group_controls import GROUP_METHODS
-    from tui_gateway.contracts.registry import METHODS
+    from hermes_agent.tui_gateway.contracts.registry import METHODS
     _hand_room_to_gateway(monkeypatch)
     reached = []
 

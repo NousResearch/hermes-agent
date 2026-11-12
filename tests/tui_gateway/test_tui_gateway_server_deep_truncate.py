@@ -5,7 +5,7 @@ anchor can still name the wrong, stale row)."""
 import threading
 import types
 
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 def _session(agent=None, **extra):
@@ -188,7 +188,7 @@ def test_prompt_submit_empty_truncation_allowed_with_confirm(monkeypatch):
 
 def test_archived_user_turns_counts_a_carrier_without_its_own_row_id():
     """An unstamped carrier's own turn has no id to look up; it still counts (fail closed)."""
-    from tui_gateway import methods_prompt
+    from hermes_agent.tui_gateway import methods_prompt
 
     history = [{"role": "user", "content": "x"}, {"role": "assistant", "content": "r"},
                {"_absorbed_row_ids": [102], "role": "user", "content": "b\n\nc"}]

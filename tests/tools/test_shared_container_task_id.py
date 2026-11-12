@@ -482,7 +482,7 @@ def test_a_home_the_tui_stamps_custom_keys_one_container_for_every_path(monkeypa
     monkeypatch.delenv("HERMES_SESSION_PROFILE", raising=False)
     monkeypatch.delenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", raising=False)
     monkeypatch.setenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "true")
-    from tui_gateway.server import _current_profile_name
+    from hermes_agent.tui_gateway.server import _current_profile_name
     assert _current_profile_name() == "custom"
     reset_session_vars()
     keys = {"worker": terminal_tool._resolve_container_task_id(None)}

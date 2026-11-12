@@ -390,7 +390,7 @@ def _groups_sig() -> dict:
     process-wide (a worker started or stopped). Cron, the CLI and other gateways append to
     these stores from their own processes, so the files are the shared signal."""
     from gateway.hosted_rooms import default_db_path
-    from tui_gateway.hosted_room_service import live_room_services
+    from hermes_agent.tui_gateway.hosted_room_service import live_room_services
     services = live_room_services()
     stores = {Path(path).resolve(): None for path in (
         *(root / "state.db" for root in _watched_homes()), default_db_path(),
@@ -404,7 +404,7 @@ def _groups_sig() -> dict:
             for room_id, part in service.live_status_sig().items():
                 rooms.setdefault(room_id, []).append(("live", part))
     # Member progress is one process-wide map that every service's status reads: signed once.
-    from tui_gateway.hosted_room_member_activity import live_progress
+    from hermes_agent.tui_gateway.hosted_room_member_activity import live_progress
     for room_id, *progress in live_progress():
         rooms.setdefault(room_id, []).append(("progress", *progress))
     # Each part starts with its kind and a key unique within the room (store path, "live", "progress" + task):
@@ -421,7 +421,7 @@ def _wake_room_drivers() -> None:
     counts: task and status moves are the driver's own. Its own appends wake it once more (one empty
     pass, at most one per watch tick); ``wakeup`` only sets an event. Reads the store signatures the
     groups watch already cached: no store access of its own."""
-    from tui_gateway.hosted_room_service import live_room_services
+    from hermes_agent.tui_gateway.hosted_room_service import live_room_services
     heads = {store: {room_id: part.next_seq for room_id, part in rows.items()}
              for store, (_mtime, rows, _fallback) in _room_store_sig_cache.items() if rows}
     moved = {store for store, rooms in heads.items() if _groups_woken_heads.get(store, rooms) != rooms}
@@ -445,7 +445,7 @@ def _groups_changed_payload(before: dict, after: dict) -> dict:
     moved. ``broadcast_id`` names this one broadcast, unique per process lifetime."""
     moved = {room_id for room_id in before.keys() | after.keys() if before.get(room_id) != after.get(room_id)}
     scope = {} if "" in moved else {"room_ids": sorted(moved)}
-    from tui_gateway.event_replay import replay_epoch
+    from hermes_agent.tui_gateway.event_replay import replay_epoch
     return {**scope, "broadcast_id": f"{replay_epoch()}:{next(_groups_broadcast_count)}"}
 
 

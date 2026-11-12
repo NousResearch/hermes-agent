@@ -33,7 +33,7 @@ from hermes_cli.config_backend import Changes, ConfigBackendUnavailable, config_
 from hermes_cli.env_loader import load_hermes_dotenv
 # The slash-worker client (slash_worker_client.py) runs on these globals; tests patch them here.
 from hermes_cli.process_identity import release_process_group_once_empty, spawn_owned
-from tui_gateway.pet_sheet import _clone_pet_payload, _pet_row_frame_counts, _pet_sheet_revision, _pet_state_rows
+from hermes_agent.tui_gateway.pet_sheet import _clone_pet_payload, _pet_row_frame_counts, _pet_sheet_revision, _pet_state_rows
 from utils import is_truthy_value
 from hermes_agent.hermes_state_ids import new_session_id
 from tools.environments.local import hermes_subprocess_env
@@ -44,17 +44,17 @@ from agent.voice_turn_route import session_runtime_view
 from agent.compaction_display import project_compaction_message_for_display
 from agent.skill_commands import describe_skill_invocation
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
-from tui_gateway import git_probe, stream_segments
-from tui_gateway.checkpoints import (_load_checkpoints_enabled, _resolve_checkpoint_hash,
+from hermes_agent.tui_gateway import git_probe, stream_segments
+from hermes_agent.tui_gateway.checkpoints import (_load_checkpoints_enabled, _resolve_checkpoint_hash,
                                      resolve_checkpoints_enabled as _resolve_checkpoints_enabled)
-from tui_gateway._env import env_float, env_int
-from tui_gateway.turn_marker import clear_turn_marker, marker_writer_state, read_turn_marker, record_turn_start
-from tui_gateway.contracts import registry as _contracts
+from hermes_agent.tui_gateway._env import env_float, env_int
+from hermes_agent.tui_gateway.turn_marker import clear_turn_marker, marker_writer_state, read_turn_marker, record_turn_start
+from hermes_agent.tui_gateway.contracts import registry as _contracts
 # User-facing copy shared with the split method modules (they close over this namespace).
-from tui_gateway.user_messages import (
+from hermes_agent.tui_gateway.user_messages import (
     AGENT_BUILD_ABANDONED, AGENT_MISSING_FOR_TURN, AGENT_STILL_STARTING, agent_init_failed_message, busy_message,
     resume_failed_message, turn_error_text)
-from tui_gateway.transport import (FanoutTransport, StdioTransport, Transport, bind_transport,
+from hermes_agent.tui_gateway.transport import (FanoutTransport, StdioTransport, Transport, bind_transport,
                                    current_transport, reset_transport)
 from hermes_cli._startup_fast import project_root_str
 
@@ -98,7 +98,7 @@ with contextlib.suppress(Exception):
 
     prefetch_update_check()
 
-from tui_gateway.render import make_stream_renderer, render_diff, render_message
+from hermes_agent.tui_gateway.render import make_stream_renderer, render_diff, render_message
 
 _sessions: dict[str, dict] = {}
 _methods: dict[str, callable] = {}
@@ -135,7 +135,7 @@ def _ws_orphan_setting(env_var: str, cfg_key: str, default: float) -> float:
     return max(0.0, default)
 
 
-# When a WebSocket client (the dashboard's embedded-chat tab / desktop app) disconnects, ``tui_gateway.ws``
+# When a WebSocket client (the dashboard's embedded-chat tab / desktop app) disconnects, ``hermes_agent.tui_gateway.ws``
 # detaches the transport but intentionally leaves the session parked so a quick reconnect can reattach it
 # (see ws.py). That park is unbounded, though: a browser refresh spins up a brand-new ``session.create``
 # (new sid + a fresh _SlashWorker via _deferred_build) and never reattaches the OLD sid, so the old
@@ -471,8 +471,8 @@ def _profile_home(profile: str | None) -> Path | None:
         # This process now hosts a second profile home: freeze the launch env as the launch
         # profile's own and flip get_secret() to fail closed, so an unscoped read for a
         # secondary raises instead of returning the launch profile's os.environ value
-        # (tui_gateway/launch_profile_policy.py). Must run before any secondary code.
-        from tui_gateway.launch_profile_policy import activate_multi_profile_hosting
+        # (hermes_agent/tui_gateway/launch_profile_policy.py). Must run before any secondary code.
+        from hermes_agent.tui_gateway.launch_profile_policy import activate_multi_profile_hosting
         activate_multi_profile_hosting()
     _served_profile_homes.add(home)  # the change watcher must stat every served sibling store too
     return home
@@ -507,7 +507,7 @@ def _profile_scoped(handler):
             profile_home = str(home) if home else None
         else:
             # Sessionless: the authority ticket's profile (WS legacy fallback), else the launch one.
-            from tui_gateway.ws_legacy_fallback import connection_profile_home
+            from hermes_agent.tui_gateway.ws_legacy_fallback import connection_profile_home
             session = _sessions.get(str(p.get("session_id") or ""))
             profile_home = session.get("profile_home") if isinstance(session, dict) else connection_profile_home()
         with _session_profile_runtime_scope({"profile_home": profile_home or None}):
@@ -570,8 +570,8 @@ def write_json(obj: dict) -> bool:
     session's transport (async events reach the owner even from threads with no contextvar binding);
     (2) the context-bound transport (:func:`dispatch`); (3) module stdio (tests monkey-patch ``_real_stdout``).
     Every event frame gets a per-session monotonic ``seq`` + replay-ring entry so ``session.events.since`` can resume."""
-    from tui_gateway.event_replay import _stamp_event
-    from tui_gateway.hosted_room_member_activity import project_room_member_activity
+    from hermes_agent.tui_gateway.event_replay import _stamp_event
+    from hermes_agent.tui_gateway.hosted_room_member_activity import project_room_member_activity
     _stamp_event(obj)
     params = obj.get("params")
     if obj.get("method") == "event" or (isinstance(obj.get("id"), str) and "method" in obj):
@@ -598,18 +598,18 @@ def _emit(event: str, sid: str, payload: dict | None = None) -> bool:
     return write_json(_event_frame(event, sid, stream_segments.stamp_session_frame(_sessions.get(sid), event, payload)))
 
 
-from tui_gateway import server_requests as _server_requests
+from hermes_agent.tui_gateway import server_requests as _server_requests
 
 _server_requests.bind_sinks(lambda frame: write_json(frame), lambda event, sid, payload: _emit(event, sid, payload),
                             lambda sid: _session_client_answers_requests(sid),
                             lambda sid: _session_answering_clients(sid))
 
 
-# Live WS peer transports (maintained by tui_gateway.ws): the only route for session-less background
+# Live WS peer transports (maintained by hermes_agent.tui_gateway.ws): the only route for session-less background
 # events, which write_json would otherwise drop on stdio (see _broadcast_global_event).
 _live_transports: set[Transport] = set()
 _live_transports_lock = threading.Lock()
-# True only when real stdout IS the JSON-RPC client channel (``tui_gateway.entry.main``, the stdio TUI).
+# True only when real stdout IS the JSON-RPC client channel (``hermes_agent.tui_gateway.entry.main``, the stdio TUI).
 # `hermes serve` / dashboard processes speak JSON-RPC over WS only: their stdout is captured into
 # desktop.log, so a peer-less global broadcast (the change watcher keeps ticking after the last WS client
 # leaves) must be dropped there, not printed.
@@ -669,7 +669,7 @@ def _open_requests(sid: str) -> list[dict]:
     ``session.activate`` / ``session.events.since``). A client detached when the request frame was written would
     otherwise never see it (agent parked until timeout). Under turn isolation the compute-host child owns the
     request; the parent mirrors it from the relayed frame (compute_host_bridge)."""
-    from tui_gateway import server_requests
+    from hermes_agent.tui_gateway import server_requests
     reqs = server_requests.open_requests(sid)
     if reqs:
         return reqs
@@ -710,7 +710,7 @@ def _emit_approval_request(sid: str, data: dict | None) -> None:
     The wait is owned by ``tools.approval``'s queue (its own timeout, ``/approve all``, coalescing), so the request
     is queue-backed: the response resolves the queue entry, and the entry's own resolution (any surface, timeout,
     interrupt) withdraws the request with ``request.cancel``."""
-    from tui_gateway import server_requests
+    from hermes_agent.tui_gateway import server_requests
     from tools import approval as _approval
     payload = _approval_request_payload(data)
     request_id = str(payload.get("request_id") or "")
@@ -970,7 +970,7 @@ def _enable_gateway_prompts() -> None:
 def _ask(method: str, sid: str, params: dict, timeout: float | None = 300) -> str:
     """Server→client request whose answer is one string under ``value`` (sudo, secret, vault prompts, GUI reads,
     MCP setup). Empty string when the renderer skipped, timed out, or was cancelled."""
-    from tui_gateway import server_requests
+    from hermes_agent.tui_gateway import server_requests
     result = server_requests.send(method, sid, params, timeout=timeout)
     value = (result or {}).get("value", "")
     return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
@@ -991,7 +991,7 @@ def _clarify_block(sid: str, questions: list[dict]) -> dict:
     """Bridge the clarify tool callback onto one ``clarify`` server request carrying only the wire fields
     (tool-side entries carry result-assembly keys too). Answers lock one at a time through ``clarify.lock``
     (``null`` = skipped); the tool gets ``{"answers", "outcome"}`` — ``undelivered`` when no client took it."""
-    from tui_gateway import server_requests
+    from hermes_agent.tui_gateway import server_requests
     wire = [{"qid": e["qid"], "question": e["question"], "choices": e["choices"], "multi_select": bool(e["multi_select"])}
             for e in questions]
     result = server_requests.send("clarify", sid, {"questions": wire}, timeout=_clarify_timeout_seconds(),
@@ -1106,7 +1106,7 @@ def _preview_action_request(sid: str, payload: dict) -> str:
 def _clear_pending(sid: str | None = None) -> None:
     """Withdraw open server→client requests: only *sid*'s (session.interrupt must not cancel other sessions'
     prompts), or every one when *sid* is None (process exit). Each one gets a ``request.cancel``."""
-    from tui_gateway import server_requests
+    from hermes_agent.tui_gateway import server_requests
     server_requests.cancel(sid, reason="interrupted" if sid else "shutdown")
 
 
@@ -1573,7 +1573,7 @@ def _schedule_mcp_late_refresh(sid: str, agent) -> None:
     rebuilds like ``/reload-mcp`` and re-emits ``session.info``. Only pre-first-turn (nothing cached to
     invalidate); afterwards late tools need an explicit, consent-gated ``/reload-mcp``."""
     try:
-        from tui_gateway.entry import mcp_discovery_in_flight, join_mcp_discovery
+        from hermes_agent.tui_gateway.entry import mcp_discovery_in_flight, join_mcp_discovery
     except Exception:
         return
     if not mcp_discovery_in_flight():

@@ -248,7 +248,7 @@ class TestScopeSetupRecovery:
         bind must release what it already bound (home override + secret scope).
         Driven through ``server`` — the split module's functions run rebound on
         server.py's globals (``bind_module``)."""
-        from tui_gateway import server
+        from hermes_agent.tui_gateway import server
         from hermes_constants import get_hermes_home_override
 
         home = tmp_path / "profiles" / "b"

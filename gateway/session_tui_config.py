@@ -1,6 +1,6 @@
 """Owner ``config.set`` for the TUI's profile preferences.
 
-Main served these from the per-TUI sidecar (``tui_gateway/methods_config_set.py``); on the shared
+Main served these from the per-TUI sidecar (``hermes_agent/tui_gateway/methods_config_set.py``); on the shared
 owner they write the OWNING profile's config.yaml (raw round-trip, off-loop, under its runtime
 scope) with main's per-key semantics. The session controls (busy/verbose/yolo/show_reasoning/
 service_tier, the refused ``model``) stay in ``gateway.session_busy_controls``; any other key is
@@ -37,7 +37,7 @@ def _statusbar(raw):
 
 def _toggles():
     """key -> (display field, word -> value, flipped(display), report(value)); '' / toggle flips."""
-    from tui_gateway.agent_factory import _MOUSE_TRACKING_ALIASES, _display_mouse_tracking
+    from hermes_agent.tui_gateway.agent_factory import _MOUSE_TRACKING_ALIASES, _display_mouse_tracking
 
     def on_off(value):
         return 'on' if value else 'off'
@@ -178,7 +178,7 @@ def _authorize_write(connection, ref, params):
     return policy
 
 
-# Profile settings main's sidecar wrote for Desktop's toggles (``tui_gateway/server.py::_DISPLAY_TOGGLE_KEYS``)
+# Profile settings main's sidecar wrote for Desktop's toggles (``hermes_agent/tui_gateway/server.py::_DISPLAY_TOGGLE_KEYS``)
 # and its voice-engine pick: config.yaml leaves with main's validation.
 _DISPLAY_TOGGLE_KEYS = frozenset({'display.message_reactions', 'display.in_app_tips', 'display.in_app_tours'})
 _VOICE_CHAT_MODES = frozenset({'chained', 'gpt-live'})
@@ -224,10 +224,10 @@ async def _broadcast_skin(connection):
         import sys
         from gateway.run import _profile_runtime_scope
         from hermes_cli.config import load_config
-        from tui_gateway.change_watcher import skin_payload
+        from hermes_agent.tui_gateway.change_watcher import skin_payload
         with _profile_runtime_scope(Path(connection.authority.profile_id)):
             payload = skin_payload(load_config())
-        if (server := sys.modules.get('tui_gateway.server')) is not None:
+        if (server := sys.modules.get('hermes_agent.tui_gateway.server')) is not None:
             server._note_skin_broadcast()  # as main: the config watcher must not repaint it again
         return payload
     payload = await asyncio.to_thread(resolve)

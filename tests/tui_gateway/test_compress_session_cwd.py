@@ -9,13 +9,13 @@ from unittest.mock import MagicMock
 
 def test_manual_compress_runs_under_the_session_cwd(tmp_path, monkeypatch):
     from agent.runtime_cwd import resolve_agent_cwd
-    from tui_gateway.server import _compress_session_history
+    from hermes_agent.tui_gateway.server import _compress_session_history
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     monkeypatch.delenv("TERMINAL_CWD", raising=False)
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr("tui_gateway.server._get_usage", lambda _agent: {})
+    monkeypatch.setattr("hermes_agent.tui_gateway.server._get_usage", lambda _agent: {})
     history = [{"role": "user" if i % 2 == 0 else "assistant", "content": f"m{i}"} for i in range(6)]
     seen = []
     agent = MagicMock(_cached_system_prompt="", tools=None, session_id="sess-cwd",

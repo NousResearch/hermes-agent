@@ -116,7 +116,7 @@ def test_drive_comment_agent_turn_binds_the_unscoped_launch_profile(tmp_path):
     })
     set_multiplex_active(True)
     try:
-        with patch("tui_gateway.launch_profile_policy.launch_profile_scope_if_multiplexed", _launch_scope), \
+        with patch("hermes_agent.tui_gateway.launch_profile_policy.launch_profile_scope_if_multiplexed", _launch_scope), \
              patch.object(rules, "load_config", return_value=object()), \
              patch.object(rules, "resolve_rule", return_value=rules.ResolvedCommentRule(True, "allowlist", frozenset(), "top")), \
              patch.object(rules, "has_wiki_keys", return_value=False), \

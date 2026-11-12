@@ -15,8 +15,8 @@ _UNANSWERED = {"success": False, "error": "No Hermes Desktop window answered the
 
 def theme_request(sid: str, payload: dict) -> dict:
     """The renderer's answer; a dismissed picker and an expired one are told apart."""
-    from tui_gateway import server_requests
-    from tui_gateway.server import _ask
+    from hermes_agent.tui_gateway import server_requests
+    from hermes_agent.tui_gateway.server import _ask
 
     if "picker" not in payload:
         answer = _ask("theme.apply", sid, dict(payload), timeout=THEME_TIMEOUT_S)

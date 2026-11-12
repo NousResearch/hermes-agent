@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from agent.context_references import preprocess_context_references
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 def _container_dir() -> str:

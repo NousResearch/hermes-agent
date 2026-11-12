@@ -47,7 +47,7 @@ def gated(request, monkeypatch):
 
 
 def _rpc(params: dict) -> dict:
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     return server.handle_request({"id": "1", "method": "plugins.manage", "params": params})
 
 

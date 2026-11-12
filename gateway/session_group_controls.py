@@ -257,7 +257,7 @@ def _disband(attached, service, db_path, gateway_id, params):
     route at its member gateway, then tombstone; any refusal leaves the room for a retry."""
     from gateway import hosted_rooms as rooms
     from gateway.hosted_room_driver import list_tasks
-    from tui_gateway.hosted_room_service import disband_fence, route_publication_lock
+    from hermes_agent.tui_gateway.hosted_room_service import disband_fence, route_publication_lock
     room_id = rooms._room_id(params.get('room_id'))
     with disband_fence(attached, room_id):
         state = rooms.room_state(db_path, room_id=room_id, include_disbanded=True)
@@ -290,7 +290,7 @@ def _disband(attached, service, db_path, gateway_id, params):
 
 def _revoke_routes_first(service, room_id):
     """Revoke each peer route at its member gateway; one that cannot be reached keeps the room."""
-    from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
+    from hermes_agent.tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
     try:
         service.revoke_room_routes(room_id)
     except PeerRunsHTTPError as exc:
@@ -384,7 +384,7 @@ def _bot_sessions(authority, actor):
     conversation, each only when the actor owns it or holds operator access. Reused while the
     store has not moved, as the pre-unified roster did (#117257): every connection polls every 5 s.
     Discovery is read-only: no legacy restore/unarchive or new SessionDB handle."""
-    from tui_gateway.profile_roster_cache import cached_reader_session_fields
+    from hermes_agent.tui_gateway.profile_roster_cache import cached_reader_session_fields
     operator = 'session:operator' in actor.capabilities
     return cached_reader_session_fields(Path(authority.db.db_path).parent, (actor.subject, operator),
                                         lambda: _read_bot_sessions(authority.db, actor.subject, operator))

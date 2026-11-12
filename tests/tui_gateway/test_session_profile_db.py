@@ -8,11 +8,11 @@ database: writes land in a foreign profile under this session's id, and reads
 come back empty because the row simply is not there.
 
 ``_session_db(session)`` is the profile-aware resolver that already exists for
-exactly this (``tui_gateway/server.py``): the profile's ``state.db`` when
+exactly this (``hermes_agent/tui_gateway/server.py``): the profile's ``state.db`` when
 ``session['profile_home']`` is set, otherwise the shared launch handle.
 
 Every test here drives the real JSON-RPC entry point
-(``server.handle_request``).  Handler bodies live in ``tui_gateway/methods_*``
+(``server.handle_request``).  Handler bodies live in ``hermes_agent/tui_gateway/methods_*``
 but are rebound onto ``server.py``'s globals by
 ``method_ctx.HandlerRegistry.install()``, so calling a handler function
 directly would bypass the path the gateway actually executes.
@@ -54,7 +54,7 @@ def server(hermes_home):
             "hermes_cli.banner": MagicMock(),
         },
     ):
-        mod = importlib.import_module("tui_gateway.server")
+        mod = importlib.import_module("hermes_agent.tui_gateway.server")
 
     methods = dict(mod._methods)
     yield mod
@@ -64,7 +64,7 @@ def server(hermes_home):
     mod._methods.clear()
     mod._methods.update(methods)
     mod._sessions.clear()
-    __import__("tui_gateway.server_requests", fromlist=["x"]).reset_for_tests()
+    __import__("hermes_agent.tui_gateway.server_requests", fromlist=["x"]).reset_for_tests()
     mod._db = None
 
 

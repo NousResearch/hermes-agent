@@ -16,7 +16,7 @@ import types
 
 import pytest
 
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 def _session(agent=None, **extra):

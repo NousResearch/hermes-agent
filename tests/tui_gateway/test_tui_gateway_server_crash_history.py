@@ -3,7 +3,7 @@
 import threading
 import types
 
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 def test_turn_error_restores_agent_transcript_to_gateway_history():

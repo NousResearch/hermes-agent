@@ -302,7 +302,7 @@ def stop_worker(timeout: float = 5.0) -> None:
 
 
 def _worker_loop() -> None:
-    from tui_gateway.launch_profile_policy import launch_profile_scope_if_multiplexed
+    from hermes_agent.tui_gateway.launch_profile_policy import launch_profile_scope_if_multiplexed
     wait = _WORKER_FIRST_TICK_SECONDS
     while not _worker_stop.wait(wait):
         try:

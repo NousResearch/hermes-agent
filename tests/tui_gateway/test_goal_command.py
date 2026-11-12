@@ -45,11 +45,11 @@ def server(hermes_home, monkeypatch):
             "hermes_cli.banner": MagicMock(),
         },
     ):
-        mod = importlib.import_module("tui_gateway.server")
+        mod = importlib.import_module("hermes_agent.tui_gateway.server")
 
     # Pin config resolution to the isolated HERMES_HOME. Sibling test
     # files (test_billing_rpc, test_delegation_session_lifecycle,
-    # test_gateway_owned_session_reap, ...) import tui_gateway.server at
+    # test_gateway_owned_session_reap, ...) import hermes_agent.tui_gateway.server at
     # collection time — BEFORE the conftest env isolation runs — so the
     # module-level ``_hermes_home = get_hermes_home()`` snapshot freezes
     # the developer's real home. When any of them precede this file in
@@ -70,7 +70,7 @@ def server(hermes_home, monkeypatch):
     # _enter_buffered_busy. Clearing the per-session dicts gives the
     # next test a clean slate.
     mod._sessions.clear()
-    __import__("tui_gateway.server_requests", fromlist=["x"]).reset_for_tests()
+    __import__("hermes_agent.tui_gateway.server_requests", fromlist=["x"]).reset_for_tests()
 
 
 @pytest.fixture()

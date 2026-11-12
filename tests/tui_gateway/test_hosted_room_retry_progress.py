@@ -8,8 +8,8 @@ import time
 from types import SimpleNamespace
 
 from gateway import hosted_room_driver as driver
-from tui_gateway.hosted_room_member_activity import record_task_progress, task_progress
-from tui_gateway.hosted_room_service import HostedRoomService
+from hermes_agent.tui_gateway.hosted_room_member_activity import record_task_progress, task_progress
+from hermes_agent.tui_gateway.hosted_room_service import HostedRoomService
 
 
 def _deferred_room(tmp_path, monkeypatch):

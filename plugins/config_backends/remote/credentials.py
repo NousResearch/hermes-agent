@@ -97,7 +97,7 @@ def _bind_owner_secret_scope(home: Path):
     from agent.secret_scope import is_multiplex_active, set_secret_scope
     if not is_multiplex_active():
         return None  # single-profile: get_secret reads the process env, which is this profile's
-    from tui_gateway.launch_profile_policy import owner_secret_scope
+    from hermes_agent.tui_gateway.launch_profile_policy import owner_secret_scope
     return set_secret_scope(owner_secret_scope(home), profile_home=str(home))
 
 

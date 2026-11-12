@@ -131,7 +131,7 @@ def delegated_profile_scope(home: Any) -> Iterator[None]:
     from hermes_cli.env_loader import hydrate_profile_secret_sources
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from tools.terminal_scope import install_profile_terminal_scope, reset_terminal_scope
-    from tui_gateway.launch_profile_policy import owner_secret_scope
+    from hermes_agent.tui_gateway.launch_profile_policy import owner_secret_scope
 
     routed = hermes_home_key(home) != hermes_home_key(get_routing_process_hermes_home())
     hydrate_profile_secret_sources(home)

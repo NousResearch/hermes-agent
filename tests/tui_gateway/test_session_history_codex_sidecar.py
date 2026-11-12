@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 
 from hermes_agent.hermes_state import SessionDB
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 def test_session_history_preserves_codex_message_items(tmp_path):

@@ -37,7 +37,7 @@ def test_usage_stats_is_exactly_the_frozen_field_list():
     assert stats['avg_latency_s'] == 2.0 and stats['tokens_per_s'] == 10.0
     assert stats['context_length'] == 128000 and stats['compression_count'] == 1
     assert stats['rate_limit'] is None and stats['fallback_model'] is None
-    from tui_gateway.contracts.registry import EVENTS
+    from hermes_agent.tui_gateway.contracts.registry import EVENTS
     EVENTS['session.usage'].payload.model_validate(stats)
 
 
@@ -61,7 +61,7 @@ def test_each_api_step_publishes_usage_only_for_local_viewers(platform):
     kinds = [kind for kind, _ in published]
     if platform == Platform.LOCAL:
         from gateway.session_usage import usage_stats
-        from tui_gateway.contracts.registry import EVENTS
+        from hermes_agent.tui_gateway.contracts.registry import EVENTS
         frame = next(payload for kind, payload in published if kind == 'session.usage')
         # One frame, both views: the loose counters the classic CLI / TUI mirror reads, and the TUI
         # view the Desktop status bar reads (without it its meters sit at the empty placeholder).
@@ -77,7 +77,7 @@ def test_each_api_step_publishes_usage_only_for_local_viewers(platform):
 async def test_session_stats_returns_the_same_dict(tmp_path, monkeypatch):
     from gateway.session_controls import AuthorityConnection
     from tests.gateway.test_surface_admission import _authority
-    from tui_gateway.contracts.registry import CANONICAL_METHODS
+    from hermes_agent.tui_gateway.contracts.registry import CANONICAL_METHODS
 
     async def answer(event):
         return 'ok'
@@ -101,7 +101,7 @@ def test_completion_carries_main_tui_usage_from_the_turn_end_stats():
     context used/max/percent, ◷ latency, t/s, compressions — what the status bar paints."""
     from gateway.session_settlement_recovery import completion_payload
     from gateway.session_usage import usage_stats
-    from tui_gateway.contracts.registry import EVENTS
+    from hermes_agent.tui_gateway.contracts.registry import EVENTS
     row = {'admission_id': 'a1', 'request_id': 'r1'}
     captured = {'result': {'final_response': 'hi'}, 'session_usage': usage_stats(_agent())}
     complete = completion_payload(row, {'outcome': 'completed'}, 'hi', captured)
@@ -139,7 +139,7 @@ def test_usage_frame_carries_the_tui_view_the_desktop_status_bar_reads():
     at the empty placeholder for the whole turn, because the embedded backend's tick
     (``server._start_usage_ticker``) is the only producer of the nested view."""
     from gateway.session_usage import usage_frame, usage_stats
-    from tui_gateway.contracts.registry import EVENTS
+    from hermes_agent.tui_gateway.contracts.registry import EVENTS
     frame = usage_frame(usage_stats(_agent()))
     EVENTS['session.usage'].payload.model_validate(frame)
     # The classic CLI / TUI mirror (``hermes_cli.gateway_agent.apply_session_usage``) reads these.
@@ -167,7 +167,7 @@ def test_published_usage_view_matches_the_embedded_ticker(agent):
     backend's ticker sends it (``{'usage': server._get_usage(agent)}``). The gateway frame's nested
     view is that same object, computed from the same agent."""
     from gateway.session_usage import publish_usage
-    from tui_gateway.server import _get_usage
+    from hermes_agent.tui_gateway.server import _get_usage
     published = []
     publish_usage(_turn(Platform.LOCAL, published, agent), agent)
     kind, frame = published[-1]
@@ -181,8 +181,8 @@ def test_a_window_plans_gauge_rides_the_canonical_usage_feed():
     from agent.credits_tracker import CreditsState
     from agent.usage_gauges import WindowGauge
     from gateway.session_usage import publish_usage, tui_usage, usage_stats
-    from tui_gateway.contracts.registry import CANONICAL_METHODS, EVENTS
-    from tui_gateway.server import _get_usage
+    from hermes_agent.tui_gateway.contracts.registry import CANONICAL_METHODS, EVENTS
+    from hermes_agent.tui_gateway.server import _get_usage
 
     day = WindowGauge(id='day', scope='all', label='today', used_bp=4_200, resets_at_ms=4_000_000_000_000)
     agent = _agent()

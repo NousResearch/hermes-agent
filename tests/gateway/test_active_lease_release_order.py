@@ -77,7 +77,7 @@ def test_the_next_sessions_claim_at_the_cap_sees_the_ended_turns_slot_free(tmp_p
 
 def test_a_desktop_claim_of_the_session_a_gateway_turn_just_ended_is_not_already_owned(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     runner = _runner({})
     src = SessionSource(platform=Platform.TELEGRAM, chat_id="c1", user_id="u1")

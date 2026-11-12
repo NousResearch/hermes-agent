@@ -187,7 +187,7 @@ def test_a_plugin_importing_its_new_dependency_at_load_still_asks_for_a_restart(
     blocked it, or enable reports "nothing of this plugin needs a session or restart"."""
     from gateway.run_plugin_rewire import reload_plugins_verb
     from hermes_cli import plugins
-    from tui_gateway.contracts.tools_mcp_plugins import PluginActivation
+    from hermes_agent.tui_gateway.contracts.tools_mcp_plugins import PluginActivation
 
     _select_generation(home, with_dist=True)
     (home / "plugins" / "depprobe" / "__init__.py").write_text(

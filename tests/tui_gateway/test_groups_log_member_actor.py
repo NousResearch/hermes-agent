@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-import tui_gateway.server as srv
+import hermes_agent.tui_gateway.server as srv
 from gateway import hosted_rooms
-from tui_gateway import methods_groups
+from hermes_agent.tui_gateway import methods_groups
 
 
 @pytest.fixture

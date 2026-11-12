@@ -2,7 +2,7 @@
 
 Each verb replies ``{task_id}`` at once and the answer lands later on the parent session's event
 stream as ``background.complete`` ``{task_id, text}`` / ``btw.complete`` ``{task_id, question,
-text}`` (``error: <exc>`` on failure) — the sidecar's contract (``tui_gateway/methods_prompt.py``).
+text}`` (``error: <exc>`` on failure) — the sidecar's contract (``hermes_agent/tui_gateway/methods_prompt.py``).
 The side agent is detached: never an admission, never a FIFO turn, never a row in the parent
 transcript. It runs on a daemon thread
 under the owning profile's scope and the session's frozen launch policy (cwd, terminal, model
@@ -181,7 +181,7 @@ async def background(connection, ref, params):
     holder = [None]
 
     def body():
-        from tui_gateway.methods_prompt import _final_response_text
+        from hermes_agent.tui_gateway.methods_prompt import _final_response_text
         with _side_scope(authority, policy, task_id):
             agent = holder[0] = _side_agent(authority, policy, live, task_id)
             try:
@@ -254,7 +254,7 @@ class _SideQuestionStop:
 
 async def preview_restart(connection, ref, params):
     """Desktop preview pane "restart dev server": a hidden terminal+file agent brings the preview
-    URL's server back up (rules: ``tui_gateway/methods_prompt.py`` ``_PREVIEW_RESTART_RULES``).
+    URL's server back up (rules: ``hermes_agent/tui_gateway/methods_prompt.py`` ``_PREVIEW_RESTART_RULES``).
     Detached like ``/bg``; progress rides ``preview.restart.progress``, the answer
     ``preview.restart.complete`` ``{task_id, text}``. Context is the session's stored transcript."""
     live, policy, url, task_id = _admit(connection, ref, params, 'preview', required='url',
@@ -271,8 +271,8 @@ async def preview_restart(connection, ref, params):
                                         event_type='preview.restart.progress')
 
     def body():
-        from tui_gateway.agent_callbacks import _preview_restart_history
-        from tui_gateway.methods_prompt import (_final_response_text, _preview_restart_prompt,
+        from hermes_agent.tui_gateway.agent_callbacks import _preview_restart_history
+        from hermes_agent.tui_gateway.methods_prompt import (_final_response_text, _preview_restart_prompt,
                                                 _validated_preview_cwd)
         preview_cwd = _validated_preview_cwd(cwd)
         history = _preview_restart_history(authority.db.get_messages_as_conversation(target) if target else [])

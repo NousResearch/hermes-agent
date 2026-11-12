@@ -59,7 +59,7 @@ def _best_effort(fn) -> bool:
 
 
 def _hermes_home_scope(path):
-    from tui_gateway.launch_profile_policy import profile_config_scope
+    from hermes_agent.tui_gateway.launch_profile_policy import profile_config_scope
     return profile_config_scope(path, launch_home=_launch_home())
 
 
@@ -242,7 +242,7 @@ def _profile_session_fields(row, profile_path):
 
     # These three are a pure function of the profile's session store, and the roster re-asks every
     # 5s per connection — so they are reused while that store has not moved (#117257).
-    from tui_gateway.profile_roster_cache import cached_session_fields
+    from hermes_agent.tui_gateway.profile_roster_cache import cached_session_fields
 
     row.update(cached_session_fields(profile_path, _read))
 
@@ -265,7 +265,7 @@ def _profile_ui_meta_fields(row: dict, profile_dir) -> None:
     # Second parse of this profile.yaml in the same request (``read_profile_meta`` already read it
     # for the row's description/display name) — reused while the file has not moved (#117383). The
     # ui_meta CAS writer below keeps reading it raw and uncached: it writes the document back.
-    from tui_gateway.profile_roster_cache import cached_ui_meta_fields
+    from hermes_agent.tui_gateway.profile_roster_cache import cached_ui_meta_fields
 
     row.update(cached_ui_meta_fields(profile_dir, _read))
     # Cheap existence flag so rosters skip a get_asset probe per paint.

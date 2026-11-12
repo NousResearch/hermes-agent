@@ -113,7 +113,7 @@ def begin_local_desktop_boot() -> None:
     from agent.memory_provider import spawn_context_thread
     from hermes_cli import free_tier_bootstrap
     from hermes_cli.process_identity import serving_local_desktop
-    from tui_gateway.launch_profile_policy import launch_profile_scope_if_multiplexed
+    from hermes_agent.tui_gateway.launch_profile_policy import launch_profile_scope_if_multiplexed
 
     with _local_desktop_boot_lock:
         first, _local_desktop_boot_started = not _local_desktop_boot_started, True
@@ -296,14 +296,14 @@ def _discard_unfinished_runs(db, stored_ids: list[str]) -> None:
 
 def _setup_beat_request(sid: str, payload: dict) -> dict | None:
     from agent.onboarding_flow import CARD_TIMEOUT_S
-    from tui_gateway import server_requests
+    from hermes_agent.tui_gateway import server_requests
     return server_requests.send("setup_beat", sid, dict(payload), timeout=CARD_TIMEOUT_S)
 
 
 def _stage_onboarding_turn_note(sid: str, agent, history_empty: bool) -> None:
     """Before a user turn in the onboarding chat (``agent.onboarding_session.onboarding_turn_note``)."""
     from agent.onboarding_session import append_turn_note, onboarding_turn_note
-    from tui_gateway import server_requests
+    from hermes_agent.tui_gateway import server_requests
     append_turn_note(agent, onboarding_turn_note(
         agent, history_empty=history_empty, card_waiting=server_requests.pending_kind(sid) == "setup_beat"))
 

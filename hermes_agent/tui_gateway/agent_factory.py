@@ -636,7 +636,7 @@ def _make_agent(
     platform_override: str | None = None, context_cwd_is_launch_artifact: bool | None = None,
     cwd_override: str | None = None, auth_user_id: str | None = None):
     # AC-4 test seam: dead unless armed by the isolated certify harness.
-    from tui_gateway.synthetic_turn import maybe_build_synthetic_agent
+    from hermes_agent.tui_gateway.synthetic_turn import maybe_build_synthetic_agent
     synthetic = maybe_build_synthetic_agent(session_id or key, model_override)
     if synthetic is not None:
         return synthetic
@@ -644,7 +644,7 @@ def _make_agent(
     from run_agent import AIAgent
     # MCP discovery runs in a daemon thread (a dead server can't freeze the shell); the agent snapshots its tool
     # list once, so briefly wait for in-flight discovery. Dashboard /api/ws uses mcp_startup; TUI stdio uses entry.
-    for _mod in ("hermes_cli.mcp_startup", "tui_gateway.entry"):
+    for _mod in ("hermes_cli.mcp_startup", "hermes_agent.tui_gateway.entry"):
         with contextlib.suppress(Exception):
             importlib.import_module(_mod).wait_for_mcp_discovery()
     cfg = _load_cfg()

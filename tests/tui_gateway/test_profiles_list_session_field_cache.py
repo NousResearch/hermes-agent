@@ -12,9 +12,9 @@ import time
 
 import pytest
 
-import tui_gateway.server as srv
+import hermes_agent.tui_gateway.server as srv
 from hermes_agent.hermes_state import SessionDB
-from tui_gateway import profile_roster_cache as cache
+from hermes_agent.tui_gateway import profile_roster_cache as cache
 
 @pytest.fixture(autouse=True)
 def _clean_memo():

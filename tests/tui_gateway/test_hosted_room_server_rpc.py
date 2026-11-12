@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.hosted_room_driver import TaskIdentity
-from tui_gateway.hosted_room_server_rpc import (
+from hermes_agent.tui_gateway.hosted_room_server_rpc import (
     HostedRoomServerRPC,
     HostedRoomSessionError,
 )

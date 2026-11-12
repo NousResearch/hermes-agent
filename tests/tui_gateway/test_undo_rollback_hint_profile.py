@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from tools.checkpoint_manager import CheckpointManager
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 def test_undo_hint_then_rollback_restore_round_trip_in_the_sessions_profile(tmp_path):

@@ -20,7 +20,7 @@ remote resolution and exposure lifecycle; a remote failure must never start a lo
 
 The gateway `gateway ensure` attaches to is **one multiplexing owner per home**: `HERMES_DESKTOP=1`
 is not how the app finds it, and no per-profile `hermes serve --port 0` child is spawned. One
-gateway process serves sessions from several homes (`tui_gateway/AGENTS.md` § Profile scope); a
+gateway process serves sessions from several homes (`hermes_agent/tui_gateway/AGENTS.md` § Profile scope); a
 served secondary answers through the multiplexer's control socket (`GatewayEndpoint.multiplex_home`).
 Remote connections (SSH, URL+token, Cloud) likewise reach a backend that may serve several profiles
 from one process. Every lifecycle/status/settings REST call carries `?profile=` (or the `profile`

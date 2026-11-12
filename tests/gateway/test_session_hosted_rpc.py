@@ -19,7 +19,7 @@ def test_local_hosted_member_revoked_during_preparation_is_not_admitted(hosted_o
     from gateway.hosted_rooms import create_room, local_authority_gateway_id
     from gateway.session_hosted_service import CanonicalHostedRoomService
     from hermes_agent.hermes_state_runtime import RuntimeStoreError, list_session_admissions
-    from tui_gateway.hosted_room_driver import HostedRoomBinding
+    from hermes_agent.tui_gateway.hosted_room_driver import HostedRoomBinding
 
     authority, loop, _, _ = hosted_owner
     service = CanonicalHostedRoomService(authority, loop)

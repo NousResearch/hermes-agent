@@ -7,7 +7,7 @@ A seeded property / matrix layer over every surface that writes ``config.yaml`` 
       explicit-default values, dotted provider names and nulls all survive);
 * P2  "set one key" changes exactly one key, on every writer: in-process ``set_config_value`` over
       EVERY documented scalar leaf of ``DEFAULT_CONFIG``, the real ``hermes config set`` CLI
-      subprocess, a real ``python -m tui_gateway.entry`` stdio JSON-RPC process (``config.set``),
+      subprocess, a real ``python -m hermes_agent.tui_gateway.entry`` stdio JSON-RPC process (``config.set``),
       and the dashboard/Desktop ``PUT /api/config`` (partial bodies, like Desktop sends);
 * P3  a failed read never results in a clobbering write: for every single config read an
       operation performs, a transient ``EMFILE`` on exactly that read, plus unreadable, truncated
@@ -341,7 +341,7 @@ def _reset_config_caches(*, keep_lkg: bool = False) -> None:
     if not keep_lkg:
         C._LAST_EXPANDED_CONFIG_BY_PATH.clear()
     with contextlib.suppress(Exception):
-        from tui_gateway import server
+        from hermes_agent.tui_gateway import server
         server._cfg_cache = server._cfg_sig = server._cfg_path = None
 
 
@@ -365,7 +365,7 @@ def home(monkeypatch):
     assert str(_cfg_path()).startswith(str(hh))
     _reset_config_caches()
     with contextlib.suppress(Exception):
-        from tui_gateway import server
+        from hermes_agent.tui_gateway import server
         monkeypatch.setattr(server, "_hermes_home", hh)
     yield hh
     _reset_config_caches()
@@ -844,7 +844,7 @@ def _op_save(ctx: dict) -> None:
 
 
 def _op_tui(ctx: dict) -> None:
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     resp = server._methods["config.set"](1, {"key": "skin", "value": ctx["new"]})
     if "error" in resp:
         raise RuntimeError(resp["error"])
@@ -1206,7 +1206,7 @@ def test_p6_null_section_survives_every_surface(section, web_app, home, monkeypa
     resolvers, save, CLI set, TUI RPC and Desktop PUT (the #105674 `display: null` class)."""
     from gateway.display_config import resolve_display_setting, resolve_tool_progress
     from hermes_cli.config_effective import load_user_config_effective
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     text, tree, cfg, null_line = _p6_setup(section, monkeypatch)
     ctx = f"{section}: null"

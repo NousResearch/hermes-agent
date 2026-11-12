@@ -9,7 +9,7 @@ Run against the fork's own HERMES_HOME so nothing here touches a real profile:
 
     python scripts/probe_active_session_exclusivity.py
 
-It drives real ``python -m tui_gateway.entry`` processes over stdio JSON-RPC.
+It drives real ``python -m hermes_agent.tui_gateway.entry`` processes over stdio JSON-RPC.
 The standalone entry now reserves the home's ``gateway.lock`` (the gateway's own
 owner reservation) before it opens ``state.db``, so the second writer is refused
 before it exists rather than per turn:
@@ -49,7 +49,7 @@ class Gateway:
         env["PYTHONUNBUFFERED"] = "1"
         self.name = name
         self.proc = subprocess.Popen(
-            [str(PYTHON), "-u", "-m", "tui_gateway.entry"],
+            [str(PYTHON), "-u", "-m", "hermes_agent.tui_gateway.entry"],
             cwd=str(REPO),
             env=env,
             stdin=subprocess.PIPE,
@@ -158,7 +158,7 @@ def main() -> int:
               bool(key) and key != sid_a, f"key={key} runtime={sid_a}")
 
         refused_b = subprocess.run(
-            [str(PYTHON), "-u", "-m", "tui_gateway.entry"], cwd=str(REPO),
+            [str(PYTHON), "-u", "-m", "hermes_agent.tui_gateway.entry"], cwd=str(REPO),
             env={**os.environ, "HERMES_HOME": str(home)}, stdin=subprocess.DEVNULL,
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180, check=False)
         check("B cannot start a second writer on A's home", refused_b.returncode == 1

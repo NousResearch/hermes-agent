@@ -12,7 +12,7 @@ import types
 import pytest
 
 from hermes_agent.hermes_state import SessionDB
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 def _frames(out: io.StringIO) -> list[dict]:
@@ -100,7 +100,7 @@ def test_lazy_watch_mount_keeps_finalized_row_ended(tmp_path, monkeypatch):
 
 def test_first_real_turn_reopens_a_finalized_row(tmp_path, monkeypatch):
     """The activity gate: prompt.submit (a real send) is what clears ended_at, not the mount."""
-    from tui_gateway import methods_prompt
+    from hermes_agent.tui_gateway import methods_prompt
 
     db, home = _finalized_db(tmp_path)
     _events, _built = _mount(monkeypatch, db, home, tmp_path)
@@ -119,7 +119,7 @@ def test_first_real_turn_reopens_a_finalized_row(tmp_path, monkeypatch):
 
 def test_reopen_if_finalized_leaves_live_rows_untouched(tmp_path):
     db, _home = _finalized_db(tmp_path)
-    from tui_gateway import methods_prompt
+    from hermes_agent.tui_gateway import methods_prompt
 
     db.create_session("live", source="desktop")
     db.append_message("live", "user", "ask", timestamp=100.0)
@@ -135,7 +135,7 @@ def test_isolated_dispatch_reopens_a_finalized_row(tmp_path, monkeypatch):
     (the child process runs the turn), so the reopen must live on the dispatch path every
     turn crosses, not in the skipped persist. A finalized row a lazy mount is about to send
     through must be reopened before the child writes into it."""
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     db, home = _finalized_db(tmp_path)
     _events, _built = _mount(monkeypatch, db, home, tmp_path)
@@ -175,8 +175,8 @@ def test_compute_host_child_turn_reopens_a_finalized_row(tmp_path, monkeypatch):
     ``_run_prompt_submit`` directly, so the reopen at the dispatch seam fires there too —
     the turn's transcript is written into a live row even though the child never saw
     prompt.submit."""
-    from tui_gateway import server
-    from tui_gateway.compute_host import ComputeHost
+    from hermes_agent.tui_gateway import server
+    from hermes_agent.tui_gateway.compute_host import ComputeHost
 
     db, home = _finalized_db(tmp_path)
     _events, _built = _mount(monkeypatch, db, home, tmp_path)
@@ -190,7 +190,7 @@ def test_compute_host_child_turn_reopens_a_finalized_row(tmp_path, monkeypatch):
     }
     server._sessions["child-sid"] = session
     # Cut the turn right after admission (the reopen runs BEFORE admission).
-    from tui_gateway import prompt_turn
+    from hermes_agent.tui_gateway import prompt_turn
     monkeypatch.setattr(server, "_prepare_turn_input", lambda *a, **k: None, raising=False)
     monkeypatch.setattr(prompt_turn, "_prepare_turn_input", lambda *a, **k: None, raising=False)
     out = io.StringIO()

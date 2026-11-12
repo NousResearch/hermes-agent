@@ -59,7 +59,7 @@ class TestFinalizeSessionUsesAgentSessionId:
         """Reproduction: agent.session_id rotated by compression, but
         session['session_key'] still holds old value. _finalize_session()
         should end the agent's current session."""
-        from tui_gateway import server
+        from hermes_agent.tui_gateway import server
 
         db = _make_session_db(tmp_path)
 
@@ -119,7 +119,7 @@ class TestPendingTitleValueError:
 
     def test_valueerror_clears_pending_title(self, monkeypatch):
         """ValueError from set_session_title should drop pending_title."""
-        from tui_gateway import server
+        from hermes_agent.tui_gateway import server
 
         mock_db = MagicMock()
         mock_db.set_session_title.side_effect = ValueError("duplicate title")

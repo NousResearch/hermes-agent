@@ -619,7 +619,7 @@ def _merge_profile_tree(
         # Same folder-identity notion the per-profile tree builder uses (``_path_key``):
         # shape-derived — Windows paths case-fold on any host, separators unify, NFC —
         # so the cross-profile merge agrees by construction with the trees it merges.
-        from tui_gateway.project_tree import _path_key
+        from hermes_agent.tui_gateway.project_tree import _path_key
         key = _path_key(project.get("path") or project["id"])
         # A per-profile read is merged again by its caller, which cannot compute this key.
         project["mergeKey"] = key
@@ -660,7 +660,7 @@ def get_profiles_projects_tree(preview_limit: int = 3, session_limit: int = 2000
     ``profile`` limits the scan to that one profile: a native grant may read only its own, so
     the Desktop merges one such read per profile by each project's ``mergeKey``.
     """
-    from tui_gateway import server as gateway_server
+    from hermes_agent.tui_gateway import server as gateway_server
     merged: dict[str, dict[str, Any]] = {}
     scoped_session_ids: list[str] = []
     errors: list[dict[str, str]] = []

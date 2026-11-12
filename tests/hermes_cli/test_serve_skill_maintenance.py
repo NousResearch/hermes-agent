@@ -12,7 +12,7 @@ async def test_removed_sessions_keep_profile_idle_watermark(tmp_path, monkeypatc
     import time
     from pathlib import Path
 
-    import tui_gateway.server as gateway
+    import hermes_agent.tui_gateway.server as gateway
     from agent.curator import load_state, save_state
     from hermes_cli.web_server_sessions import _auto_archive_ticker_loop, _skill_maintenance_idle_for
 
@@ -82,7 +82,7 @@ async def test_serve_timer_runs_due_curator_once_and_honors_pause(tmp_path, monk
         await asyncio.to_thread(ticks.get, True, 8)
         assert load_state()["run_count"] == 0
         # Active turns must suppress maintenance even with a zero idle threshold.
-        import tui_gateway.server as gateway
+        import hermes_agent.tui_gateway.server as gateway
         with gateway._sessions_lock:
             gateway._sessions['maintenance-test'] = {"running": True}
         set_paused(False)

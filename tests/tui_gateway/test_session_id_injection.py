@@ -1,4 +1,4 @@
-"""Contract test: tui_gateway._set_session_context must inject the live
+"""Contract test: hermes_agent.tui_gateway._set_session_context must inject the live
 session id into HERMES_SESSION_ID so terminal/execute_code subprocesses can
 read the current session's id.
 
@@ -16,7 +16,7 @@ from gateway.session_context import (
     _VAR_MAP,
     _UNSET,
 )
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 @pytest.fixture(autouse=True)

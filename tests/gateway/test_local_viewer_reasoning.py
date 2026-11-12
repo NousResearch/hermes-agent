@@ -35,7 +35,7 @@ def test_a_local_turn_streams_reasoning_unless_the_session_or_its_config_hides_i
 
 def test_completion_carries_the_turns_reasoning_only_to_local_viewers():
     from gateway.session_settlement_recovery import completion_payload
-    from tui_gateway.contracts.registry import EVENTS
+    from hermes_agent.tui_gateway.contracts.registry import EVENTS
     row = {'admission_id': 'a1', 'request_id': 'r1'}
     local = completion_payload(row, {'outcome': 'completed'}, 'answer', {'result': {
         'local_viewer': True, 'last_reasoning': '  weigh both options  '}})

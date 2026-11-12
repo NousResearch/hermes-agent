@@ -11,7 +11,7 @@ from gateway import hosted_room_driver as tasks
 from gateway import hosted_rooms
 from gateway.session_controls import AuthorityConnection
 from tests.gateway.test_hosted_room_unserved_member_stop import deferred as deferred_fixture
-from tui_gateway import methods_groups, methods_groups_forward, server
+from hermes_agent.tui_gateway import methods_groups, methods_groups_forward, server
 
 deferred = deferred_fixture
 

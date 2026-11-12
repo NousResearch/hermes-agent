@@ -6,9 +6,9 @@ import threading
 import time
 
 
-from tui_gateway import compute_host, server
-from tui_gateway.compute_host import ComputeHost, _default_workers
-from tui_gateway.host_supervisor import (
+from hermes_agent.tui_gateway import compute_host, server
+from hermes_agent.tui_gateway.compute_host import ComputeHost, _default_workers
+from hermes_agent.tui_gateway.host_supervisor import (
     HostSupervisor,
     append_log_record,
 )
@@ -48,7 +48,7 @@ def test_compute_host_workers_inherit_tui_pool_env(monkeypatch):
 def test_compute_host_routes_relayed_response_and_lock_to_its_open_request(monkeypatch):
     """The child owns the server request's wait: a relayed client response frame resolves it in-process,
     and a relayed ``clarify.lock`` is answered with that method's result for the parent to ack."""
-    from tui_gateway import server_requests
+    from hermes_agent.tui_gateway import server_requests
     out = io.StringIO()
     host = ComputeHost(stdout=out, heartbeat_secs=0)
     sid = "host-clarify"
@@ -82,7 +82,7 @@ def test_compute_host_routes_relayed_response_and_lock_to_its_open_request(monke
 def test_compute_host_withdraws_its_open_request_when_the_parent_relays_a_cancel(monkeypatch):
     """Skip setup in the parent withdraws the card the child waits on: the wait returns and every
     renderer gets the ``request.cancel``."""
-    from tui_gateway import server_requests
+    from hermes_agent.tui_gateway import server_requests
     out = io.StringIO()
     host = ComputeHost(stdout=out, heartbeat_secs=0)
     sid = "host-setup"

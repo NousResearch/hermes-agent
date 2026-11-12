@@ -43,7 +43,7 @@ def test_watcher_delivers_terminal_once_with_bounded_polls_past_the_response_cap
     from gateway.control_socket import _MAX_RESPONSE_BYTES
     from gateway.hosted_room_driver import TaskIdentity
     from hermes_agent.hermes_state_runtime import claim_session_input, settle_session_input
-    from tui_gateway.hosted_room_driver import _bounded_terminal_result
+    from hermes_agent.tui_gateway.hosted_room_driver import _bounded_terminal_result
     authority, loop, _, _ = hosted_owner
     polls, real_request = [], transport.owner_request
     def recording(home, verb, params, **kwargs):

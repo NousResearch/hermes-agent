@@ -898,7 +898,7 @@ class TestProtectedInstructionFiles:
         """
         import tools.approval as A
         from tools import approval_context
-        from tui_gateway.server import _approval_request_payload
+        from hermes_agent.tui_gateway.server import _approval_request_payload
 
         session_key = "protected-files-payload-session"
         token = approval_context.set_current_session_key(session_key)

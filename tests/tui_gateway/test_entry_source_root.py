@@ -25,7 +25,7 @@ def test_entry_ignores_an_inherited_source_root(tmp_path):
     # tui_gateway routes stdout to stderr (the JSON-RPC channel), so the probe writes a file.
     result = subprocess.run(
         [sys.executable, "-c",
-         "import json, sys, tui_gateway.entry, run_agent;"
+         "import json, sys, hermes_agent.tui_gateway.entry, run_agent;"
          f"open({str(report)!r}, 'w').write(json.dumps([sys.path[0], run_agent.__file__]))"],
         cwd=tmp_path, env=env, capture_output=True, text=True, encoding="utf-8",
         errors="replace", timeout=120, check=False,

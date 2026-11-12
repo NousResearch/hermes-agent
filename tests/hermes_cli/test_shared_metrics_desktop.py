@@ -17,7 +17,7 @@ from hermes_cli.observability import relay_shared_metrics
 from hermes_cli.observability import shared_metrics_contract as contract
 from hermes_cli.observability import shared_metrics_desktop as desktop
 from hermes_cli.observability.shared_metrics import SharedMetricsStore
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 TODAY = "2026-09-27"
 

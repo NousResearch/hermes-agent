@@ -8,7 +8,7 @@ import hermes_yaml as yaml
 
 @pytest.mark.parametrize("explicit_profile", [None, "default"])
 def test_tools_configure_uses_live_session_profile(tmp_path, monkeypatch, explicit_profile):
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     from hermes_constants import get_hermes_home
 
     home = tmp_path / ".hermes"
@@ -47,7 +47,7 @@ def test_tools_configure_uses_live_session_profile(tmp_path, monkeypatch, explic
 @pytest.mark.parametrize("path", ["reset", "capabilities"])
 @pytest.mark.parametrize("has_agent_db", [True, False])
 def test_rebuild_preparation_failure_keeps_reachable_owner(tmp_path, monkeypatch, path, has_agent_db):
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     from hermes_agent.hermes_state import SessionDB
     from hermes_constants import get_hermes_home
 
@@ -93,7 +93,7 @@ def test_rebuild_preparation_failure_keeps_reachable_owner(tmp_path, monkeypatch
 def test_rebuild_keeps_session_runtime_picks_but_new_clears_them(monkeypatch):
     """Regression for #127449: a rebuild is not a conversation boundary, /new is.
     /model, /reasoning and /fast are all session pins the rebuild must carry."""
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     pick = {"model": "pick-b", "provider": "openrouter"}
     reasoning = {"enabled": True, "effort": "high"}
@@ -120,7 +120,7 @@ def test_rebuild_keeps_session_runtime_picks_but_new_clears_them(monkeypatch):
 def test_rebuild_finishing_after_close_closes_the_replacement_and_its_handle(tmp_path, monkeypatch):
     """session.close claiming the record while _make_agent runs already tore down the agent it saw:
     the replacement must be closed (and its dedicated handle released), never installed (#49852)."""
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     closed: list[str] = []
     handle = SimpleNamespace(close=lambda: closed.append("db"))

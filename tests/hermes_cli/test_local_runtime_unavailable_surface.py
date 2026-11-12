@@ -83,7 +83,7 @@ def test_chat_text_names_the_local_server_and_no_desktop_only_pane(llamacpp_home
     from agent.error_surface import build_error_surface_from_result
     from gateway.config import Platform
     from gateway.run_turn_runner import _resolution_failure_reply
-    from tui_gateway.user_messages import turn_error_text
+    from hermes_agent.tui_gateway.user_messages import turn_error_text
 
     llamacpp_home({"enabled": enabled})
     exc = _resolution_error()
@@ -107,7 +107,7 @@ def test_chat_text_suggests_retry_only_while_the_server_can_come_up(llamacpp_hom
     """A switched-off server never comes up on its own: the TUI/dashboard text (built from the
     error surface, as a turn builds it) names where to start it, never /retry."""
     from agent.error_surface import build_error_surface_from_result
-    from tui_gateway.user_messages import turn_error_text
+    from hermes_agent.tui_gateway.user_messages import turn_error_text
 
     llamacpp_home({"enabled": enabled})
     exc = _resolution_error()

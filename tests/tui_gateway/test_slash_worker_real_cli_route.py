@@ -12,7 +12,7 @@ import json
 import sys
 
 import cli as cli_mod
-import tui_gateway.slash_worker as sw
+import hermes_agent.tui_gateway.slash_worker as sw
 
 CODEX_URL = "https://chatgpt.com/backend-api/codex"
 

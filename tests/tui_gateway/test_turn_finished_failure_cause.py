@@ -28,7 +28,7 @@ import types
 
 import pytest
 
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 class _InlineThread:
@@ -111,7 +111,7 @@ class TestTheReportedRecordNowNamesItsCause:
             "failed": True,
         }))
 
-        with caplog.at_level(logging.INFO, logger="tui_gateway.server"):
+        with caplog.at_level(logging.INFO, logger="hermes_agent.tui_gateway.server"):
             _run(session)
 
         msg = _finished(caplog)
@@ -135,7 +135,7 @@ class TestTheReportedRecordNowNamesItsCause:
             "failed": True,
         }))
 
-        with caplog.at_level(logging.INFO, logger="tui_gateway.server"):
+        with caplog.at_level(logging.INFO, logger="hermes_agent.tui_gateway.server"):
             _run(session)
 
         assert "failure_reason=billing_wall" in _finished(caplog)
@@ -151,7 +151,7 @@ class TestTheReportedRecordNowNamesItsCause:
             clear_interrupt=lambda: None,
         ))
 
-        with caplog.at_level(logging.INFO, logger="tui_gateway.server"):
+        with caplog.at_level(logging.INFO, logger="hermes_agent.tui_gateway.server"):
             _run(session)
 
         msg = _finished(caplog)
@@ -173,7 +173,7 @@ class TestContentDiscipline:
             "failed": True,
         }))
 
-        with caplog.at_level(logging.INFO, logger="tui_gateway.server"):
+        with caplog.at_level(logging.INFO, logger="hermes_agent.tui_gateway.server"):
             _run(session, self.SECRETISH_PROMPT)
 
         msg = _finished(caplog)
@@ -198,7 +198,7 @@ class TestContentDiscipline:
             "failed": True,
         }))
 
-        with caplog.at_level(logging.INFO, logger="tui_gateway.server"):
+        with caplog.at_level(logging.INFO, logger="hermes_agent.tui_gateway.server"):
             _run(session)
 
         msg = _finished(caplog)
@@ -229,7 +229,7 @@ class TestContentDiscipline:
             "failed": True,
         }))
 
-        with caplog.at_level(logging.INFO, logger="tui_gateway.server"):
+        with caplog.at_level(logging.INFO, logger="hermes_agent.tui_gateway.server"):
             _run(session, "Summarise this: " + self.SENTINEL)
 
         msg = _finished(caplog)
@@ -249,7 +249,7 @@ class TestContentDiscipline:
             "failed": True,
         }))
 
-        with caplog.at_level(logging.INFO, logger="tui_gateway.server"):
+        with caplog.at_level(logging.INFO, logger="hermes_agent.tui_gateway.server"):
             _run(session, "Summarise this: " + self.SENTINEL)
 
         msg = _finished(caplog)
@@ -264,7 +264,7 @@ class TestContentDiscipline:
             "failed": True,
         }))
 
-        with caplog.at_level(logging.INFO, logger="tui_gateway.server"):
+        with caplog.at_level(logging.INFO, logger="hermes_agent.tui_gateway.server"):
             _run(session)
 
         msg = _finished(caplog)
@@ -288,7 +288,7 @@ class TestContentDiscipline:
             clear_interrupt=lambda: None,
         ))
 
-        with caplog.at_level(logging.INFO, logger="tui_gateway.server"):
+        with caplog.at_level(logging.INFO, logger="hermes_agent.tui_gateway.server"):
             _run(session)
 
         msg = _finished(caplog)

@@ -80,7 +80,7 @@ async def held(tmp_path, monkeypatch):
     dm_dir.mkdir(mode=0o700)
     monkeypatch.setattr(bot_mode_dm, '_dm_dir', lambda: dm_dir)
     monkeypatch.setattr(bot_mode_dm, '_spawn_delivery', lambda command, label, **kwargs: '{}')
-    # tui_gateway/session_lifecycle._claim_active_session_slot: the only 'desktop' lease writer.
+    # hermes_agent/tui_gateway/session_lifecycle._claim_active_session_slot: the only 'desktop' lease writer.
     lease, refusal = try_acquire_active_session(session_id=CHAT, surface='desktop', config={},
         registry_home=tmp_path, metadata={'live_session_id': 'desk'}, track_liveness=True)
     assert lease is not None, refusal

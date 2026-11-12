@@ -14,7 +14,7 @@ from typing import Any, Protocol
 
 from gateway.hosted_room_driver import TaskIdentity
 from gateway.hosted_room_peer import HostedMemberDispatch, PROTOCOL_VERSION
-from tui_gateway.hosted_room_driver import (
+from hermes_agent.tui_gateway.hosted_room_driver import (
     ROOM_SESSION_SOURCE, HostedRoomBinding, InternalSessionRPC, room_session_title)
 
 

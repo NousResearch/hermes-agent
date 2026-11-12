@@ -22,6 +22,6 @@ def test_watch_event_identity_survives_retry_but_not_another_hit():
     assert identity != GatewayRunner._completion_delivery_identity(second)
     assert GatewayRunner._completion_delivery_identity(disabled) not in (None, identity)
     assert all(e['parent_session_id'] == session.parent_session_id for e in (first, second, disabled))
-    from tui_gateway.session_notifications import _notification_event_dedup_key
+    from hermes_agent.tui_gateway.session_notifications import _notification_event_dedup_key
     assert _notification_event_dedup_key(first) == _notification_event_dedup_key(json.loads(json.dumps(first)))
     assert _notification_event_dedup_key(first) != _notification_event_dedup_key(second)

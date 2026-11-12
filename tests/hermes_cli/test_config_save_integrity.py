@@ -25,7 +25,7 @@ approvals:
 
 @pytest.fixture
 def home(tmp_path, monkeypatch):
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     server._cfg_cache = server._cfg_sig = server._cfg_path = None
@@ -56,7 +56,7 @@ class _ReadFaults:
 
 def _fresh_process(home, text, *, keep_last_known_good=False):
     """*text* on a new inode with cold caches (and no last-known-good copy unless asked)."""
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     config_mod._LOAD_CONFIG_CACHE.clear()
     config_mod._RAW_CONFIG_CACHE.clear()
     server._cfg_cache = server._cfg_sig = server._cfg_path = None
@@ -81,7 +81,7 @@ def _save_raw():  # the shape every migration step and ``write_platform_config_f
 
 
 def _tui_config_set():
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     reply = server._methods["config.set"](1, {"key": "skin", "value": "ares"})
     if "error" in reply:
         raise RuntimeError(reply["error"]["message"])

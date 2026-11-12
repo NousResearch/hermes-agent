@@ -13,9 +13,9 @@ import pytest
 from tools import async_delegation as ad
 from tools.process_registry import process_registry
 from tools.process_registry_notifications import format_process_notification
-from tui_gateway import server
-from tui_gateway.transport import StdioTransport, TeeTransport
-from tui_gateway.ws import WSTransport
+from hermes_agent.tui_gateway import server
+from hermes_agent.tui_gateway.transport import StdioTransport, TeeTransport
+from hermes_agent.tui_gateway.ws import WSTransport
 
 
 @pytest.fixture

@@ -1,7 +1,7 @@
 """session.create with seeded messages: the seed is durable before the first prompt, and durable once."""
 
 from hermes_agent.hermes_state import SessionDB
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 def _quiet_create(monkeypatch, db):

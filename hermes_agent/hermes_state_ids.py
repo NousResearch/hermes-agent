@@ -1,6 +1,6 @@
 """Session-id minting: the ONE place that knows the ``YYYYMMDD_HHMMSS_<hex>`` shape.
 
-stdlib-only on purpose: ``agent/``, ``cli.py``, ``gateway/`` and ``tui_gateway/`` all mint ids and
+stdlib-only on purpose: ``agent/``, ``cli.py``, ``gateway/`` and ``hermes_agent/tui_gateway/`` all mint ids and
 must not pull the SessionDB import graph in to do it. ``hermes_cli/session_lost_and_found.py``
 classifies schema-less salvage rows by ``is_known_session_id``, so a shape change here is a
 recovery-classification change — keep the prefix stable, and add any NEW derived-id shape to
@@ -24,7 +24,7 @@ SESSION_ID_RECOGNIZERS = (
     # minted by cron/jobs.py, but user/legacy job ids ("job-1") are real and still in live stores.
     re.compile(r"^cron_[A-Za-z0-9][A-Za-z0-9._-]*_\d{8}_\d{6}$"),
     # /bg: CLI + gateway mint f"bg_{now:%H%M%S}_{hex6}" (time only, no date); the TUI/Desktop
-    # (tui_gateway/methods_prompt.py _side_agent_args) mints f"bg_{uuid4().hex[:6]}".
+    # (hermes_agent/tui_gateway/methods_prompt.py _side_agent_args) mints f"bg_{uuid4().hex[:6]}".
     re.compile(r"^bg_(?:\d{6}_)?[0-9a-f]{6}$"),
     # gateway/platforms/api_server_room_dispatch.py: f"room_{sha256(seed)[:32]}".
     re.compile(r"^room_[0-9a-f]{32}$"),

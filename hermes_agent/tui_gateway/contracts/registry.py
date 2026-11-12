@@ -1,7 +1,7 @@
 """The contract catalog: every method, server→client request and event the gateway speaks.
 
 Three tables, filled by the ``contracts.*`` topic modules at import time and read by
-``tui_gateway/server.py`` (runtime validation) and ``scripts/gen_gateway_contracts.py``
+``hermes_agent/tui_gateway/server.py`` (runtime validation) and ``scripts/gen_gateway_contracts.py``
 (TypeScript + OpenRPC rendering). A handler registered with ``@method`` for a name that has
 no contract here fails at import: the wire has no undeclared surface.
 """

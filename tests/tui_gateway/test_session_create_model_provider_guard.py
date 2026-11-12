@@ -12,7 +12,7 @@ import pytest
 @pytest.fixture
 def _create(monkeypatch, tmp_path):
     monkeypatch.setattr("hermes_cli.banner.prefetch_update_check", lambda: None)
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     (tmp_path / "config.yaml").write_text("model:\n  default: claude-opus-5\n  provider: anthropic\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -61,7 +61,7 @@ def test_session_create_keeps_coherent_unlisted_and_custom_pairs(_create, params
 
 def test_session_create_logs_when_a_client_override_beats_the_profile_default(_create, caplog, monkeypatch):
     """A composer pick silently decided every new chat's model; agent.log must name it (#107410)."""
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     monkeypatch.setattr(server, "_session_default_route", lambda session: ("deepseek-v4-flash", ""))
     with caplog.at_level(logging.INFO):

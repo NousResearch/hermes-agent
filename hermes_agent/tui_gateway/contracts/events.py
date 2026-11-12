@@ -33,7 +33,7 @@ class OpenPayload(Payload):
 
 
 class SkinPayload(OpenPayload):
-    """``tui_gateway/change_watcher.py::resolve_skin`` — the resolved active skin (``HermesSkin``).
+    """``hermes_agent/tui_gateway/change_watcher.py::resolve_skin`` — the resolved active skin (``HermesSkin``).
     ``{}`` when the skin engine failed to load. Colour maps are token → colour string."""
 
     name: str = ""
@@ -49,7 +49,7 @@ class SkinPayload(OpenPayload):
 
 
 class GatewayReadyPayload(Payload):
-    """``tui_gateway/entry.py`` (stdio) / ``tui_gateway/ws.py`` (WebSocket) first frame."""
+    """``hermes_agent/tui_gateway/entry.py`` (stdio) / ``hermes_agent/tui_gateway/ws.py`` (WebSocket) first frame."""
 
     skin: SkinPayload
     change_events: bool
@@ -121,7 +121,7 @@ event("error", ErrorPayload, doc="A session-level failure outside a turn (agent 
 
 
 class NoticePayload(Payload):
-    """``tui_gateway/model_switch.py`` capability-refresh notice."""
+    """``hermes_agent/tui_gateway/model_switch.py`` capability-refresh notice."""
 
     message: str
 

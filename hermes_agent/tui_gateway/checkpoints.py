@@ -60,7 +60,7 @@ def undo_rollback_hint_for(session: dict, target_message: dict, kept_history: li
     if mgr is None or not mgr.enabled:
         return None
     from tools.checkpoint_undo_hint import undo_hint_payload, undo_span_start
-    from tui_gateway import server  # method bodies are bound onto server.py's globals (method_ctx.py)
+    from hermes_agent.tui_gateway import server  # method bodies are bound onto server.py's globals (method_ctx.py)
 
     def hint(mgr, cwd):  # under the same profile scope rollback.restore runs in (_with_checkpoints)
         if server._container_checkpoint_refusal(session, mgr, cwd):

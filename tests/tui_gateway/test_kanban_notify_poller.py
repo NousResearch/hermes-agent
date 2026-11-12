@@ -6,7 +6,7 @@ read those rows back: the gateway notifier skips them (no "tui" messaging
 adapter) and the TUI notification poller only watched process completions.
 ``last_event_id`` stayed 0 forever and no notification was ever delivered.
 
-These tests cover the delivery half that now lives in tui_gateway/server.py:
+These tests cover the delivery half that now lives in hermes_agent/tui_gateway/server.py:
 ``_collect_kanban_notifications`` (cursor claim + formatting + archive-only
 unsubscribe) and ``_format_kanban_event_text``.
 """
@@ -17,7 +17,7 @@ from unittest.mock import patch
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_notify as kbn
-from tui_gateway.server import (
+from hermes_agent.tui_gateway.server import (
     _collect_kanban_notifications,
     _format_kanban_event_text,
 )
@@ -260,7 +260,7 @@ class TestNotificationPollerLoopKanbanWiring:
 
     def _start_poller(self, session: dict, monkeypatch):
         import threading
-        from tui_gateway import server
+        from hermes_agent.tui_gateway import server
 
         emits: list = []
         submits: list = []

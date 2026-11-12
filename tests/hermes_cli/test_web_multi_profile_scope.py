@@ -38,7 +38,7 @@ def two_homes(tmp_path, monkeypatch):
     monkeypatch.setenv("A_ONLY_TOKEN", A_VAL)  # the dashboard process loaded its own .env
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
     from agent import secret_scope
-    from tui_gateway import launch_profile_policy as lpp
+    from hermes_agent.tui_gateway import launch_profile_policy as lpp
     monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", False)
     monkeypatch.setattr(lpp, "_snapshot", None)
     from hermes_cli import config as cfg_mod

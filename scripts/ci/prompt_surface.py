@@ -118,7 +118,7 @@ def _scrub(text: str, home: Path) -> str:
 
 def _enabled_toolsets(platform: str) -> list[str]:
     if platform in TUI_GATEWAY_PLATFORMS:
-        from tui_gateway.server import _load_enabled_toolsets
+        from hermes_agent.tui_gateway.server import _load_enabled_toolsets
         return list(_load_enabled_toolsets(platform) or [])
     from hermes_cli.config import load_config
     from hermes_cli.tools_config import _get_platform_tools

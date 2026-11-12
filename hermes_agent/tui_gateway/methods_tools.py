@@ -115,7 +115,7 @@ def _mcp_rpc(name: str, required=_NAME):
 
 def _mcp_server_rows():
     config_servers = _tools_mod("hermes_cli.mcp_config")._get_mcp_servers()
-    return _tools_mod("tui_gateway.mcp_rpc_helpers").server_configs_with_sources(config_servers)
+    return _tools_mod("hermes_agent.tui_gateway.mcp_rpc_helpers").server_configs_with_sources(config_servers)
 
 
 def _mcp_named_server(rid, params):
@@ -436,7 +436,7 @@ def _(rid, params: dict) -> dict:
     session is actually in (#114359); a session-less draft is bound to ``params['profile']`` (#124651) and
     an unknown profile is 4064 like ``complete.slash`` — never a launch-profile palette.
     Every loader (quick, plugin, skill) runs inside the scope."""
-    from tui_gateway.command_discovery import command_catalog
+    from hermes_agent.tui_gateway.command_discovery import command_catalog
     scope = _session_home_scope(_sessions.get(params.get("session_id", "")), cwd=_completion_cwd(params),
                                 profile=params.get("profile"))
     return _ok(rid, command_catalog(load_cfg=_load_cfg, module_loader=_tools_mod, scope=scope))
@@ -880,7 +880,7 @@ def _cmd_undo(rid, params, session, name, arg):
     _tui_model_friction("undo", session, turns_undone)
     turn_word = "turn" if turns_undone == 1 else "turns"
     notice = f"↶ Undid {turns_undone} {turn_word} ({rewound_count} message(s)). Edit and resubmit, or send a new message."
-    if hint := _tools_mod("tui_gateway.checkpoints").undo_rollback_hint_for(session, live_view, active):
+    if hint := _tools_mod("hermes_agent.tui_gateway.checkpoints").undo_rollback_hint_for(session, live_view, active):
         notice += "\n" + hint["text"]
     return _ok(rid, {"type": "prefill", "message": target_text, "notice": notice})
 
@@ -1531,7 +1531,7 @@ def _(rid, params: dict) -> dict:
     if bearer_token := params.get("bearer_token"):
         server_config["headers"] = mc._save_bearer_auth_token(name, str(bearer_token))
     saved_ok = mc._save_mcp_server(name, server_config)
-    _tools_mod("tui_gateway.mcp_rpc_helpers").record_mcp_add(entry, server_config, saved_ok)
+    _tools_mod("hermes_agent.tui_gateway.mcp_rpc_helpers").record_mcp_add(entry, server_config, saved_ok)
     if not saved_ok:
         return _err(rid, 4001, f"server '{name}' rejected: suspicious command/args configuration")
     saved = mc._get_mcp_servers().get(name, server_config)
@@ -1629,7 +1629,7 @@ def _(rid, params: dict) -> dict:
             return _err(rid, 4001, "this server uses header/API-key auth, not OAuth")
         cfg["auth"] = "oauth"
         hermes_home = str(_tools_mod("hermes_constants").get_hermes_home().expanduser().resolve(strict=False))
-        result = _tools_mod("tui_gateway.mcp_oauth_sessions").start_flow(
+        result = _tools_mod("hermes_agent.tui_gateway.mcp_oauth_sessions").start_flow(
             hermes_home, name, cfg, client_redirect_uri=client_redirect_uri)
     except ValueError as e:
         return _err(rid, 4001, str(e))
@@ -1639,7 +1639,7 @@ def _(rid, params: dict) -> dict:
 @_mcp_rpc("oauth.poll", _NAME_SESSION)
 def _(rid, params: dict) -> dict:
     """Poll a flow → ``{ok, status: pending|approved|error, ...}``; ``approved`` persists tokens per profile."""
-    poll = _tools_mod("tui_gateway.mcp_oauth_sessions").poll_flow
+    poll = _tools_mod("hermes_agent.tui_gateway.mcp_oauth_sessions").poll_flow
     return _ok(rid, {"ok": True, **poll(_str_arg(params, "session_id"), _str_arg(params, "name"))})
 
 
@@ -1647,7 +1647,7 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     """Cancel a flow owned by the resolved profile, waking its callback worker."""
     home = str(_tools_mod("hermes_constants").get_hermes_home().expanduser().resolve(strict=False))
-    cancel = _tools_mod("tui_gateway.mcp_oauth_sessions").cancel_flow
+    cancel = _tools_mod("hermes_agent.tui_gateway.mcp_oauth_sessions").cancel_flow
     return _ok(rid, cancel(_str_arg(params, "session_id"), _str_arg(params, "name"), home))
 
 
@@ -1655,7 +1655,7 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     """Relay a client-captured redirect (``code``/``state``/``error``/``iss``) into a ``client_redirect_uri`` flow."""
     code, state, error, iss = (str(params.get(k) or "") or None for k in ("code", "state", "error", "iss"))
-    deliver = _tools_mod("tui_gateway.mcp_oauth_sessions").deliver_callback_flow
+    deliver = _tools_mod("hermes_agent.tui_gateway.mcp_oauth_sessions").deliver_callback_flow
     return _ok(rid, deliver(
         _str_arg(params, "session_id"), _str_arg(params, "name"), code=code, state=state, error=error,
         iss=iss))

@@ -41,7 +41,7 @@ def _(rid, params: dict) -> dict:
     _paste_counter += 1
     line_count = text.count("\n") + 1
     # The shared owner's legacy fallback serves secondary profiles too: write under the ticket's home.
-    from tui_gateway.ws_legacy_fallback import connection_profile_home
+    from hermes_agent.tui_gateway.ws_legacy_fallback import connection_profile_home
     paste_dir = Path(connection_profile_home() or _hermes_home) / "pastes"
     paste_dir.mkdir(parents=True, exist_ok=True)
     from datetime import datetime
@@ -284,7 +284,7 @@ def _path_completion_items(word: str, root: str, session_key: str | None, local:
 @method("complete.slash")
 @_catch(5020)
 def _(rid, params: dict) -> dict:
-    from tui_gateway.command_discovery import slash_completions
+    from hermes_agent.tui_gateway.command_discovery import slash_completions
     # Skill/bundle lookups are home- and cwd-keyed: bind the calling session's profile and workspace so
     # the popup offers the project-local skills ``command.dispatch`` accepts for that session (#114359).
     # A new-chat draft has no session yet: it names its rail-selected ``profile`` instead (#124651).

@@ -5,7 +5,7 @@ The host tree vs a host checkpoint is not the sandbox session's diff, so the RPC
 import threading
 import types
 
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 def test_rollback_diff_refuses_container_backed_session():

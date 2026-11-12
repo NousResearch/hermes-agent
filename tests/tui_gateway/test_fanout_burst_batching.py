@@ -7,7 +7,7 @@ import asyncio
 import threading
 
 from tests.waiting import wait_until
-from tui_gateway.transport import FanoutTransport
+from hermes_agent.tui_gateway.transport import FanoutTransport
 
 
 class _LoopSocket:

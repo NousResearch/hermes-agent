@@ -31,7 +31,7 @@ from __future__ import annotations
 import threading
 from unittest.mock import MagicMock
 
-from tui_gateway.server import _finalize_session
+from hermes_agent.tui_gateway.server import _finalize_session
 
 
 def _make_session(agent, session_key="test_key_bg_review"):

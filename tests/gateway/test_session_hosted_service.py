@@ -14,7 +14,7 @@ async def test_room_owner_survives_service_restart_and_foreign_actor_cannot_clai
     db = SessionDB(tmp_path / 'state.db')
     authority = SimpleNamespace(db=db, profile_id=str(tmp_path), epoch=begin_runtime_epoch(db, instance_id='test'))
     try:
-        from tui_gateway import hosted_room_service
+        from hermes_agent.tui_gateway import hosted_room_service
         def forbidden_legacy(*args):
             raise AssertionError('canonical service constructed legacy RPC')
         monkeypatch.setattr(hosted_room_service, 'HostedRoomServerRPC', forbidden_legacy)
@@ -62,7 +62,7 @@ def test_hosted_dequeue_checks_exact_task_member_and_frozen_input(tmp_path, monk
     from gateway.session_hosted_service import CanonicalHostedRoomService
     from gateway import hosted_room_driver as tasks
     from gateway.hosted_rooms import create_room, local_authority_gateway_id
-    from tui_gateway.hosted_room_driver import HostedRoomBinding
+    from hermes_agent.tui_gateway.hosted_room_driver import HostedRoomBinding
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     with SessionDB(tmp_path / 'state.db') as db:
         authority = SimpleNamespace(db=db, profile_id=str(tmp_path), epoch=begin_runtime_epoch(db, instance_id='test'))

@@ -13,7 +13,7 @@ import pytest
 
 import hermes_agent.hermes_state_registry as registry
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 @pytest.fixture()
@@ -48,7 +48,7 @@ def test_get_db_first_touch_under_foreign_override_uses_launch_path(launch_db_en
 
 def test_get_db_follows_a_process_home_redirected_after_import(monkeypatch, tmp_path):
     """The launch handle resolves ``HERMES_HOME`` at first use, not at import (#112692): a harness
-    that redirects the env after ``tui_gateway.server`` is imported must not open the import-time
+    that redirects the env after ``hermes_agent.tui_gateway.server`` is imported must not open the import-time
     home's state.db. Only the context-local override is ignored (#102526), never the process env."""
     redirected = tmp_path / "redirected"
     redirected.mkdir()
@@ -150,13 +150,13 @@ def test_prompt_background_turn_survives_parent_close(launch_db_env, tmp_path, m
     monkeypatch.setattr(server, "_load_cfg", lambda: {"max_turns": 25})
     monkeypatch.setattr(server, "_load_enabled_toolsets", lambda *_a, **_kw: ["file"])
     monkeypatch.setattr(server, "_load_reasoning_config", lambda *_a, **_kw: None)
-    with patch("tui_gateway.server.threading.Thread", InlineThread), \
+    with patch("hermes_agent.tui_gateway.server.threading.Thread", InlineThread), \
             patch("run_agent.AIAgent", FakeAgent), \
-            patch("tui_gateway.server._sess", return_value=(session, None)), \
-            patch("tui_gateway.server._set_session_context", return_value=None), \
-            patch("tui_gateway.server._clear_session_context"), \
-            patch("tui_gateway.server._session_cwd", return_value=str(tmp_path)), \
-            patch("tui_gateway.server._emit"):
+            patch("hermes_agent.tui_gateway.server._sess", return_value=(session, None)), \
+            patch("hermes_agent.tui_gateway.server._set_session_context", return_value=None), \
+            patch("hermes_agent.tui_gateway.server._clear_session_context"), \
+            patch("hermes_agent.tui_gateway.server._session_cwd", return_value=str(tmp_path)), \
+            patch("hermes_agent.tui_gateway.server._emit"):
         server._methods["prompt.background"]("rid", {"text": "hi", "session_id": "ui1"})
 
     # The registry lends ONE shared object per path; the side agent's own refcount is what kept it open.

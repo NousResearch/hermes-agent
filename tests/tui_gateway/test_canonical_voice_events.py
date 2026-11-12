@@ -10,8 +10,8 @@ import sys
 import threading
 import types
 
-from tui_gateway import server
-from tui_gateway.transport import bind_transport, reset_transport
+from hermes_agent.tui_gateway import server
+from hermes_agent.tui_gateway.transport import bind_transport, reset_transport
 
 
 class _Sink:

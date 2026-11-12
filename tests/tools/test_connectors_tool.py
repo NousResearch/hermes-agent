@@ -160,7 +160,7 @@ def test_cli_session_gets_the_tool_outside_a_code_workspace(tmp_path, monkeypatc
 
 def test_tui_and_desktop_sessions_get_the_tool(monkeypatch):
     """The path the TUI/desktop gateway takes to build its selection."""
-    from tui_gateway.server import _load_enabled_toolsets
+    from hermes_agent.tui_gateway.server import _load_enabled_toolsets
 
     monkeypatch.delenv("HERMES_TUI_TOOLSETS", raising=False)
     for platform in ("tui", "desktop"):
@@ -191,7 +191,7 @@ def test_session_the_portal_has_not_enabled_never_receives_the_tool(tmp_path, mo
     gate for the direct RPC path."""
     from hermes_cli.tools_config import _get_platform_tools
     from tools.registry import registry
-    from tui_gateway.server import _load_enabled_toolsets
+    from hermes_agent.tui_gateway.server import _load_enabled_toolsets
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("HERMES_TUI_TOOLSETS", raising=False)

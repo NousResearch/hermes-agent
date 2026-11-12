@@ -135,7 +135,7 @@ def test_async_out_of_turn_call_binds_the_explicit_main_runtime_session(monkeypa
 def test_tui_gateway_oneshot_runtime_snapshot_carries_the_session(monkeypatch, out_of_turn):
     """The Desktop/TUI-gateway ``llm.oneshot`` path builds its explicit ``main_runtime`` from the live
     agent; without ``session_id`` an OpenCode title request sends no ``x-opencode-session`` (#112717)."""
-    from tui_gateway.server import _main_runtime_from_agent
+    from hermes_agent.tui_gateway.server import _main_runtime_from_agent
 
     agent = SimpleNamespace(
         provider="opencode-zen", model="glm-5", base_url="https://opencode.ai/zen/v1", api_key="test-key",

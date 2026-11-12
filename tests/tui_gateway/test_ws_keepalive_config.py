@@ -42,7 +42,7 @@ def test_dashboard_ws_values_propagate_from_yaml(_temp_home):
 
 
 def test_ws_orphan_reap_grace_reads_config(_temp_home):
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     _write_config(
         _temp_home,
@@ -55,7 +55,7 @@ def test_ws_orphan_reap_grace_reads_config(_temp_home):
 
 
 def test_ws_orphan_reap_grace_env_var_overrides_config(_temp_home, monkeypatch):
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     _write_config(
         _temp_home,
@@ -69,7 +69,7 @@ def test_ws_orphan_reap_grace_env_var_overrides_config(_temp_home, monkeypatch):
 
 
 def test_ws_orphan_reap_grace_invalid_values_fall_back(_temp_home, monkeypatch):
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     _write_config(
         _temp_home,

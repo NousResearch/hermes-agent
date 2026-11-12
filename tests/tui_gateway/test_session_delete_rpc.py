@@ -3,7 +3,7 @@ the onboarding run a deleted chat ends first (moved out of test_tui_gateway_serv
 
 from pathlib import Path
 
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 class _NoOnboardingRun:

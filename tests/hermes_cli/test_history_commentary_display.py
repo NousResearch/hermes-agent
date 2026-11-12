@@ -1,7 +1,7 @@
 """Public Codex commentary is a display projection, never a replay mutation."""
 
 from hermes_cli.web_routers.sessions import _project_for_display
-from tui_gateway.server import _history_to_messages
+from hermes_agent.tui_gateway.server import _history_to_messages
 from agent.history_commentary import visible_commentary
 from hermes_constants import get_hermes_home_override
 
@@ -260,7 +260,7 @@ def test_unscoped_rest_history_uses_custom_home_of_its_database(monkeypatch, tmp
 
 def test_cold_resume_uses_the_resumed_session_home(monkeypatch, tmp_path):
     from hermes_cli import config as config_mod
-    from tui_gateway.server import _Resume
+    from hermes_agent.tui_gateway.server import _Resume
 
     home = tmp_path / "disabled"
     monkeypatch.setattr(

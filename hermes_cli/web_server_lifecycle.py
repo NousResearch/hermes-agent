@@ -440,7 +440,7 @@ def _port_bind_conflict(host: str, port: int) -> bool:
 def _write_machine_sentinel_line(line: str) -> None:
     """Write a machine-parsed sentinel line to the REAL stdout (fd 1).
 
-    ``tui_gateway.server`` redirects ``sys.stdout`` to stderr at import (#94724),
+    ``hermes_agent.tui_gateway.server`` redirects ``sys.stdout`` to stderr at import (#94724),
     so a ``print()`` sentinel never reaches the Desktop's stdout pipe; fd 1 is
     untouched. If fd 1 is unwritable (pythonw.exe) fall back to ``print()`` for
     humans only — pythonw spawns discover the port via the ready file. Never

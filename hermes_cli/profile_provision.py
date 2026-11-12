@@ -152,7 +152,7 @@ def disable_unselected_skills(profile_dir: Path, keep: tuple[str, ...]) -> int:
     from hermes_cli.config import load_config
     from hermes_cli.config_backend import CONFIG_MUTATION_LOCK
     from hermes_cli.skills_config import get_disabled_skills, save_disabled_skills
-    from tui_gateway.launch_profile_policy import profile_config_scope
+    from hermes_agent.tui_gateway.launch_profile_policy import profile_config_scope
     keep_set = {s.strip() for s in keep if s and s.strip()}
     with profile_config_scope(profile_dir), CONFIG_MUTATION_LOCK:
         skills_root = profile_dir / "skills"
@@ -186,7 +186,7 @@ def write_profile_model(profile_dir: Path, provider: str, model: str, validate_i
     from agent.secret_scope import reset_multiplex_context, set_multiplex_context
     from hermes_cli.env_loader import hydrate_profile_secret_sources
     from hermes_constants import get_process_hermes_home
-    from tui_gateway.launch_profile_policy import profile_config_scope
+    from hermes_agent.tui_gateway.launch_profile_policy import profile_config_scope
     validate_home = validate_in or profile_dir
     foreign = validate_home.resolve() != get_process_hermes_home().resolve()
     if foreign:
@@ -218,7 +218,7 @@ def write_profile_mcp_servers(profile_dir: Path, servers: list) -> int:
     from hermes_cli.mcp_config import _save_bearer_auth_token
     from hermes_cli.config_backend import CONFIG_MUTATION_LOCK
     from hermes_cli.web_server_mcp import normalize_mcp_server_create
-    from tui_gateway.launch_profile_policy import profile_config_scope
+    from hermes_agent.tui_gateway.launch_profile_policy import profile_config_scope
     written = 0
     with profile_config_scope(profile_dir), CONFIG_MUTATION_LOCK:
         cfg = load_config()
@@ -271,7 +271,7 @@ def _env_over_stub(src: Path, dst: Path) -> bool:
 def _mirror_voice_sections(path: Path) -> bool:
     from hermes_cli.config import read_user_config_raw, save_config
     from hermes_cli.config_backend import CONFIG_MUTATION_LOCK
-    from tui_gateway.launch_profile_policy import profile_config_scope
+    from hermes_agent.tui_gateway.launch_profile_policy import profile_config_scope
     # RAW reads: the launch side keeps its ${VAR} refs (never its secrets), and load_config() on the
     # profile side would merge DEFAULT_CONFIG so every section would look present.
     launch_raw = read_user_config_raw()
@@ -291,7 +291,7 @@ def inherit_launch_model(path: Path) -> bool:
     from hermes_cli.config import load_config_readonly, read_user_config_raw, save_config
     from hermes_cli.config_backend import CONFIG_MUTATION_LOCK
     from hermes_cli.profile_model_seed import launch_model_seed, merge_endpoint_seed
-    from tui_gateway.launch_profile_policy import profile_config_scope
+    from hermes_agent.tui_gateway.launch_profile_policy import profile_config_scope
     with profile_config_scope(path):
         dst_model = (read_user_config_raw() or {}).get("model") or {}
     if dst_model.get("provider") and dst_model.get("default"):

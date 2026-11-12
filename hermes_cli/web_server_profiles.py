@@ -92,7 +92,7 @@ def _approval_mode_of(config: dict[str, Any]) -> str:
 def _broadcast_gateway_session_info() -> None:
     """Broadcast session.info on the in-process gateway when it's loaded (``sys.modules``
     guard, not an import: gateway never imported means no live sessions to notify)."""
-    server = sys.modules.get("tui_gateway.server")
+    server = sys.modules.get("hermes_agent.tui_gateway.server")
     if server is None:
         return
     try:
@@ -251,7 +251,7 @@ def _config_profile_scope(profile: Optional[str]):
     profile's plaintext credentials and ``load_gateway_config()`` under B's home bridged B's YAML
     settings into the shared process env (``yaml_env_setter`` skips only under a secret scope).
     A request for another profile's home also flips this process to fail-closed multi-profile
-    hosting (``tui_gateway/launch_profile_policy.py``), so any remaining unscoped read raises
+    hosting (``hermes_agent/tui_gateway/launch_profile_policy.py``), so any remaining unscoped read raises
     instead of borrowing; the dashboard's own profile then runs under its frozen-launch-env scope.
 
     Explicit names resolving to the process home retain current-profile semantics.
@@ -263,7 +263,7 @@ def _config_profile_scope(profile: Optional[str]):
     from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
     from hermes_cli.env_loader import hydrate_profile_secret_sources
     from hermes_constants import get_hermes_home, get_hermes_home_override
-    from tui_gateway.launch_profile_policy import activate_multi_profile_hosting, launch_secret_scope
+    from hermes_agent.tui_gateway.launch_profile_policy import activate_multi_profile_hosting, launch_secret_scope
 
     process_home = get_process_hermes_home()
     if _is_current_profile(profile):

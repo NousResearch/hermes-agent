@@ -19,7 +19,7 @@ import pytest
 from tests.gateway.test_normal_runtime_boot import control
 from tests.waiting import wait_until
 
-# The owner, with ``tui_gateway.ws.handle_ws`` failing the way the unimportable onboarding module did.
+# The owner, with ``hermes_agent.tui_gateway.ws.handle_ws`` failing the way the unimportable onboarding module did.
 _BROKEN_OWNER = textwrap.dedent('''
     import runpy, sys
     import tui_gateway.ws as ws

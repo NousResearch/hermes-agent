@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 from gateway.hosted_room_peer import decode_room_grant, gateway_room_grant_secret
 from tests.gateway.test_session_group_peers import gateway as gateway_fixture
-from tui_gateway import methods_groups_forward, owner_forward, server
+from hermes_agent.tui_gateway import methods_groups_forward, owner_forward, server
 
 gateway = gateway_fixture
 

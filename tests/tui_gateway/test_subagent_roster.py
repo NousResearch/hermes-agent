@@ -10,7 +10,7 @@ import pytest
 def roster(monkeypatch, tmp_path):
     from hermes_agent.hermes_state import SessionDB
     from tools import delegate_tool_registry as reg
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     db = SessionDB(db_path=tmp_path / "state.db")
     db.create_session("parent-a", source="tui")
@@ -51,7 +51,7 @@ def test_roster_resolves_a_background_process_route_key_to_its_stored_conversati
     (``agent:main:local:dm:...``) as its ``session_key``, not the stored id; the roster still reports it
     under the stored conversation that route belongs to, so a background-only row lights after a reload."""
     from tools.process_registry import ProcessSession, process_registry
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     _, call = roster
     route = "agent:main:local:dm:desktop-chat-1"

@@ -11,7 +11,7 @@ import pytest
 
 from agent import secret_scope
 from hermes_cli import web_server
-from tui_gateway import launch_profile_policy
+from hermes_agent.tui_gateway import launch_profile_policy
 
 LATE_KEY = "LAUNCH_FREEZE_PROBE_TOKEN"
 

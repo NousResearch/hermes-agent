@@ -5,7 +5,7 @@ import pytest
 
 from hermes_cli import runtime_provider as rp
 from hermes_cli.local_runtime import endpoint
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 @pytest.fixture

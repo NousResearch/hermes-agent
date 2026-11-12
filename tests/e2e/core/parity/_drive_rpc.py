@@ -1,13 +1,13 @@
 """Entrypoint drivers for the parity matrix: the JSON-RPC surfaces.
 
-* ``drive_tui_gateway`` — ``python -m tui_gateway.entry`` over stdio, exactly how
+* ``drive_tui_gateway`` — ``python -m hermes_agent.tui_gateway.entry`` over stdio, exactly how
   the Ink TUI spawns it (launch dir = the user's shell cwd); stops on stdin EOF.
 * ``drive_serve`` — ``hermes serve --host 127.0.0.1 --port 0`` spawned the way the
   Desktop spawns it (``TERMINAL_CWD`` + ``HERMES_DASHBOARD_SESSION_TOKEN`` +
   ``HERMES_DESKTOP=1`` env, stdin closed), port read from the READY sentinel on
   stdout, one turn over the ``/api/ws`` JSON-RPC WebSocket; stops on SIGTERM.
 
-Both speak the same contract (``tui_gateway/contracts``): ``session.create`` →
+Both speak the same contract (``hermes_agent/tui_gateway/contracts``): ``session.create`` →
 ``prompt.submit`` → ``message.complete`` event. Follows the driver contract in
 ``_drive_cli``.
 """

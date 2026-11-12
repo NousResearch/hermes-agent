@@ -2310,7 +2310,7 @@ your handler). Where it lands depends on the process the call runs in:
 | the stdio TUI (`hermes` in a terminal) | that terminal's client |
 | `hermes chat`, cron, `hermes plugins validate`, or a gateway with no Desktop window connected | nobody — no Desktop client is attached to that process; the call is a logged no-op |
 
-Use this instead of importing `tui_gateway.server` internals; for plugin-scoped frames
+Use this instead of importing `hermes_agent.tui_gateway.server` internals; for plugin-scoped frames
 with a payload tailored per connection, `ctx.socket('/events')` remains the
 richer door.
 

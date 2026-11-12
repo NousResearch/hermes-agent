@@ -14,7 +14,7 @@ from __future__ import annotations
 import pytest
 
 from hermes_agent.hermes_state import SessionDB
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 _BASE_URL = "http://127.0.0.1:59999/v1"
 _STORED = "20260919-000000-abcd"

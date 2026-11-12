@@ -1,7 +1,7 @@
 """The desktop window bridges for a local viewer's turn on the session authority.
 
-Main's TUI sidecar wired two things per session (``tui_gateway/session_notifications.py::
-_wire_desktop_sinks`` and ``tui_gateway/agent_callbacks.py::_agent_cbs``):
+Main's TUI sidecar wired two things per session (``hermes_agent/tui_gateway/session_notifications.py::
+_wire_desktop_sinks`` and ``hermes_agent/tui_gateway/agent_callbacks.py::_agent_cbs``):
 
 * the ``tools.desktop_ui`` emitter, so ``desktop_preview`` open/close, ``focus_pane``,
   ``close_terminal`` and the other window events reach the renderer as ``event`` frames;
@@ -38,7 +38,7 @@ CALLBACK_ATTRS = ("read_terminal_callback", "read_preview_callback", "drive_prev
                   "read_window_below_callback", "theme_callback", "tour_callback", "setup_beat_callback",
                   "connection_callback")
 
-# main: tui_gateway/agent_callbacks.py ``_read_block`` budgets and tui_gateway/server.py's preview.act ladder.
+# main: hermes_agent/tui_gateway/agent_callbacks.py ``_read_block`` budgets and hermes_agent/tui_gateway/server.py's preview.act ladder.
 _TERMINAL_READ_TIMEOUT_S = 30
 _PREVIEW_READ_TIMEOUT_S = 45
 _WINDOW_READ_TIMEOUT_S = 30
@@ -53,7 +53,7 @@ _PREVIEW_ACTION_BRIDGE_UNAVAILABLE = json.dumps({
               "listening. Update the Hermes Desktop app, open a page with open_preview, and try "
               "again in this session after a short cooldown.")})
 
-# main: tui_gateway/theme_bridge.py and tui_gateway/server.py's tour ladder.
+# main: hermes_agent/tui_gateway/theme_bridge.py and hermes_agent/tui_gateway/server.py's tour ladder.
 _THEME_TIMEOUT_S = 15
 _THEME_PICK_TIMEOUT_S = 300
 _THEME_UNANSWERED = {"success": False, "error": "No Hermes Desktop window answered the theme request."}
@@ -145,7 +145,7 @@ def _install_connection_hook() -> None:
             if previous is not None:
                 previous(operation, change, snapshot)
             return
-        from tui_gateway.connector_payload import connector_ui_payload
+        from hermes_agent.tui_gateway.connector_payload import connector_ui_payload
         payload = {**snapshot, "settled": snapshot.get("settled_at") is not None, **(change or {}),
                    "owner": {"type": "session", "session_id": route[1]}}
         live.event_stream.publish(route[1], connector_ui_payload(payload), event_type="connection.update")

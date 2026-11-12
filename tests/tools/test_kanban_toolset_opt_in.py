@@ -55,7 +55,7 @@ def test_saved_opt_in_roundtrip_reaches_schema_and_board(surface, tmp_path, monk
             assert response.status_code == 200, response.text
             assert response.json()["enabled"] is enabled
         elif surface == "rpc":
-            from tui_gateway.server import _methods
+            from hermes_agent.tui_gateway.server import _methods
 
             response = _methods["tools.configure"]("kanban-opt-in", {"action": action, "names": ["kanban"]})
             assert "error" not in response, response

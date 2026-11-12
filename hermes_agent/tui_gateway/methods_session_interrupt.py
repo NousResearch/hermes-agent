@@ -1,6 +1,6 @@
 """Interrupt / steer / redirect session handlers (``methods_session`` split).
 
-Moved verbatim from ``tui_gateway/methods_session.py`` (file-line ratchet #68779): the
+Moved verbatim from ``hermes_agent/tui_gateway/methods_session.py`` (file-line ratchet #68779): the
 bodies close over server.py globals through ``method_ctx.bind_module`` exactly as before —
 ``@method`` registration, ``_session_arg`` wrapping and module publication all still run
 from the parent's ``register()`` via ``HandlerRegistry``.

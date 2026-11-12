@@ -3,7 +3,7 @@ the update frames that drive it, and the RPCs the card answers through.
 
 Shapes are typed from ``tools/connectors/operation.py`` (``Target.snapshot``,
 ``ConnectionOperation.request_payload`` / ``_snapshot_locked``) and
-``tui_gateway/methods_connectors.py`` (``_operation_view``, ``_connection_update``). The card is a
+``hermes_agent/tui_gateway/methods_connectors.py`` (``_operation_view``, ``_connection_update``). The card is a
 projection: every frame carries the full target snapshot, and the renderer never derives state.
 """
 

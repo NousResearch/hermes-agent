@@ -6,7 +6,7 @@ import pytest
 import hermes_yaml as yaml
 from agent.status_output import StatusOutputMixin
 from hermes_cli.cli_stream_mixin import CLIStreamMixin
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 from tests.tui_gateway.test_auto_continue import turn_env, marker_home, _session
 
 

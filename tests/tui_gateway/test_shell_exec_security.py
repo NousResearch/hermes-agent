@@ -5,7 +5,7 @@ from __future__ import annotations
 import subprocess
 
 from agent import redact
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 def test_shell_exec_scrubs_child_env_and_force_redacts_rpc_output(monkeypatch):

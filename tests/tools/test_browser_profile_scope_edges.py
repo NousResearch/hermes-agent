@@ -276,7 +276,7 @@ def test_a_session_that_resolved_the_old_endpoint_during_a_connect_is_closed_not
     resolved the OLD endpoint before the publish but inserted its session after the second reap kept
     driving the old browser. The real ``_browser_connect`` handler runs mid-creation here."""
     from tools import browser_session as bs, browser_session_lifecycle as lifecycle
-    from tui_gateway import server  # binds methods_browser helpers onto server globals
+    from hermes_agent.tui_gateway import server  # binds methods_browser helpers onto server globals
 
     a, _b = profiles
     sessions = {}
@@ -309,7 +309,7 @@ def test_a_stale_session_is_closed_without_ever_being_handed_to_a_concurrent_cal
     backend ``close`` runs, a concurrent ``get_session_info`` for the same key must not find it in
     ``_active_sessions`` (it would return a browser that is being closed underneath it)."""
     from tools import browser_session as bs, browser_session_lifecycle as lifecycle
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     a, _b = profiles
     sessions = {}
@@ -370,7 +370,7 @@ def test_a_browser_exec_that_routed_to_the_old_endpoint_during_a_connect_reloads
     nothing, and the harness daemon (which latches ``BU_CDP_*`` at spawn) kept the old browser for every
     later call. The real ``_browser_connect`` handler runs between routing and dispatch here."""
     from tools import browser_use_cli as bu_cli
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     a, _b = profiles
     monkeypatch.setattr(bu_cli, "_driven_daemons", {})
@@ -415,7 +415,7 @@ def test_a_connect_that_lands_while_browser_exec_spawns_its_daemon_reloads_it(pr
     import json
     import subprocess
     from tools import browser_use_cli as bu_cli
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     a, _b = profiles
     monkeypatch.setattr(bu_cli, "_driven_daemons", {})

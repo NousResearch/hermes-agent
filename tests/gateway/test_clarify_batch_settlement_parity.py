@@ -1,6 +1,6 @@
 """One settlement rule for a batch clarify, whichever registry holds it.
 
-Main's sidecar (``tui_gateway/server_requests.py``) and the session owner (``gateway/session_server_requests.py``)
+Main's sidecar (``hermes_agent/tui_gateway/server_requests.py``) and the session owner (``gateway/session_server_requests.py``)
 each keep open server→client requests, and each used to compute a batch's terminal ``{answers, outcome}``
 in its own code, which drifted twice (#140472 review). Both now call ``tools.clarify_batch.settle_batch``.
 These cases drive each real registry through the same ending, one ``clarify.lock`` on ``q0`` first, and
@@ -39,7 +39,7 @@ def _wait_for(predicate, timeout=5.0):
 
 
 def _sidecar(monkeypatch, ending):
-    from tui_gateway import server_requests
+    from hermes_agent.tui_gateway import server_requests
     frames = []
     monkeypatch.setattr(server_requests, '_write', frames.append)
     monkeypatch.setattr(server_requests, '_emit', lambda *a: None)

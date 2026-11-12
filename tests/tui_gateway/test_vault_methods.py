@@ -1,4 +1,4 @@
-"""Tests: vault.* JSON-RPC handlers (tui_gateway/methods_vault.py).
+"""Tests: vault.* JSON-RPC handlers (hermes_agent/tui_gateway/methods_vault.py).
 
 The Desktop's Settings → Credential Vault panel. Contracts:
 - vault.list returns metadata only — secret values must never appear in
@@ -14,7 +14,7 @@ import json
 
 import pytest
 
-import tui_gateway.server as srv
+import hermes_agent.tui_gateway.server as srv
 
 
 @pytest.fixture

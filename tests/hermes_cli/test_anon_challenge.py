@@ -388,7 +388,7 @@ class TestPresenting:
         """The TUI keeps its gateway's stderr as a log the user never sees: the challenge goes to the
         client over the JSON-RPC channel instead of being printed there."""
         sent = []
-        from tui_gateway import server
+        from hermes_agent.tui_gateway import server
         monkeypatch.setattr(server, "_stdio_is_rpc_channel", True)
         monkeypatch.setattr(server, "_broadcast_global_event", lambda event, payload: sent.append((event, payload)))
         challenge = anon_challenge.BrowserChallenge(f"{PORTAL}/challenge?code=t", True, 600, 2, "m")
@@ -401,7 +401,7 @@ class TestPresenting:
 
     def test_a_stdio_write_failure_falls_back_to_the_terminal(self, monkeypatch):
         """The stdio channel re-raises host I/O errors; the link must still reach the user."""
-        from tui_gateway import server
+        from hermes_agent.tui_gateway import server
         opened = []
         monkeypatch.setattr(server, "_stdio_is_rpc_channel", True)
         monkeypatch.setattr(server, "_broadcast_global_event", lambda *_: (_ for _ in ()).throw(OSError(28, "ENOSPC")))

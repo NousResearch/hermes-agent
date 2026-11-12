@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import agent.context_compressor as cc_mod
 from agent.context_compressor import ContextCompressor
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 PIN = 249_000
 

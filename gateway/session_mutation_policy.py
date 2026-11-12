@@ -39,7 +39,7 @@ async def prepare_workspace(authority, live, payload, prepared):
     import os
     from gateway.session_policy import restore_policy
     from hermes_constants import translate_cwd_for_wsl_backend
-    from tui_gateway import git_probe
+    from hermes_agent.tui_gateway import git_probe
     old = restore_policy(prepared['snapshot']['receipt']['policy'])
 
     def probe():

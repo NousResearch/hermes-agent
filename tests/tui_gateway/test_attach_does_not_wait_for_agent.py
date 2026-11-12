@@ -18,7 +18,7 @@ import threading
 
 import pytest
 
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 PNG_BYTES = b"\x89PNG\r\n\x1a\n" + bytes(range(256)) * 4
 

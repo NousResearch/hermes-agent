@@ -19,8 +19,8 @@ import pytest
 from tools.connectors import live
 from tools.connectors.contract import Actor, TargetState
 from tools.connectors.operation import ConnectionOperation, Target
-from tui_gateway import server
-from tui_gateway.transport import StdioTransport
+from hermes_agent.tui_gateway import server
+from hermes_agent.tui_gateway.transport import StdioTransport
 
 
 class PipeClient:

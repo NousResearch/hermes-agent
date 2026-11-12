@@ -4,7 +4,7 @@ A standalone ``hermes serve``/``hermes dashboard`` has no session authority: on 
 rooms in the root ``shared-state.db`` and drives them here. Once a ready gateway serves the
 profile, that gateway's store is the one Group Chat list native Desktop and the Webapp share, so
 the room calls a Desktop makes go to it instead (the owner-forward path prompts already use:
-``tui_gateway/owner_forward.py``). The gateway imports the rooms this backend already hosts once
+``hermes_agent/tui_gateway/owner_forward.py``). The gateway imports the rooms this backend already hosts once
 (``gateway/hosted_rooms_gateway_import.py``) and fences them here, so each room has one driver.
 
 Routing, so no view ever loses a room it listed before:
@@ -123,7 +123,7 @@ def _standalone_rooms(params: dict | None = None) -> list[dict]:
 
 def _call(server, rid, home, endpoint, method: str, params: dict) -> dict:
     from hermes_cli.gateway_client import GatewayRPCError
-    from tui_gateway import owner_forward
+    from hermes_agent.tui_gateway import owner_forward
     try:
         result = owner_forward.forward_rpc(home, endpoint, method, params)
     except GatewayRPCError as exc:
@@ -220,7 +220,7 @@ def _list(server, rid, home, params: dict) -> dict | None:
 
 def forward_bound(rid, method: str, params: dict) -> dict | None:
     """:func:`forward` on the server ``methods_groups`` is bound to (``None``: none bound yet)."""
-    from tui_gateway import methods_groups
+    from hermes_agent.tui_gateway import methods_groups
     server = methods_groups._bound_server
     return None if server is None else forward(server, rid, method, params)
 

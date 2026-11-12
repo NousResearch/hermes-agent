@@ -33,7 +33,7 @@ def db(tmp_path):
 
 class TestBackendHeartbeatRefresher:
     def test_first_call_registers_row_in_db(self, db, monkeypatch, tmp_path):
-        from tui_gateway import server
+        from hermes_agent.tui_gateway import server
 
         monkeypatch.setattr(server, "_get_db", lambda: db)
         monkeypatch.setattr(server, "_HEARTBEAT_REFRESH_S", 0.0)  # never re-enter
@@ -53,7 +53,7 @@ class TestBackendHeartbeatRefresher:
         assert rows[0]["last_heartbeat"] > 0
 
     def test_repeat_calls_are_noops(self, db, monkeypatch):
-        from tui_gateway import server
+        from hermes_agent.tui_gateway import server
 
         monkeypatch.setattr(server, "_get_db", lambda: db)
         monkeypatch.setattr(server, "_HEARTBEAT_REFRESH_S", 0.0)
@@ -76,7 +76,7 @@ class TestBackendHeartbeatRefresher:
 
     def test_refresher_failure_does_not_raise(self, monkeypatch):
         """A malformed DB / write error must never break startup."""
-        from tui_gateway import server
+        from hermes_agent.tui_gateway import server
 
         def _boom():
             raise RuntimeError("disk full")
@@ -95,7 +95,7 @@ class TestEntryAndWsWiring:
     to the heartbeat refresher: both sites must call the start helper."""
 
     def test_entry_main_starts_heartbeat_refresher(self, monkeypatch):
-        from tui_gateway import entry, server
+        from hermes_agent.tui_gateway import entry, server
 
         started = {"n": 0}
 
@@ -120,7 +120,7 @@ class TestEntryAndWsWiring:
     def test_handle_ws_starts_heartbeat_refresher(self, monkeypatch):
         import asyncio
 
-        from tui_gateway import server, ws as ws_mod
+        from hermes_agent.tui_gateway import server, ws as ws_mod
 
         started = {"n": 0}
         monkeypatch.setattr(

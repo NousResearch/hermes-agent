@@ -312,7 +312,7 @@ def start(
     from hermes_cli.mcp_config import _get_mcp_servers
     from hermes_constants import get_hermes_home
     from tools.mcp_dashboard_oauth import DashboardOAuthFlow
-    from tui_gateway import mcp_oauth_sessions
+    from hermes_agent.tui_gateway import mcp_oauth_sessions
 
     cfg = dict(cfg if cfg is not None else _get_mcp_servers().get(server_name) or {})
     if not cfg:

@@ -1,7 +1,7 @@
 """The TUI gateway's ``llm.oneshot`` hands the client's ``task`` to the model call as the last
 release did: any key, blank meaning ``title_generation``, never refused for being unregistered."""
 
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 def test_llm_oneshot_passes_any_task_key_through(monkeypatch):

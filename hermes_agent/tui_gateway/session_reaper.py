@@ -10,7 +10,7 @@ import contextlib
 import secrets
 import threading
 
-from tui_gateway._env import env_float
+from hermes_agent.tui_gateway._env import env_float
 
 from .method_ctx import bind_module
 
@@ -41,7 +41,7 @@ def _flush_session_messages(session: dict | None) -> bool:
     # resolved at CALL time, and every caller of this helper is an unscoped reaper / exit-flush thread
     # with no turn on the stack — so a SERVED profile's flush resolved them against the LAUNCH home.
     # (The transcript ROWS were never at risk: a profile session gets its own SessionDB whose db_path
-    # is frozen at construction, tui_gateway/server.py::_open_profile_session_db). Same binding
+    # is frozen at construction, hermes_agent/tui_gateway/server.py::_open_profile_session_db). Same binding
     # _finalize_session makes at the identical chokepoint (session_lifecycle.py).
     #
     # hydrate_secrets=False: persisting a transcript needs no external credential, and hydration

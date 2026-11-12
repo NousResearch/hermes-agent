@@ -5,7 +5,7 @@ consumed once the row carries it, not re-applied on every message.
 """
 
 import pytest
-import tui_gateway.server as srv
+import hermes_agent.tui_gateway.server as srv
 from hermes_agent.hermes_state import SessionDB
 
 

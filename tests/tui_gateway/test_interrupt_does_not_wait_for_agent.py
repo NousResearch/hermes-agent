@@ -14,7 +14,7 @@ import types
 
 import pytest
 
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 REMOVED_PROVIDER = "Unknown provider 'custom:llama-local'."
 

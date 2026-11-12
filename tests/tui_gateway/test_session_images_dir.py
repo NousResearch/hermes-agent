@@ -12,7 +12,7 @@ profile home, and the agent can never see the upload it was handed.
 from pathlib import Path
 from unittest.mock import patch
 
-from tui_gateway.server import _session_images_dir
+from hermes_agent.tui_gateway.server import _session_images_dir
 
 
 def test_profile_home_session_writes_under_profile(tmp_path):
@@ -28,7 +28,7 @@ def test_launch_home_fallback_when_no_profile(tmp_path):
     launch_home = tmp_path / ".hermes"
     session = {}
 
-    with patch("tui_gateway.server._hermes_home", launch_home):
+    with patch("hermes_agent.tui_gateway.server._hermes_home", launch_home):
         assert _session_images_dir(session) == launch_home / "images"
 
 
@@ -37,7 +37,7 @@ def test_empty_profile_home_falls_back_to_launch_home(tmp_path):
     launch_home = tmp_path / ".hermes"
     session = {"profile_home": ""}
 
-    with patch("tui_gateway.server._hermes_home", launch_home):
+    with patch("hermes_agent.tui_gateway.server._hermes_home", launch_home):
         assert _session_images_dir(session) == launch_home / "images"
 
 

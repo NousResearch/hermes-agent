@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 from gateway import hosted_rooms, hosted_room_driver as driver
 from gateway.hosted_room_attachments import HostedRoomAttachmentStore
-from tui_gateway.hosted_room_service import HostedRoomService
+from hermes_agent.tui_gateway.hosted_room_service import HostedRoomService
 
 
 def service_at(db):

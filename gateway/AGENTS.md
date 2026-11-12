@@ -180,7 +180,7 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
   `AIAgent(memory_manager=...)` adopts it without a second provider init. Without it the previous
   turn's queued recall never reaches the next request (#120116).
 - **`multiplex_profiles: false` is not "no scope ever".** A native hosted room serving a second
-  profile flips the process-wide guard (`tui_gateway/launch_profile_policy.py::
+  profile flips the process-wide guard (`hermes_agent/tui_gateway/launch_profile_policy.py::
   activate_multi_profile_hosting`) inside the gateway process, after the adapters were wired; every
   standalone entry point (`run_turn.py::_profile_scope_for_source`, the primary adapter's message /
   busy / platform-event handlers via `run_adapters.py::_standalone_scoped`) then binds the launch

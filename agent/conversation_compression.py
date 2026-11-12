@@ -70,7 +70,7 @@ _TERMINAL_COMPRESSION_PROVENANCES = frozenset(
 # B).
 _SPLIT_FAILURE_COOLDOWN_SECONDS = 60
 
-# Marker tui_gateway/server.py::_status_update matches to tag kind="compacting" for drivers' "Summarizing…" UI. Keep
+# Marker hermes_agent/tui_gateway/server.py::_status_update matches to tag kind="compacting" for drivers' "Summarizing…" UI. Keep
 # the phrase intact when rewording. Idle/preflight/retry lines lack it; is_compaction_progress_status covers those.
 COMPACTION_STATUS_MARKER = "Compacting context"
 COMPACTION_STATUS = f"🗜️ {COMPACTION_STATUS_MARKER} — summarizing earlier conversation so I can continue..."

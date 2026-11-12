@@ -45,7 +45,7 @@ class _Socket:
     async def receive_text(self):
         frame = await self.inbound.get()
         if frame is None:
-            from tui_gateway.ws import _WebSocketDisconnect
+            from hermes_agent.tui_gateway.ws import _WebSocketDisconnect
             for step in self.on_disconnect:
                 step()
             raise _WebSocketDisconnect()
@@ -72,8 +72,8 @@ async def rig(tmp_path, monkeypatch):
     from gateway.run_runtime import initialize_gateway_runtime, serve_profile_runtime
     from gateway.runtime_ownership import process_ownership
     from gateway.session_authorities import authority_for_profile_id
-    from tui_gateway import server
-    from tui_gateway import ws as ws_mod
+    from hermes_agent.tui_gateway import server
+    from hermes_agent.tui_gateway import ws as ws_mod
 
     monkeypatch.setattr(ws_mod, '_start_backend_liveness', lambda: None)
     monkeypatch.setattr(server, '_ensure_skin_watcher', lambda: None)
@@ -177,7 +177,7 @@ async def test_a_failed_start_answers_the_waiting_frame_with_profile_mismatch(ri
 
 @pytest.mark.asyncio
 async def test_a_profile_still_starting_when_the_wait_runs_out_is_refused_retryably(rig, monkeypatch):
-    from tui_gateway import ws as ws_mod
+    from hermes_agent.tui_gateway import ws as ws_mod
     monkeypatch.setattr(ws_mod, '_WS_PROFILE_START_WAIT_S', 0.5)
     sock = await rig.connect()
     rig.create(sock, 'beta', 'beta-start-slow')
@@ -201,7 +201,7 @@ async def test_frames_held_for_a_starting_profile_still_park_the_reader(rig, mon
     """Held frames count against the socket's dispatch bound: a flood naming the starting profile stops
     being read off the socket once that many wait, instead of piling up in memory, and every frame is
     still answered once the start ends."""
-    from tui_gateway import ws as ws_mod
+    from hermes_agent.tui_gateway import ws as ws_mod
 
     bound = 4
     monkeypatch.setattr(ws_mod, '_WS_DISPATCH_QUEUE_MAX', bound)
@@ -234,7 +234,7 @@ async def test_frames_held_for_a_starting_profile_still_park_the_reader(rig, mon
 async def test_a_frame_read_after_the_start_ends_still_queues_behind_the_held_frames(rig, monkeypatch):
     """The start ended but its lane is still answering the frames held for it: a frame for that profile
     read now joins the end of that queue instead of running on the serial lane ahead of them."""
-    from tui_gateway import ws as ws_mod
+    from hermes_agent.tui_gateway import ws as ws_mod
 
     real_dispatch = ws_mod._dispatch_request
     ran, first_held_running, first_held_may_finish = [], asyncio.Event(), asyncio.Event()
@@ -289,7 +289,7 @@ async def test_a_frame_read_after_the_start_ends_still_queues_behind_the_held_fr
 
 
 def _record_dispatch(monkeypatch):
-    from tui_gateway import ws as ws_mod
+    from hermes_agent.tui_gateway import ws as ws_mod
 
     real_dispatch = ws_mod._dispatch_request
     ran = []
@@ -306,7 +306,7 @@ def _record_dispatch(monkeypatch):
 async def test_a_disconnect_drops_the_frames_held_for_a_start_that_has_not_ended(rig, monkeypatch):
     """Nobody reads the replies once the client is gone: the socket's handler ends without waiting
     out the start, and the held frames are never run, not even once the start ends."""
-    from tui_gateway import ws as ws_mod
+    from hermes_agent.tui_gateway import ws as ws_mod
 
     monkeypatch.setattr(ws_mod, '_WS_PROFILE_START_WAIT_S', 30.0)
     ran = _record_dispatch(monkeypatch)
@@ -328,7 +328,7 @@ def _on_disconnect_path(monkeypatch, sock, step):
     """Run *step* once, synchronously, at the first step of ``handle_ws``'s disconnect path (its first
     ``asyncio.current_task()`` after the socket raised the disconnect): nothing else on the loop,
     no held lane included, runs between the handler reaching that path and *step*."""
-    from tui_gateway import ws as ws_mod
+    from hermes_agent.tui_gateway import ws as ws_mod
 
     real_current_task, armed = asyncio.current_task, []
 
@@ -349,7 +349,7 @@ async def test_held_frames_run_only_when_their_start_ended_before_the_disconnect
     """Whether held frames run is decided when the client leaves, not when their lane next resumes:
     a start that ends right after the disconnect (no yield between the two, so the lane wakes to
     both) still drops them, and one that ends right before it still runs them."""
-    from tui_gateway import ws as ws_mod
+    from hermes_agent.tui_gateway import ws as ws_mod
 
     monkeypatch.setattr(ws_mod, '_WS_PROFILE_START_WAIT_S', 30.0)
     ran = _record_dispatch(monkeypatch)
@@ -376,7 +376,7 @@ async def test_held_frames_run_only_when_their_start_ended_before_the_disconnect
 async def test_frames_held_for_a_start_that_ended_before_the_disconnect_still_run(rig, monkeypatch):
     """Frames whose start ended while the client was connected finish as the serial lane's queue does:
     the disconnect reaches the handler while held-0 is still running, and does not stop it."""
-    from tui_gateway import ws as ws_mod
+    from hermes_agent.tui_gateway import ws as ws_mod
 
     real_dispatch = ws_mod._dispatch_request
     ran, first_held_running, first_held_may_finish = [], asyncio.Event(), asyncio.Event()

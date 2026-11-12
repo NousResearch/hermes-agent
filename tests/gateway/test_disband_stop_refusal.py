@@ -9,7 +9,7 @@ from tests.gateway.test_hosted_room_disband_publication import _surface
 from tests.gateway.test_session_group_peers import (
     gateway as gateway_fixture, linked_peer as linked_peer_fixture, call)
 from tests.tui_gateway.test_hosted_room_service import _FakeRPC
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 gateway, linked_peer = gateway_fixture, linked_peer_fixture
 

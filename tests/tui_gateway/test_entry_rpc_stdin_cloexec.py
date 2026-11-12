@@ -5,7 +5,7 @@ import sys
 
 import pytest
 
-from tui_gateway import entry
+from hermes_agent.tui_gateway import entry
 
 
 @pytest.mark.platforms("posix")  # POSIX close-on-exec semantics

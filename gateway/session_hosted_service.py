@@ -9,7 +9,7 @@ from gateway.session_authorities import active_authority, all_authorities, owner
 from gateway.session_hosted_controls import HostedControls
 from gateway.owner_identity import same_owner
 from hermes_agent.hermes_state_runtime import RuntimeStoreError, _epoch
-from tui_gateway.hosted_room_service import HostedRoomService
+from hermes_agent.tui_gateway.hosted_room_service import HostedRoomService
 
 _OWNER = 'gateway.hosted.owner.v1:'
 # What the Stop of an attempt asks its admitting home after the profile moved: never create, submit or approve.
@@ -269,7 +269,7 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
     def _stop_pending_refusal(self, room_id, deferred):
         """Name an unconfigured member profile whose unknown home keeps a turn deferred."""
         from gateway.session_hosted_member_homes import unknown_home_refusal
-        from tui_gateway.hosted_room_service import task_member_id
+        from hermes_agent.tui_gateway.hosted_room_service import task_member_id
         return unknown_home_refusal(self, room_id, [
             task for task in deferred if not self._member_is_peer(room_id, task_member_id(task))])
 
@@ -279,7 +279,7 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
         from gateway.session_hosted_member_homes import unsettled_legacy_homes, unserved_member_stopped
         if super()._stop_deferred_peer(room_id, task):
             return not unsettled_legacy_homes(self, room_id, task)
-        from tui_gateway.hosted_room_service import task_member_id
+        from hermes_agent.tui_gateway.hosted_room_service import task_member_id
         return (not self._member_is_peer(room_id, task_member_id(task))
                 and unserved_member_stopped(self, room_id, task))
 
@@ -288,7 +288,7 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
         import json
         from gateway.hosted_room_driver import TaskIdentity, list_tasks
         from gateway.session_hosted_attachments import committed_submission_payload
-        from tui_gateway.hosted_room_driver import HostedRoomBinding
+        from hermes_agent.tui_gateway.hosted_room_driver import HostedRoomBinding
         try:
             if not row['request_id'].startswith('hosted:'):
                 raise ValueError('not a hosted admission')

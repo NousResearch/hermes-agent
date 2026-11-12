@@ -1,6 +1,6 @@
 """``session.history`` on the canonical owner: the durable display transcript with each row's ``row_id``.
 
-Main's TUI sidecar served it (``tui_gateway/methods_session.py``); Desktop's edit-after-interrupt resolves the edited turn's row from it, and without an answer the edit only appends (TUI-15, #134889).
+Main's TUI sidecar served it (``hermes_agent/tui_gateway/methods_session.py``); Desktop's edit-after-interrupt resolves the edited turn's row from it, and without an answer the edit only appends (TUI-15, #134889).
 """
 from types import SimpleNamespace
 

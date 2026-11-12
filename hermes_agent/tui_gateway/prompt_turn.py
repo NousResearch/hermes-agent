@@ -1166,7 +1166,7 @@ def _run_prompt_submit(
         display_kind or "user", len(text) if isinstance(text, str) else "-", len(images))
     # The turn's wire identity: _emit stamps its message.* frames from it (stream_segments.py), so the
     # frames are the same here and in a compute-host child; dropped in run_body's finally.
-    from tui_gateway.stream_segments import SESSION_KEY, TurnSegments  # bound functions run in server's globals
+    from hermes_agent.tui_gateway.stream_segments import SESSION_KEY, TurnSegments  # bound functions run in server's globals
     session[SESSION_KEY] = segments = TurnSegments()
     if not muted:
         _emit("message.start", sid)
@@ -1200,7 +1200,7 @@ def _run_prompt_submit(
             payload, raw, status = _complete_turn_payload(session, st, status_note, cols)
             if status == "complete":
                 # Before message.complete: the desktop re-reads the sign-in offer on that event.
-                from tui_gateway.free_tier_task_done import note_task_done
+                from hermes_agent.tui_gateway.free_tier_task_done import note_task_done
                 note_task_done(session, st.result, st.agent, display_kind)
             _emit("message.complete", sid, payload)
             goal_followup = _goal_followup_after_turn(sid, session, st.result, status, raw)

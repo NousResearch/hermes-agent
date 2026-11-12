@@ -25,7 +25,7 @@ import pytest
 
 from tests.waiting import wait_until
 from hermes_cli import process_identity
-from tui_gateway import server, slash_worker
+from hermes_agent.tui_gateway import server, slash_worker
 
 _REPO = Path(__file__).resolve().parents[2]
 
@@ -253,7 +253,7 @@ def test_slash_worker_close_reaps_zombie_and_closes_fds(monkeypatch):
 _LEGACY_OWNER = r'''
 import os, subprocess, sys
 r = int(sys.argv[1])
-worker = subprocess.Popen([sys.executable, "-m", "tui_gateway.slash_worker", "--session-key", "legacy",
+worker = subprocess.Popen([sys.executable, "-m", "hermes_agent.tui_gateway.slash_worker", "--session-key", "legacy",
                            "--parent-pid", str(os.getpid())], stdin=r, stdout=subprocess.DEVNULL,
                           stderr=subprocess.DEVNULL, start_new_session=True, pass_fds=(r,))
 print(worker.pid, flush=True)

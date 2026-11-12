@@ -90,7 +90,7 @@ def test_one_shot_prints_finalize_message_to_stderr(finalize_hook, capsys, monke
 
 
 def test_tui_session_close_returns_finalize_message(finalize_hook, monkeypatch):
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
     monkeypatch.setattr(server, "_TURN_SETTLE_BEFORE_CLOSE_SECONDS", 0.0)

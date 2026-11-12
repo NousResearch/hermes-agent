@@ -13,7 +13,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from hermes_cli.config import load_config, save_config
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 _NATIVE = """
 def _handler(args, **_kw):

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import threading
 
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 def failed_session(tmp_path, sid: str) -> dict:

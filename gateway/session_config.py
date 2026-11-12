@@ -165,7 +165,7 @@ def local_voice_transition(source, mode):
     session's capture is left alone."""
     import sys
     from gateway.config import Platform
-    server = sys.modules.get('tui_gateway.server')
+    server = sys.modules.get('hermes_agent.tui_gateway.server')
     if mode == 'off' and server is not None and getattr(source, 'platform', None) == Platform.LOCAL:
         server._stop_session_voice_capture(source.chat_id)
 
@@ -213,7 +213,7 @@ def _reasoning(agent, policy, cfg, connection=None, ref=None):
 
 
 def _project(params, policy, cfg):
-    from tui_gateway import git_probe
+    from hermes_agent.tui_gateway import git_probe
     cwd = params.get('cwd') or (policy.cwd if policy else cfg.get('terminal', {}).get('cwd'))
     if not cwd:
         from agent.runtime_cwd import resolve_agent_cwd

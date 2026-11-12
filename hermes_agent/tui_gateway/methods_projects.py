@@ -385,7 +385,7 @@ def _build_project_tree(
     db, *, preview_limit: int, hydrate: bool, session_limit: int, include_discovered: bool
 ) -> tuple[dict, str | None]:
     """Gather inputs and run the one authoritative builder. Returns (tree, active_id)."""
-    from tui_gateway import project_tree
+    from hermes_agent.tui_gateway import project_tree
     _DIR_EXISTS_CACHE.clear()
     sessions, projects, discovered, active_id = _project_tree_inputs(
         db, session_limit, include_discovered=include_discovered)

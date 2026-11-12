@@ -7,7 +7,7 @@ from unittest.mock import Mock
 
 from cli import HermesCLI
 from tools.process_registry_notifications import format_process_notification
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 def test_completion_display_keeps_payload_separate_across_surfaces(monkeypatch, capsys, tmp_path):

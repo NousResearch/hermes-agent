@@ -17,9 +17,9 @@ import pytest
 
 from gateway import hosted_room_driver as driver
 from gateway import hosted_rooms as rooms
-from tui_gateway import hosted_room_member_activity as activity
-from tui_gateway import hosted_room_service
-from tui_gateway import server
+from hermes_agent.tui_gateway import hosted_room_member_activity as activity
+from hermes_agent.tui_gateway import hosted_room_service
+from hermes_agent.tui_gateway import server
 
 
 class _Service:

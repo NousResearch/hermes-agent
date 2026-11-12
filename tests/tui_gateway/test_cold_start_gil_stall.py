@@ -5,7 +5,7 @@ synchronous CPU-bound work ran on the loop thread during the window
 between ``HERMES_BACKEND_READY`` and the first prompt. Fix 1 (the Copilot
 ``gh auth token`` skip) is tested with the github-copilot plugin; here:
 
-2. ``tui_gateway.ws.handle_ws`` runs ``resolve_skin()`` via
+2. ``hermes_agent.tui_gateway.ws.handle_ws`` runs ``resolve_skin()`` via
    ``asyncio.to_thread`` so the loop is not blocked by config/skin init.
 3. ``web_server_lifecycle._warm_gateway_module`` pre-imports the heavy module
    chains that the first WS connection + RPC burst would otherwise
@@ -23,7 +23,7 @@ def test_handle_ws_resolves_skin_off_the_loop_thread(monkeypatch):
     import json
     import threading
 
-    from tui_gateway import server, ws as ws_mod
+    from hermes_agent.tui_gateway import server, ws as ws_mod
 
     idents = {}
     frames = []

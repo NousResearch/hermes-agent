@@ -32,7 +32,7 @@ import pytest
 
 from agent.context_compressor import MODEL_ONLY_DISPLAY_METADATA_KEY
 
-import tui_gateway.server as srv
+import hermes_agent.tui_gateway.server as srv
 
 
 @pytest.fixture

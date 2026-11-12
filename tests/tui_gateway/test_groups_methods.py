@@ -7,8 +7,8 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.hosted_rooms import default_db_path as hosted_rooms_default_db_path
-import tui_gateway.server as srv
-from tui_gateway import methods_groups
+import hermes_agent.tui_gateway.server as srv
+from hermes_agent.tui_gateway import methods_groups
 
 
 @pytest.fixture
@@ -103,7 +103,7 @@ def test_capabilities_and_invitation_advertise_scoped_roomlink(home, monkeypatch
 def test_capabilities_disable_roomlink_when_run_replay_is_not_durable(
     home, monkeypatch
 ):
-    import tui_gateway.methods_groups as groups_methods
+    import hermes_agent.tui_gateway.methods_groups as groups_methods
 
     class VolatileRunStore:
         durable = False
@@ -336,7 +336,7 @@ def test_register_peer_route_probes_scope_and_persists_via_service(home, monkeyp
 
     monkeypatch.setattr(srv, "get_hosted_room_service", lambda: FakeService())
     monkeypatch.setattr(
-        "tui_gateway.hosted_room_peer_http.PeerRunsHTTPClient",
+        "hermes_agent.tui_gateway.hosted_room_peer_http.PeerRunsHTTPClient",
         FakeClient,
     )
     result = _result(

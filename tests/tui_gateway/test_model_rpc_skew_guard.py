@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from unittest.mock import Mock
 
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 def _call(method: str, params: dict | None = None) -> dict:

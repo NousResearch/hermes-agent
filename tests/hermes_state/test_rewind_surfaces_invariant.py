@@ -59,7 +59,7 @@ def _rewind_via(surface: str, db: SessionDB, sid: str, n: int):
         cli._prefill_input_buffer = MagicMock()
         cli.undo_last(n)
         return cli.conversation_history if len(cli.conversation_history) < len(warm) else None
-    from tui_gateway.server import _rewind_active_session_history
+    from hermes_agent.tui_gateway.server import _rewind_active_session_history
     session = {"agent": SimpleNamespace(_session_messages=warm), "history": list(warm),
                "history_lock": threading.Lock(), "history_version": 0, "session_key": sid}
     return _rewind_active_session_history(session, ordinal)
@@ -68,7 +68,7 @@ def _rewind_via(surface: str, db: SessionDB, sid: str, n: int):
 @pytest.fixture()
 def db(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     handle = SessionDB(db_path=tmp_path / "state.db")
     monkeypatch.setattr(server, "_db", handle)
     yield handle

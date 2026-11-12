@@ -10,7 +10,7 @@ the same reply twice in one bubble, nothing between the copies when the tool is 
 import contextlib
 from types import SimpleNamespace
 
-import tui_gateway.server as srv
+import hermes_agent.tui_gateway.server as srv
 
 
 def _payload(monkeypatch, result):

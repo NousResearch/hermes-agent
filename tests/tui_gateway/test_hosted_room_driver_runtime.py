@@ -13,15 +13,15 @@ import pytest
 
 from gateway import hosted_room_driver as state
 from gateway import hosted_rooms
-from tui_gateway.hosted_room_driver import (
+from hermes_agent.tui_gateway.hosted_room_driver import (
     MAX_TERMINAL_TEXT_BYTES,
     ROOM_SESSION_SOURCE,
     HostedRoomBinding,
     HostedRoomRuntime,
     room_session_title,
 )
-from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
-from tui_gateway.hosted_room_peer_transport import (
+from hermes_agent.tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
+from hermes_agent.tui_gateway.hosted_room_peer_transport import (
     PeerHostedRoomTransport,
     PeerMemberRoute,
 )

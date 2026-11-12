@@ -72,8 +72,8 @@ _MAX_HELPER_SHUTDOWN_GRACE_S = 2.0
 
 def _helper_shutdown_grace() -> float:
     # The gateway's grace is 1.0 s unless HERMES_TUI_GATEWAY_SHUTDOWN_GRACE_S raises it
-    # (tui_gateway/entry.py); the PTY child inherits that env. Read it here rather than import
-    # tui_gateway.entry, which installs signal handlers.
+    # (hermes_agent/tui_gateway/entry.py); the PTY child inherits that env. Read it here rather than import
+    # hermes_agent.tui_gateway.entry, which installs signal handlers.
     from utils import env_float
 
     gateway = env_float("HERMES_TUI_GATEWAY_SHUTDOWN_GRACE_S", 1.0)

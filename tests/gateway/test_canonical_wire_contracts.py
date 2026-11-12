@@ -7,7 +7,7 @@ from gateway.session_authority import LiveSession, SessionAuthority
 from gateway.session_controls import AuthorityConnection
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_runtime import begin_runtime_epoch
-from tui_gateway.contracts.registry import CANONICAL_METHODS, METHODS, ContractViolation, validate_params
+from hermes_agent.tui_gateway.contracts.registry import CANONICAL_METHODS, METHODS, ContractViolation, validate_params
 
 
 @pytest.mark.asyncio
@@ -54,7 +54,7 @@ def test_canonical_admission_and_creation_models_leave_legacy_wire_unchanged():
 
 @pytest.mark.asyncio
 async def test_canonical_result_validation_catches_a_handler_contract_violation(tmp_path, monkeypatch):
-    from tui_gateway.contracts import registry
+    from hermes_agent.tui_gateway.contracts import registry
     monkeypatch.setattr(registry, 'STRICT', True)
     db = SessionDB(db_path=tmp_path / 'state.db')
     try:

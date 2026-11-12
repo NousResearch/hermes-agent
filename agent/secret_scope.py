@@ -110,7 +110,7 @@ def serves_routed_profile() -> bool:
 _SECRET_SCOPE: ContextVar[Optional[_BoundScope]] = ContextVar("_SECRET_SCOPE", default=None)
 # A launch-profile body that entered before this process started multiplexing (no scope bound,
 # single-profile semantics): the launch profile's own mapping to read once fail-closed is armed
-# mid-body. Set only by ``tui_gateway.launch_profile_policy.launch_body``; never ``os.environ``.
+# mid-body. Set only by ``hermes_agent.tui_gateway.launch_profile_policy.launch_body``; never ``os.environ``.
 _LAUNCH_BODY_SCOPE: ContextVar[Optional[Callable[[], Mapping[str, str]]]] = ContextVar(
     "_LAUNCH_BODY_SCOPE", default=None)
 

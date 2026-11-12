@@ -41,7 +41,7 @@ def homes(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(root))
     monkeypatch.setattr(plugins_mod, "get_bundled_plugins_dir", lambda: empty_bundled)
     from agent import secret_scope
-    from tui_gateway import launch_profile_policy as lpp
+    from hermes_agent.tui_gateway import launch_profile_policy as lpp
     monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", False)
     monkeypatch.setattr(lpp, "_snapshot", None)
     plugins_mod._reset_plugin_managers_for_tests()

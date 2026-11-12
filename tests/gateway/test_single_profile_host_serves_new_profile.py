@@ -149,7 +149,7 @@ def test_launch_profile_work_on_a_standalone_host_binds_its_scope_once_a_second_
 
     from agent.secret_scope import get_secret
     from gateway.session_authorities import owner_scope
-    from tui_gateway.launch_profile_policy import activate_multi_profile_hosting
+    from hermes_agent.tui_gateway.launch_profile_policy import activate_multi_profile_hosting
 
     runner, home, _restarts = standalone_host
     activate_multi_profile_hosting()

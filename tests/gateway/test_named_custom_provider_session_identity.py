@@ -7,7 +7,7 @@ import pytest
 
 from gateway.run_turn_prepare import GatewayTurnPrepareMixin
 from hermes_agent.hermes_state import SessionDB
-from tui_gateway.server import _session_info, _stored_session_runtime_overrides, _runtime_model_config
+from hermes_agent.tui_gateway.server import _session_info, _stored_session_runtime_overrides, _runtime_model_config
 from gateway.session_local_inventory import agent_inventory
 
 
@@ -101,7 +101,7 @@ def test_tui_runtime_config_and_session_info_keep_requested_custom_slug(monkeypa
 
     atomic_config_write(get_config_path(), CONFIG)
     agent = _agent()
-    monkeypatch.setattr("tui_gateway.server._load_approval_mode", lambda: "manual")
+    monkeypatch.setattr("hermes_agent.tui_gateway.server._load_approval_mode", lambda: "manual")
     config = _runtime_model_config(agent)
     assert config["provider"] == "custom:beta"
     info = _session_info(agent, {"agent": agent, "session_key": "s1", "profile_home": str(get_hermes_home())})
@@ -182,7 +182,7 @@ def _edited_entry_agent(*, old_owner=True, old_url=OLD_URL, new_url=NEW_URL):
 
 
 def _resumed_route(row):
-    from tui_gateway.server import _resolve_agent_model_runtime
+    from hermes_agent.tui_gateway.server import _resolve_agent_model_runtime
 
     overrides = _stored_session_runtime_overrides(row)
     _, restored = _resolve_agent_model_runtime(overrides["model_override"], overrides.get("provider_override"))
@@ -233,7 +233,7 @@ def test_live_unpersisted_session_reports_the_requested_entry(monkeypatch):
     """A built session reattached before its first turn reports the entry it runs, not the adapter class."""
     from hermes_cli.config import atomic_config_write, get_config_path
     from hermes_constants import get_hermes_home
-    from tui_gateway.server import _live_session_identity
+    from hermes_agent.tui_gateway.server import _live_session_identity
 
     atomic_config_write(get_config_path(), CONFIG)
     session = {"agent": _agent(), "session_key": "not-persisted", "profile_home": str(get_hermes_home())}

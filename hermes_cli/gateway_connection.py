@@ -420,7 +420,7 @@ class GatewayConnection:
     def call_until(self, method, wake, **params):
         """``call`` with no answer deadline, for a verb that lasts as long as the work it runs (a plugin
         command's handler), on a socket of its own to this connection's gateway: the gateway answers a
-        socket's requests one at a time, in arrival order (``tui_gateway/ws.py``), so a handler still
+        socket's requests one at a time, in arrival order (``hermes_agent/tui_gateway/ws.py``), so a handler still
         running never holds this connection's reads, prompts and interrupts. One dial and one send,
         never retried. Waits for the answer or the transport's error, unless *wake* (a
         ``threading.Event``, set by Ctrl+C or :meth:`close`) is set first: then raises

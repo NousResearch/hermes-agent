@@ -25,8 +25,8 @@ from hermes_cli import plugins as plugins_mod
 from hermes_constants import get_hermes_home, get_hermes_home_override
 from tools.daemon_pool import DaemonThreadPoolExecutor
 from tools.thread_context import propagate_context_to_thread
-from tui_gateway import server
-from tui_gateway import launch_profile_policy as lpp
+from hermes_agent.tui_gateway import server
+from hermes_agent.tui_gateway import launch_profile_policy as lpp
 
 
 @pytest.fixture

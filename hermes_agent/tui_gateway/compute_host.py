@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any, Callable, Collection
 
 from hermes_cli.config_backend import ConfigBackendUnavailable
-from tui_gateway.host_supervisor import MUTATOR_ROUTE_TABLE, _build_sha
+from hermes_agent.tui_gateway.host_supervisor import MUTATOR_ROUTE_TABLE, _build_sha
 
 
 def now_ns() -> int:
@@ -139,7 +139,7 @@ class ComputeHost:
         self, *, reason: str = "shutdown", skip_sids: Collection[str] | None = None) -> None:
         """Finalize every server session except ``skip_sids`` (turn still live)."""
         try:
-            from tui_gateway import server
+            from hermes_agent.tui_gateway import server
         except Exception:
             return
         skip = set(skip_sids or ())
@@ -185,7 +185,7 @@ class ComputeHost:
         sid = str(frame.get("sid") or "")
         request_id = frame.get("request_id")
         try:
-            from tui_gateway import server
+            from hermes_agent.tui_gateway import server
             body(server, sid, request_id)
         except (Exception, ConfigBackendUnavailable) as exc:  # health: allow BLE001 -- the frame's one reply (the outage is a SystemExit)
             if on_error is not None:
@@ -216,7 +216,7 @@ class ComputeHost:
             if error:
                 self._reply("respond.error", sid, request_id, message=error)
                 return
-            from tui_gateway import server_requests
+            from hermes_agent.tui_gateway import server_requests
             if isinstance(params.get("lock"), dict):
                 response = server._methods["clarify.lock"](request_id, params["lock"])
             elif isinstance(cancel := params.get("cancel"), dict):
@@ -236,7 +236,7 @@ class ComputeHost:
             self._reply("turn.error", sid, request_id, message="sid required")
             return
         try:
-            from tui_gateway import server
+            from hermes_agent.tui_gateway import server
             session = self._ensure_server_session(server, frame)
             # #101416: the parent already holds this session's active-session lease (claimed in
             # prompt.submit before routing here). Install the inert borrow BEFORE the turn runs, or
@@ -294,7 +294,7 @@ class ComputeHost:
                 session_info=session_info, session_info_emitted=True)
         except (Exception, ConfigBackendUnavailable) as exc:  # health: allow BLE001 -- the turn's one reply (the outage is a SystemExit)
             with contextlib.suppress(Exception):
-                from tui_gateway import server
+                from hermes_agent.tui_gateway import server
                 session = server._sessions.get(sid)
                 if session is not None:
                     with session.get("history_lock", threading.Lock()):
@@ -360,7 +360,7 @@ class ComputeHost:
                 # turn process never ran the launch dotenv path for the routed profile, so without
                 # hydration the scope is built on an empty external snapshot and a vault-only
                 # provider key fails closed. Same order as gateway/run.py::_load_profile_secret_scope
-                # and tui_gateway/model_switch.py::_profile_runtime_scope_tokens (#119521).
+                # and hermes_agent/tui_gateway/model_switch.py::_profile_runtime_scope_tokens (#119521).
                 hydrate_profile_secret_sources(Path(profile_home))
                 secret_token = set_secret_scope(
                     build_profile_secret_scope(Path(profile_home)), profile_home=profile_home)
@@ -391,7 +391,7 @@ class ComputeHost:
                     reset_hermes_home_override(home_token)
                     reset_secret_scope(secret_token)
         try:
-            from tui_gateway.transport import bind_transport, reset_transport
+            from hermes_agent.tui_gateway.transport import bind_transport, reset_transport
             token = bind_transport(self._transport)
             try:
                 server._init_session(
@@ -465,7 +465,7 @@ class ComputeHost:
                 # host commits; discard it so it can't fire against a rejected boundary later
                 # (finalize is exactly-once, so a no-op if the mirror already emitted it).
                 with contextlib.suppress(Exception):
-                    from tui_gateway import server as _server
+                    from hermes_agent.tui_gateway import server as _server
                     from agent.conversation_compression import (
                         finalize_context_engine_compression_notification as _finalize)
                     _agent = (_server._sessions.get(sid) or {}).get("agent")
@@ -562,7 +562,7 @@ def run_host(stdin: Any = None, stdout: Any = None) -> None:
     # No client is connected to this process: session-less broadcasts (``broadcast_plugin_event``
     # from a plugin tool/hook running in the isolated turn) ride the host pipe to the parent
     # gateway, which fans them out to its clients (compute_host_bridge._relay_compute_host_rpc).
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     server.register_live_transport(host._transport)
 
     def _signal_handler(_signum, _frame) -> None:

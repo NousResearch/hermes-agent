@@ -10,7 +10,7 @@ sanitize/merge pass already coalesces consecutive user messages.
 from __future__ import annotations
 
 
-from tui_gateway.server import _append_model_switch_marker
+from hermes_agent.tui_gateway.server import _append_model_switch_marker
 
 
 class TestAppendModelSwitchMarkerRole:
@@ -36,7 +36,7 @@ class TestModelSwitchMarkerDedup:
 
     @staticmethod
     def _markers(session: dict) -> list:
-        from tui_gateway.server import _is_model_switch_marker
+        from hermes_agent.tui_gateway.server import _is_model_switch_marker
 
         return [h for h in session["history"] if _is_model_switch_marker(h)]
 
@@ -94,12 +94,12 @@ class TestModelSwitchMarkerDedup:
 
 
 def _make_marker_entry(model: str) -> dict:
-    from tui_gateway.server import _MODEL_SWITCH_MARKER_PREFIX
+    from hermes_agent.tui_gateway.server import _MODEL_SWITCH_MARKER_PREFIX
 
     return {"role": "user", "content": f"{_MODEL_SWITCH_MARKER_PREFIX}{model}.]"}
 
 
 def _is_marker(entry: dict) -> bool:
-    from tui_gateway.server import _is_model_switch_marker
+    from hermes_agent.tui_gateway.server import _is_model_switch_marker
 
     return _is_model_switch_marker(entry)

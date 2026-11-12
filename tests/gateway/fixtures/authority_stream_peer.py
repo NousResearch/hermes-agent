@@ -276,7 +276,7 @@ def main():
         # The stalled observer must hit a mailbox bound while the session replay buffer (4 MB) still
         # holds the whole turn and the terminal frame (the whole reply) still fits the byte cap, so
         # bound it by frames: the 330 chunks below exceed this.
-        from tui_gateway.transport import FanoutTransport
+        from hermes_agent.tui_gateway.transport import FanoutTransport
         FanoutTransport._MAX_PENDING_FRAMES = 256
     peer.acks = queue.Queue()
     peer.command = 'printf owned-effect > ' + shlex.quote(str(target))

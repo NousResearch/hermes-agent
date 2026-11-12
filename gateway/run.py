@@ -1775,7 +1775,7 @@ def _load_profile_secret_scope(profile_home: Path) -> dict:
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
     # Caller already hydrated external sources off-loop (#99519).
     from hermes_cli.env_loader import hydrate_profile_secret_sources
-    from tui_gateway.launch_profile_policy import owner_secret_scope
+    from hermes_agent.tui_gateway.launch_profile_policy import owner_secret_scope
 
     home_token = set_hermes_home_override(str(profile_home))
     try:
@@ -1804,7 +1804,7 @@ def _profile_runtime_scope(
         elif hydrate_secrets:
             secrets = _load_profile_secret_scope(Path(profile_home))
         else:
-            from tui_gateway.launch_profile_policy import owner_secret_scope  # caller already hydrated off-loop
+            from hermes_agent.tui_gateway.launch_profile_policy import owner_secret_scope  # caller already hydrated off-loop
             secrets = owner_secret_scope(Path(profile_home))
         secret_token = set_secret_scope(secrets, profile_home=str(profile_home))
         # Install the routed profile's COMPLETE terminal policy, never ambient TERMINAL_* a prior turn set.
@@ -4584,7 +4584,7 @@ async def _shutdown_mcp_servers_nonblocking(timeout: float = 5.0, config: Any = 
 
     See #82874.
     """
-    from tui_gateway.launch_profile_policy import launch_profile_scope_if_multiplexed
+    from hermes_agent.tui_gateway.launch_profile_policy import launch_profile_scope_if_multiplexed
 
     profile_homes = (
         _multiplex_profile_homes(config) if getattr(config, "multiplex_profiles", False) else [])

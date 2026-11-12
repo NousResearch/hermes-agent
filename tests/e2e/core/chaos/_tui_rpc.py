@@ -1,4 +1,4 @@
-"""Stdio JSON-RPC driver for a REAL ``python -m tui_gateway.entry`` subprocess.
+"""Stdio JSON-RPC driver for a REAL ``python -m hermes_agent.tui_gateway.entry`` subprocess.
 
 This is the process the Ink TUI and Desktop talk to: newline-delimited JSON-RPC 2.0 on
 stdin/stdout, responses carry the request ``id``, server-pushed events are

@@ -11,8 +11,8 @@ from types import SimpleNamespace
 
 from tests.waiting import wait_until
 from gateway import hosted_room_driver as driver
-from tui_gateway.hosted_room_member_activity import project_room_member_activity
-from tui_gateway.hosted_room_service import HostedRoomService
+from hermes_agent.tui_gateway.hosted_room_member_activity import project_room_member_activity
+from hermes_agent.tui_gateway.hosted_room_service import HostedRoomService
 
 
 class _HeldRPC:

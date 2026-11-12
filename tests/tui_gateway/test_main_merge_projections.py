@@ -3,7 +3,7 @@ import threading
 from contextlib import nullcontext
 
 def test_live_message_count_tracks_serialized_projection(monkeypatch):
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     monkeypatch.setattr(server, '_session_db', lambda session: nullcontext(None))
     monkeypatch.setattr(server, '_fallback_session_info', lambda session: {})
     monkeypatch.setattr(server, '_pending_approval_request_payload', lambda key: None)

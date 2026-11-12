@@ -2,7 +2,7 @@
 
 The CLI (``cli_session_mixin._show_session_status``), the messaging gateway
 (``gateway/slash_commands_status._handle_status_command``) and the TUI backend
-(``tui_gateway/methods_session`` ``session.status``) all report the same session facts —
+(``hermes_agent/tui_gateway/methods_session`` ``session.status``) all report the same session facts —
 id, home path, title, model route, created / last-activity stamps, lifetime tokens, running
 flag. Each used to derive them independently (three ``getattr(agent, "model")`` fallback
 chains, three ``updated_at`` candidate scans, three timestamp formats to keep aligned).

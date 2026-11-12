@@ -14,7 +14,7 @@ import pytest
 
 from agent.terminal_env_provider import TerminalEnvironmentProvider
 from tools import terminal_tool
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 @pytest.fixture
@@ -257,7 +257,7 @@ def test_compute_host_carries_workspace_provenance(launch_dir, monkeypatch, tmp_
     import io
     import types
 
-    from tui_gateway.compute_host import ComputeHost
+    from hermes_agent.tui_gateway.compute_host import ComputeHost
 
     project = tmp_path / "project"
     project.mkdir()
@@ -291,7 +291,7 @@ def test_compute_host_minimal_record_keeps_workspace_provenance(launch_dir, monk
     import io
     import types
 
-    from tui_gateway.compute_host import ComputeHost
+    from hermes_agent.tui_gateway.compute_host import ComputeHost
 
     project = tmp_path / "project"
     project.mkdir()

@@ -106,7 +106,7 @@ def _ticket_profile_request(server: Any, req: dict, home: str) -> tuple[dict, st
     own profile name (refused when that name does not resolve to the ticket's home). Returns the
     request plus the home to scope ("" = launch), or an error frame and None."""
     from hermes_constants import profile_name_for_home
-    from tui_gateway.contracts.registry import METHODS
+    from hermes_agent.tui_gateway.contracts.registry import METHODS
     params = req.get("params") if isinstance(req.get("params"), dict) else {}
     refused = _unavailable(req)
     if (explicit := _explicit_profile_request(server, req)) is not None:

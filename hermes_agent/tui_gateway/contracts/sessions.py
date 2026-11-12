@@ -1,4 +1,4 @@
-"""Session lifecycle contracts (``tui_gateway/methods_session.py``): create / resume / activate /
+"""Session lifecycle contracts (``hermes_agent/tui_gateway/methods_session.py``): create / resume / activate /
 close, the live-session snapshot those share, history + compression + undo, mid-turn corrections,
 listing/browsing stored rows, spawn-tree snapshots, event replay and the stateless one-shot LLM call.
 """

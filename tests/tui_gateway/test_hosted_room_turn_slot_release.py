@@ -12,8 +12,8 @@ from __future__ import annotations
 import threading
 import types
 
-from tui_gateway import server
-from tui_gateway.hosted_room_driver import ROOM_SESSION_SOURCE
+from hermes_agent.tui_gateway import server
+from hermes_agent.tui_gateway.hosted_room_driver import ROOM_SESSION_SOURCE
 
 
 class _InlineThread:

@@ -19,7 +19,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tui_gateway import notification_park, server
+from hermes_agent.tui_gateway import notification_park, server
 
 OWNER_KEY = "owner-session-key"
 OTHER_KEY = "unrelated-session-key"

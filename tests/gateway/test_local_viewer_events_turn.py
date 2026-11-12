@@ -99,7 +99,7 @@ def test_tool_complete_carries_duration_only_for_local_viewers(platform):
 
 
 def test_wire_contract_accepts_the_boundary_frame():
-    from tui_gateway.contracts.registry import EVENTS
+    from hermes_agent.tui_gateway.contracts.registry import EVENTS
     EVENTS['message.delta'].payload.model_validate({'text': None})
     EVENTS['tool.generating'].payload.model_validate({'name': 'terminal'})
     EVENTS['agent.print'].payload.model_validate({'text': 'line'})
@@ -150,7 +150,7 @@ def test_progress_projects_reasoning_available_and_moa(monkeypatch, classic):
     live.show_reasoning = True
     turn.progress_callback('reasoning.available', '_thinking', 'because', None)
     assert published == [('reasoning.available', {'text': 'because'})]
-    from tui_gateway.contracts.registry import EVENTS
+    from hermes_agent.tui_gateway.contracts.registry import EVENTS
     for kind, payload in moa:
         EVENTS[kind].payload.model_validate(payload)
 
@@ -199,7 +199,7 @@ def test_a_local_write_ships_its_inline_diff_snapshotted_before_the_tool_ran(tmp
     complete = next(payload for kind, payload in published if kind == 'tool.complete')
     diff = complete['inline_diff']
     assert isinstance(diff, str) and '-beta' in diff and '+gamma' in diff, diff
-    from tui_gateway.contracts.registry import EVENTS
+    from hermes_agent.tui_gateway.contracts.registry import EVENTS
     EVENTS['tool.complete'].payload.model_validate({k: complete[k] for k in ('tool_id', 'name', 'duration_s', 'inline_diff')})
 
 
@@ -214,7 +214,7 @@ def test_the_todo_tool_publishes_the_full_snapshot():
     assert kinds == ['tool.start', 'tool.complete', 'todo.updated']
     assert published[-1][1] == {'todos': todos, 'revision': 3}
     assert published[1][1]['inline_diff'] is None and published[1][1]['todos'] == todos
-    from tui_gateway.contracts.registry import EVENTS
+    from hermes_agent.tui_gateway.contracts.registry import EVENTS
     EVENTS['todo.updated'].payload.model_validate(published[-1][1])
 
 
@@ -253,7 +253,7 @@ def test_prompts_carry_the_gateway_wait_window_only_for_local_viewers(monkeypatc
     approval, clarify = published[0][1], published[1][1]
     if platform == Platform.LOCAL:
         assert (approval['timeout_s'], clarify['timeout_s']) == (90, 600)
-        from tui_gateway.contracts.canonical_sessions import CanonicalPendingPrompt
+        from hermes_agent.tui_gateway.contracts.canonical_sessions import CanonicalPendingPrompt
         CanonicalPendingPrompt.model_validate(approval)
         CanonicalPendingPrompt.model_validate(clarify)
     else:
@@ -306,7 +306,7 @@ def test_completion_payload_forwards_billing_failure_and_response_flags():
     from gateway.session_settlement_recovery import completion_payload
     from gateway.turn_context import TurnContext
     from tests.gateway.test_local_viewer_events_submit import _gateway_runner, _SteeredAgent
-    from tui_gateway.contracts.registry import EVENTS
+    from hermes_agent.tui_gateway.contracts.registry import EVENTS
 
     billing = build_billing_block(
         provider='openrouter', base_url='https://openrouter.ai/api/v1', model='gpt-x', message='Out of credits'
@@ -382,7 +382,7 @@ def test_progress_publishes_subagent_lifecycle_events_for_local_viewers():
     from gateway.session_events import SessionEvents
     from tools.delegate_tool_progress import _build_child_progress_callback
     from tools.delegate_tool_registry import _register_subagent, _unregister_subagent
-    from tui_gateway.contracts.registry import EVENTS
+    from hermes_agent.tui_gateway.contracts.registry import EVENTS
 
     class _Parent:
         pass

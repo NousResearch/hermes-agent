@@ -6,8 +6,8 @@ from gateway.session_authority import SessionAuthority
 from gateway.session_controls import AuthorityConnection
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_runtime import begin_runtime_epoch
-from tui_gateway import server
-from tui_gateway.ws import _dispatch_request
+from hermes_agent.tui_gateway import server
+from hermes_agent.tui_gateway.ws import _dispatch_request
 
 @pytest.mark.asyncio
 # The two namespaces only this test pins: the legacy fallback gate's own tests do not cover them.

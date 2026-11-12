@@ -40,7 +40,7 @@ def server():
     ):
         import importlib
 
-        mod = importlib.import_module("tui_gateway.server")
+        mod = importlib.import_module("hermes_agent.tui_gateway.server")
 
     yield mod
     # Reset module-level session state without re-importing. importlib.reload
@@ -50,7 +50,7 @@ def server():
     # _enter_buffered_busy. Clearing the per-session dicts gives the
     # next test a clean slate.
     mod._sessions.clear()
-    __import__("tui_gateway.server_requests", fromlist=["x"]).reset_for_tests()
+    __import__("hermes_agent.tui_gateway.server_requests", fromlist=["x"]).reset_for_tests()
 
 
 def test_init_session_attaches_background_review_callback(server, monkeypatch):

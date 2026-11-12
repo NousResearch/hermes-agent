@@ -81,7 +81,7 @@ class CanonicalResumeParams(ProfileParams):
     omit_messages: bool = False
     cols: int | None = None
     # A renderer (the Ink TUI) asks for main's display projection of the same rows
-    # (``tui_gateway.session_history._history_to_messages``) as ``display_messages``.
+    # (``hermes_agent.tui_gateway.session_history._history_to_messages``) as ``display_messages``.
     display_projection: bool = False
 
 

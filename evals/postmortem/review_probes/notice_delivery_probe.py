@@ -82,7 +82,7 @@ else:
     results['busy_parent']={'notice_claimed':bool(claim),'final_claim':final_claim,'row':ad.get_durable_delegation('busy-parent')}
     assert final_claim, 'the final result must still be claimable after a notice was consumed'
     # Different TUI UI-dedup keys do not fix shared durable claim identity.
-    from tui_gateway.session_notifications import _notification_event_dedup_key
+    from hermes_agent.tui_gateway.session_notifications import _notification_event_dedup_key
     results['busy_parent']['ui_keys_differ']=_notification_event_dedup_key(notice)!=_notification_event_dedup_key(final)
 print(json.dumps(results,indent=2),flush=True)
 print('PROBE_COMPLETE',flush=True)

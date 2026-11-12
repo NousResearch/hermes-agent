@@ -7,7 +7,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 @pytest.mark.parametrize("phase", ["before_callback", "before_continuation", "before_initial_timer", "cold_resume_claim"])

@@ -1,7 +1,7 @@
 """Transport abstraction for the tui_gateway JSON-RPC server.
 
 A :class:`Transport` forwards a JSON-serialisable dict to its peer, so one dispatcher runs over stdio
-(``tui_gateway.entry``) or WebSocket (``tui_gateway.ws``). The request's transport lives in a
+(``hermes_agent.tui_gateway.entry``) or WebSocket (``hermes_agent.tui_gateway.ws``). The request's transport lives in a
 ``ContextVar`` so pool-dispatched handlers write to the right peer; with nothing bound
 ``server.write_json`` falls back to the module-level :class:`StdioTransport`, which resolves
 ``_real_stdout`` lazily so tests that monkey-patch it keep working.
@@ -237,8 +237,8 @@ class FanoutTransport:
                 peer.pending.clear()
                 peer.pending_bytes = 0
             try:
-                # Duck-typed on purpose: importing ``tui_gateway.ws`` here would pull
-                # ``tui_gateway.server`` in on this drain thread, racing any concurrent
+                # Duck-typed on purpose: importing ``hermes_agent.tui_gateway.ws`` here would pull
+                # ``hermes_agent.tui_gateway.server`` in on this drain thread, racing any concurrent
                 # importer with a partially initialized module.
                 write_current = getattr(peer.transport, "write_many_if_current_async", None)
                 write_many = write_current or getattr(peer.transport, "write_many_async", None)

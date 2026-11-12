@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from tui_gateway import profile_roster_cache as cache
+from hermes_agent.tui_gateway import profile_roster_cache as cache
 
 
 @pytest.fixture

@@ -363,7 +363,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         home = self._profile_scope_key_for_source(source)
         if home is not None:
             return _async_profile_runtime_scope(home)
-        from tui_gateway.launch_profile_policy import async_launch_profile_scope_if_multiplexed
+        from hermes_agent.tui_gateway.launch_profile_policy import async_launch_profile_scope_if_multiplexed
         return async_launch_profile_scope_if_multiplexed()
 
     @staticmethod
@@ -372,13 +372,13 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         another profile home, then the launch profile's OWN runtime scope.
 
         A native hosted room running a second profile calls
-        ``tui_gateway.launch_profile_policy.activate_multi_profile_hosting`` inside the gateway process,
+        ``hermes_agent.tui_gateway.launch_profile_policy.activate_multi_profile_hosting`` inside the gateway process,
         so ``get_secret`` fails closed for every unscoped read afterwards — including the standalone
         gateway's ordinary turns, which never bound a scope because ``multiplex_profiles`` is off
         (#112878). The launch profile is a profile too: bind its ``.env`` over the env frozen at
         activation (a key injected by systemd / ``op run`` has no file to rebuild it from), never a
         secondary's scope and never live ``os.environ``."""
-        from tui_gateway.launch_profile_policy import launch_profile_scope_if_multiplexed
+        from hermes_agent.tui_gateway.launch_profile_policy import launch_profile_scope_if_multiplexed
         return launch_profile_scope_if_multiplexed()
 
     def _media_delivery_scope_for_source(self, source: SessionSource):

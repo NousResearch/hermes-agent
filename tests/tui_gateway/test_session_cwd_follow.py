@@ -14,7 +14,7 @@ import subprocess
 import pytest
 
 from tools import terminal_tool
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 def _git(cwd, *args):
@@ -36,7 +36,7 @@ def repo_with_worktree(tmp_path):
     worktree = tmp_path / "proj-feature"
     _git(repo, "worktree", "add", "-b", "feature", str(worktree))
 
-    from tui_gateway import git_probe
+    from hermes_agent.tui_gateway import git_probe
 
     git_probe.invalidate()
     yield repo, worktree

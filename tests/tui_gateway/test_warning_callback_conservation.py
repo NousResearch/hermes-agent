@@ -7,7 +7,7 @@ import pytest
 import hermes_yaml as yaml
 
 from agent.status_output import StatusOutputMixin
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 from tests.tui_gateway.test_auto_continue import turn_env, marker_home, _session
 
 CLARIFY_QUESTIONS = [{"qid": "q0", "question": "Continue recovery?", "choices": ["yes", "no"], "multi_select": False}]
@@ -55,7 +55,7 @@ def test_real_tui_callbacks_filter_only_diagnostics_at_owner_sink(tmp_path, monk
 @pytest.mark.parametrize("setting", [None, False, True])
 def test_post_turn_drain_uses_owner_and_preserves_real_clarify(turn_env, marker_home, monkeypatch, setting, caplog):
     from tools.process_registry import process_registry
-    from tui_gateway import server_requests
+    from hermes_agent.tui_gateway import server_requests
     owner = marker_home / "owner"
     owner.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(marker_home))
@@ -96,7 +96,7 @@ def test_post_turn_drain_uses_owner_and_preserves_real_clarify(turn_env, marker_
 
 @pytest.mark.parametrize("setting", [None, False, True])
 def test_diagnostic_turn_callbacks_from_real_worker_keep_controls_and_logs(turn_env, marker_home, monkeypatch, setting, caplog):
-    from tui_gateway import server_requests
+    from hermes_agent.tui_gateway import server_requests
     monkeypatch.setenv("HERMES_HOME", str(marker_home))
     (marker_home / "config.yaml").write_text(yaml.safe_dump(
         {} if setting is None else {"display": {"suppress_warning_notifications": setting}}))

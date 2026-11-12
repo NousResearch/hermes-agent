@@ -14,7 +14,7 @@ from tests.gateway.test_hosted_room_owed_revoke_cap import _fill
 from tests.gateway.test_session_group_peers import (
     gateway as gateway_fixture, linked_peer as linked_peer_fixture, linked_room, _seat, invite, _grant_error,
 )
-from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient, PeerRunsHTTPError
+from hermes_agent.tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient, PeerRunsHTTPError
 
 gateway, linked_peer = gateway_fixture, linked_peer_fixture
 

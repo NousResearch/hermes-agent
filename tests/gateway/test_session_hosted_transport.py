@@ -209,7 +209,7 @@ def test_prompt_digest_preserves_source_fences_and_legacy_input(tmp_path, monkey
 def test_source_attestation_binds_bytes_to_task_member_and_current_home(tmp_path, monkeypatch):
     import base64
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
-    from tui_gateway.hosted_room_driver import HostedRoomBinding
+    from hermes_agent.tui_gateway.hosted_room_driver import HostedRoomBinding
     from gateway.session_hosted_transport import _CHUNK_BYTES
     source = _SourceTask(tmp_path, monkeypatch, b'owned source bytes' * 4000)
     with source.db:

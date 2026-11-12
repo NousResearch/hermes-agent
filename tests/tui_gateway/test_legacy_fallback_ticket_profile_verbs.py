@@ -14,7 +14,7 @@ import pytest
 
 @pytest.fixture
 def homes(tmp_path, monkeypatch):
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     launch = tmp_path / 'root'
     bee = launch / 'profiles' / 'bee'
     bee.mkdir(parents=True)
@@ -25,7 +25,7 @@ def homes(tmp_path, monkeypatch):
 
 def _call(server, profile_id, method, params):
     from gateway.runtime_bootstrap import _PURPOSE_CAPABILITIES
-    from tui_gateway.ws_legacy_fallback import dispatch_legacy
+    from hermes_agent.tui_gateway.ws_legacy_fallback import dispatch_legacy
     actor = types.SimpleNamespace(profile_id=str(profile_id), capabilities=frozenset(_PURPOSE_CAPABILITIES['interactive']))
     written, done = [], threading.Event()
     transport = types.SimpleNamespace(write=lambda frame: written.append(frame) or done.set() or True)

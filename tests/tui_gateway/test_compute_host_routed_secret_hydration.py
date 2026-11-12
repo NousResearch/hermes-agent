@@ -10,8 +10,8 @@ from pathlib import Path
 
 import pytest
 
-from tui_gateway import server
-from tui_gateway.compute_host import ComputeHost
+from hermes_agent.tui_gateway import server
+from hermes_agent.tui_gateway.compute_host import ComputeHost
 
 
 @pytest.mark.platforms("linux")

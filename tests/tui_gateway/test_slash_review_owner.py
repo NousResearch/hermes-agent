@@ -7,8 +7,8 @@ from __future__ import annotations
 import threading
 from unittest.mock import patch
 
-from tui_gateway import server
-from tui_gateway.transport import StdioTransport
+from hermes_agent.tui_gateway import server
+from hermes_agent.tui_gateway.transport import StdioTransport
 
 
 def _live_session(agent):

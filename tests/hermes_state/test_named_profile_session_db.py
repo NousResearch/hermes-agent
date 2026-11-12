@@ -62,7 +62,7 @@ def _make_store_unopenable(profile: Path) -> Path:
 
 def test_open_profile_session_db_returns_profile_handle(homes):
     root, profile = homes
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     db = server._open_profile_session_db(str(profile))
     try:
@@ -77,7 +77,7 @@ def test_open_profile_session_db_returns_profile_handle(homes):
 def test_open_profile_session_db_raises_when_store_unopenable(homes):
     """A genuinely unopenable state.db (directory in its place) must raise."""
     root, profile = homes
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     _make_store_unopenable(profile)
     with pytest.raises(RuntimeError, match="profile session store unavailable"):
@@ -88,7 +88,7 @@ def test_open_profile_session_db_raises_when_store_unopenable(homes):
 def test_open_profile_session_db_does_not_fallback_on_open_failure(homes, monkeypatch):
     """SessionDB constructor failure must raise, not reuse/return launch."""
     root, profile = homes
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     class Boom(Exception):
         pass
@@ -113,7 +113,7 @@ def test_deferred_build_fails_closed_when_profile_store_unopenable(homes, monkey
     emit an error event, and never reach _make_agent.
     """
     root, profile = homes
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     _make_store_unopenable(profile)
     launch = SessionDB(db_path=root / "state.db")
@@ -174,7 +174,7 @@ def test_init_session_skips_launch_db_when_profile_store_unopenable(homes, monke
     patched to a tripwire: any call proves the launch store was touched.
     """
     root, profile = homes
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     _make_store_unopenable(profile)
     sid = "sid-worker-init"
@@ -240,7 +240,7 @@ def test_bot_capability_rebuild_stays_on_the_profile_store(homes, monkeypatch):
     desktop replayed ``profiles/<bot>/state.db`` and showed a stale transcript (#104079).
     """
     root, profile = homes
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     launch = SessionDB(db_path=root / "state.db")
     profile_db = server._open_profile_session_db(str(profile))
@@ -281,7 +281,7 @@ def test_bot_capability_rebuild_stays_on_the_profile_store(homes, monkeypatch):
 def test_reset_session_agent_stays_on_the_profile_store(homes, monkeypatch):
     """The tools.configure session reset must retain the same profile binding."""
     root, profile = homes
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     launch = SessionDB(db_path=root / "state.db")
     profile_db = server._open_profile_session_db(str(profile))

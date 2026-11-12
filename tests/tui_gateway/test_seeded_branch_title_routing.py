@@ -9,7 +9,7 @@ from hermes_agent.hermes_state import SessionDB
 
 def test_seeded_desktop_branch_title_is_derived_until_the_user_renames(monkeypatch, tmp_path):
     monkeypatch.setattr("hermes_cli.banner.prefetch_update_check", lambda: None)
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     project = tmp_path / "example-project"
     project.mkdir()

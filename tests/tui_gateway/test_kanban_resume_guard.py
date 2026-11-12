@@ -22,9 +22,9 @@ def _restore_stdout():
 @pytest.fixture()
 def server():
     # Same import-window pattern as tests/tui_gateway/test_protocol.py: the mocks only need
-    # to cover the initial import of tui_gateway.server.
-    import tui_gateway.server_requests
-    import tui_gateway.transport
+    # to cover the initial import of hermes_agent.tui_gateway.server.
+    import hermes_agent.tui_gateway.server_requests
+    import hermes_agent.tui_gateway.transport
     with patch.dict("sys.modules", {
         "hermes_constants": MagicMock(get_hermes_home=MagicMock(return_value="/tmp/hermes_test")),
         "hermes_cli.env_loader": MagicMock(),
@@ -32,7 +32,7 @@ def server():
         "hermes_agent.hermes_state": MagicMock(),
     }):
         import importlib
-        mod = importlib.import_module("tui_gateway.server")
+        mod = importlib.import_module("hermes_agent.tui_gateway.server")
 
     methods = dict(mod._methods)
     real_stdout = mod._real_stdout
@@ -42,7 +42,7 @@ def server():
     mod._real_stdout = real_stdout
     for sid in list(mod._sessions):
         mod._close_session_by_id(sid, end_reason="test_cleanup")
-    from tui_gateway import server_requests
+    from hermes_agent.tui_gateway import server_requests
     server_requests.reset_for_tests()
     mod._live_transports.clear()
 

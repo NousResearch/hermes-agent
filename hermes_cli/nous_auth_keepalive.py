@@ -154,7 +154,7 @@ def refresh_nous_auth_keepalive_once(
     # This runs in a bare daemon thread, so it does not inherit a request's ContextVars. Once a
     # gateway multiplexes profiles, even the launch profile must bind its own scope before a
     # credential read; otherwise the fail-closed routing reader warns on every tick.
-    from tui_gateway.launch_profile_policy import launch_profile_scope_if_multiplexed
+    from hermes_agent.tui_gateway.launch_profile_policy import launch_profile_scope_if_multiplexed
 
     with launch_profile_scope_if_multiplexed():
         pool_result = _refresh_selected_pool_entry(

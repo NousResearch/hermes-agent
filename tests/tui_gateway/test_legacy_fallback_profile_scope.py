@@ -12,7 +12,7 @@ import pytest
 
 @pytest.fixture
 def homes(tmp_path, monkeypatch):
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     launch = tmp_path / 'root'
     bee = launch / 'profiles' / 'bee'
     bee.mkdir(parents=True)
@@ -25,7 +25,7 @@ def homes(tmp_path, monkeypatch):
 def test_profile_bound_ticket_reads_only_its_own_profile(homes, monkeypatch):
     from gateway.runtime_bootstrap import _PURPOSE_CAPABILITIES
     from hermes_agent.hermes_state import SessionDB
-    from tui_gateway.ws_legacy_fallback import dispatch_legacy, legacy_fallback_allowed
+    from hermes_agent.tui_gateway.ws_legacy_fallback import dispatch_legacy, legacy_fallback_allowed
     server, launch, bee = homes
     with SessionDB(launch / 'state.db') as db:
         db.create_session('launch-sid', 'cli')

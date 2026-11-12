@@ -1,4 +1,4 @@
-"""Server→client request ordering on the wire (tui_gateway/server_requests.py).
+"""Server→client request ordering on the wire (hermes_agent/tui_gateway/server_requests.py).
 
 A request is published in ``_open`` before its frame is written, so a cancel (session.interrupt / close /
 shutdown on an RPC thread) can withdraw it in between. The renderer must still see the request before its
@@ -12,7 +12,7 @@ import threading
 
 import pytest
 
-from tui_gateway import server_requests
+from hermes_agent.tui_gateway import server_requests
 
 
 @pytest.fixture()
@@ -104,7 +104,7 @@ def _answer_with_error(code, message):
 def test_an_error_answer_is_logged_with_its_code(wire, caplog, code):
     """An error answer still reads as unanswered for the caller, but its code and message reach the
     log at warning: a client handler crash (-32603) or a missing handler (-32601) is no longer silent."""
-    with caplog.at_level("WARNING", logger="tui_gateway.server_requests"):
+    with caplog.at_level("WARNING", logger="hermes_agent.tui_gateway.server_requests"):
         assert _answer_with_error(code, "handler crashed: TypeError") == [None]
 
     assert any(str(code) in r.getMessage() and "handler crashed" in r.getMessage() for r in caplog.records)

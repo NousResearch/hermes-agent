@@ -1,4 +1,4 @@
-"""Invariants for the authoritative project-tree builder (tui_gateway.project_tree).
+"""Invariants for the authoritative project-tree builder (hermes_agent.tui_gateway.project_tree).
 
 These assert structural contracts (worktree folding, kanban collapse, lane id
 scheme, membership union) rather than snapshots, so routine data changes don't
@@ -7,7 +7,7 @@ break them.
 
 from __future__ import annotations
 
-from tui_gateway import project_tree as pt
+from hermes_agent.tui_gateway import project_tree as pt
 
 _SID = 0
 

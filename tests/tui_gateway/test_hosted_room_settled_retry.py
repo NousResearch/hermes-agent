@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from gateway import hosted_room_driver as driver, hosted_rooms
-from tui_gateway.hosted_room_service import HostedRoomService
+from hermes_agent.tui_gateway.hosted_room_service import HostedRoomService
 
 
 @pytest.mark.parametrize("later_messages", [0, 25])

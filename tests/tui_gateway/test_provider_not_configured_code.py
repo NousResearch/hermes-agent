@@ -9,7 +9,7 @@ but …"), the matcher did not, and a blank install got a dead-end toast instead
 import pytest
 
 from agent.auxiliary_unavailable import ProviderNotConfiguredError
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 @pytest.fixture

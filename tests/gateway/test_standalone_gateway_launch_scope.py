@@ -1,7 +1,7 @@
 """A standalone gateway (``multiplex_profiles`` off) keeps resolving the launch profile's credentials
 after a native hosted room activated the process-wide secret guard (#112878).
 
-``tui_gateway.launch_profile_policy.activate_multi_profile_hosting`` runs inside the messaging
+``hermes_agent.tui_gateway.launch_profile_policy.activate_multi_profile_hosting`` runs inside the messaging
 gateway process when a hosted room serves a second profile; ``get_secret`` then fails closed for
 every unscoped read. The standalone gateway's turns and handler entry points must bind the launch
 profile's OWN scope (``.env`` over the env frozen at activation) — not skip binding because the
@@ -17,7 +17,7 @@ from agent import secret_scope
 from agent.secret_scope import UnscopedSecretError, current_secret_scope, get_secret
 from gateway.config import GatewayConfig
 from gateway.run import GatewayRunner
-from tui_gateway import launch_profile_policy
+from hermes_agent.tui_gateway import launch_profile_policy
 
 INJECTED = "HOSTEDROOM_TEST_INJECTED_KEY"
 
@@ -45,7 +45,7 @@ def _keys():
 
 def test_standalone_turn_binds_launch_profile_scope_after_hosted_activation(standalone):
     runner, secondary = standalone
-    from tui_gateway.server import _session_profile_runtime_scope
+    from hermes_agent.tui_gateway.server import _session_profile_runtime_scope
 
     # A native hosted room ran a second profile: real activation, real secondary scope entered and left.
     launch_profile_policy.activate_multi_profile_hosting()

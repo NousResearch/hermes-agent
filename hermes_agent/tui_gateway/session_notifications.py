@@ -178,7 +178,7 @@ def _notif_unowned_event(sid: str, evt: dict, deferred) -> None:
     to be requeued; anything else drops."""
     evt_type, is_delegation = evt.get("type", "completion"), evt.get("type") == "async_delegation"
     origin, key = str(evt.get("origin_ui_session_id") or ""), str(evt.get("session_key") or "")
-    from tui_gateway import notification_park
+    from hermes_agent.tui_gateway import notification_park
     if notification_park.park(evt):
         logger.debug("Parked unowned %s notification (origin=%r key=%r) until its owner returns",
                      evt_type, origin, key)
@@ -807,7 +807,7 @@ def _notification_poller_scoped_loop(stop_event: threading.Event, sid: str, sess
     from tools import async_delegation
     from tools.process_registry import process_registry
     from tools.process_registry_awaiting import release as release_in_flight, take_ready
-    from tui_gateway import notification_park
+    from hermes_agent.tui_gateway import notification_park
     from tools.process_registry_notifications import format_process_notification
     process_registry.restore_completions()  # first consumer in a TUI process (#123265)
     queue = process_registry.completion_queue

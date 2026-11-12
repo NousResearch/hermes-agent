@@ -7,7 +7,7 @@ import pytest
 
 from tests.gateway.test_api_unknown_resolution import (
     _AUTH_HEADERS, _close_fixture, _restarted_api_runs)
-from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient, PeerRunsHTTPError
+from hermes_agent.tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient, PeerRunsHTTPError
 
 
 @pytest.mark.asyncio

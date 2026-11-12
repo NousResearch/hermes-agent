@@ -13,7 +13,7 @@ What it does
    It NEVER touches the live :9119 dashboard / ai.hermes.dashboard / live
    state.db. Loopback bind ⇒ no auth gate (web_server.should_require_auth).
 2. Arms the synthetic GIL-heavy turn seam (``HERMES_ISO_CERTIFY_SYNTH_TURN=1``,
-   see ``tui_gateway/synthetic_turn.py``) so 6 concurrent turns reproduce the
+   see ``hermes_agent/tui_gateway/synthetic_turn.py``) so 6 concurrent turns reproduce the
    ``take_gil`` interpreter-contention regime WITHOUT real model calls. A
    network/sleep stub would release the GIL and NOT reproduce the incident, so
    it would be a fake green — the synthetic turn is pure-Python CPU on purpose.

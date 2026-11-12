@@ -164,7 +164,7 @@ def anthropic_homes(tmp_path, monkeypatch):
 
 
 def _disconnect(slug):
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     return server._methods["model.disconnect"](1, {"slug": slug})
 

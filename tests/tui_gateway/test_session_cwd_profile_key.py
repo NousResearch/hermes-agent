@@ -9,7 +9,7 @@ key and ``get_session_cwd`` misses until the first ``cd``.
 from __future__ import annotations
 
 from tools import terminal_tool
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 def test_secondary_profile_session_cwd_is_found_inside_its_scope(monkeypatch, tmp_path):

@@ -1,4 +1,4 @@
-"""WebSocket transport for the tui_gateway JSON-RPC server: reuses :func:`tui_gateway.server.dispatch`
+"""WebSocket transport for the tui_gateway JSON-RPC server: reuses :func:`hermes_agent.tui_gateway.server.dispatch`
 verbatim so every RPC, slash command, approval flow and agent event takes the same handlers as Ink over
 stdio. Wire protocol is identical to stdio (newline-delimited JSON-RPC both ways; ``gateway.ready`` right
 after accept). Mount as ``@app.websocket("/api/ws") async def ws(ws): await handle_ws(ws)``."""
@@ -16,11 +16,11 @@ import threading
 import time
 from typing import Any, Callable
 
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 from agent.message_sanitization import _sanitize_surrogates
-from tui_gateway.event_replay import replay_epoch
-from tui_gateway.transport import serialize_frame
-from tui_gateway.ws_legacy_fallback import dispatch_legacy, legacy_fallback_allowed
+from hermes_agent.tui_gateway.event_replay import replay_epoch
+from hermes_agent.tui_gateway.transport import serialize_frame
+from hermes_agent.tui_gateway.ws_legacy_fallback import dispatch_legacy, legacy_fallback_allowed
 
 _log = logging.getLogger(__name__)
 
@@ -118,7 +118,7 @@ _WS_ANSWER_METHODS = frozenset({"clarify.lock"})
 
 
 def _answers_open_request(req: Any) -> bool:
-    from tui_gateway.server_requests import is_response_frame
+    from hermes_agent.tui_gateway.server_requests import is_response_frame
     return isinstance(req, dict) and (req.get("method") in _WS_ANSWER_METHODS or is_response_frame(req))
 
 # Per-token streaming frames are coalesced: buffered and flushed as a batch on a short timer instead
@@ -390,7 +390,7 @@ async def _dispatch_request(authority_connection: Any, req: Any, req_method: Any
     local Desktop runs as work for it (the welcome trial and onboarding key on that), and so do the
     threads it hands off to: ``to_thread`` and the legacy pool copy this context."""
     from hermes_cli.process_identity import serving_local_desktop
-    from tui_gateway.server_requests import resolve_pinned_response
+    from hermes_agent.tui_gateway.server_requests import resolve_pinned_response
     if authority_connection is not None and resolve_pinned_response(req, transport):
         # The answer to a request a sidecar RPC sent back to THIS socket (vault.preview.fill's page
         # scripts); the authority's own registry never holds those ids.
@@ -430,7 +430,7 @@ class _SendFailed(Exception):
 
 async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: str | None = None,
                     operator: bool = False) -> None:
-    """Run one WebSocket session. Wire-compatible with ``tui_gateway.entry``. *auth_identity* is the server-minted
+    """Run one WebSocket session. Wire-compatible with ``hermes_agent.tui_gateway.entry``. *auth_identity* is the server-minted
     ``{user_id, provider}`` recorded at WS-upgrade auth, stored as ``WSTransport.auth_identity`` (the only identity
     authority for session ownership and relay authorship); callers that omit it (harnesses, embedded TUI child) get None."""
     peer, transport = _ws_peer_label(ws), None

@@ -7,7 +7,7 @@ plugin's schema with the current values, and ``settings`` writes through the sam
 
 import pytest
 
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 MANIFEST = """\
 name: demo-plugin

@@ -70,7 +70,7 @@ def test_rpc_switch_and_update_all_round_trip(home, monkeypatch):
     """Desktop's switch writes the profile's plugins.auto_apply; Update all reports each plugin and
     never accepts a widened pin on the user's behalf."""
     from hermes_cli import plugins_cmd_update, plugins_updates
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     def rpc(**params):
         return server.handle_request({"id": "1", "method": "plugins.manage", "params": params})["result"]

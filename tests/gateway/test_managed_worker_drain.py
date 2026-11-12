@@ -63,7 +63,7 @@ async def test_draining_ws_redeems_only_worker_ticket(tmp_path, monkeypatch, pur
     async def handle(ws, **kwargs):
         await ws.accept(subprotocol='hermes-gateway-v1')
         seen.append((await ws.receive_json(), kwargs['auth_identity']['capabilities']))
-    monkeypatch.setattr('tui_gateway.ws.handle_ws', handle)
+    monkeypatch.setattr('hermes_agent.tui_gateway.ws.handle_ws', handle)
     monkeypatch.setattr(web, '_DASHBOARD_EMBEDDED_CHAT_ENABLED', True)
     monkeypatch.setattr(web_server_chat, '_ws_request_is_allowed', lambda ws: True)
     incoming = iter([{'type': 'websocket.connect'}, {'type': 'websocket.receive', 'text': json.dumps({'method': 'worker.persist'})}])

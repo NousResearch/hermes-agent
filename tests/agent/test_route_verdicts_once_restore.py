@@ -25,14 +25,14 @@ def _switch(agent, model, base_url):
 
 
 def _once_restore(agent, snapshot):
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
         server._restore_agent_model_runtime(agent, snapshot)
 
 
 def test_once_switch_that_fails_over_restores_the_original_primarys_verdicts():
     """``/model X --once``; X fails over; the one-turn restore puts P back with P's verdicts, not X's."""
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     agent = _make_agent(fallback_model=_FALLBACK)
     agent._reasoning_effort_rejected = True
     primary = _verdicts(agent)
@@ -51,7 +51,7 @@ def test_once_switch_that_fails_over_restores_the_original_primarys_verdicts():
 
 def test_switch_while_on_fallback_does_not_hand_the_old_primarys_verdicts_to_the_new_one():
     """Fallback from P, ``/model Q`` while on the fallback, a ``--once`` hop, restore to Q: Q starts clean."""
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     agent = _make_agent(fallback_model=_FALLBACK)
     agent._reasoning_effort_rejected = agent._stream_options_unsupported = True  # P's
     _fail_over(agent)
@@ -93,7 +93,7 @@ def test_primary_verdicts_come_back_only_on_the_endpoint_that_earned_them():
 def test_once_restore_through_switch_model_keeps_the_primarys_verdicts():
     """The pool reset gate blocks ``_restore_primary_runtime``, so the one-turn restore falls back to
     ``switch_model``; the primary still gets back the verdicts it earned, not a clean slate."""
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     agent = _make_agent(fallback_model=_FALLBACK)
     agent._reasoning_effort_rejected = True
     primary = _verdicts(agent)
@@ -139,7 +139,7 @@ def test_a_second_fallback_hop_does_not_restamp_the_first_fallbacks_verdicts_as_
 def test_gated_once_restore_onto_a_fallback_sharing_the_primarys_url_keeps_the_primarys_verdicts_off_it():
     """``/model X --once`` taken while on F1, which shares the primary's URL; the gated restore switches
     back to F1, and the primary's endpoint-stamped verdicts must not land on F1."""
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     agent = _make_agent()
     agent._reasoning_effort_rejected = True  # P's
     f1 = {"provider": "custom", "model": "f1-model"}

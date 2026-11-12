@@ -15,8 +15,8 @@ import pytest
 from gateway import run_api
 from gateway.config import Platform
 from gateway.slash_commands import GatewaySlashCommandsMixin
-from tui_gateway import server
-from tui_gateway.transport import bind_transport, reset_transport
+from hermes_agent.tui_gateway import server
+from hermes_agent.tui_gateway.transport import bind_transport, reset_transport
 
 
 class _Mic:

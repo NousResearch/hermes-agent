@@ -23,7 +23,7 @@ def _call(server, method, params):
 
 
 def test_languages_and_catalog_serve_pack_layers_per_surface(tmp_path, monkeypatch, clean_layers):
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     from hermes_cli.plugins import PluginContext, PluginManager
     from hermes_cli.plugins_manifest import PluginManifest
 
@@ -63,7 +63,7 @@ def test_languages_and_catalog_serve_pack_layers_per_surface(tmp_path, monkeypat
 def test_catalog_answers_for_the_requested_profile_home(tmp_path, monkeypatch, clean_layers):
     """Two on-disk homes; only the named profile overlays de. The method must read that home's overlay
     and leave the launch home's (empty) view intact."""
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     launch, named = tmp_path / "launch", tmp_path / "profiles" / "named"
     (launch / "locales").mkdir(parents=True)
@@ -81,7 +81,7 @@ def test_catalog_answers_for_the_requested_profile_home(tmp_path, monkeypatch, c
 def test_cold_gateway_serves_an_installed_pack_before_any_agent_exists(tmp_path, monkeypatch, clean_layers):
     """The Desktop asks for ``i18n.languages`` / ``i18n.catalog`` right after connecting, before anything
     in the gateway has discovered plugins. An installed, enabled pack must already be in both answers."""
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     from hermes_cli import plugins as plugins_mod
 
     home = tmp_path / "home"
@@ -114,7 +114,7 @@ def test_cold_gateway_serves_an_installed_pack_before_any_agent_exists(tmp_path,
 
 
 def test_failed_plugin_discovery_still_answers_with_bundled_languages(tmp_path, monkeypatch, clean_layers):
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     from hermes_cli import plugins as plugins_mod
 
     def boom(force=False):
@@ -137,7 +137,7 @@ def test_slow_plugin_discovery_does_not_hold_up_other_requests(method, tmp_path,
     import threading
 
     from hermes_cli import plugins as plugins_mod
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     class Transport:
         def __init__(self):

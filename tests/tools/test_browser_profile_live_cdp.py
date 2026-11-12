@@ -40,7 +40,7 @@ def test_a_live_override_is_this_profiles_alone(profiles, monkeypatch):
 def test_disconnect_falls_back_to_this_profiles_own_env_never_the_launch_env(profiles, monkeypatch):
     """After a disconnect the BROWSER_CDP_URL tier is the profile's own ``.env``; the launch process's
     ``os.environ`` value belongs to the launch profile and must not reach a served one."""
-    from tui_gateway.server import _resolve_browser_cdp_url  # bound onto server.py globals
+    from hermes_agent.tui_gateway.server import _resolve_browser_cdp_url  # bound onto server.py globals
 
     a, b = profiles
     (b / ".env").write_text("BROWSER_CDP_URL=http://127.0.0.1:7777\n")

@@ -1,5 +1,5 @@
 """Contracts: system / process / slash-command / rollback / cron / browser / config RPCs
-(handlers in ``tui_gateway/methods_tools.py``, browser helpers in ``methods_browser.py``).
+(handlers in ``hermes_agent/tui_gateway/methods_tools.py``, browser helpers in ``methods_browser.py``).
 
 Several results here are pass-throughs of dicts another module owns (``tools/process_registry.py``,
 ``tools/checkpoint_manager.py``, ``tools/cronjob_tools.py``): those declare every key the producer is

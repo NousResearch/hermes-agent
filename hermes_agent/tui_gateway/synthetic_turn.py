@@ -15,7 +15,7 @@ import threading
 import time
 from typing import Any, Callable, Optional
 
-from tui_gateway._env import env_float as _env_float, env_int as _env_int
+from hermes_agent.tui_gateway._env import env_float as _env_float, env_int as _env_int
 
 
 # Per-turn intensity spec: (key, caster, default source). ``chunk`` = pure-Python ops per interrupt
@@ -39,7 +39,7 @@ def synth_turn_armed() -> bool:
 
 class SyntheticHeavyAgent:
     """An AIAgent-shaped object whose turn is a GIL-holding CPU burn. Presents only the surface
-    ``tui_gateway.server``'s turn path and status helpers read (``run_conversation``/``interrupt``/
+    ``hermes_agent.tui_gateway.server``'s turn path and status helpers read (``run_conversation``/``interrupt``/
     ``clear_interrupt`` plus the ``model``/``provider``/``session_*`` attributes consumed by
     ``_get_usage`` and ``_session_info``). Never opens a socket or spawns a subprocess."""
 

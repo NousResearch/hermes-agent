@@ -9,7 +9,7 @@ sessions, tool subprocesses and httpx clients:
   batch's whole run.
 * ``plugins.platforms/feishu/feishu_comment._run_comment_agent`` — one agent
   per comment run in a long-lived gateway process.
-* ``tui_gateway/methods_prompt`` ``prompt.background`` — one side agent per
+* ``hermes_agent/tui_gateway/methods_prompt`` ``prompt.background`` — one side agent per
   background turn in the gateway process.
 * ``hermes_cli/cli_commands_mixin._handle_background_command`` — one agent
   per ``/bg`` task in a long-lived CLI process.
@@ -162,7 +162,7 @@ def _bg_session(server, sid: str) -> dict:
 
 class TestPromptBackgroundClosesAgent:
     def _call(self, monkeypatch, sid, agent_cls):
-        from tui_gateway import server
+        from hermes_agent.tui_gateway import server
         import contextlib
 
         monkeypatch.setattr(server, "_start_agent_build", lambda sid_, session_: None)
@@ -191,7 +191,7 @@ class TestPromptBackgroundClosesAgent:
         return response
 
     def test_agent_closed_after_background_turn(self, monkeypatch):
-        from tui_gateway import server
+        from hermes_agent.tui_gateway import server
         sid = "close-lifecycle-bg"
         _bg_session(server, sid)
         try:
@@ -202,7 +202,7 @@ class TestPromptBackgroundClosesAgent:
             server._sessions.pop(sid, None)
 
     def test_agent_closed_when_background_turn_fails(self, monkeypatch):
-        from tui_gateway import server
+        from hermes_agent.tui_gateway import server
 
         class FailingAgent(RecordingAgent):
             def __init__(self, *args, **kwargs):

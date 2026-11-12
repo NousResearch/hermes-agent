@@ -257,7 +257,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
             if profile_home:
                 session_db = _open_profile_session_db(profile_home)
             try:
-                from tui_gateway.entry import ensure_mcp_discovery_started
+                from hermes_agent.tui_gateway.entry import ensure_mcp_discovery_started
                 ensure_mcp_discovery_started()
             except Exception:
                 logger.warning("MCP discovery startup failed", exc_info=True)
@@ -633,7 +633,7 @@ def _schedule_resume_hydration(sid: str, stored_id: str, db, *, close_db: bool =
 
 def _session_pending_kind(sid: str) -> str:
     """Method of the server→client request *sid* is blocked on ("" when none)."""
-    from tui_gateway import server_requests
+    from hermes_agent.tui_gateway import server_requests
     return server_requests.pending_kind(sid)
 
 

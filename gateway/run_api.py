@@ -321,7 +321,7 @@ _SESSION_SOCKET_MODULE = "tui_gateway.ws"
 
 
 def preload_session_socket() -> "asyncio.Task | None":
-    """Start importing the ``/api/ws`` handler (``tui_gateway.ws``, ~0.7 s of CPU) off the loop.
+    """Start importing the ``/api/ws`` handler (``hermes_agent.tui_gateway.ws``, ~0.7 s of CPU) off the loop.
 
     Unloaded, the first upgrade imports it on the event loop while the client's 10 s open timeout
     runs, and a CPU-starved host turns that into a failed attach right after READY. Only a client's
@@ -351,7 +351,7 @@ async def await_session_socket_preload(task: "asyncio.Task | None", *, timeout: 
 
 
 async def session_socket_handler():
-    """``tui_gateway.ws.handle_ws``, fetched on a worker thread: an attach that arrives while the
+    """``hermes_agent.tui_gateway.ws.handle_ws``, fetched on a worker thread: an attach that arrives while the
     module is still loading (a preload that outlived its READY bound) would otherwise block the
     event loop, and every connection on it, on the import lock the preload thread holds."""
     import importlib

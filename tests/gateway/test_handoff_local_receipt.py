@@ -193,8 +193,8 @@ async def _bot_row(authority, actor):
     empty but the roster names a chat, so the two must agree."""
     from pathlib import Path
     from gateway.session_controls import AuthorityConnection
-    from tui_gateway.server import _profile_session_fields
-    from tui_gateway.profile_roster_cache import invalidate
+    from hermes_agent.tui_gateway.server import _profile_session_fields
+    from hermes_agent.tui_gateway.profile_roster_cache import invalidate
     invalidate()
     roster = {}
     _profile_session_fields(roster, Path(authority.db.db_path).parent)

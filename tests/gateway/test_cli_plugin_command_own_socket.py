@@ -1,6 +1,6 @@
 """A classic CLI plugin command never holds the CLI's own gateway connection (#134889 PLG-7).
 
-The gateway answers one socket's requests one at a time, in arrival order (``tui_gateway/ws.py``
+The gateway answers one socket's requests one at a time, in arrival order (``hermes_agent/tui_gateway/ws.py``
 ``_dispatch_loop``), and a plugin handler may run for minutes. So ``slash.exec`` for a plugin command
 goes over a socket of its own to the same gateway, for the same session: while the handler runs, even
 after Ctrl+C stopped the wait, the CLI's reads, prompt admissions and interrupts are answered at once.

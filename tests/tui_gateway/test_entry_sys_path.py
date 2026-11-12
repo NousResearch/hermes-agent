@@ -1,4 +1,4 @@
-"""Regression test for tui_gateway/entry.py sys.path hardening (#15989, #51286).
+"""Regression test for hermes_agent/tui_gateway/entry.py sys.path hardening (#15989, #51286).
 
 The TUI backend is spawned by Node with the user's launch directory as CWD. A
 local package there (e.g. ``utils/``, ``proxy/``, ``ui/`` in tg-ws-proxy) shadowed
@@ -30,7 +30,7 @@ def test_entry_imports_from_cwd_with_colliding_packages(tmp_path):
     env["HERMES_HOME"] = str(tmp_path / "hermes_home")
 
     result = subprocess.run(
-        [sys.executable, "-c", "import tui_gateway.entry"],
+        [sys.executable, "-c", "import hermes_agent.tui_gateway.entry"],
         cwd=tmp_path,
         env=env,
         capture_output=True,

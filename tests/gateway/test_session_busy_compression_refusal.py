@@ -1,7 +1,7 @@
 """A rewind refused because another writer holds the conversation's compression lock says so.
 
 Main's busy text told the user to wait for a running ``/compress`` instead of pressing Stop
-(``tui_gateway/user_messages.py::busy_message``); the shared owner's refusal keeps its ``session_busy``
+(``hermes_agent/tui_gateway/user_messages.py::busy_message``); the shared owner's refusal keeps its ``session_busy``
 reason and names the lock in ``field`` so a client can pick that wording.
 """
 import pytest

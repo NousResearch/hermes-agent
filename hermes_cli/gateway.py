@@ -575,7 +575,7 @@ def _scan_gateway_pids(
     exclude_pids = exclude_pids | _get_ancestor_pids()
     pids: list[int] = []
     # Strict matcher shared with gateway.status: requires a real ``gateway run`` argv, so
-    # ``gateway status``/``dashboard`` siblings and ``python -m tui_gateway`` don't match.
+    # ``gateway status``/``dashboard`` siblings and ``python -m hermes_agent.tui_gateway`` don't match.
     from gateway.status import (
         looks_like_gateway_command_line,
         looks_like_gateway_runtime_command_line,

@@ -2,7 +2,7 @@
 
 Plugins extend Hermes through public surfaces (hooks, middleware, provider profiles, Desktop SDK
 slots). A plugin that replaces a core function, method or module attribute in place — assigning
-``AIAgent._replace_primary_openai_client``, ``tui_gateway.server.handle_request``, a
+``AIAgent._replace_primary_openai_client``, ``hermes_agent.tui_gateway.server.handle_request``, a
 ``gateway.run_turn`` helper, a private catalog dict — collides with every other plugin that patches
 the same seam and breaks on any core release. This static pass finds those rebinds in the plugin's
 Python (the import closure of ``__init__.py`` and ``dashboard/``; tests, benchmarks and scripts

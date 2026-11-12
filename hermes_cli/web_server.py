@@ -1292,7 +1292,7 @@ def _on_server_started(
 
     _write_dashboard_ready_file(actual_port)
     # Port-discovery sentinel parsed by the Desktop spawn. Written to fd 1:
-    # tui_gateway.server redirects sys.stdout to stderr at import, and the
+    # hermes_agent.tui_gateway.server redirects sys.stdout to stderr at import, and the
     # Desktop watches child.stdout (#96282). A headless `serve` announces the
     # neutral token FIRST and the legacy HERMES_DASHBOARD_READY one after it:
     # a packaged Desktop artifact whose parser predates the neutral token
@@ -1332,7 +1332,7 @@ def _on_server_started(
     # Collapse the peer-hangup teardown flood (#50005): 50+ identical WinError
     # 10054 tracebacks per Desktop disconnect become one debug line.
     def _install_noise_filter() -> None:
-        from tui_gateway.loop_noise import install_loop_noise_filter
+        from hermes_agent.tui_gateway.loop_noise import install_loop_noise_filter
 
         install_loop_noise_filter(asyncio.get_running_loop())
 
@@ -1484,7 +1484,7 @@ def _start_server_runtime(
     # uvicorn's capture_signals() so uvicorn re-raises into them as the
     # "original" handlers — kills outside the serve window are covered too.
     try:
-        from tui_gateway.server import install_exit_flush_signal_handlers
+        from hermes_agent.tui_gateway.server import install_exit_flush_signal_handlers
 
         install_exit_flush_signal_handlers()
     except Exception as exc:
@@ -1508,7 +1508,7 @@ def _start_server_runtime(
     # rotated by a later boot step would otherwise be invisible for the process lifetime. No-op on a
     # single-profile host; `gateway.multiplex_profiles: false` is retired and no longer skips it.
     try:
-        from tui_gateway.launch_profile_policy import activate_multi_profile_hosting_eagerly
+        from hermes_agent.tui_gateway.launch_profile_policy import activate_multi_profile_hosting_eagerly
 
         activate_multi_profile_hosting_eagerly()
     except Exception:

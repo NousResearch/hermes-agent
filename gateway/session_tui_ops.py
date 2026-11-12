@@ -237,7 +237,7 @@ async def rollback(connection, ref, params, *, kind):
 
     def run() -> dict:
         from tools.checkpoint_manager import CheckpointManager
-        from tui_gateway.checkpoints import _resolve_checkpoint_hash
+        from hermes_agent.tui_gateway.checkpoints import _resolve_checkpoint_hash
         mgr = CheckpointManager(enabled=bool(kwargs['checkpoints_enabled']), **{
             key[len('checkpoint_'):]: value for key, value in kwargs.items() if key.startswith('checkpoint_')})
         cwd = policy.cwd
@@ -280,7 +280,7 @@ async def rollback(connection, ref, params, *, kind):
         if kind == 'diff':
             if refusal:
                 raise RuntimeStoreError('unsupported_terminal_backend')
-            from tui_gateway.render import render_diff
+            from hermes_agent.tui_gateway.render import render_diff
             result = mgr.diff(cwd, target)
             raw = result.get('diff', '')[:4000]
             payload = {'stat': result.get('stat', ''), 'diff': raw}

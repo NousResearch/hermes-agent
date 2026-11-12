@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 
 def test_retirement_reserves_admission_until_cancel_or_permanent_commit(monkeypatch):
     from hermes_cli import web_server
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     from hermes_cli import backend_retirement
 
     monkeypatch.setattr(backend_retirement, "retirement", backend_retirement.RetirementFence())

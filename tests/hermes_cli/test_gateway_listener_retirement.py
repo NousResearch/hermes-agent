@@ -14,7 +14,7 @@ from tests.hermes_cli.native_gateway_client import native_desktop_client
 
 def _fresh_fence(monkeypatch):
     from hermes_cli import backend_retirement
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     fence = backend_retirement.RetirementFence()
     monkeypatch.setattr(backend_retirement, "retirement", fence)

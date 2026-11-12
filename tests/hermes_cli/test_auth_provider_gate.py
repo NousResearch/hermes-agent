@@ -208,7 +208,7 @@ def test_profile_dotenv_key_counts_as_explicit_when_process_env_lacks_it(tmp_pat
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
 
     from agent import secret_scope
-    from tui_gateway import launch_profile_policy as lpp
+    from hermes_agent.tui_gateway import launch_profile_policy as lpp
     monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", False)
     monkeypatch.setattr(lpp, "_snapshot", None)
 

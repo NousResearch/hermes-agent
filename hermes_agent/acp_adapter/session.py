@@ -275,7 +275,7 @@ class SessionManager:
         _register_task_cwd(session_id, cwd)
         self._persist(state)
         # Promote the authoritative column and claim an ordering generation, the
-        # same contract tui_gateway/session_workdir.py uses: a git probe may only
+        # same contract hermes_agent/tui_gateway/session_workdir.py uses: a git probe may only
         # publish while its generation is still current, so a slow probe for a
         # previous workspace cannot overwrite a newer claim (A -> B -> A).
         self._schedule_git_metadata(state, self._claim_cwd_generation(state))
@@ -447,7 +447,7 @@ class SessionManager:
 
         def _run() -> None:
             try:
-                from tui_gateway import git_probe
+                from hermes_agent.tui_gateway import git_probe
                 branch, root = git_probe.branch(cwd), git_probe.common_repo_root(cwd)
                 if not (branch or root):
                     return

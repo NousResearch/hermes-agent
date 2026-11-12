@@ -9,7 +9,7 @@ import pytest
 from agent import onboarding_record
 from agent.onboarding_flow import End, Facts
 from hermes_cli.config import read_user_config_raw
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 FACTS = Facts(os="macos", arch="arm64", machine_kind="Mac", plugins=())
 

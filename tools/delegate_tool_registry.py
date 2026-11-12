@@ -112,7 +112,7 @@ def _subagent_transport_matches(record, transport) -> bool:
     every reattach path (prompt.submit, queued drain, resume, activate, viewer failover) already
     mutates it; a per-record copy needed a matching registry sync at each of those sites and two
     were missed (#106663). Records whose owner is not a session dict keep the exact-object rule."""
-    from tui_gateway.transport import FanoutTransport
+    from hermes_agent.tui_gateway.transport import FanoutTransport
 
     if record.get("owner_transport") is None:
         return False
@@ -162,7 +162,7 @@ def _capture_gateway_steer_authority(owner_session_id: Optional[str]) -> tuple[A
     if not owner_session_id:
         return None, None
     try:
-        from tui_gateway.server import _current_session_steer_authority
+        from hermes_agent.tui_gateway.server import _current_session_steer_authority
         return _current_session_steer_authority(owner_session_id)
     except Exception:
         return None, None

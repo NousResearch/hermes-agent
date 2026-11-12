@@ -38,7 +38,7 @@ from gateway.slash_commands_goals import GatewayGoalCommandsMixin
 from gateway.config import Platform
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 assert str(Path(cli_commands_mixin.__file__).resolve()).startswith(repo)
 assert str(Path(goals.__file__).resolve()).startswith(repo)

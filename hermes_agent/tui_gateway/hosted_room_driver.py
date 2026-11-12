@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, ContextManager, Protocol, cast
 
 from gateway import hosted_room_driver as state
-from tui_gateway.hosted_room_lease_keeper import LeaseKeeper
+from hermes_agent.tui_gateway.hosted_room_lease_keeper import LeaseKeeper
 
 logger = logging.getLogger(__name__)
 

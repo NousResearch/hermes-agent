@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import threading
 
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 class _FakeCLI:
@@ -35,7 +35,7 @@ def _live_session():
 
 
 def test_run_harvests_pending_agent_seed():
-    from tui_gateway import slash_worker
+    from hermes_agent.tui_gateway import slash_worker
 
     cli = _FakeCLI(seed="Composed in $EDITOR")
     out = slash_worker._run(cli, "/prompt")
@@ -48,7 +48,7 @@ def test_run_harvests_pending_agent_seed():
 
 
 def test_run_without_seed_harvests_empty_seed():
-    from tui_gateway import slash_worker
+    from hermes_agent.tui_gateway import slash_worker
 
     cli = _FakeCLI()
     out = slash_worker._run(cli, "/status")
@@ -57,7 +57,7 @@ def test_run_without_seed_harvests_empty_seed():
 
 
 def test_empty_command_returns_empty_output_and_seed():
-    from tui_gateway import slash_worker
+    from hermes_agent.tui_gateway import slash_worker
 
     cli = _FakeCLI()
     assert slash_worker._run(cli, "") == ""

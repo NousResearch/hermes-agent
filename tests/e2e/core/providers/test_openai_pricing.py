@@ -1,6 +1,6 @@
 """Model-picker pricing for a config-defined twin of a priced aggregator (#120757).
 
-Tier (stated honestly): a REAL ``python -m tui_gateway.entry`` process — the backend the TUI
+Tier (stated honestly): a REAL ``python -m hermes_agent.tui_gateway.entry`` process — the backend the TUI
 and Desktop model picker talk to — answering the ``model.options`` JSON-RPC exactly as the
 picker calls it. The only fake is the vendor's price catalog: the aggregator catalog URL
 (``https://openrouter.ai/api/v1/models``) is a hard-coded https constant with no override and

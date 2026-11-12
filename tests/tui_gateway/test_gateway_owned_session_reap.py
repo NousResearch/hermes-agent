@@ -13,7 +13,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from tui_gateway.server import _is_gateway_owned_source, _teardown_session
+from hermes_agent.tui_gateway.server import _is_gateway_owned_source, _teardown_session
 
 
 class TestIsGatewayOwnedSource:

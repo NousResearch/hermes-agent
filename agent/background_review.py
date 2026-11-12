@@ -140,7 +140,7 @@ def cancel_background_review_for_live_turn(
     warning is logged and the live turn proceeds anyway. See #84423.
 
     Despite the name, this is also the session-teardown/interrupt cancellation path
-    (``tui_gateway.session_lifecycle._finalize_session`` and ``_interrupt_session_turn``, #102895): a
+    (``hermes_agent.tui_gateway.session_lifecycle._finalize_session`` and ``_interrupt_session_turn``, #102895): a
     session ending or being explicitly stopped while its background review is still running must
     cancel that review the same way a new live turn preempts one — the review fork is invisible to
     every other interrupt/teardown mechanism (not tracked on ``session["running"]``, not joined by

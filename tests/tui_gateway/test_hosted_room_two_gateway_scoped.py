@@ -15,9 +15,9 @@ from aiohttp.test_utils import TestServer
 from gateway.config import PlatformConfig
 from gateway.hosted_rooms import local_authority_gateway_id
 from gateway.platforms.api_server import APIServerAdapter
-from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
-from tui_gateway.hosted_room_peer_transport import PeerMemberRoute
-from tui_gateway.hosted_room_service import HostedRoomService
+from hermes_agent.tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
+from hermes_agent.tui_gateway.hosted_room_peer_transport import PeerMemberRoute
+from hermes_agent.tui_gateway.hosted_room_service import HostedRoomService
 
 
 class _LocalRPC:

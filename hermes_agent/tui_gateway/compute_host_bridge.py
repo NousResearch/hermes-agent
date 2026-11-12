@@ -39,7 +39,7 @@ def _get_compute_host_supervisor(cfg: dict | None = None):
     isolation_cfg = cfg or _load_dashboard_process_isolation_config()
     with _compute_host_supervisor_lock:
         if _compute_host_supervisor is None:
-            from tui_gateway.host_supervisor import HostSupervisor
+            from hermes_agent.tui_gateway.host_supervisor import HostSupervisor
             _compute_host_supervisor = HostSupervisor(
                 rpc_sink=_relay_compute_host_rpc,
                 heartbeat_secs=int(isolation_cfg.get("compute_host_heartbeat_secs") or 15),
@@ -148,7 +148,7 @@ def _relay_compute_host_rpc(message: dict) -> bool:
         # A server request minted by the child: remember it against its session until it is answered/withdrawn.
         session = _sessions.get(str((params or {}).get("session_id") or "")) if isinstance(params, dict) else None
         if session is not None:
-            from tui_gateway.server_requests import can_replay_request
+            from hermes_agent.tui_gateway.server_requests import can_replay_request
 
             replayable = can_replay_request(message["method"], params)
             with _history_lock(session):
@@ -229,7 +229,7 @@ def _cancel_session_requests(sid: str, reason: str, *, method: str) -> None:
     """Withdraw *sid*'s open *method* requests wherever they wait: in this process, or in the compute-host
     child that minted them (the parent holds only a mirror, so a local cancel never reaches that wait).
     The child's ``request.cancel`` comes back through ``_relay_compute_host_rpc``, which drops the mirror."""
-    from tui_gateway import server_requests
+    from hermes_agent.tui_gateway import server_requests
     server_requests.cancel(sid, reason, method=method)
     session = _sessions.get(sid)
     if session is None:

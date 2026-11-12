@@ -14,7 +14,7 @@ FINAL = "".join(DELTAS)
 
 @pytest.fixture(autouse=True)
 def frame_cap(monkeypatch):
-    from tui_gateway.transport import FanoutTransport
+    from hermes_agent.tui_gateway.transport import FanoutTransport
     monkeypatch.setattr(FanoutTransport, "_MAX_PENDING_FRAMES", 256)
 
 

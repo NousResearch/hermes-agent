@@ -1,6 +1,6 @@
 """Provider readiness probe for the session authority's ``setup.runtime_check``.
 
-Answers with the legacy ``tui_gateway/methods_config.py`` handler's payload so a client reads one
+Answers with the legacy ``hermes_agent/tui_gateway/methods_config.py`` handler's payload so a client reads one
 contract whichever backend it reached: ``ok``/``provider``/``model``/``source``, ``error`` on
 failure (naming the configured pin, never the fallback chain's tail), ``free_tier_route`` on success.
 """

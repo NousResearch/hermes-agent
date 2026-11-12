@@ -6,7 +6,7 @@ import pytest
 
 # session.create's resume path imports this lazily mid-request; importing it whole here keeps the
 # conftest server-state fixture from meeting a half-initialized module at teardown.
-import tui_gateway.server
+import hermes_agent.tui_gateway.server
 from gateway.run import GatewayRunner
 
 

@@ -591,7 +591,7 @@ async def handle_drive_comment_event(client: Any, data: Any, *, self_open_id: st
     # SDK callbacks for the launch adapter can arrive without the connect-time
     # context. Once multiplexing is active, bind the launch tenant explicitly
     # before this path resolves comment rules, config, or model credentials.
-    from tui_gateway.launch_profile_policy import async_launch_profile_scope_if_multiplexed
+    from hermes_agent.tui_gateway.launch_profile_policy import async_launch_profile_scope_if_multiplexed
     async with async_launch_profile_scope_if_multiplexed():
         await _handle_drive_comment_event(client, data, self_open_id=self_open_id)
 

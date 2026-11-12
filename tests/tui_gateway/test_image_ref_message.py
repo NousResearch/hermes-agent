@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 import pytest
 
-from tui_gateway.server import _build_image_ref_message
+from hermes_agent.tui_gateway.server import _build_image_ref_message
 
 
 @pytest.fixture()

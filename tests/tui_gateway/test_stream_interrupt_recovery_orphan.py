@@ -13,7 +13,7 @@ from __future__ import annotations
 import time
 
 from hermes_agent.hermes_state import SessionDB
-from tui_gateway.session_reaper import _ORPHAN_SWEEP_SOURCES
+from hermes_agent.tui_gateway.session_reaper import _ORPHAN_SWEEP_SOURCES
 
 # One of the four orphan ids from the report.
 ORPHAN_SID = "20260913_210721_c89ac8"

@@ -91,7 +91,7 @@ def _profile_runtime_scope_tokens(profile_home, *, hydrate_secrets: bool = True)
             # plugin runtime bindings and per-home slots fail closed on (#118538).
             # Resolve at call time like the launch state.db handle: a harness that
             # re-homes the process after import must not read the old home's .env.
-            from tui_gateway.launch_profile_policy import launch_secret_scope, launch_terminal_env
+            from hermes_agent.tui_gateway.launch_profile_policy import launch_secret_scope, launch_terminal_env
             home = _launch_home()
             secrets = launch_secret_scope(home)
             # No home stamp: this IS the process's own profile, and the stamp exists only to

@@ -9,7 +9,7 @@ import pytest
 import hermes_yaml as yaml
 
 from hermes_cli import managed_scope
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 @pytest.fixture

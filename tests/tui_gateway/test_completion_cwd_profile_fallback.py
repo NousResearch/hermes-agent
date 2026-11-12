@@ -12,7 +12,7 @@ per-session override (``cwd_explicit`` still wins for a deliberate pick).
 
 from pathlib import Path
 
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 from tests.tui_gateway.test_tui_gateway_server import _write_profile_cfg
 
 

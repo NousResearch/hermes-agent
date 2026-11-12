@@ -17,7 +17,7 @@ import time
 import pytest
 
 from hermes_constants import get_hermes_home
-from tui_gateway import server as tui_server
+from hermes_agent.tui_gateway import server as tui_server
 
 class _Agent:
     def __init__(self, seen):

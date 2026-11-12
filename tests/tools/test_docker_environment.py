@@ -1346,7 +1346,7 @@ def test_cleanup_vm_default_honors_persist_mode(monkeypatch):
     for a persist-mode container.
 
     Regression for the bug Ben caught after commit 4: ``AIAgent.close()``
-    (which is called from ``tui_gateway/server.py`` on session.close, from
+    (which is called from ``hermes_agent/tui_gateway/server.py`` on session.close, from
     ``gateway/run.py`` on per-session teardown, and from per-turn cleanup)
     calls ``cleanup_vm(task_id)``. If that defaulted to ``force_remove=True``
     we'd tear down the container on every TUI session close, defeating the

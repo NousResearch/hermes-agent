@@ -118,7 +118,7 @@ def _tool_complete_payload(call_id, tool_name, args, result, *, is_error=None, v
     payload = {**_tool_lifecycle_payload(call_id, tool_name, args), "is_error": bool(is_error),
                "result": bounded_result(result, is_error)}
     if verbose:
-        from tui_gateway.tool_progress import _tool_result_text
+        from hermes_agent.tui_gateway.tool_progress import _tool_result_text
         payload["result_text"] = _tool_result_text(result)
     return payload
 

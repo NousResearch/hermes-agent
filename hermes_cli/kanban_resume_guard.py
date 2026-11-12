@@ -11,7 +11,7 @@ a resumed session WRITE-CAPABLE asks this guard before loading history:
 - interactive CLI ``--resume`` / ``-c`` (``HermesCLI._preload_resumed_session``),
 - mid-chat ``/resume`` / ``/sessions <id>`` (``_handle_resume_command``),
 - gateway ``session.resume`` — Desktop session history and the TUI picker
-  (``tui_gateway/methods_session.py``).
+  (``hermes_agent/tui_gateway/methods_session.py``).
 
 Detection is persisted provenance (``SessionDB.is_kanban_owned_session``: the session row's
 ``kanban`` source, checked across the compression lineage a resume would materialize) plus

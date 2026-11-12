@@ -10,7 +10,7 @@ import pytest
 
 from tools.connectors import live
 from tools.connectors.gateway.errors import IdempotencyConflict
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 @pytest.fixture(autouse=True)

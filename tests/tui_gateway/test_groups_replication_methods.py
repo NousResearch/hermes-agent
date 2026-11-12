@@ -5,8 +5,8 @@ from __future__ import annotations
 
 import pytest
 
-import tui_gateway.server as srv
-from tui_gateway import methods_groups
+import hermes_agent.tui_gateway.server as srv
+from hermes_agent.tui_gateway import methods_groups
 
 MEMBERS = [{"kind": "bot", "id": "planner"}]
 

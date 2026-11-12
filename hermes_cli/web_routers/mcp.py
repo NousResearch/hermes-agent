@@ -97,7 +97,7 @@ async def list_mcp_servers(profile: Optional[str] = None):
 
     def _read():
         config_servers = _get_mcp_servers()
-        from tui_gateway.mcp_rpc_helpers import server_configs_with_sources
+        from hermes_agent.tui_gateway.mcp_rpc_helpers import server_configs_with_sources
 
         return server_configs_with_sources(config_servers)
 
@@ -123,7 +123,7 @@ async def add_mcp_server(body: MCPServerCreate, profile: Optional[str] = None):
         # between check and save.
         with config_write_scope(body.profile or profile):
             config_servers = _get_mcp_servers()
-            from tui_gateway.mcp_rpc_helpers import server_configs_with_sources
+            from hermes_agent.tui_gateway.mcp_rpc_helpers import server_configs_with_sources
 
             servers, plugins = server_configs_with_sources(config_servers)
             if plugin := plugins.get(name):
@@ -166,7 +166,7 @@ async def replace_mcp_servers(body: MCPServersReplace, profile: Optional[str] = 
 
     def _run():
         with config_write_scope(body.profile or profile):
-            from tui_gateway.mcp_rpc_helpers import server_configs_with_sources
+            from hermes_agent.tui_gateway.mcp_rpc_helpers import server_configs_with_sources
 
             _servers, plugins = server_configs_with_sources({})
             for name in body.servers:
@@ -187,7 +187,7 @@ async def remove_mcp_server(name: str, profile: Optional[str] = None):
     def _run():
         with config_write_scope(profile):
             config_servers = _get_mcp_servers()
-            from tui_gateway.mcp_rpc_helpers import server_configs_with_sources
+            from hermes_agent.tui_gateway.mcp_rpc_helpers import server_configs_with_sources
 
             _servers, plugins = server_configs_with_sources(config_servers)
             if plugin := plugins.get(name):
@@ -208,7 +208,7 @@ async def test_mcp_server(name: str, profile: Optional[str] = None):
 
     def _read():
         config_servers = _get_mcp_servers()
-        from tui_gateway.mcp_rpc_helpers import server_configs_with_sources
+        from hermes_agent.tui_gateway.mcp_rpc_helpers import server_configs_with_sources
 
         return server_configs_with_sources(config_servers)[0]
 
@@ -269,7 +269,7 @@ async def auth_mcp_server(name: str, request: Request, profile: Optional[str] = 
     def _read():
         with _profile_secret_scope(profile):
             config_servers = _get_mcp_servers()
-            from tui_gateway.mcp_rpc_helpers import server_configs_with_sources
+            from hermes_agent.tui_gateway.mcp_rpc_helpers import server_configs_with_sources
 
             servers, plugins = server_configs_with_sources(config_servers)
             return servers, plugins, _home()
@@ -376,7 +376,7 @@ async def set_mcp_server_enabled(name: str, body: MCPEnabledToggle, profile: Opt
     def _run():
         with config_write_scope(body.profile or profile):
             cfg = load_config()
-            from tui_gateway.mcp_rpc_helpers import server_configs_with_sources
+            from hermes_agent.tui_gateway.mcp_rpc_helpers import server_configs_with_sources
 
             _servers, plugins = server_configs_with_sources(cfg.get("mcp_servers") or {})
             if plugin := plugins.get(name):

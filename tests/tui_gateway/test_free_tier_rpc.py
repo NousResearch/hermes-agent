@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import pytest
 
-import tui_gateway.server as srv
+import hermes_agent.tui_gateway.server as srv
 from hermes_cli import anon_auth, free_tier_offer
 from hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store
 from tests.hermes_cli.anon_portal import as_local_desktop_backend, claimed_trial, install_portal

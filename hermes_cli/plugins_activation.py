@@ -221,7 +221,7 @@ def _go_live(name: str) -> Optional[dict[str, Any]]:
     activation["live_now"] = {"mcp_servers": servers, "skills": skills}
     activation["deferred"] = {k: v for k, v in (activation.get("deferred") or {}).items() if k != "mcp_servers"}
     import sys
-    server = sys.modules.get("tui_gateway.server")  # loaded == this process hosts chats
+    server = sys.modules.get("hermes_agent.tui_gateway.server")  # loaded == this process hosts chats
     note = live_notice(activation)
     if server is not None and (servers or note):
         from hermes_constants import get_hermes_home

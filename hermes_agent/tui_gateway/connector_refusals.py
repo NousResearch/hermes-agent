@@ -1,7 +1,7 @@
 """Connector refusals both connector handlers send: the legacy one (``methods_connectors``) and the session authority's (``gateway/session_connections``). Each entry is ``(code, ConnectorErrorReason, message)``."""
 from tools.connectors.run import LINK_STILL_VALID, MIXED_KINDS, NOT_ALLOWED, REFUSED, SETTLED, UNKNOWN_TARGET
 
-from tui_gateway.contracts.connectors import ConnectorErrorReason as Reason
+from hermes_agent.tui_gateway.contracts.connectors import ConnectorErrorReason as Reason
 
 INVALID_PARAMS = (4000, Reason.invalid_params, "Connector parameters are invalid.")
 INVALID_ANSWER = (4002, Reason.invalid_answer, "Connection answer is invalid.")

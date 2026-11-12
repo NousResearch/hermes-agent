@@ -6,7 +6,7 @@ config that now exists but cannot be stat'ed would let the next save erase every
 
 from hermes_cli import config_backend
 from hermes_cli.config_read_errors import FailedConfigRead
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 def test_stat_error_after_a_cached_absent_config_is_a_failed_read(monkeypatch, tmp_path):

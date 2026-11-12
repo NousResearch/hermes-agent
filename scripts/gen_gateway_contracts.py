@@ -1,5 +1,5 @@
 #!/usr/bin/env -S bash -c 'exec "$BASH" "$(dirname "$0")/run-in-hermes-env" python3 "$0" "$@"'
-"""Render ``tui_gateway/contracts`` into TypeScript and OpenRPC.
+"""Render ``hermes_agent/tui_gateway/contracts`` into TypeScript and OpenRPC.
 
 Python-only (the Python CI lane has no Node): Pydantic's ``model_json_schema()`` output is walked
 by a deliberately small JSON-Schema-subset renderer — object/properties/required, primitives,
@@ -26,15 +26,15 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tui_gateway import contracts
-from tui_gateway.contracts.connectors import (
+from hermes_agent.tui_gateway import contracts
+from hermes_agent.tui_gateway.contracts.connectors import (
     ConnectorAccountStatus,
     ConnectorErrorReason,
     ConnectorToolFacet,
     ConnectorToolsSource,
 )
-from tui_gateway.contracts.connectors_operation import ConnectionSettleReason, ConnectionTargetState
-from tui_gateway.contracts.registry import CANONICAL_METHODS, CANONICAL_NAMESPACES, EVENTS, METHODS, SERVER_REQUESTS
+from hermes_agent.tui_gateway.contracts.connectors_operation import ConnectionSettleReason, ConnectionTargetState
+from hermes_agent.tui_gateway.contracts.registry import CANONICAL_METHODS, CANONICAL_NAMESPACES, EVENTS, METHODS, SERVER_REQUESTS
 from tools.connectors.contract import SettleReason, TargetState
 from tools.connectors.gateway.wire import ConnectionStatus
 from tools.connectors.portal.tools_cache import ToolsRead

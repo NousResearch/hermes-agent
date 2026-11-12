@@ -164,7 +164,7 @@ the launch directory. Construction-time workspace metadata does not require
 changing the process cwd or rebuilding an existing conversation's system prompt.
 
 Desktop/TUI workspace changes synchronize the live agent's `session_cwd` through
-`tui_gateway/session_workdir.py::_register_session_cwd`, including when a deferred
+`hermes_agent/tui_gateway/session_workdir.py::_register_session_cwd`, including when a deferred
 agent is attached after a workspace move. This lets a first or restarted Codex
 app-server session use the current workspace instead of its construction-time
 cwd. It does not move an already-running Codex thread, reinitialize memory

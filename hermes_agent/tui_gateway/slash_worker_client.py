@@ -1,9 +1,9 @@
-"""The gateway side of the persistent slash worker: ``_SlashWorker`` starts ``tui_gateway.slash_worker`` as
+"""The gateway side of the persistent slash worker: ``_SlashWorker`` starts ``hermes_agent.tui_gateway.slash_worker`` as
 an owned child (``spawn_owned``), talks JSON lines to it, and stops its whole process group on close.
 
 Bodies are rebound onto server.py's globals at install time (method_ctx.bind_module), so they reference
 server.py globals bare: ``_hermes_home`` and ``_SLASH_WORKER_TIMEOUT_S``. Tests patch the names on
-``tui_gateway.server`` (``spawn_owned``, ``_stop_worker_group``, ``os``), where these bodies read them.
+``hermes_agent.tui_gateway.server`` (``spawn_owned``, ``_stop_worker_group``, ``os``), where these bodies read them.
 """
 
 from __future__ import annotations
@@ -55,7 +55,7 @@ class _SlashWorker:
         # worker re-resolves provider from config, so a MoA session (provider=moa, model=<preset>)
         # dispatched its preset NAME to the configured real provider and 402/503'd (#57283). ``--base-url``
         # likewise: else the worker seeds model.base_url, the default provider's endpoint (#141953).
-        argv = [sys.executable, "-P", "-m", "tui_gateway.slash_worker", "--session-key", session_key] \
+        argv = [sys.executable, "-P", "-m", "hermes_agent.tui_gateway.slash_worker", "--session-key", session_key] \
             + (["--model", model] if model else []) \
             + (["--provider", provider] if provider else []) \
             + (["--base-url", base_url] if base_url else [])

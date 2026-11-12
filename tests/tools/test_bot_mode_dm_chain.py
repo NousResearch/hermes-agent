@@ -109,7 +109,7 @@ def test_a_relay_reply_carries_the_no_reply_marker_and_the_receiver_honours_it(t
     assert ack["expects_reply"] is False and calls == []  # notify-only: no waiter
     assert f"{NO_REPLY_MARKER} 42" in envelope["message"]
 
-    # The receiving side: its turn author is what tui_gateway/methods_bot_relay.py rebuilds.
+    # The receiving side: its turn author is what hermes_agent/tui_gateway/methods_bot_relay.py rebuilds.
     receiver = _FakeAgent(home / "elsewhere")
     receiver.session_id = "receiver"
     _bot_turn(receiver, bot_relay.delivery_turn_author("default", "hermes", "laptop")["id"],

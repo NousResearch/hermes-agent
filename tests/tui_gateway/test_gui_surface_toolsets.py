@@ -14,7 +14,7 @@ answer is identical on every connection topology.
 
 import pytest
 
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 from toolsets import TOOLSETS
 
 GUI_TOOLS = {

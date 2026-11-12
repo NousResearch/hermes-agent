@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import socket
 
-from tui_gateway.ws import _disable_nagle
+from hermes_agent.tui_gateway.ws import _disable_nagle
 
 
 class _FakeSocket:

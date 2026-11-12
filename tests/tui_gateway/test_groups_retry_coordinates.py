@@ -10,9 +10,9 @@ from types import SimpleNamespace
 
 import pytest
 
-import tui_gateway.server as srv
+import hermes_agent.tui_gateway.server as srv
 from gateway import hosted_room_driver as driver
-from tui_gateway.hosted_room_service import HostedRoomService
+from hermes_agent.tui_gateway.hosted_room_service import HostedRoomService
 
 
 def _deferred_room(tmp_path, monkeypatch):

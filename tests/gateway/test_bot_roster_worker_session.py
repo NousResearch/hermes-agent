@@ -7,7 +7,7 @@ but left ``worker_session`` at the ``None`` initializer it was born with
 worker runs (``workerActiveAt`` is ``bot?.worker_session?.last_active``), so with no producer that
 indicator could never light on the unified gateway.
 
-The producer reuses the legacy roster's semantics (``tui_gateway/methods_profiles``
+The producer reuses the legacy roster's semantics (``hermes_agent/tui_gateway/methods_profiles``
 ``_latest_profile_session_rows``, #90268): the newest DENIED-source row (``kanban`` / ``tool`` /
 ``oneshot``, ``INTERNAL_LISTING_SOURCES``), never an archived or hidden row, with the worker's
 ``last_activity_at`` heartbeat (#72016) as ``last_active``. Both roster rows read through the two

@@ -40,8 +40,8 @@ def _run_stale_refresh(agent):
     builder = MagicMock(return_value=["terminal", "file", "desktop_ui"])
     with (
         patch("tools.bot_mode_probe.stored_prompt_capability_stale", return_value=True),
-        patch("tui_gateway.server._load_enabled_toolsets", builder),
-        patch("tui_gateway.server._load_disabled_toolsets", return_value=["computer_use"]),
+        patch("hermes_agent.tui_gateway.server._load_enabled_toolsets", builder),
+        patch("hermes_agent.tui_gateway.server._load_disabled_toolsets", return_value=["computer_use"]),
         patch("tools.mcp_tool_agent.refresh_agent_mcp_tools", return_value=set()) as refresh,
     ):
         _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])

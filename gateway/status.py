@@ -540,7 +540,7 @@ def _read_process_cmdline(pid: int) -> Optional[str]:
 
 def _gateway_command_subcommand(command: str | None) -> str | None:
     """Hermes gateway lifecycle subcommand from a command line, or None. No loose substring matches
-    (``"gateway" in cmdline`` also matched ``gateway status`` / ``python -m tui_gateway``): needs a
+    (``"gateway" in cmdline`` also matched ``gateway status`` / ``python -m hermes_agent.tui_gateway``): needs a
     Hermes entrypoint plus the ``gateway`` subcommand, or a gateway-dedicated entrypoint. Tokenizes
     quote-aware (Windows paths with spaces); ``--profile``/``-p`` selectors are stripped anywhere in
     argv since ``_apply_profile_override`` removes them before argparse."""

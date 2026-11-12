@@ -16,7 +16,7 @@ from types import SimpleNamespace
 import pytest
 
 from tools import approval_context
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 FALLBACK = [{"provider": "xai-oauth", "model": "grok-4.6"}]
 

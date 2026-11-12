@@ -23,7 +23,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 FAST_OVERRIDES = {"service_tier": "priority"}
 

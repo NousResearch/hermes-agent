@@ -693,7 +693,7 @@ def _project_for_display(messages: list, *, home=None, inline_images: bool = Tru
     # ``inline_images=false`` uses, kilobytes instead of re-transmitting every stored attachment.
     coerce = None
     if not inline_images:
-        from tui_gateway.session_history import _coerce_message_text
+        from hermes_agent.tui_gateway.session_history import _coerce_message_text
 
         def coerce(message: dict) -> dict:
             if message.get("content") is not None:
@@ -705,7 +705,7 @@ def _project_for_display(messages: list, *, home=None, inline_images: bool = Tru
         message = _with_tool_call_labels(message)
         if coerce is not None:
             message = coerce(message)
-        # Same read-side typing as session.resume (tui_gateway/session_history.py).
+        # Same read-side typing as session.resume (hermes_agent/tui_gateway/session_history.py).
         failed_turn = not message.get("display_kind") and untyped_failed_turn_display_kind(
             message.get("role"), message.get("content"))
         if failed_turn:

@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from agent.turn_context import _stage_turn_user_message
 from hermes_agent.hermes_state import SessionDB
 from run_agent import AIAgent
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 def _desktop_session(monkeypatch, db):
@@ -108,7 +108,7 @@ def test_turn_adopts_the_submit_row_and_writes_no_duplicate(monkeypatch, tmp_pat
 
 
 def test_completion_receipt_covers_only_committed_current_turn_rows(monkeypatch, tmp_path):
-    from tui_gateway.prompt_turn import _TurnRun
+    from hermes_agent.tui_gateway.prompt_turn import _TurnRun
 
     db = SessionDB(db_path=tmp_path / "state.db")
     sid, key = _desktop_session(monkeypatch, db)

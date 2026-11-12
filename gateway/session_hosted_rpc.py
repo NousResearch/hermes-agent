@@ -223,7 +223,7 @@ class HostedRoomAuthorityRPC:
         if wanted is not None and (not isinstance(wanted, list) or len(wanted) > 256
                                    or not all(isinstance(i, str) and i for i in wanted)):
             raise RuntimeStoreError('invalid_params')
-        from tui_gateway.hosted_room_driver import MAX_TERMINAL_TEXT_BYTES
+        from hermes_agent.tui_gateway.hosted_room_driver import MAX_TERMINAL_TEXT_BYTES
         receipts, used = [], 0
         for row, task, generation in reversed(self._rows()):
             if row['status'] != 'terminal' or (wanted is not None and row['admission_id'] not in wanted):

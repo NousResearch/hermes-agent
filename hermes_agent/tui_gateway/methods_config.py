@@ -128,7 +128,7 @@ def _(rid, params: dict) -> dict:
 
 def _stamped_project_tree(db, params, **kwargs):
     """``_build_project_tree`` + profile stamping shared by the two tree RPCs."""
-    from tui_gateway.project_tree import stamp_profile
+    from hermes_agent.tui_gateway.project_tree import stamp_profile
     tree, active_id = _build_project_tree(db, **kwargs)
     stamp_profile(tree["projects"], _response_profile_name(params.get("profile")))
     return tree, active_id

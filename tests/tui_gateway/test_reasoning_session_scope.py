@@ -23,8 +23,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from tui_gateway import server
-from tui_gateway.server import _session_info
+from hermes_agent.tui_gateway import server
+from hermes_agent.tui_gateway.server import _session_info
 
 
 def _agent(reasoning_config, **overrides):

@@ -1,6 +1,6 @@
 """Desktop/TUI agents honor ``prefill_messages_file`` from the active profile.
 
-Regression for #60456: ``tui_gateway.server._make_agent`` (the Desktop / ``hermes serve`` agent
+Regression for #60456: ``hermes_agent.tui_gateway.server._make_agent`` (the Desktop / ``hermes serve`` agent
 factory) never passed ``prefill_messages``, so a configured prefill file only worked in the
 classic CLI and the messaging gateway.
 """
@@ -11,7 +11,7 @@ import json
 import types
 
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 def _write_home(root, name: str, content: str):

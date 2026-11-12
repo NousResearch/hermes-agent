@@ -8,8 +8,8 @@ from gateway import hosted_room_driver as driver
 from gateway.session_controls import AuthorityConnection
 from tests.tui_gateway.test_hosted_room_peer_recovery import _crashed_turn, _UnreachablePeerClient
 from tests.tui_gateway.test_hosted_room_retry_progress import _deferred_room, _worker_row
-from tui_gateway.hosted_room_member_activity import forget_task_progress, task_progress
-from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
+from hermes_agent.tui_gateway.hosted_room_member_activity import forget_task_progress, task_progress
+from hermes_agent.tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
 
 
 def test_peer_poll_uses_the_task_generation_and_late_replaced_polls_stay_out(tmp_path, monkeypatch):

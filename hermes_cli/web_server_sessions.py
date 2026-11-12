@@ -499,7 +499,7 @@ def _maybe_auto_archive_for_profile(profile: Optional[str]) -> None:
 
 def _skill_maintenance_idle_for(started_at: float) -> Optional[float]:
     """Measure chat inactivity, not socket inactivity (Desktop stays connected)."""
-    import tui_gateway.server as gateway
+    import hermes_agent.tui_gateway.server as gateway
 
     from hermes_constants import get_hermes_home
 

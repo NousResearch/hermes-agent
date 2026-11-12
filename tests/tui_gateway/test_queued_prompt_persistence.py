@@ -14,7 +14,7 @@ import types
 from agent.turn_context import _stage_turn_user_message
 from hermes_agent.hermes_state import SessionDB
 from run_agent import AIAgent
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 def _desktop_session(monkeypatch, db):

@@ -78,7 +78,7 @@ def test_row_shape_state_and_disclosure(catalog):
 
 
 def test_plugins_manage_presence_over_the_wire(catalog):
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     response = server.handle_request({"jsonrpc": "2.0", "id": 9, "method": "plugins.manage",
                                       "params": {"action": "presence", "names": ["dashed", "app", "broken"]}})

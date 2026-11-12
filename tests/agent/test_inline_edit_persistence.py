@@ -28,7 +28,7 @@ def test_edit_preview_is_durable_before_emission_and_display_only(
     from tools.terminal_tool import register_task_env_overrides, clear_task_env_overrides
     from tools import file_tools
     import model_tools
-    import tui_gateway.server as progress
+    import hermes_agent.tui_gateway.server as progress
 
     assert Path(model_tools.__file__).resolve().parent == Path(__file__).resolve().parents[2]
     monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
@@ -161,7 +161,7 @@ def test_edit_preview_is_durable_before_emission_and_display_only(
 
 
 def test_orphaned_preview_never_attaches_to_a_reused_call_id(monkeypatch):
-    import tui_gateway.server as progress
+    import hermes_agent.tui_gateway.server as progress
 
     emitted = []
     monkeypatch.setattr(progress, "_emit_tool_lifecycle", lambda kind, sid, name, args, payload: emitted.append(payload))

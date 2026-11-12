@@ -13,7 +13,7 @@ from unittest.mock import patch
 import pytest
 
 from hermes_cli.browser_connect import ChromeDebugLaunch
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 def _stub_urlopen(monkeypatch, *, ok: bool):

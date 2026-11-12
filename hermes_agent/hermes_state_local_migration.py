@@ -75,7 +75,7 @@ def login_owned_by(row, subject):
     """Whether *subject* owns the login stamp a served dashboard put on this row.
 
     Older ``hermes serve`` builds stamped the WS-upgrade login as ``<provider>:<user id>``
-    (tui_gateway/session_transports.py), and the gateway stored a Webapp login as its
+    (hermes_agent/tui_gateway/session_transports.py), and the gateway stored a Webapp login as its
     ``auth:v1:[...]`` subject. Hermes is single-user and sign-in is owner-only, so both name the
     machine owner: the host owner's subject adopts them (gateway.owner_identity.same_owner).
     """

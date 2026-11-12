@@ -3,7 +3,7 @@ row and re-armed by ``session.resume`` in a process whose in-memory approval set
 
 import types
 
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 def test_session_yolo_toggle_survives_a_backend_restart(monkeypatch, tmp_path):

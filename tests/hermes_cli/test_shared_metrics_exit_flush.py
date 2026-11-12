@@ -115,7 +115,7 @@ def test_graceful_gateway_exit_writes_the_open_sessions_summary(metrics_home, mo
 def test_compute_host_shutdown_frame_writes_the_open_sessions_summary(metrics_home):
     import io
 
-    from tui_gateway.compute_host import ComputeHost
+    from hermes_agent.tui_gateway.compute_host import ComputeHost
 
     home, _ = metrics_home
     _finished_task_in_open_session()
@@ -155,7 +155,7 @@ def test_sigtermed_kanban_worker_writes_the_open_sessions_summary(metrics_home, 
 
 @pytest.mark.platforms("posix")  # the legacy parent watchdog is POSIX-only
 def test_orphaned_slash_worker_writes_the_open_sessions_summary(metrics_home, monkeypatch):
-    from tui_gateway import slash_worker
+    from hermes_agent.tui_gateway import slash_worker
 
     home, _ = metrics_home
     _finished_task_in_open_session()

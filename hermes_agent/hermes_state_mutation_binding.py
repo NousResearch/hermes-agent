@@ -21,7 +21,7 @@ def _owner_user(row):
 
 
 def _login_label(subject):
-    """The ``<provider>:<user>`` label Desktop stamps on its rows (tui_gateway/session_transports.py) when it
+    """The ``<provider>:<user>`` label Desktop stamps on its rows (hermes_agent/tui_gateway/session_transports.py) when it
     names exactly the dashboard subject ``auth:v1:[provider, "", user]`` (gateway/session_identity.py).
     Only an issuer-less login maps: the label drops the issuer, so an issuer-bearing subject must not claim it."""
     from gateway.session_identity import parse_authenticated_subject

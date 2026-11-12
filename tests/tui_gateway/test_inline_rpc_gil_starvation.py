@@ -42,7 +42,7 @@ def server():
         "hermes_agent.hermes_state": MagicMock(),
     }):
         import importlib
-        mod = importlib.import_module("tui_gateway.server")
+        mod = importlib.import_module("hermes_agent.tui_gateway.server")
 
     # Tests below stub handlers ("session.list", "prompt.submit", ...) in
     # the module-level _methods dict shared with every other test file in
@@ -54,7 +54,7 @@ def server():
     mod._methods.update(methods)
     mod._real_stdout = real_stdout
     mod._sessions.clear()
-    __import__("tui_gateway.server_requests", fromlist=["x"]).reset_for_tests()
+    __import__("hermes_agent.tui_gateway.server_requests", fromlist=["x"]).reset_for_tests()
 
 
 def test_dispatch_inline_rpc_does_not_block_under_gil_pressure(server):

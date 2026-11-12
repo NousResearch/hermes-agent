@@ -6,7 +6,7 @@ import threading
 import pytest
 
 from tools.mcp_dashboard_oauth import DashboardOAuthFlow
-from tui_gateway import mcp_oauth_sessions as sessions
+from hermes_agent.tui_gateway import mcp_oauth_sessions as sessions
 
 
 @pytest.mark.parametrize("client_redirect", [False, True])

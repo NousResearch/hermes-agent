@@ -87,7 +87,7 @@ def test_desktop_workspace_registration_preserves_unmounted_profile_sandbox(
     home, tmp_path, monkeypatch, mount, profile
 ):
     from tools import terminal_tool
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     profile_home = home if profile == "default" else home / "profiles" / profile
     profile_home.mkdir(parents=True, exist_ok=True)

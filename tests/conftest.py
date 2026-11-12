@@ -101,7 +101,7 @@ def _hermes_home_points_at_production(value: str) -> bool:
     try:
         # The platform-default root, not a hardcoded ``~/.hermes``: Windows installs live under
         # ``%LOCALAPPDATA%\hermes``, and a dev shell exporting that path used to be honored as
-        # "custom", pinning import-time paths (``tui_gateway.server._hermes_home``) to the live
+        # "custom", pinning import-time paths (``hermes_agent.tui_gateway.server._hermes_home``) to the live
         # install so the state.db guard tripped on every store-touching test (#112692).
         from hermes_agent.hermes_state_guard import _real_platform_state_root
 
@@ -384,10 +384,10 @@ def _hermetic_environment(tmp_path, tmp_path_factory, monkeypatch):
         monkeypatch.setattr(secret_scope_mod, "_MULTIPLEX_ACTIVE", False)
     if secret_scope_mod is not None and hasattr(secret_scope_mod, "_AUTO_PINNED_HOME"):
         monkeypatch.setattr(secret_scope_mod, "_AUTO_PINNED_HOME", None)
-    launch_policy_mod = sys.modules.get("tui_gateway.launch_profile_policy")
+    launch_policy_mod = sys.modules.get("hermes_agent.tui_gateway.launch_profile_policy")
     if launch_policy_mod is not None and hasattr(launch_policy_mod, "_snapshot"):
         monkeypatch.setattr(launch_policy_mod, "_snapshot", None)
-    tui_server_mod = sys.modules.get("tui_gateway.server")
+    tui_server_mod = sys.modules.get("hermes_agent.tui_gateway.server")
     if tui_server_mod is not None and hasattr(tui_server_mod, "_served_profile_homes"):
         monkeypatch.setattr(tui_server_mod, "_served_profile_homes", set())
     # A classic CLI's gateway-session toolset reader is process-global too (``_ensure_gateway_session``).
@@ -786,7 +786,7 @@ def _state_db_write_guard(request, monkeypatch):
 
 # ── tui_gateway.server shared-module state isolation ───────────────────────
 #
-# ``tui_gateway.server`` registers its RPC handlers in a module-level
+# ``hermes_agent.tui_gateway.server`` registers its RPC handlers in a module-level
 # ``_methods`` dict at import time and keeps per-session state in module
 # globals (sessions, child-run registry, config cache, DB handle). The
 # canonical per-file process isolation above hides any leakage, but a direct
@@ -803,7 +803,7 @@ def _state_db_write_guard(request, monkeypatch):
 # ``server`` fixtures (tests/tui_gateway/test_protocol.py and friends), which
 # snapshot immediately after the import.
 
-_TUI_SERVER_MODULE = "tui_gateway.server"
+_TUI_SERVER_MODULE = "hermes_agent.tui_gateway.server"
 
 
 def _teardown_tui_server_sessions(mod) -> None:
@@ -856,7 +856,7 @@ def _reset_tui_gateway_server_state():
     # Addressed notifications parked for an absent session: a leak would let a
     # later test's session claim a stale event, or spend the cap and refuse its
     # own park.
-    park = sys.modules.get("tui_gateway.notification_park")
+    park = sys.modules.get("hermes_agent.tui_gateway.notification_park")
     if park is not None:
         park.clear()
 
@@ -1015,7 +1015,7 @@ def _wal_is_usable() -> bool:
 #
 #   1. ``test_voice_toggle_tts_branch_also_carries_record_key`` drives the
 #      ``voice.toggle`` RPC with ``action="tts"``. The handler
-#      (``tui_gateway/server.py``) flips the flag by writing the *real*
+#      (``hermes_agent/tui_gateway/server.py``) flips the flag by writing the *real*
 #      process environment: ``os.environ["HERMES_VOICE_TTS"] = "1"``. The
 #      test's ``monkeypatch.delenv(..., raising=False)`` records no undo entry
 #      (pytest only records an undo when the key was present), so the "1"

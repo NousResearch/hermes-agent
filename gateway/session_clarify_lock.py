@@ -15,7 +15,7 @@ from hermes_agent.hermes_state_runtime import RuntimeStoreError
 async def clarify_lock(connection, ref, params):
     from gateway.session_server_requests import lock_answer, may_settle
     # The dispatcher already refused unknown keys and mistyped fields against the declared
-    # ``ClarifyLockParams`` (``tui_gateway/contracts/canonical.py``); a missing or empty id is ours to refuse.
+    # ``ClarifyLockParams`` (``hermes_agent/tui_gateway/contracts/canonical.py``); a missing or empty id is ours to refuse.
     # ``profile`` naming another served profile was routed to its owner by ``dispatch``.
     request_id, question_id = params.get('request_id'), params.get('question_id')
     if not isinstance(request_id, str) or not request_id or not isinstance(question_id, str) or not question_id:

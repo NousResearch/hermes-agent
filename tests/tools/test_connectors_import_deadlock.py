@@ -2,7 +2,7 @@
 
 The package is imported concurrently with its own submodules: the tool registry's discovery
 scan imports ``tools.connectors.tool`` while the gateway's Group Chat worker imports the
-package (``tui_gateway.methods_connectors`` -> ``tools.connectors``). When ``__init__``
+package (``hermes_agent.tui_gateway.methods_connectors`` -> ``tools.connectors``). When ``__init__``
 imported its submodules eagerly, one thread held the package's module lock while waiting for
 a submodule another thread already held, and Python 3.14 aborted the loser with
 ``_frozen_importlib._DeadlockError: deadlock detected by _ModuleLock('tools.connectors.tool')``

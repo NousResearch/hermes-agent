@@ -242,7 +242,7 @@ does not cancel its owner-held mutation: the commit, live projection and queue
 wakeup finish together, and profile retirement joins that work before releasing
 the store. An exact old receipt cannot evict a newer running agent.
 
-Canonical wire models live in `tui_gateway/contracts/canonical*.py` and generate
+Canonical wire models live in `hermes_agent/tui_gateway/contracts/canonical*.py` and generate
 `CanonicalRpcMethods` plus the OpenRPC `x-canonical-methods` catalog, separately
 from the standalone protocol. Both parameters and successful results are checked.
 

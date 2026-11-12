@@ -874,7 +874,7 @@ class TestListProfiles:
         from one background refresh per profile per recheck window (#114041). Control: the
         synchronous ``list_profiles()`` still walks and reports the fresh number."""
         import threading
-        import tui_gateway.server as srv
+        import hermes_agent.tui_gateway.server as srv
 
         skills = profile_env / ".hermes" / "skills" / "cat"
         for i in range(3):
@@ -911,7 +911,7 @@ class TestListProfiles:
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
         from hermes_cli.web_routers import profiles as profiles_router
-        from tui_gateway import methods_complete
+        from hermes_agent.tui_gateway import methods_complete
         app = FastAPI()
         app.include_router(profiles_router.router)
         # Cold cache: a synchronous list_profiles() in either caller would walk on the request thread.

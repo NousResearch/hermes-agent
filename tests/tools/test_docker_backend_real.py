@@ -165,7 +165,7 @@ def test_desktop_workspace_selection_and_recreation(
     from tools.file_tools import read_file_tool
     from tools.terminal_tool_lifecycle import cleanup_vm
     from tools.terminal_scope import reset_terminal_scope, set_terminal_scope
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "true")
     monkeypatch.setenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false")

@@ -129,7 +129,7 @@ def _looks_like_credential(name: str) -> bool:
 # HERMES_* vars that change test behavior by being set. Unset all of these
 # unconditionally — individual tests that need them set do so explicitly.
 _HERMES_BEHAVIORAL_VARS = frozenset({
-    # Voice/TTS runtime flags. ``tui_gateway/server.py`` reads these straight
+    # Voice/TTS runtime flags. ``hermes_agent/tui_gateway/server.py`` reads these straight
     # off ``os.environ`` at call time (``_voice_mode_enabled`` /
     # ``_voice_tts_enabled``) and, on every completed turn, hands the turn's
     # final response text to ``hermes_cli.voice.speak_text`` — real synthesis,

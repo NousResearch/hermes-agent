@@ -12,7 +12,7 @@ import json
 
 import pytest
 
-from tui_gateway.methods_complete import _backend_dir_entries
+from hermes_agent.tui_gateway.methods_complete import _backend_dir_entries
 
 
 def _fake_terminal_tool(seen, output="src/\nREADME.md\n", exit_code=0):

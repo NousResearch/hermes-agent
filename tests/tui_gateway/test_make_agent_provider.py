@@ -14,7 +14,7 @@ from unittest.mock import patch
 def test_probe_config_health_flags_null_sections():
     """Bare YAML keys (`agent:` with no value) parse as None and silently
     drop nested settings; probe must surface them so users can fix."""
-    from tui_gateway.server import _probe_config_health
+    from hermes_agent.tui_gateway.server import _probe_config_health
 
     assert _probe_config_health({"agent": {"x": 1}}) == ""
     assert _probe_config_health({}) == ""
@@ -30,7 +30,7 @@ def test_apply_model_switch_does_not_leak_process_env():
     that session's agent in place) and must NOT write process-global env vars,
     which the single-process desktop backend shares across every live session.
     """
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     class _FakeResult:
         success = True
@@ -71,16 +71,16 @@ def test_apply_model_switch_does_not_leak_process_env():
         patch("hermes_cli.model_switch.resolve_persist_behavior",
               return_value=False),
         patch("hermes_cli.model_switch.switch_model", return_value=_FakeResult()),
-        patch("tui_gateway.server._emit"),
-        patch("tui_gateway.server._restart_slash_worker"),
-        patch("tui_gateway.server._session_info", return_value={}),
+        patch("hermes_agent.tui_gateway.server._emit"),
+        patch("hermes_agent.tui_gateway.server._restart_slash_worker"),
+        patch("hermes_agent.tui_gateway.server._session_info", return_value={}),
         patch("hermes_cli.model_switch.persist_model_selection") as mock_persist,
         patch(
-            "tui_gateway.server._persist_live_session_runtime",
+            "hermes_agent.tui_gateway.server._persist_live_session_runtime",
             side_effect=lambda session: persisted_composer_profiles.append(
                 session.get("composer_override_profile")),
         ) as persist_runtime,
-        patch("tui_gateway.server._config_model_target", return_value=("minimax/m3", "minimax")),
+        patch("hermes_agent.tui_gateway.server._config_model_target", return_value=("minimax/m3", "minimax")),
     ):
         before = {k: os.environ.get(k) for k in env_keys}
         result = server._apply_model_switch("sidB", sess_b, "glm-5.1")
@@ -110,7 +110,7 @@ def test_resumed_row_cannot_pin_stale_wire_onto_per_model_provider():
     """#96066: a persisted opencode-go row written while the session ran an anthropic_messages model must not
     route deepseek-v4-flash-vision-exp through the Anthropic wire or the other family's relay URL on resume;
     the route is re-derived from the target model. Fixed-wire providers keep honoring their row."""
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     def fake_resolve(**kwargs):
         provider = kwargs["requested"]

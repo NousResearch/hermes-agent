@@ -98,7 +98,7 @@ class _Cdp(BaseHTTPRequestHandler):
 
 @pytest.fixture
 def homes(tmp_path, monkeypatch):
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     launch = tmp_path / "root"
     bee = launch / "profiles" / "bee"
     bee.mkdir(parents=True)
@@ -125,7 +125,7 @@ def _runner_serving(*names, multiplexed=True):
 
 def _call(server, profile_id, params):
     from gateway.runtime_bootstrap import _PURPOSE_CAPABILITIES
-    from tui_gateway.ws_legacy_fallback import dispatch_legacy
+    from hermes_agent.tui_gateway.ws_legacy_fallback import dispatch_legacy
     actor = types.SimpleNamespace(profile_id=str(profile_id),
                                   capabilities=frozenset(_PURPOSE_CAPABILITIES["interactive"]))
     written, done = [], threading.Event()

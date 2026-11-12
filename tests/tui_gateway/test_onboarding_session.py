@@ -14,7 +14,7 @@ from agent import onboarding_record
 from agent.onboarding_flow import End, Facts, Shown
 from agent.onboarding_session import carry_onboarding_toolset, onboarding_prelude, onboarding_toolsets
 from agent.onboarding_text import GREETING
-from tui_gateway import server, server_requests
+from hermes_agent.tui_gateway import server, server_requests
 
 FACTS = Facts(os="macos", arch="arm64", machine_kind="Mac", plugins=("blender",))
 

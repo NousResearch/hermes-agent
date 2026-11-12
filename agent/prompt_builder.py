@@ -718,7 +718,7 @@ PLATFORM_HINTS = {
 # ``platforms.telegram.extra.rich_messages: true`` (gateway.* or top-level).
 # NOTE: a "webui" hint lived here until 2026-08-29. It was a ghost (verified in the all-platform hint audit,
 # PR #97873): no code path constructs platform="webui" — the dashboard chat resolves to 'desktop' or 'tui'
-# (tui_gateway/server.py:_resolve_session_platform), and the browser chat tab is an xterm.js PTY hosting the
+# (hermes_agent/tui_gateway/server.py:_resolve_session_platform), and the browser chat tab is an xterm.js PTY hosting the
 # TUI, not an HTML chat renderer. Its content (tables/LaTeX/Mermaid, MEDIA: rich previews incl. Excalidraw)
 # described a renderer that does not exist anywhere in web/. If a real WebUI chat surface ships, write a
 # hint from its actual renderer — do not resurrect this text.

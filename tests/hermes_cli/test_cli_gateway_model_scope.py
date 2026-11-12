@@ -499,7 +499,7 @@ def test_once_reasoning_admission_passes_the_real_submit_contract(monkeypatch, o
     The CLI sends ``model_override.reasoning`` but ``CanonicalModelOverride`` forbade the key, and the
     owner's dispatcher (``canonical_param_problems``) refuses an unknown key before the handler runs.
     The recorded submit goes through that same production check, not a stubbed connection."""
-    from tui_gateway.contracts.registry import CANONICAL_METHODS, canonical_param_problems
+    from hermes_agent.tui_gateway.contracts.registry import CANONICAL_METHODS, canonical_param_problems
     contract = CANONICAL_METHODS["prompt.submit"]
     params = {"session_id": "s", "text": "t", "submission_id": "x", "model_override": override}
     assert canonical_param_problems(contract, params) == []
@@ -518,6 +518,6 @@ def test_once_reasoning_admission_passes_the_real_submit_contract(monkeypatch, o
 def test_every_model_override_key_the_cli_sends_is_in_the_contract():
     """``GatewayAgent._take_turn_route`` and the ``/moa`` one-shot build ``model_override`` from
     ``_route_off_session`` (``model``/``provider``) plus ``reasoning``: each key must be declared."""
-    from tui_gateway.contracts.canonical_sessions import CanonicalModelOverride
+    from hermes_agent.tui_gateway.contracts.canonical_sessions import CanonicalModelOverride
     assert {"model", "provider", "reasoning"} <= set(CanonicalModelOverride.model_fields)
 

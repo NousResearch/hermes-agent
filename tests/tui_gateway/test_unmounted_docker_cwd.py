@@ -16,7 +16,7 @@ def test_registration_uses_the_target_profiles_mount_policy(
         install_and_reset_profile_terminal_scope,
         terminal_env,
     )
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     home = tmp_path / "home"
     profile = home / "profiles" / "beta"
@@ -69,7 +69,7 @@ def test_registration_uses_the_target_profiles_mount_policy(
 def test_unmounted_registration_preserves_configured_container_cwd(tmp_path):
     from tools import terminal_tool
     from tools.terminal_scope import reset_terminal_scope, set_terminal_scope
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     token = set_terminal_scope(
         {
@@ -107,7 +107,7 @@ def test_a_bad_unrelated_terminal_setting_does_not_drop_the_registration(tmp_pat
     full terminal config would raise on, inside the caller's blanket suppress) changes nothing."""
     from tools import terminal_tool
     from tools.terminal_scope import reset_terminal_scope, set_terminal_scope
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     token = set_terminal_scope({
         "TERMINAL_ENV": "docker",
@@ -129,7 +129,7 @@ def test_an_unreadable_profile_keeps_the_desktop_cwd_record(tmp_path, monkeypatc
     (project tools read it) must still be written."""
     import hermes_constants as hc
     from tools import terminal_tool
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     home = tmp_path / "home"
     profile = home / "profiles" / "bad"

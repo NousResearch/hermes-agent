@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 def test_model_options_binds_requested_profile_home(monkeypatch, tmp_path):

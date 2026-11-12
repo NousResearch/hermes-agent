@@ -9,7 +9,7 @@ sites, fixed here:
   ``has_archived_messages`` and FAILED OPEN into the destructive replace on
   any probe error (and could race a concurrent ``archive_and_compact``).
   Now passes ``active_only=True`` unconditionally.
-- ``tui_gateway/methods_prompt.py`` edit/regenerate truncation: bare
+- ``hermes_agent/tui_gateway/methods_prompt.py`` edit/regenerate truncation: bare
   ``replace_messages`` deleted the archived transcript on every
   edit/regenerate of a compacted session.  Now ``active_only=True``.
 

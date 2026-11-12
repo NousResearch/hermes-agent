@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 PIL = pytest.importorskip("PIL.Image")
 

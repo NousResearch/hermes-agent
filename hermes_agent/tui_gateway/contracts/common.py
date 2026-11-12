@@ -26,7 +26,7 @@ class PlanGauge(Result):
 
 
 class Usage(OpenModel):
-    """``tui_gateway/server.py::_get_usage`` + ``agent/context_breakdown.py::context_usage_fields``."""
+    """``hermes_agent/tui_gateway/server.py::_get_usage`` + ``agent/context_breakdown.py::context_usage_fields``."""
 
     model: str = ""
     input: int = 0
@@ -55,7 +55,7 @@ class Usage(OpenModel):
 
 
 class ProjectRef(Result):
-    """``tui_gateway/server.py::_project_info_for_cwd``."""
+    """``hermes_agent/tui_gateway/server.py::_project_info_for_cwd``."""
 
     id: str
     slug: str
@@ -71,7 +71,7 @@ class McpServerStatus(OpenModel):
 
 
 class SessionLiveInfo(OpenModel):
-    """``tui_gateway/server.py::_session_info`` — the ``session.info`` event and the ``info`` field of
+    """``hermes_agent/tui_gateway/server.py::_session_info`` — the ``session.info`` event and the ``info`` field of
     ``session.create`` / ``session.resume`` / ``session.activate`` results."""
 
     model: str = ""

@@ -27,7 +27,7 @@ def _caution_release(repo) -> str:
 @pytest.mark.parametrize("installed", ["custom"], indirect=True)
 def test_desktop_update_returns_findings_then_force_applies(installed, monkeypatch):
     from hermes_cli import plugins_cmd as pc
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     _, _home, repo, target, _state = installed
     old_head = _head(target)

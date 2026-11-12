@@ -16,7 +16,7 @@ import time
 import types
 
 from hermes_agent.hermes_state import SessionDB
-from tui_gateway import entry, server
+from hermes_agent.tui_gateway import entry, server
 from hermes_cli import model_switch_providers
 
 

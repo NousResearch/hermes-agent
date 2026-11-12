@@ -73,7 +73,7 @@ def test_every_surface_honours_preview_without_compressing(surface, monkeypatch)
         reply = asyncio.run(gw._handle_compress_command_inner(event))
         assert "Preview" in reply
     elif surface == "tui":
-        from tui_gateway.server import _compress_session_history
+        from hermes_agent.tui_gateway.server import _compress_session_history
         session = {"agent": agent, "history": history, "history_lock": threading.Lock(), "history_version": 3}
         assert _compress_session_history(session, "--preview")[0] == 0
         assert session["history"] == frozen and session["history_version"] == 3

@@ -27,7 +27,7 @@ RESUME_KEY_MISMATCH = ("--api-key on resume must be the key this session was lau
 # ``SESSION_COMPRESS_TIMEOUT_MS`` so every surface gives up at the same point.
 COMPRESS_RPC_TIMEOUT = 660
 # A full event queue parks the socket reader; a consumer that takes no event for this long has
-# stalled and is failed. Same bound as the owner's own send deadline (``tui_gateway/ws.py``).
+# stalled and is failed. Same bound as the owner's own send deadline (``hermes_agent/tui_gateway/ws.py``).
 EVENT_STALL_TIMEOUT = 30
 # Events read past a full queue while an RPC answer is awaited (the owner sends a re-attached
 # session's frames ahead of its ``session.resume`` answer, and a recovery RPC is awaited from the

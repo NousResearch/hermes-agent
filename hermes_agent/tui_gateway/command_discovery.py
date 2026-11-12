@@ -286,7 +286,7 @@ def slash_completions(text: str = "", scope=None) -> dict:
         # Command-token stage: the completer only emits name-prefix matches, so merge in
         # catalog entries whose name SUBSTRING or DESCRIPTION words match (name outranks description).
         if " " not in text and len(text) > 1:
-            from tui_gateway.slash_fuzzy import fuzzy_rank_slash_items, normalize_slash_search_query
+            from hermes_agent.tui_gateway.slash_fuzzy import fuzzy_rank_slash_items, normalize_slash_search_query
             items, score_of = fuzzy_rank_slash_items(
                 items, to_items(Document("/", 1)), normalize_slash_search_query(text))
         usage, origin_of = _skill_usage_lookup()

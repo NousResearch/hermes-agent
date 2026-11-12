@@ -18,8 +18,8 @@ from hermes_constants import reset_hermes_home_override, set_hermes_home_overrid
 from hermes_cli.active_sessions import active_session_registry_snapshot
 from hermes_cli.browser_connect import ChromeDebugLaunch
 from tools import async_delegation as ad
-from tui_gateway import server
-from tui_gateway.transport import bind_transport, reset_transport
+from hermes_agent.tui_gateway import server
+from hermes_agent.tui_gateway.transport import bind_transport, reset_transport
 
 
 def _dispatch_sync(req: dict, transport=None) -> dict | None:
@@ -336,7 +336,7 @@ def test_prompt_submit_unknown_session_logs_warning(caplog):
         server._teardown_session(session)
     server._sessions.clear()
 
-    with caplog.at_level(logging.WARNING, logger="tui_gateway.server"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.tui_gateway.server"):
         resp = _dispatch_sync(
             {
                 "id": "r1",
@@ -774,7 +774,7 @@ def test_profile_scoped_mcp_discovery_uses_target_home(monkeypatch, tmp_path):
     """MCP discovery must start under the selected profile's HERMES_HOME."""
     from hermes_cli import mcp_startup
     from hermes_constants import get_hermes_home
-    from tui_gateway import entry
+    from hermes_agent.tui_gateway import entry
 
     profile_home = tmp_path / "profiles" / "sheepyr"
     profile_home.mkdir(parents=True)
@@ -837,7 +837,7 @@ def test_profile_scoped_agent_build_starts_mcp_discovery_in_profile_home(
         or type("Agent", (), {"model": "test"})(),
     )
     monkeypatch.setattr(
-        "tui_gateway.entry.ensure_mcp_discovery_started",
+        "hermes_agent.tui_gateway.entry.ensure_mcp_discovery_started",
         lambda: seen.append(str(get_hermes_home())),
     )
     monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
@@ -901,7 +901,7 @@ def test_profile_scoped_agent_build_installs_secret_scope(monkeypatch, tmp_path)
 
     monkeypatch.setattr(server, "_make_agent", _fake_make_agent)
     monkeypatch.setattr(
-        "tui_gateway.entry.ensure_mcp_discovery_started", lambda: None
+        "hermes_agent.tui_gateway.entry.ensure_mcp_discovery_started", lambda: None
     )
     monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
     monkeypatch.setattr(server, "_SlashWorker", lambda *args: None)
@@ -1215,7 +1215,7 @@ def test_write_json_unserializable_payload_becomes_error_frame(monkeypatch, capl
 
     out = _ChunkyStdout()
     monkeypatch.setattr(server, "_real_stdout", out)
-    with caplog.at_level(logging.ERROR, logger="tui_gateway.transport"):
+    with caplog.at_level(logging.ERROR, logger="hermes_agent.tui_gateway.transport"):
         assert server.write_json({"jsonrpc": "2.0", "id": "profiles",
                                   "result": {"created": datetime.datetime(2026, 8, 22)}}) is True
     frame = json.loads("".join(out.parts))
@@ -4278,7 +4278,7 @@ def test_persist_live_session_runtime_preserves_explicit_normal_tier():
 
 
 def test_status_callback_emits_kind_and_text():
-    with patch("tui_gateway.server._emit") as emit:
+    with patch("hermes_agent.tui_gateway.server._emit") as emit:
         cb = server._agent_cbs("sid")["status_callback"]
         cb("context_pressure", "85% to compaction")
 
@@ -4290,7 +4290,7 @@ def test_status_callback_emits_kind_and_text():
 
 
 def test_status_callback_accepts_single_message_argument():
-    with patch("tui_gateway.server._emit") as emit:
+    with patch("hermes_agent.tui_gateway.server._emit") as emit:
         cb = server._agent_cbs("sid")["status_callback"]
         cb("thinking...")
 
@@ -7813,7 +7813,7 @@ def test_run_prompt_submit_binds_exact_steer_authority_and_resets_contextvars(
 ):
     """The turn thread commissions children with this session generation only."""
     from tools.delegate_tool import _capture_gateway_steer_authority
-    from tui_gateway.transport import (
+    from hermes_agent.tui_gateway.transport import (
         bind_transport,
         current_transport,
         reset_transport,
@@ -9658,7 +9658,7 @@ def test_setup_runtime_check_reports_target_model_on_credential_failure(monkeypa
 def test_setup_runtime_check_scopes_launch_profile_in_multiplex_backend(monkeypatch, tmp_path):
     """The launch profile needs a scope too when its Codex route reads an override."""
     from agent import secret_scope
-    from tui_gateway import launch_profile_policy
+    from hermes_agent.tui_gateway import launch_profile_policy
 
     launch_home = tmp_path / ".hermes"
     launch_home.mkdir()
@@ -9805,7 +9805,7 @@ def _slash_skill_fixtures(monkeypatch):
     usage = {"work": 297, "research": 84, "clean": 12}
 
     monkeypatch.setattr(
-        "tui_gateway.command_discovery._skill_usage_lookup",
+        "hermes_agent.tui_gateway.command_discovery._skill_usage_lookup",
         lambda: (
             lambda name: usage.get(name, 0),
             lambda name: "bundled" if name.startswith("unused-") else "local",
@@ -10423,7 +10423,7 @@ def test_config_set_model_recovers_failed_profile_resume_after_build_completes(
     monkeypatch.setattr(server, "_make_agent", fake_make_agent)
     monkeypatch.setattr(server, "_transfer_db_to_agent", barrier_transfer)
     monkeypatch.setattr(
-        "tui_gateway.entry.ensure_mcp_discovery_started", lambda: None
+        "hermes_agent.tui_gateway.entry.ensure_mcp_discovery_started", lambda: None
     )
     monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
     monkeypatch.setattr(server, "_start_notification_poller", lambda *a, **k: None)
@@ -11174,7 +11174,7 @@ def test_session_compress_uses_compress_helper(monkeypatch):
     )
     monkeypatch.setattr(server, "_session_info", lambda _agent, *a: {"model": "x"})
 
-    with patch("tui_gateway.server._emit") as emit:
+    with patch("hermes_agent.tui_gateway.server._emit") as emit:
         resp = server.handle_request(
             {"id": "1", "method": "session.compress", "params": {"session_id": "sid"}}
         )
@@ -11355,7 +11355,7 @@ def test_session_compress_reports_aborted_summary_without_success(monkeypatch):
     monkeypatch.setattr(server, "_session_info", lambda _agent, *a: {"model": "x"})
 
     try:
-        with patch("tui_gateway.server._emit"):
+        with patch("hermes_agent.tui_gateway.server._emit"):
             resp = server.handle_request(
                 {
                     "id": "1",
@@ -11409,7 +11409,7 @@ def test_session_compress_syncs_session_key_after_rotation(monkeypatch):
     )
 
     try:
-        with patch("tui_gateway.server._emit"):
+        with patch("hermes_agent.tui_gateway.server._emit"):
             server.handle_request(
                 {
                     "id": "1",
@@ -11457,7 +11457,7 @@ def test_session_compress_sync_failure_discards_lcm_notification(monkeypatch):
     )
 
     try:
-        with patch("tui_gateway.server._emit"):
+        with patch("hermes_agent.tui_gateway.server._emit"):
             resp = server.handle_request(
                 {
                     "id": "1",
@@ -12046,7 +12046,7 @@ def test_commands_catalog_ranks_skill_commands_by_recorded_usage(monkeypatch):
     opened outranks the one they invoke daily.
     """
     monkeypatch.setattr(
-        "tui_gateway.command_discovery._skill_usage_lookup",
+        "hermes_agent.tui_gateway.command_discovery._skill_usage_lookup",
         lambda: (
             lambda name: {"research": 60, "work": 172}.get(name, 0),
             lambda name: "bundled" if name == "research-paper-writing" else "local",
@@ -13258,7 +13258,7 @@ def test_prompt_submit_merges_on_model_switch_marker(monkeypatch):
       old marker before appending the new one, producing a net-zero length
       delta that the positional slice missed).
     """
-    from tui_gateway.server import _MODEL_SWITCH_MARKER_PREFIX
+    from hermes_agent.tui_gateway.server import _MODEL_SWITCH_MARKER_PREFIX
 
     session_ref = {"s": None}
 
@@ -13290,7 +13290,7 @@ def test_prompt_submit_merges_on_model_switch_marker(monkeypatch):
             }
 
     def _is_marker(entry) -> bool:
-        from tui_gateway.server import _is_model_switch_marker
+        from hermes_agent.tui_gateway.server import _is_model_switch_marker
         return _is_model_switch_marker(entry)
 
     class _ImmediateThread:
@@ -14175,7 +14175,7 @@ def test_prompt_submit_row_id_accepts_full_lineage_ordinal(monkeypatch):
 
 
 def _open_request(sid, method="clarify"):
-    from tui_gateway import server_requests
+    from hermes_agent.tui_gateway import server_requests
     req = server_requests.ServerRequest(sid, method, {})
     with server_requests._lock:
         server_requests._open[req.id] = req
@@ -14187,7 +14187,7 @@ def test_interrupt_only_clears_own_session_pending():
     and must NOT touch session B's — otherwise B's clarify/sudo/secret prompt silently resolves as if
     the user cancelled it."""
     import types
-    from tui_gateway import server_requests
+    from hermes_agent.tui_gateway import server_requests
 
     session_a = _session()
     session_a["agent"] = types.SimpleNamespace(interrupt=lambda: None)
@@ -14992,7 +14992,7 @@ def test_wait_agent_for_prompt_expires_at_cap(monkeypatch):
 def test_clear_pending_without_sid_clears_all():
     """_clear_pending(None) is the process-exit path — every open request is withdrawn, and a response for
     a withdrawn id is dropped quietly (no error frame back to the client)."""
-    from tui_gateway import server_requests
+    from hermes_agent.tui_gateway import server_requests
     reqs = [_open_request("sid-x"), _open_request("sid-y", "sudo")]
     try:
         server._clear_pending(None)
@@ -15930,7 +15930,7 @@ def test_handoff_request_uses_session_profile_home(monkeypatch, tmp_path):
 
     from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
     from hermes_cli.config import get_hermes_home
-    from tui_gateway import methods_session
+    from hermes_agent.tui_gateway import methods_session
 
     methods_session.register(server)
     profile_home = tmp_path / "profiles" / "coder"
@@ -19232,7 +19232,7 @@ def test_reap_idle_sessions_logs_trim_failure(monkeypatch, caplog):
     monkeypatch.setattr(mem_trim, "trim_memory", lambda **_kw: (_ for _ in ()).throw(RuntimeError("boom")))
     server._sessions.clear()
     try:
-        with caplog.at_level("DEBUG", logger="tui_gateway.server"):
+        with caplog.at_level("DEBUG", logger="hermes_agent.tui_gateway.server"):
             server._reap_idle_sessions()
         assert "boom" in caplog.text
     finally:
@@ -20484,7 +20484,7 @@ def test_speak_text_with_barge_no_monitor_when_voice_mode_off(monkeypatch):
 
 def _capture_server_request(monkeypatch, result):
     """Stub the server-request send and capture (method, sid, params, timeout)."""
-    from tui_gateway import server_requests
+    from hermes_agent.tui_gateway import server_requests
     captured = {}
 
     def fake_send(method, sid, params, *, timeout, qids=None):

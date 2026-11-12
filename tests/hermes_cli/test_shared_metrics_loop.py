@@ -260,7 +260,7 @@ def test_background_review_fork_terminal_calls_are_not_backend_usage(home):
 
 
 def test_path_completion_listing_is_not_user_backend_work(home):
-    import tui_gateway.methods_complete as mc
+    import hermes_agent.tui_gateway.methods_complete as mc
     from tools.terminal_tool import terminal_tool
 
     for _ in range(3):  # three keystrokes of `@file:` on a non-local backend each list the directory

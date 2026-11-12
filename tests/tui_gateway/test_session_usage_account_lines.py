@@ -18,7 +18,7 @@ def _snapshot() -> AccountUsageSnapshot:
 
 
 def test_usage_slash_shows_account_limits_before_first_turn_inside_session_scope():
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     # Fresh chat whose composer picked Codex under an OpenRouter-default profile.
     session = {"agent": None, "profile_home": "/nonexistent/hermes-profiles/coder", "history": [],

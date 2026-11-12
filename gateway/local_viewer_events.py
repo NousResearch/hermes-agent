@@ -24,7 +24,7 @@ _TURN_ATTRS = ("tool_gen_callback", "_print_fn", "thinking_callback", "reaction_
                *local_desktop_ui.CALLBACK_ATTRS)
 # Private key in ``wire``'s return value: the desktop window bridge registration ``restore`` releases.
 _DESKTOP_UI_TOKEN = "__desktop_ui_token__"
-# MoA facade progress (agent/moa_loop._RELAY_EVENTS) -> the payload tui_gateway/tool_progress emits.
+# MoA facade progress (agent/moa_loop._RELAY_EVENTS) -> the payload hermes_agent/tui_gateway/tool_progress emits.
 _MOA_KEYS = {"moa.reference": {"moa_index": "index", "moa_count": "count"},
              "moa.progress": {"moa_refs_done": "refs_done", "moa_refs_total": "refs_total"},
              "moa.phase": {"moa_phase": "phase", "moa_refs_done": "refs_done", "moa_refs_total": "refs_total"},
@@ -131,7 +131,7 @@ def publish_progress(turn, event_type, name, preview, kwargs) -> None:
     if isinstance(event_type, str) and event_type.startswith("subagent."):
         if event_type == "subagent.text":
             return
-        from tui_gateway.tool_progress import _subagent_payload
+        from hermes_agent.tui_gateway.tool_progress import _subagent_payload
         _publish_subagent(turn, event_type, _subagent_payload(
             event_type, name, preview, kwargs, show_reasoning=show_reasoning(turn)))
         return
@@ -238,7 +238,7 @@ def todo_state(tool_name, result) -> dict | None:
     if not is_todo_tool_name(tool_name):
         return None
     import json
-    from tui_gateway.tool_progress import _normalize_todo_state
+    from hermes_agent.tui_gateway.tool_progress import _normalize_todo_state
     try:
         return _normalize_todo_state(json.loads(result) if isinstance(result, str) else result)
     except (TypeError, ValueError):

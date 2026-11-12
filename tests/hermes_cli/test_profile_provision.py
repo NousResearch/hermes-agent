@@ -91,7 +91,7 @@ def test_a_named_launch_profiles_subscription_login_is_not_copied_and_says_so(la
     result = provision_profile(ProfileCreateRequest(name="child"))
     assert "anthropic" not in (result.path / "auth.json").read_text()
     assert any("subscription logins not carried over (anthropic)" in w for w in result.warnings)
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     rpc = server._methods["profiles.create"](1, {"name": "child2", "no_alias": True})["result"]
     assert any("anthropic" in w for w in rpc["warnings"])
 
@@ -158,7 +158,7 @@ def test_every_surface_creates_through_provision_profile(launch, monkeypatch):
     from hermes_cli.web_models import ProfileCreate
     from hermes_cli.web_routers.profiles import create_profile_endpoint
     asyncio.run(create_profile_endpoint(ProfileCreate(name="rest")))
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     assert server._methods["profiles.create"](1, {"name": "rpc", "no_alias": True})["result"]["ok"]
     assert [r.name for r in seen] == ["cli", "rest", "rpc"]
     # One default everywhere: the bot page's.
@@ -180,7 +180,7 @@ def test_every_surface_has_both_opt_outs(launch, monkeypatch):
     from hermes_cli import profile_cmd
     from hermes_cli.web_models import ProfileCreate
     from hermes_cli.web_routers.profiles import create_profile_endpoint
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     seen = []
     real = profile_provision.provision_profile
 

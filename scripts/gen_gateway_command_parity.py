@@ -157,7 +157,7 @@ def _sidecar_live_session_methods():
 
 def _rpc_cell(methods, served):
     """An RPC the authority does not serve: session-namespace verbs answer -32601 (the client's
-    "out of sync" error); any other method reaches the legacy sidecar (``tui_gateway/ws.py``),
+    "out of sync" error); any other method reaches the legacy sidecar (``hermes_agent/tui_gateway/ws.py``),
     where a live-session handler answers 4001 for every shared-gateway session."""
     from hermes_agent.compat.paths import current_module
     fallback = importlib.import_module(current_module("tui_gateway.ws_legacy_fallback"))

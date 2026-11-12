@@ -79,7 +79,7 @@ def test_lifespan_enters_and_exits_as_an_async_context_manager(monkeypatch):
 
 def test_hosted_room_recovery_cannot_block_or_abort_backend_startup(monkeypatch):
     from fastapi.testclient import TestClient
-    from tui_gateway import methods_groups
+    from hermes_agent.tui_gateway import methods_groups
 
     started = threading.Event()
     release = threading.Event()

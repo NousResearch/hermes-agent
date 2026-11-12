@@ -10,7 +10,7 @@ def test_side_workers_hold_admission_through_cleanup_and_preserve_profile_scope(
     from hermes_cli import backend_retirement
     from hermes_constants import get_hermes_home
     from agent.secret_scope import get_secret, set_multiplex_active
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     fence = backend_retirement.RetirementFence()
     monkeypatch.setattr(backend_retirement, "retirement", fence)

@@ -56,7 +56,7 @@ class TestFinalizeSessionPersist:
 
     def test_commit_memory_still_called(self):
         """Existing memory commit path is preserved."""
-        from tui_gateway.server import _finalize_session
+        from hermes_agent.tui_gateway.server import _finalize_session
 
         history = [{"role": "user", "content": "x"}]
         agent = _make_agent()
@@ -71,7 +71,7 @@ class TestFinalizeSessionPersist:
 
     def test_already_finalized_skips(self):
         """Double-finalize is a no-op."""
-        from tui_gateway.server import _finalize_session
+        from hermes_agent.tui_gateway.server import _finalize_session
 
         agent = _make_agent()
         session = _make_session(agent=agent, history=[{"role": "user", "content": "x"}])
@@ -126,7 +126,7 @@ class TestFinalizeSessionPersistE2E:
         disconnect tears the session down."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
         from hermes_agent.hermes_state import SessionDB
-        import tui_gateway.server as srv
+        import hermes_agent.tui_gateway.server as srv
 
         db = SessionDB(db_path=tmp_path / "state.db")
         session_id = "sess-unflushed"
@@ -159,7 +159,7 @@ class TestFinalizeSessionPersistE2E:
         already durable in the DB) must NOT re-append duplicate rows."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
         from hermes_agent.hermes_state import SessionDB
-        import tui_gateway.server as srv
+        import hermes_agent.tui_gateway.server as srv
 
         db = SessionDB(db_path=tmp_path / "state.db")
         session_id = "sess-resumed"
@@ -189,7 +189,7 @@ class TestOnSessionEndHook:
     @patch("hermes_cli.plugins.invoke_hook")
     def test_hook_fired_with_interrupted_true(self, mock_invoke_hook):
         """on_session_end is called with interrupted=True when finalizing."""
-        from tui_gateway.server import _finalize_session
+        from hermes_agent.tui_gateway.server import _finalize_session
 
         agent = _make_agent(session_id="hook_test_001")
         agent.model = "claude-sonnet-4"

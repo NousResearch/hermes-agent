@@ -29,7 +29,7 @@ def running_screen(monkeypatch):
 
 
 def test_status_never_prints_the_holders_raw_viewer_id(running_screen, capsys):
-    from tui_gateway import methods_display
+    from hermes_agent.tui_gateway import methods_display
 
     secret = "secret-viewer-token-ABC123"
     lease.acquire(secret, reason="typing a password")

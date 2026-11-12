@@ -8,7 +8,7 @@ from __future__ import annotations
 import contextlib
 from typing import Any
 
-from tui_gateway import git_probe
+from hermes_agent.tui_gateway import git_probe
 
 from .method_ctx import bind_module
 

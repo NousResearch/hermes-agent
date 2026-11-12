@@ -3,7 +3,7 @@
 from pathlib import Path
 
 from tests.tui_gateway.test_hosted_room_service import _server
-from tui_gateway.hosted_room_service import HostedRoomService
+from hermes_agent.tui_gateway.hosted_room_service import HostedRoomService
 
 
 def test_local_profiles_skips_delete_tombstones_and_dot_dirs(tmp_path: Path):

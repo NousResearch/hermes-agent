@@ -15,7 +15,7 @@ from types import SimpleNamespace
 import pytest
 import hermes_yaml as yaml
 
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 HEARTBEAT = {"type": "heartbeat", "session_id": "proc_hb", "seq": 2, "elapsed": 130.0, "interval": 60,
              "command": "npm test", "output": "1 failing\n"}

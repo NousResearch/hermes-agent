@@ -10,7 +10,7 @@ from __future__ import annotations
 import io
 import json
 
-from tui_gateway import entry
+from hermes_agent.tui_gateway import entry
 
 
 def test_main_reports_inline_handler_error_and_keeps_reading(monkeypatch):

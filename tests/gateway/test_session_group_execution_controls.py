@@ -169,7 +169,7 @@ def test_send_refusals_say_only_a_refusal_before_commit_admitted_nothing(tmp_pat
     if preparation fails; an event-id conflict stays uncertain."""
     import threading
     from gateway import hosted_rooms
-    from tui_gateway.hosted_room_service import HostedRoomService
+    from hermes_agent.tui_gateway.hosted_room_service import HostedRoomService
 
     class OwnedRooms(HostedRoomService):
         def authorize_room(self, actor_subject, room_id, *, create=False, conn=None):

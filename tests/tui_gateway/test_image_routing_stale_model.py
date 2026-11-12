@@ -3,7 +3,7 @@
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from tui_gateway.server import _active_image_routing_identity
+from hermes_agent.tui_gateway.server import _active_image_routing_identity
 
 
 def test_live_agent_identity_wins_after_model_switch():

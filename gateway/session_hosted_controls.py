@@ -1,9 +1,9 @@
 """Exact operator controls for canonical hosted attempts, never legacy replay."""
 from gateway import hosted_room_driver as tasks
 from hermes_agent.hermes_state_runtime import RuntimeStoreError
-from tui_gateway.hosted_room_driver import HostedRoomBinding, discarded_receipt
-from tui_gateway.hosted_room_prepare_stall import RETRY_TASK_PREFIX
-from tui_gateway.hosted_room_service import attempt_action, task_member_id
+from hermes_agent.tui_gateway.hosted_room_driver import HostedRoomBinding, discarded_receipt
+from hermes_agent.tui_gateway.hosted_room_prepare_stall import RETRY_TASK_PREFIX
+from hermes_agent.tui_gateway.hosted_room_service import attempt_action, task_member_id
 
 _GRANT_ERRORS = frozenset({'invalid_room_grant', 'room_reauthorization_required'})
 
@@ -65,7 +65,7 @@ class HostedControls:
         closed key settles the turn at once. A found run is stopped, and the turn settles only once
         that gateway confirms the run ended. A member gateway that is unreachable, or too old to
         answer that question, keeps the turn: nothing here can prove what it did with the admission."""
-        from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
+        from hermes_agent.tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
         if task['status'] != 'deferred':
             raise RuntimeStoreError('unsupported_operation')
         try:
@@ -142,7 +142,7 @@ class HostedControls:
         """A member on another gateway may still hold this generation: replay it under its own key
         first, never start another (``HostedRoomRuntime._retry_deferred``). Called outside the
         policy lock, since it waits on the member's gateway."""
-        from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
+        from hermes_agent.tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
         try:
             try:
                 return self.runtime.retry_indeterminate(

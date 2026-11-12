@@ -8,7 +8,7 @@ def test_full_descriptions_survive_catalog_and_completion(monkeypatch):
     from agent import skill_commands
     from hermes_cli import plugins
     from hermes_cli.commands_completion import SlashCommandCompleter
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     description = "Read the entire description before selecting a command. " * 8
     skills = {"/proof-skill": {"name": "proof-skill", "description": description}}

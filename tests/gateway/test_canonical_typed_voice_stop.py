@@ -14,7 +14,7 @@ def voice_owner(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
     from gateway.config import Platform
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     db, authority = _authority(tmp_path, monkeypatch, platform=Platform.LOCAL)  # TUI-26 is the local voice chat
     # The owner's voice mode is keyed by the session's source (``_voice_key_for_source``). Ending the
     # LOCAL push-to-talk capture is ``set_local_voice_mode``'s job, pinned in
@@ -129,7 +129,7 @@ async def test_other_busy_corrections_still_reach_the_turn(voice_owner):
 
 
 def test_the_canonical_contract_declares_the_voice_stopped_reply():
-    from tui_gateway.contracts.registry import CANONICAL_METHODS
+    from hermes_agent.tui_gateway.contracts.registry import CANONICAL_METHODS
     contract = CANONICAL_METHODS['prompt.submit']
     contract.result.model_validate({'voice_stopped': True})
     with pytest.raises(Exception):

@@ -41,10 +41,10 @@ def server(hermes_home):
             "hermes_cli.banner": MagicMock(),
         },
     ):
-        mod = importlib.import_module("tui_gateway.server")
+        mod = importlib.import_module("hermes_agent.tui_gateway.server")
         yield mod
         mod._sessions.clear()
-        __import__("tui_gateway.server_requests", fromlist=["x"]).reset_for_tests()
+        __import__("hermes_agent.tui_gateway.server_requests", fromlist=["x"]).reset_for_tests()
 
 
 @pytest.fixture()

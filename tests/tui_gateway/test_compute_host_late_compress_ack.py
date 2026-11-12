@@ -14,8 +14,8 @@ import types
 
 import pytest
 
-from tui_gateway import server
-from tui_gateway.host_supervisor import HostSupervisor
+from hermes_agent.tui_gateway import server
+from hermes_agent.tui_gateway.host_supervisor import HostSupervisor
 
 
 def _supervisor() -> tuple[HostSupervisor, list]:
@@ -91,7 +91,7 @@ def test_late_control_error_and_bare_error_frames_fire_handler():
 
 
 def test_late_ack_handlers_are_bounded_by_ttl_and_cap(monkeypatch):
-    from tui_gateway import host_supervisor as hs
+    from hermes_agent.tui_gateway import host_supervisor as hs
 
     monkeypatch.setattr(hs, "_LATE_CONTROL_MAX", 3)
     sup, _sent = _supervisor()

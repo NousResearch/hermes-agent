@@ -7,7 +7,7 @@ import time
 import pytest
 
 from tests.gateway.test_session_group_peers import gateway as gateway_fixture
-from tui_gateway.hosted_room_driver import HostedRoomBinding
+from hermes_agent.tui_gateway.hosted_room_driver import HostedRoomBinding
 
 gateway = gateway_fixture
 
@@ -64,7 +64,7 @@ def test_revoke_transport_without_optional_http_packages(gateway, monkeypatch, r
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     from gateway import hosted_rooms
 
-    from tui_gateway import hosted_room_peer_http
+    from hermes_agent.tui_gateway import hosted_room_peer_http
     monkeypatch.setattr(hosted_room_peer_http, 'MAX_PEER_RESPONSE_BYTES', 32)
     seen = []
 
@@ -109,7 +109,7 @@ def test_revoke_transport_without_optional_http_packages(gateway, monkeypatch, r
 
 def test_unexpected_transport_error_keeps_debt_on_backoff(gateway, monkeypatch):
     import sqlite3
-    from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
+    from hermes_agent.tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
 
     def failed_transport(*args, **kwargs):
         raise TypeError('transport failed')
@@ -127,7 +127,7 @@ def test_unexpected_transport_error_keeps_debt_on_backoff(gateway, monkeypatch):
 @pytest.mark.parametrize('targets, limit', [(list(range(6)), 4), ([0] * 6, 1)])
 def test_blocked_resolvers_bound_outstanding_attempts_and_drain(gateway, monkeypatch, targets, limit):
     import sqlite3
-    from tui_gateway import hosted_room_service
+    from hermes_agent.tui_gateway import hosted_room_service
 
     service, release, workers, destinations = gateway.service, threading.Event(), [], []
     now = [service.runtime.clock() + 10]

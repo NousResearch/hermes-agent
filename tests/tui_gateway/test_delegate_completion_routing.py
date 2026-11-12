@@ -16,7 +16,7 @@ from hermes_agent.hermes_state import SessionDB
 from tests.tools import test_delegate_transcript_readiness as transcript_readiness
 from tools.delegate_tool import _build_child_agent
 from tools.process_registry_notifications import format_process_notification
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 offline_children = transcript_readiness.offline_children

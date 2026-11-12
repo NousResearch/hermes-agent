@@ -472,7 +472,7 @@ def _kill_pids_windows(pids: list[int], killed: list[int], failed: list[tuple[in
 # SIGTERM → SIGKILL grace for the dashboard/serve backend. Must outlast the lifespan teardown in
 # hermes_cli/web_server.py::_lifespan: stop_hosted_room_service(timeout=5.0) + the startup-thread
 # join(1.0) + PTY_REGISTRY.close_all() (concurrent; ≤ ~4s per PTY, see pty_bridge._MAX_HELPER_SHUTDOWN_GRACE_S). A SIGKILL inside
-# that window skips close_all(), so the ui-tui / tui_gateway.entry children outlive the backend
+# that window skips close_all(), so the ui-tui / hermes_agent.tui_gateway.entry children outlive the backend
 # and keep the deleted state.db-wal inode open — the next hermes start refuses with a FATAL
 # DeletedWalGenerationError (#111912). The orphan reaper's 1.5s (`_reap_orphaned_desktop_local_serves`)
 # is deliberately shorter: it runs on the Desktop boot path under a 10s ready-probe.
@@ -493,7 +493,7 @@ def _is_detached_session_leader(pid: int, tty: str) -> bool:
     ``hermes --tui`` child is a session leader too (``pty.fork``) but owns the pts whose master the
     dashboard held, so its tty column is set and it stays in the sweep.
 
-    Known gap: the turn-isolation ``tui_gateway.compute_host`` and ``slash_worker`` children are
+    Known gap: the turn-isolation ``hermes_agent.tui_gateway.compute_host`` and ``slash_worker`` children are
     launched the same way (``start_new_session=True``, no tty; ``compute_host`` also holds
     ``state.db``), so a wedged WAL holder of that class is spared here too. Their exit relies on
     ``compute_host._parent_guard_loop`` and on the gateway's owner-death supervisor

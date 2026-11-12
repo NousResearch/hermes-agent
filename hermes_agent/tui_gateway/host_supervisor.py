@@ -1,5 +1,5 @@
 """Supervisor for the dashboard compute-host child: with ``dashboard.turn_isolation``
-agent turns run in one persistent ``python -m tui_gateway.compute_host`` child so heavy
+agent turns run in one persistent ``python -m hermes_agent.tui_gateway.compute_host`` child so heavy
 agent threads do not contend with the serving process' event loop for the GIL."""
 
 from __future__ import annotations
@@ -151,7 +151,7 @@ class HostSupervisor:
         self.registry_path = (
             Path(registry_path) if registry_path is not None
             else get_hermes_home() / "state" / _REGISTRY_NAME)
-        self.argv = argv or [sys.executable, "-m", "tui_gateway.compute_host"]
+        self.argv = argv or [sys.executable, "-m", "hermes_agent.tui_gateway.compute_host"]
         self.cwd = Path(cwd) if cwd is not None else _repo_root()
         self.env = env
         self.rpc_sink = rpc_sink or (lambda _obj: None)

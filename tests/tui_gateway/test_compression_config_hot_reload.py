@@ -10,7 +10,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from agent.context_compressor import ContextCompressor
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 def _session_with_compressor(**compression_ctor):
@@ -312,7 +312,7 @@ def test_apply_live_compression_config_is_self_contained():
     # is_truthy_value without importing it, so a direct (non-rebound) call
     # raised NameError. The module must not depend on server.py injecting the
     # name via method_ctx.bind_module.
-    from tui_gateway.session_compression import _apply_live_compression_config
+    from hermes_agent.tui_gateway.session_compression import _apply_live_compression_config
 
     agent = SimpleNamespace(
         model="unset-test-model",

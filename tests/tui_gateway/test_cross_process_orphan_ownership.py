@@ -16,7 +16,7 @@ from hermes_cli.active_sessions import (
     active_session_registry_snapshot,
     try_acquire_active_session,
 )
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 _LEASE_HOLDER_SCRIPT = """

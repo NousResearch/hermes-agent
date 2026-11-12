@@ -21,7 +21,7 @@ async def attach_bytes(connection, ref, params):
 
 
 def _stage(directory, params):
-    from tui_gateway.prompt_attachments import (
+    from hermes_agent.tui_gateway.prompt_attachments import (
         _ATTACH_BYTES_MAX_BYTES, _decode_attach_base64, _sniff_image_ext, stage_image_bytes,
     )
     try:

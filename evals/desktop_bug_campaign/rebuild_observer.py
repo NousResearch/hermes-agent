@@ -8,7 +8,7 @@ import inspect
 import os
 from pathlib import Path
 
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 import hermes_agent.hermes_state_registry as registry
 
 

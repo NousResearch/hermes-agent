@@ -1,6 +1,6 @@
 """C8 chaos: agent-turn liveness through the REAL tui_gateway JSON-RPC subprocess.
 
-``python -m tui_gateway.entry`` is the exact process the Ink TUI and Desktop drive over
+``python -m hermes_agent.tui_gateway.entry`` is the exact process the Ink TUI and Desktop drive over
 stdio. Only the LLM provider is faked (``tests/fakes/fake_llm_provider``); the agent,
 tools, SessionDB and the RPC dispatcher are the shipped code. Each scenario starts its
 own gateway (so process hygiene is judged per fault), opens a session, submits a turn

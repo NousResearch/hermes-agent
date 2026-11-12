@@ -150,7 +150,7 @@ def test_scope_is_reset_when_resolution_fails(launch_home, monkeypatch):
 def test_home_and_scope_are_restored_when_the_scope_build_fails(launch_home, monkeypatch):
     from agent.secret_scope import current_secret_scope_home
     from hermes_constants import get_hermes_home_override, reset_hermes_home_override, set_hermes_home_override
-    from tui_gateway import launch_profile_policy
+    from hermes_agent.tui_gateway import launch_profile_policy
 
     secondary = _profile(launch_home / "profiles" / "work", OTHER)
     set_multiplex_active(True)
@@ -179,7 +179,7 @@ def test_launch_profile_keeps_its_env_only_override_frozen_at_activation(tmp_pat
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(tmp_path / "shared"))
     monkeypatch.setenv("HERMES_PORTAL_BASE_URL", STAGING)
-    from tui_gateway.launch_profile_policy import activate_multi_profile_hosting
+    from hermes_agent.tui_gateway.launch_profile_policy import activate_multi_profile_hosting
     activate_multi_profile_hosting()  # freezes the launch env
     monkeypatch.setenv("HERMES_PORTAL_BASE_URL", OTHER)  # poisoned afterwards
 

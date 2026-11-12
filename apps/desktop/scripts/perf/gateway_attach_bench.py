@@ -5,7 +5,7 @@ clipboard.paste, pdf.attach) resolves its session through ``_sess()``, which
 blocks on the deferred agent build. None of them is in ``_LONG_HANDLERS``, so
 that block happens INLINE on the socket reader thread.
 
-This drives the real ``tui_gateway.server.dispatch`` with a session whose
+This drives the real ``hermes_agent.tui_gateway.server.dispatch`` with a session whose
 agent build has not completed, and times it. ``prompt.submit`` (which uses
 ``_sess_nowait``) is timed alongside as the control — it is the path that
 stays instant today.
@@ -97,7 +97,7 @@ def main() -> int:
     ap.add_argument("--kb", type=int, default=900)
     args = ap.parse_args()
 
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     # The build is already in flight for these sessions (that is the state the
     # bench recreates), so the "start one if none is running" call is a no-op.

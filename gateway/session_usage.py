@@ -128,7 +128,7 @@ def seed_compression_count(live, agent) -> None:
 
 
 def tui_usage(stats: dict) -> dict:
-    """``stats`` in main's TUI ``Usage`` shape (``tui_gateway/server.py::_get_usage``): the fields its
+    """``stats`` in main's TUI ``Usage`` shape (``hermes_agent/tui_gateway/server.py::_get_usage``): the fields its
     status bar (context used/max/bar, ``◷`` latency, ``t/s``, ``cmp`` badge, cache hit) and ``/usage``
     read off ``message.complete.usage``. Absent figures are omitted, never fabricated as zeros."""
     usage = {"model": stats.get("model") or "", "input": stats.get("input_tokens") or stats.get("prompt_tokens") or 0,
@@ -162,7 +162,7 @@ def tui_usage(stats: dict) -> dict:
 def usage_frame(stats: dict) -> dict:
     """The ``session.usage`` event payload: BOTH views of the same counters, in one frame.
 
-    ``SessionUsagePayload`` (``tui_gateway/contracts/events.py``) allows either view — the TUI
+    ``SessionUsagePayload`` (``hermes_agent/tui_gateway/contracts/events.py``) allows either view — the TUI
     ``usage`` object (``server._start_usage_ticker``) or the session-cumulative counters at the top
     level — and the readers on the far end want different halves. The classic CLI
     (``hermes_cli.gateway_connection.SessionState.apply_event``) keeps the top-level counters

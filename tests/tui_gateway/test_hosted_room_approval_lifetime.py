@@ -6,8 +6,8 @@ import time
 import pytest
 
 from gateway.hosted_room_peer import GatewayRoomCatalog, catalog_mapping
-from tui_gateway.hosted_room_peer_transport import PeerMemberRoute
-from tui_gateway.hosted_room_service import HostedRoomService
+from hermes_agent.tui_gateway.hosted_room_peer_transport import PeerMemberRoute
+from hermes_agent.tui_gateway.hosted_room_service import HostedRoomService
 from tests.tui_gateway.test_hosted_room_service import _ApprovalPeerClient, _FakeRPC, _server
 
 from gateway import hosted_room_driver as driver, hosted_rooms

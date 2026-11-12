@@ -140,7 +140,7 @@ def _emit_reasoning_delta(sid: str, text: str) -> None:
 
 def _agent_cbs(sid: str) -> dict:
     # Late import: bind_module rebinds this function to server.py's globals and skips plain imports.
-    from tui_gateway.theme_bridge import theme_request
+    from hermes_agent.tui_gateway.theme_bridge import theme_request
 
     def _read_block(method: str, timeout: int):
         # read_terminal / read_preview (desktop GUI): server request like clarify; the preview

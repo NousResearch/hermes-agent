@@ -4,19 +4,7 @@ repo: https://github.com/Web3B-eth/whos-listening
 sha: a498dd769c4196d0e911b713d4ad7363c8154ba1
 subdir: ""
 version: "0.1.0"
-description: >-
-  Memory that knows who's listening. Each memory is Private or Shared. Private memories go into a
-  request only when the machine running Hermes (the gateway), the app you chat in (the platform)
-  and the model provider are all trusted. By default, the gateway you install it on is trusted
-  unless it's a hosted Hermes such as Hermes Cloud; the trusted platforms are the terminal and
-  Hermes Desktop, including its Webapp; and the trusted model routes are Venice's private models
-  and models on your own machine or local network. Everything else gets Shared memories only. You
-  can configure all of these options in the plugin's settings: trusting either more or fewer
-  gateways, platforms or model providers. Disclosure — memories stay in
-  $HERMES_HOME/whos-listening/. With a Venice key in Hermes, a duplicate check sends each new
-  memory and up to 20 others, Private ones included, to Venice's private Clef model
-  (duplicate_judge off keeps it local). Shared memories sync to your GitHub repository only if you
-  set that up.
+description: "Memory that knows who's listening. Each memory is Private or Shared. Private memories go into a request only when the machine running Hermes (the gateway), the app you chat in (the platform) and the model provider are all trusted. By default, the gateway you install it on is trusted unless it's a hosted Hermes such as Hermes Cloud; the trusted platforms are the terminal and Hermes Desktop, including its Webapp; and the trusted model routes are Venice's private models and models on your own machine or local network. Everything else gets Shared memories only. You can configure all of these options in the plugin's settings: trusting either more or fewer gateways, platforms or model providers. Disclosure — memories stay in $HERMES_HOME/whos-listening/. Once a day it fetches Venice's public model list from api.venice.ai (nothing about you is sent). With a Venice key in Hermes, a duplicate check (on by default) sends each new memory, each memory arriving by sync and each memory in a /memories review scan, together with up to 20 others, Private ones included, to Venice's private Clef model (duplicate_judge off keeps it local). Shared memories sync to your GitHub repository only if you set that up."
 maintainer: Web3B-eth
 tier: community
 category: memory

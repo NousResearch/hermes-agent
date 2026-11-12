@@ -1588,7 +1588,8 @@ def _normalize_root_model_keys(config: dict[str, Any]) -> dict[str, Any]:
     ``model`` only when the corresponding ``model.*`` key is empty — never overriding. ``api_base``
     (the OpenAI-SDK/LiteLLM name users reach for) is an alias for ``base_url``; the runtime reads
     only ``model.base_url``. A dict-valued ``default``/``model``/``name`` is flattened so no reader
-    sees a nested dict, and the id is canonicalized to ``default``.
+    sees a nested dict, and the id is canonicalized to ``default``. Any other nested key is lifted
+    onto ``model`` when that key is not already set, so a save does not drop it.
 
     Also aliases ``api_base`` → ``base_url`` (issue #8919). ``api_base`` is the intuitive name OpenAI-SDK /
     LiteLLM users reach for, and ``hermes config set`` blindly accepts any dotted key — so
@@ -1622,18 +1623,12 @@ def _normalize_root_model_keys(config: dict[str, Any]) -> dict[str, Any]:
     model = dict(model) if isinstance(model, dict) else {"default": model} if model else {}
     config["model"] = model
 
-    # Flatten ``{provider: <p>, model: <m>}``. The nested provider wins over the merged default
-    # ``"auto"`` (which runtime resolution treats as authoritative) but never over a configured one.
-    for _key in ("default", "model", "name"):
-        _val = model.get(_key)
-        if isinstance(_val, dict):
-            _nested_model = _val.get("model") or _val.get("default")
-            _nested_provider = str(_val.get("provider") or "").strip()
-            model[_key] = str(_nested_model or "").strip()
-            if _nested_provider:
-                _outer_provider = str(model.get("provider") or "").strip()
-                if not _outer_provider or _outer_provider == "auto":
-                    model["provider"] = _nested_provider
+    # Flatten ``{provider: <p>, model: <m>}``. Nested provider wins over the merged default
+    # ``"auto"`` but never over a configured one. Other nested keys are applied after the
+    # root-key move so a value already on ``model`` is left alone.
+    from hermes_cli.config_model_flatten import flatten_dict_valued_model_ids
+
+    lifted_model_keys = flatten_dict_valued_model_ids(model)
 
     for key in ("provider", "base_url", "context_length"):
         root_val = config.get(key)
@@ -1649,6 +1644,10 @@ def _normalize_root_model_keys(config: dict[str, Any]) -> dict[str, Any]:
     # provider-less configs would add churn to config.yaml on the next save.
     if model.get("provider") is not None:
         model["provider"] = coerce_provider_id(model.get("provider"))
+
+    for extra_key, extra_val in lifted_model_keys.items():
+        if extra_key not in model:
+            model[extra_key] = extra_val
 
     for alias_val in (config.get("api_base"), model.get("api_base")):
         if alias_val and not model.get("base_url"):

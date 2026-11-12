@@ -1057,7 +1057,8 @@ async def fs_read_text(
     if backend is not None:
         try:
             data, size, target = await asyncio.to_thread(
-                backend.read_bytes,
+                _remote_read_bytes,
+                backend,
                 path,
                 max_bytes=_FS_TEXT_SOURCE_MAX_BYTES,
                 read_limit=_FS_TEXT_PREVIEW_MAX_BYTES,
@@ -1223,7 +1224,7 @@ async def fs_read_data_url(
     if backend is not None:
         try:
             data, _size, target = await asyncio.to_thread(
-                backend.read_bytes, path, max_bytes=_FS_DATA_URL_MAX_BYTES
+                _remote_read_bytes, backend, path, max_bytes=_FS_DATA_URL_MAX_BYTES
             )
         except Exception as exc:
             _raise_fs_backend_error(exc)
@@ -1273,6 +1274,13 @@ def _remote_download_target(backend, path: str) -> tuple[str, int]:
     if _is_sensitive_path(Path(target)):
         raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
     return target, size
+
+
+def _remote_read_bytes(backend, path: str, **limits) -> tuple[bytes, int, str]:
+    """*path* read from the SSH workspace once download's checks pass on the path it resolves to:
+    a link named ``notes.txt`` that points at ``~/.hermes/.env`` is refused before any byte moves."""
+    target, _size = _remote_download_target(backend, path)
+    return backend.read_bytes(target, **limits)
 
 
 def _remote_stream_target(backend, path: str) -> tuple[str, int]:

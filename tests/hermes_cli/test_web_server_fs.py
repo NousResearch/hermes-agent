@@ -164,12 +164,14 @@ def test_fs_routes_workspace_reads_to_ssh_backend(client, monkeypatch):
     assert calls == [
         ("list", "/srv/repos"),
         ("branch", "/srv/repos"),
+        ("inspect", "/srv/repos/project/README.md"),
         (
             "read",
             "/srv/repos/project/README.md",
             file_routes._FS_TEXT_SOURCE_MAX_BYTES,
             file_routes._FS_TEXT_PREVIEW_MAX_BYTES,
         ),
+        ("inspect", "/srv/repos/project/logo.png"),
         ("read", "/srv/repos/project/logo.png", web_server._FS_DATA_URL_MAX_BYTES, None),
         ("write", "/srv/repos/project/README.md", "updated", file_routes._FS_TEXT_WRITE_MAX_BYTES),
         ("git-root", "/srv/repos/project/src"),
@@ -232,6 +234,79 @@ def test_fs_download_rejects_sensitive_resolved_ssh_path_before_streaming(client
     )
 
     assert response.status_code == 403
+
+
+@pytest.mark.parametrize("endpoint", ["/api/fs/read-text", "/api/fs/read-data-url"])
+@pytest.mark.parametrize("resolved", ["/srv/repos/.env", "/home/dev/.hermes/auth.json",
+                                      "/home/dev/.hermes/mcp-tokens/github.json"])
+def test_fs_readers_reject_sensitive_resolved_ssh_path_before_reading(client, monkeypatch, endpoint, resolved):
+    """An SSH profile's previews refuse what download refuses, judged on the path the SSH machine
+    resolves (a harmless-looking link to a credential file included), before any byte is read."""
+    class FakeSshFs:
+        def inspect_file(self, _path):
+            return resolved, 8
+
+        def read_bytes(self, _path, *, max_bytes, read_limit=None):
+            pytest.fail("sensitive SSH files must not be read")
+
+    monkeypatch.setattr(file_routes, "_fs_backend", lambda profile=None: FakeSshFs())
+
+    response = client.get(endpoint, params={"path": "/srv/repos/safe-link", "profile": "remote-dev"})
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Access to sensitive files is not allowed"
+
+
+@pytest.mark.parametrize("endpoint", ["/api/fs/read-text", "/api/fs/read-data-url"])
+def test_fs_ssh_readers_read_the_resolved_path_they_vetted(client, monkeypatch, endpoint):
+    """The preview reads the resolved target the sensitive-path check judged, not the link again."""
+    reads = []
+
+    class FakeSshFs:
+        def inspect_file(self, _path):
+            return "/srv/repos/notes.txt", 2
+
+        def read_bytes(self, path, *, max_bytes, read_limit=None):
+            reads.append(path)
+            return b"hi", 2, path
+
+    monkeypatch.setattr(file_routes, "_fs_backend", lambda profile=None: FakeSshFs())
+
+    response = client.get(endpoint, params={"path": "/srv/repos/safe-link", "profile": "remote-dev"})
+
+    assert response.status_code == 200
+    assert reads == ["/srv/repos/notes.txt"]
+
+
+@pytest.mark.parametrize("endpoint", ["/api/fs/read-text", "/api/fs/read-data-url", "/api/fs/download"])
+def test_fs_ssh_readers_refuse_a_resolved_name_the_adapter_would_rewrite(client, monkeypatch, endpoint):
+    """The real adapter strips whitespace from paths it reads, so a link resolving to ``.env ``
+    (trailing space, not sensitive by name) must not be served: reading it would open ``.env``."""
+    resolved = base64.b64encode(b"/srv/repos/.env ").decode()
+
+    class FakeEnv:
+        cwd = "/srv/repos"
+        timeout = 30
+        _remote_home = "/home/dev"
+
+        def __init__(self):
+            self.commands = []
+
+        def execute(self, command, **_kwargs):
+            self.commands.append(command)
+            if len(self.commands) > 1:
+                pytest.fail("a path the adapter rewrites must not be read")
+            return {"returncode": 0, "output": f"__HERMES_FS_TARGET__:{resolved}\n__HERMES_FS_SIZE__:8\n"}
+
+        def _build_ssh_command(self):
+            pytest.fail("a path the adapter rewrites must not be streamed")
+
+    backend = ssh_workspace_fs.SshWorkspaceFs(FakeEnv())
+    monkeypatch.setattr(file_routes, "_fs_backend", lambda profile=None: backend)
+
+    response = client.get(endpoint, params={"path": "/srv/repos/safe-link", "profile": "remote-dev"})
+
+    assert response.status_code == 400
 
 
 def test_fs_download_streams_ssh_files_without_preview_cap(client, monkeypatch):

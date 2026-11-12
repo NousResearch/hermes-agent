@@ -167,6 +167,30 @@ def test_unusable_checkout_is_moved_aside_and_recloned(tmp_path, damage):
     assert (broken / "keep").read_text() == "user file"
 
 
+def test_damaged_checkout_inside_a_git_managed_home_never_touches_the_home_repo(tmp_path):
+    """A damaged .git makes git search upward; the home repo it finds is not the checkout (#146032)."""
+    origin = _origin(tmp_path / "origin")
+    _git(tmp_path, "init", "-q", "-b", "main")
+    (tmp_path / "tracked").write_text("v1")
+    _git(tmp_path, "add", "tracked")
+    _git(tmp_path, "commit", "-qm", "home")
+    _git(tmp_path, "remote", "add", "origin", origin.as_posix())
+    (tmp_path / "tracked").write_text("edited")
+    (tmp_path / ".ssh").mkdir()
+    (tmp_path / ".ssh" / "id_ed25519").write_text("secret")
+    install = tmp_path / "install"
+    install.mkdir()
+    _git(install, "init", "-q")
+    (install / ".git" / "HEAD").unlink()
+    result = _stage(tmp_path, origin)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (install / "README").read_text() == "one"
+    assert list(tmp_path.glob("install.broken-*"))
+    assert (tmp_path / ".ssh" / "id_ed25519").read_text() == "secret"
+    assert (tmp_path / "tracked").read_text() == "edited"
+    assert _git(tmp_path, "stash", "list") == ""
+
+
 def test_unmerged_index_is_cleared_then_stashed(tmp_path):
     origin = _origin(tmp_path / "origin")
     assert _stage(tmp_path, origin).returncode == 0

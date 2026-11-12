@@ -1041,9 +1041,17 @@ function Stage-Repository {
     # rejects outright (empty HEAD, a gitdir: file pointing nowhere), where
     # `hermes update` cannot fetch. Move it aside -- never delete it, it may
     # hold something the user wants -- and clone fresh below.
+    # A .git git cannot read makes it search the parent directories, and a
+    # git-managed home would pass the probe and get the stash/reset below
+    # (#146032): the ceiling keeps the probe to $InstallDir's own .git.
     if (Test-Path (Join-Path $InstallDir ".git")) {
-        Invoke-Native { git -C $InstallDir rev-parse --verify HEAD 2>$null } | Out-Null
-        if ($LASTEXITCODE) {
+        $ceiling = $env:GIT_CEILING_DIRECTORIES
+        $env:GIT_CEILING_DIRECTORIES = Split-Path -Parent $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($InstallDir)
+        try {
+            Invoke-Native { git -C $InstallDir rev-parse --verify HEAD 2>$null } | Out-Null
+            $unusable = $LASTEXITCODE
+        } finally { $env:GIT_CEILING_DIRECTORIES = $ceiling }
+        if ($unusable) {
             $broken = "$InstallDir.broken-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
             Write-Warn "$InstallDir is not a usable git checkout (interrupted clone or damaged .git); moving it aside to $broken"
             Move-Item -LiteralPath $InstallDir -Destination $broken

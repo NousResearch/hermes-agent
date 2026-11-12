@@ -718,7 +718,12 @@ stage_repository() {
     # one git rejects outright (empty HEAD, a gitdir: file pointing nowhere),
     # where `hermes update` cannot fetch. Move it aside -- never delete it, it
     # may hold something the user wants -- and clone fresh below.
-    if [ -e "$INSTALL_DIR/.git" ] && ! git -C "$INSTALL_DIR" rev-parse --verify HEAD >/dev/null 2>&1; then
+    # A .git git cannot read makes it search the parent directories, and a
+    # git-managed $HOME would pass the probe and get the stash/reset below
+    # (#146032): the ceiling keeps the probe to INSTALL_DIR's own .git.
+    local ceiling
+    ceiling="$(CDPATH="" cd "$INSTALL_DIR" 2>/dev/null && pwd -P)" && ceiling="$(dirname "$ceiling")" || ceiling=""
+    if [ -e "$INSTALL_DIR/.git" ] && ! GIT_CEILING_DIRECTORIES="$ceiling" git -C "$INSTALL_DIR" rev-parse --verify HEAD >/dev/null 2>&1; then
         local broken
         broken="${INSTALL_DIR}.broken-$(date -u +%Y%m%d-%H%M%S)"
         log_warn "$INSTALL_DIR is not a usable git checkout (interrupted clone or damaged .git); moving it aside to $broken"

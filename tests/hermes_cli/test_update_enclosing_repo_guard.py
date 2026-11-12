@@ -75,3 +75,33 @@ def test_plugin_pull_refuses_a_plugin_dir_git_resolves_to_an_enclosing_repo(tmp_
     assert secret.read_text(encoding='utf-8') == 'PRIVATE KEY\n'
     assert (home / 'tracked.txt').read_text(encoding='utf-8') == 'edited home file\n'
     assert git(home, 'stash', 'list') == ''
+
+
+def test_update_git_ignores_an_inherited_git_dir(tmp_path, monkeypatch):
+    """A GIT_DIR from the user's shell (a dotfiles alias, a git hook) must not retarget the updater."""
+    from hermes_cli.update_custody import run_git
+
+    home, checkout = tmp_path / 'home', tmp_path / 'checkout'
+    for repo in (home, checkout):
+        repo.mkdir()
+        git(repo, 'init', '-q')
+    monkeypatch.setenv('GIT_DIR', str(home / '.git'))
+    monkeypatch.setenv('GIT_WORK_TREE', str(home))
+
+    top = run_git(['git'], ['rev-parse', '--show-toplevel'], cwd=str(checkout), capture_output=True, text=True)
+
+    assert top.stdout.strip() == str(checkout.resolve())
+
+
+def test_pinned_feed_update_refuses_a_plugin_dir_git_resolves_to_an_enclosing_repo(tmp_path):
+    from hermes_cli.plugins_cmd_git import _foreign_checkout_error
+
+    home = tmp_path / 'home'
+    plugin = home / 'plugins' / 'demo'
+    plugin.mkdir(parents=True)
+    git(home, 'init', '-q')
+    (plugin / '.git').mkdir()
+
+    assert 'not its own git checkout' in _foreign_checkout_error('git', plugin)
+    git(plugin, 'init', '-q')
+    assert _foreign_checkout_error('git', plugin) == ''

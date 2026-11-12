@@ -3278,9 +3278,27 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         state expires after ~5s). Chats in ``_typing_paused`` are skipped (approval waits — Slack's
         setStatus disables the compose box). Each ``send_typing`` is bounded by a sub-interval timeout."""
         _send_typing_timeout = max(0.25, min(1.5, interval - 0.25))
+        # Python < 3.12: ``asyncio.wait_for`` swallows a CancelledError when the inner future is
+        # already done at the moment the outer task is cancelled (it returns the result instead of
+        # re-raising).  One send_typing round-trip per tick means that window is hit eventually on
+        # long runs; the cancel from _stop_typing_refresh is lost and the loop keeps re-arming the
+        # platform typing bubble forever (Telegram DM stuck on "typing…" for 1.5 h after the reply
+        # until the gateway was restarted).  ``Task.cancelling()`` (3.11+) still reports the
+        # swallowed request, so check it every tick and bail out.
+        _own_task = asyncio.current_task()
+
+        def _cancel_requested() -> bool:
+            cancelling = getattr(_own_task, "cancelling", None)
+            try:
+                return bool(cancelling and cancelling() > 0)
+            except Exception:
+                return False
+
         try:
             while True:
                 if stop_event is not None and stop_event.is_set():
+                    return
+                if _cancel_requested():
                     return
                 if chat_id not in self._typing_paused:
                     try:  # asyncio.timeout: 3.11's wait_for swallows a same-tick cancel (stuck "typing")
@@ -3290,6 +3308,8 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
                         pass  # Slow network — abandon this tick, stay on schedule.
                     except Exception as typing_err:
                         logger.debug("[%s] send_typing error (non-fatal): %s", self.name, typing_err)
+                    if _cancel_requested():
+                        return  # The cancel landed inside wait_for and was swallowed.
                 if stop_event is None:
                     await asyncio.sleep(interval)
                     continue
@@ -3318,10 +3338,20 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         self._typing_paused.add(chat_id)
         try:
             if typing_task is not None and not typing_task.done():
-                typing_task.cancel()
-                # Slow adapter cleanup must not block delivery/shutdown.
-                with contextlib.suppress(asyncio.CancelledError, asyncio.TimeoutError):
-                    await asyncio.wait_for(asyncio.shield(typing_task), timeout=timeout)
+                # Cancel more than once: on Python < 3.12 a single cancel() can be swallowed by the
+                # wait_for inside _keep_typing (see there).  A task still alive after the short
+                # per-attempt grace gets the request again; slow adapter cleanup must not block
+                # delivery/shutdown.
+                _attempt_timeout = max(0.05, timeout / 3)
+                for _cancel_attempt in range(3):
+                    typing_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError, asyncio.TimeoutError):
+                        await asyncio.wait_for(asyncio.shield(typing_task), timeout=_attempt_timeout)
+                    if typing_task.done():
+                        break
+                if not typing_task.done():
+                    logger.warning("[%s] typing refresh task for chat %s still alive after repeated "
+                                   "cancel — platform typing indicator may linger", self.name, chat_id)
             for attempt in range(max(1, stop_attempts)):
                 if attempt:
                     await asyncio.sleep(0)

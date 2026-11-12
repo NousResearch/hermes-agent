@@ -19,9 +19,10 @@ from hermes_cli.providers import (
 from hermes_cli.model_normalize import normalize_model_for_provider
 from agent.models_dev import (
     ModelCapabilities, ModelInfo, get_model_capabilities, get_model_info, list_provider_models)
-from utils import base_url_host_matches, base_url_hostname, base_url_origin, same_base_url_origin
+from utils import base_url_host_matches, base_url_hostname, base_url_origin
 # Re-exported: callers/tests patch hermes_cli.model_switch.<name>.
-from hermes_cli.model_switch_providers import list_authenticated_providers
+from hermes_cli.model_switch_providers import (
+    _extra_headers_from_config, _saved_entry_on_other_origin, list_authenticated_providers)
 
 
 logger = logging.getLogger(__name__)
@@ -1465,15 +1466,6 @@ def _switch_provider_label(st: _Switch) -> str:
     return label
 
 
-def _saved_entry_on_other_origin(name: str, base_url: str) -> bool:
-    """True when the saved ``providers.<name>`` points at another origin than *base_url*."""
-    from hermes_cli.config import load_config
-
-    saved = (load_config().get("providers") or {}).get(name)
-    old_url = str(saved.get("base_url") or "") if isinstance(saved, dict) else ""
-    return bool(old_url) and not same_base_url_origin(old_url, base_url)
-
-
 def _creds_for_switched_provider(st: _Switch) -> Optional[ModelSwitchResult]:
     """Credentials when the provider changed or ``--provider`` was given.
 
@@ -1981,13 +1973,6 @@ def persist_model_selection(result: ModelSwitchResult, config_path: Any = None) 
         os.chmod(path, 0o600)
     except (OSError, NotImplementedError):
         pass
-
-
-def _extra_headers_from_config(entry: Any) -> dict[str, str]:
-    if not isinstance(entry, dict):
-        return {}
-    from hermes_cli.config import normalize_extra_headers
-    return normalize_extra_headers(entry.get("extra_headers"))
 
 
 def _scoped_key_env(name: str) -> str:

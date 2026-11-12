@@ -358,7 +358,8 @@ def _model_flow_named_custom(config, provider_info):
     saved model is pre-selected and is the fallback when probing fails."""
     from hermes_cli.main_provider_setup import _custom_provider_api_key_config_value, _custom_provider_base_url_config_value, _save_custom_provider
     from hermes_cli.auth import _save_model_choice
-    from hermes_cli.config import drop_credentials_of_other_route, load_config, save_config
+    from hermes_cli.config import load_config, save_config
+    from hermes_cli.route_identity import drop_credentials_of_other_route
     from hermes_cli.model_switch import _entry_models_discovered, _models_config_is_allowlist
     name = provider_info["name"]
     base_url = provider_info["base_url"]

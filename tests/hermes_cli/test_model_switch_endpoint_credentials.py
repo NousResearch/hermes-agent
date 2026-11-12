@@ -29,7 +29,7 @@ def _seed_endpoint_a(monkeypatch, key_shape: str) -> None:
 def _run_custom_flow(monkeypatch, url: str) -> None:
     import hermes_cli.main_provider_setup as mps
     import hermes_cli.model_setup_flows_custom as flows
-    import hermes_cli.secret_prompt as secret_prompt
+    from hermes_cli import secret_prompt
     from hermes_cli.config import load_config
 
     answers = iter([url, "", "endpoint"])
@@ -52,10 +52,10 @@ def _run_named_custom_flow(monkeypatch) -> None:
 
 
 def _run_ai_gateway_flow(monkeypatch) -> None:
-    import hermes_cli.auth as auth
+    from hermes_cli import auth
     import hermes_cli.main_provider_setup as mps
     import hermes_cli.model_setup_flows as flows
-    import hermes_cli.models as models
+    from hermes_cli import models
     import hermes_cli.models_pricing as pricing
 
     monkeypatch.setenv("AI_GATEWAY_API_KEY", "vck-GATEWAY-MARKER")

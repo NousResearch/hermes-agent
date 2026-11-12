@@ -211,6 +211,7 @@ hermes skills uninstall <skill-name>
 | [**shop**](../user-guide/skills/optional/productivity/productivity-shop.md) | Shop catalog search, checkout, order tracking, returns. |
 | [**siyuan**](../user-guide/skills/optional/productivity/productivity-siyuan.md) | Query and edit a SiYuan knowledge base via its API. |
 | [**telephony**](../user-guide/skills/optional/productivity/productivity-telephony.md) | Provision Twilio numbers, SMS/MMS, and AI outbound calls. |
+| [**travel-designer**](../user-guide/skills/optional/productivity/productivity-travel-designer.md) | Plan trips around traveler style and current facts. |
 
 ## research
 

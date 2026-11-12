@@ -46,8 +46,9 @@ AUTO_APPROVE_ASK = "ask"
 AUTO_APPROVE_WORKSPACE = "workspace_session"
 AUTO_APPROVE_SESSION = "session"
 
-_V4A_FILE_RE = re.compile(r'^\*\*\*\s+(?:Update|Add|Delete)\s+File:\s*(.+)$', re.MULTILINE)
-_V4A_MOVE_RE = re.compile(r'^\*\*\*\s+Move\s+File:\s*(.+?)\s*->\s*(.+)$', re.MULTILINE)
+# ``\s*`` after the stars as in tools/patch_parser.py: a header the parser applies must not escape approval.
+_V4A_FILE_RE = re.compile(r'^\*\*\*\s*(?:Update|Add|Delete)\s+File:\s*(.+)$', re.MULTILINE)
+_V4A_MOVE_RE = re.compile(r'^\*\*\*\s*Move\s+File:\s*(.+?)\s*->\s*(.+)$', re.MULTILINE)
 
 
 def set_edit_approval_requester(requester: EditApprovalRequester | None) -> Token:

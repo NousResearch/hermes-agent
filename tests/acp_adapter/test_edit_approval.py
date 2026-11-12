@@ -181,6 +181,17 @@ def _symlink(link, target):
         pytest.skip(f"symlinks unavailable: {exc}")
 
 
+@pytest.mark.parametrize("error", [OSError("ELOOP"), RuntimeError("Symlink loop")])
+def test_unresolvable_path_fails_closed(tmp_path, monkeypatch, error):
+    """A target resolve() can't settle asks instead of auto-approving."""
+    def unresolvable(self, strict=False):
+        raise error
+    monkeypatch.setattr(Path, "resolve", unresolvable)
+    proposal = EditProposal("write_file", str(tmp_path / "src.py"), None, "y", {})
+    for policy in ("session", "workspace_session"):
+        assert not should_auto_approve_edit(proposal, policy, str(tmp_path)), policy
+
+
 def test_symlink_to_sensitive_file_is_not_auto_approved(tmp_path):
     """An innocuously named symlink must not launder a write to a secret file (#55367)."""
     secret = tmp_path / ".env"
@@ -229,3 +240,15 @@ def test_literal_git_symlink_to_innocuous_dir_still_asks(tmp_path):
     for proposal in (write, v4a, stray_write, stray_empty, stray_replace):
         assert not should_auto_approve_edit(proposal, "session", str(tmp_path))
         assert not should_auto_approve_edit(proposal, "workspace_session", str(tmp_path))
+
+
+def test_v4a_header_without_space_after_stars_still_asks(tmp_path):
+    """The patch tool parses ``***Add File:`` (no space); approval must see that target too."""
+    ok = tmp_path / "ok.py"
+    ok.write_text("a\n", encoding="utf-8")
+    hook = tmp_path / ".git" / "hooks" / "pre-commit"
+    outside = Path(tempfile.gettempdir()).parent / "outside.txt"
+    for target, policy in ((hook, "session"), (outside, "workspace_session")):
+        body = f"*** Update File: {ok}\n@@\n-a\n+b\n***Add File: {target}\n+x\n"
+        proposal = build_edit_proposal("patch", {"mode": "patch", "patch": body})
+        assert not should_auto_approve_edit(proposal, policy, str(tmp_path)), (target, policy)

@@ -49,10 +49,14 @@ BASENAMES = ("agents.md", "claude.md", "soul.md", ".cursorrules")
 # real work: (1) the command contains a write SHAPE at all, (2) some token names a protected
 # file. Keeping the shape match loose (any redirect/`sed -i`/`tee`/`cp`/`mv`/`install`) is
 # deliberate — quoting, `$VAR`, Windows backslashes and drive letters make a tight
-# path-glued regex miss real writes, and the basename check is what decides.
+# path-glued regex miss real writes, and the basename check is what decides. The Windows
+# cmdlet names ride along because a spawned PowerShell writes the same files as `cp`.
 SHELL_WRITE_SHAPE = (
     r"(?:>>?|\bsed\b[^\n]*\s(?:-[A-Za-z]*i[A-Za-z]*|--in-place)\b|\btee\b"
-    r"|\b(?:cp|mv|install)\b|\btruncate\b|\bdd\b[^\n]*\bof=|\bpython[0-9.]*\b[^\n]*-c\b)"
+    r"|\b(?:cp|mv|install|copy|move|xcopy)\b"
+    r"|\b(?:copy-item|cpi|move-item|mi|set-content|add-content|clear-content"
+    r"|out-file|new-item|tee-object)\b"
+    r"|\btruncate\b|\bdd\b[^\n]*\bof=|\bpython[0-9.]*\b[^\n]*-c\b)"
 )
 
 
@@ -163,9 +167,36 @@ def terminal_write_targets(
 # Redirect spellings, longest first so `2>>` wins over `2>`.
 _REDIRECT_RE = re.compile(r"(\d?&?>>?|&>)")
 # Commands whose LAST non-flag argument is the file they write.
-_DEST_LAST_CMDS = frozenset({"cp", "mv", "install", "ln", "rsync", "scp"})
+# The PowerShell and cmd.exe spellings are here because `terminal` on Windows drives a shell
+# where `Copy-Item -Force a.md SOUL.md` overwrites just as surely as `cp a.md SOUL.md`; the
+# aliases (`copy`, `move`, `cpi`, `mi`) are how the same cmdlets are typed in practice.
+_DEST_LAST_CMDS = frozenset(
+    {
+        "cp",
+        "mv",
+        "install",
+        "ln",
+        "rsync",
+        "scp",
+        "copy",
+        "move",
+        "xcopy",
+        "copy-item",
+        "move-item",
+        "cpi",
+        "mi",
+    }
+)
 # Commands whose every non-flag argument is a file they write.
 _DEST_ALL_CMDS = frozenset({"tee", "truncate", "touch"})
+# PowerShell content writers name their target with a parameter as often as positionally.
+# Their payload lives in `-Value`, so the target is read from an explicit path switch and only
+# falls back to the first positional when none is given — otherwise a payload that happens to
+# read `AGENTS.md` would raise a prompt on a write to some unrelated file.
+_PS_PATH_PARAMS = ("-path", "-literalpath", "-filepath", "-pspath")
+_PS_CONTENT_CMDS = frozenset(
+    {"set-content", "add-content", "clear-content", "out-file", "tee-object", "new-item"}
+)
 # In-place editors: the file arguments are written in place. `-i`, `-i.bak`, `-si`,
 # `--in-place`, `--in-place=.bak` all count.
 _INPLACE_RE = re.compile(r"^(?:-[A-Za-z]*i[A-Za-z]*(?:\.[^\s]*)?|--in-place(?:=.*)?)$")
@@ -217,9 +248,22 @@ def _write_target_tokens(command: str) -> list[str]:
     for position, word in enumerate(words):
         name = os.path.basename(word).lower()
         if name in _DEST_LAST_CMDS:
-            args = _non_flag_args(words[position + 1:])
-            if len(args) >= 2:
-                targets.append(args[-1])
+            tail = words[position + 1:]
+            explicit = _ps_param_value(tail, ("-destination", "-target", "-filepath"))
+            if explicit:
+                targets.append(explicit)
+            else:
+                args = _non_flag_args(tail)
+                if len(args) >= 2:
+                    targets.append(args[-1])
+        elif name in _PS_CONTENT_CMDS:
+            explicit = _ps_param_value(words[position + 1:], _PS_PATH_PARAMS)
+            if explicit:
+                targets.append(explicit)
+            else:
+                args = _non_flag_args(words[position + 1:])
+                if args:
+                    targets.append(args[0])
         elif name in _DEST_ALL_CMDS:
             targets.extend(_non_flag_args(words[position + 1:]))
         elif name in ("sed", "perl", "ruby"):
@@ -239,6 +283,23 @@ def _write_target_tokens(command: str) -> list[str]:
             targets.extend(_python_inline_targets(source))
 
     return [t for t in dict.fromkeys(targets) if t]
+
+
+def _ps_param_value(words: list[str], params: tuple[str, ...]) -> str:
+    """Value of the first PowerShell path switch in *words*, in either spelling.
+
+    PowerShell accepts ``-Path x``, ``-Path:x`` and the abbreviated forms it auto-completes,
+    so the switch is matched by prefix rather than by exact name.
+    """
+    for index, word in enumerate(words):
+        lowered = word.lower()
+        for param in params:
+            if lowered == param:
+                if index + 1 < len(words):
+                    return _strip_quotes(words[index + 1])
+            elif lowered.startswith(param + ":"):
+                return _strip_quotes(word[len(param) + 1:])
+    return ""
 
 
 def _unwrap_wrappers(words: list[str]) -> list[str]:

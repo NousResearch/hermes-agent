@@ -248,12 +248,45 @@ def test_child_guard_survives_a_cell_that_clears_its_globals(tmp_path):
         'sh -c "echo changed > AGENTS.md"',
         """python -c "open('AGENTS.md','w').write('x')\"""",
         """python -c "import pathlib; pathlib.Path('AGENTS.md').write_text('x')\"""",
+        # PowerShell / cmd.exe, where `terminal` on Windows spawns a different shell.
+        "Copy-Item -Force backup.md SOUL.md",
+        "copy-item backup.md C:/repo/AGENTS.md",
+        "Copy-Item -Path backup.md -Destination SOUL.md",
+        "Copy-Item -Destination:AGENTS.md -Path backup.md",
+        "copy backup.md SOUL.md",
+        "move backup.md CLAUDE.md",
+        "xcopy backup.md .cursorrules",
+        "Set-Content -Path AGENTS.md -Value 'x'",
+        "Set-Content AGENTS.md 'x'",
+        "Set-Content AGENTS.md -Value 'see backup.md'",
+        "Add-Content -LiteralPath SOUL.md -Value 'x'",
+        "Out-File AGENTS.md",
+        "New-Item -ItemType File -Path CLAUDE.md",
     ],
 )
 def test_terminal_write_targets_sees_mechanical_shell_writes(command):
     targets = pig.terminal_write_targets(command, "/work/proj", env_type="local")
     assert targets, command
-    assert all(os.path.basename(t).lower() in pig.BASENAMES for t in targets)
+    assert all(os.path.basename(t).lower() in pig.BASENAMES for t in targets), targets
+
+
+def test_terminal_write_targets_detects_powershell_copy_item(tmp_path, monkeypatch):
+    """PowerShell ``Copy-Item -Force`` must not bypass the protected-file approval seam."""
+    monkeypatch.setattr(
+        pig,
+        "guard_spec",
+        lambda task_id="default": {
+            "enabled": True,
+            "basenames": list(pig.BASENAMES),
+            "extra": [],
+            "exempt": [],
+            "task_id": task_id,
+        },
+    )
+    targets = pig.terminal_write_targets(
+        "Copy-Item -Force backup.md SOUL.md", str(tmp_path), env_type="local"
+    )
+    assert targets == [os.path.normpath(str(tmp_path / "SOUL.md"))]
 
 
 @pytest.mark.parametrize(
@@ -270,6 +303,9 @@ def test_terminal_write_targets_sees_mechanical_shell_writes(command):
         "sed -n 1p AGENTS.md",
         """python -c "print(open('AGENTS.md').read())\"""",
         'python -c "print(1)"',
+        # A PowerShell payload that merely names a protected file is not a write to it.
+        "Set-Content -Path notes.txt -Value 'AGENTS.md'",
+        "Copy-Item AGENTS.md backup/",
     ],
 )
 def test_terminal_write_targets_ignores_reads_and_mentions(command):

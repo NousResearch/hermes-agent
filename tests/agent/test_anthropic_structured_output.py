@@ -35,6 +35,7 @@ def _capture_anthropic_kwargs(
         tool_calls=None,
         reasoning=None,
         finish_reason="stop",
+        provider_data=None,
     )
     call_kwargs = dict(top_level_kwargs or {})
     if extra_body is not None:

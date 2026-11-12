@@ -1,0 +1,31 @@
+name: hermes-microduck
+title: Microduck Robot (MuJoCo)
+repo: https://github.com/arcabotai/hermes-microduck
+sha: 305f64006184ee21cc3313090a118ba9c76d9346
+version: "0.1.0"
+description: "Drive Microduck, the open-source bipedal duck robot from Pollen Robotics / Hugging Face, in a MuJoCo simulation running its real trained ONNX RL policies: look through the duck's head camera, walk, turn, sit, stand, move the head, and line up and kick a ball at a goal (10 tools), with every motion gated by a pre_tool_call safety interlock (speed and duration caps, an arena geofence, a latching e-stop only a human clears with /duck clear, every blocked call logged). Ships a /duck command, a bundled skill and a dependency-free mock duck, so it runs with no MuJoCo at all. Independent community integration, not affiliated with Pollen Robotics. Disclosure — network: in sim mode, plain HTTP to the sim server you configure (default 127.0.0.1:8765, sim/server.py, a long-running process you start yourself); mock mode (default) makes no network connections. Setup: sim/fetch_assets.py, run by you once, downloads Pollen's MJCF, meshes and ONNX policies (~7 MB, Apache-2.0) from the official pollen-robotics/microduck-simulator Hugging Face Space pinned to a commit; the plugin downloads nothing at runtime. Files: camera snapshots, a blocked-call audit log and the e-stop latch under the plugin data dir. No credentials. The interlock limits this plugin's tools only; it does not stop other tools (terminal, code execution) from calling the sim server or changing the limits in config.yaml."
+maintainer: Arca Computer (arcabotai)
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/arcabotai/hermes-microduck#readme
+readme: true
+screenshots:
+  - https://raw.githubusercontent.com/arcabotai/hermes-microduck/305f64006184ee21cc3313090a118ba9c76d9346/docs/img/demo.png
+  - https://raw.githubusercontent.com/arcabotai/hermes-microduck/305f64006184ee21cc3313090a118ba9c76d9346/docs/img/interlock.png
+capabilities:
+  provides_tools:
+    - duck_status
+    - duck_look
+    - duck_walk
+    - duck_turn
+    - duck_kick_ball
+    - duck_kick
+    - duck_sit
+    - duck_stand
+    - duck_head
+    - duck_stop
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

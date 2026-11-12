@@ -727,9 +727,8 @@ def test_the_gateway_restart_and_status_run_outside_the_config_lock(client, nous
     takes, then restart the gateway and read its status outside that lock: the restart spawn and the
     status query (a control-socket round trip of up to 5 seconds) hold no other request up."""
     import hermes_cli.web_server_gateway as gw
-    from hermes_cli import web_server, webapp_access
-
-    lock = web_server._CONFIG_MUTATION_LOCK
+    from hermes_cli import webapp_access
+    from hermes_cli.config_backend import CONFIG_MUTATION_LOCK as lock
     free_during: dict[str, bool] = {}
 
     def restart(_profile, *, what, label):

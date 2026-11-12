@@ -1,0 +1,18 @@
+name: cron-budget
+version: "0.1.0"
+repo: https://github.com/heirakug/hermes-cron-budget
+sha: 1a355e85ea3e4df63d45197a5e5f7e49d655fb6f
+description: "Counts provider requests, not dollars, across every profile and holds cron jobs before they spend the requests kept for chat; chat is never blocked. Observe mode by default. Disclosure — one llm_execution middleware and one pre_auxiliary_call hook; stores request counts, timestamps, profile, job ids and names, provider and model names (never message text) in a local SQLite ledger under plugin-data/cron-budget/ in the root Hermes home; no network calls, credentials, shell commands, background processes or telemetry; does not write the cron store."
+maintainer: heirakug
+tier: community
+category: automation
+requires_hermes: ">=0.22.1"
+docs_url: https://github.com/heirakug/hermes-cron-budget#readme
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_auxiliary_call
+  provides_middleware:
+    - llm_execution
+  requires_env: []

@@ -1,6 +1,9 @@
 {
   "name": "@hermes/shared",
   "private": true,
+  "engines": {
+    "npm": "npm is refused here: run pnpm install --frozen-lockfile at the repository root"
+  },
   "version": "0.0.0",
   "type": "module",
   "exports": {

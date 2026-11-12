@@ -105,7 +105,6 @@ def _build_runner(gateway_run, adapter, fake_db):
     runner.session_store.append_to_transcript = MagicMock()
     runner._running_agents = {}
     runner._pending_messages = {}
-    runner._pending_approvals = {}
     runner._session_db = SimpleNamespace(_db=fake_db)
     runner._is_user_authorized = lambda _source: True
     runner._set_session_env = lambda _context: None

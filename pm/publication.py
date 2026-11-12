@@ -13,7 +13,7 @@ import threading
 from pathlib import Path
 
 from pm.environments import dependency_home_root, install_state_dir, runtime_facts_path
-from pm.filesystem import durable_write_bytes, file_digest, read_bytes_or_none
+from pm.filesystem import durable_write_bytes, file_digest, inherit_parent_acl, read_bytes_or_none
 from pm.workspace import enabled_plugin_dirs, _is_member_candidate
 
 
@@ -123,6 +123,20 @@ class PluginSelection:
         durable_write_bytes(self.path, self.proposed)
 
 
+def _warn_acl_not_inherited(target: Path) -> None:
+    """Best effort stays best effort, but not silent: the plugin keeps the staging folder's DACL,
+    which a non-elevated Hermes may be unable to read. The worker's stderr reaches the user."""
+    import sys
+
+    from pm import receipt
+
+    message = (f"Could not give {target} the Windows permissions of {target.parent}; a Hermes running "
+               f"without elevation may be unable to read this plugin. To repair, from an elevated prompt "
+               f'run: icacls "{target}" /reset /t')
+    print(f"⚠ {message}", file=sys.stderr, flush=True)
+    receipt.record_warning(message)
+
+
 class StagedPlugin:
     def __init__(self, plugin: dict):
         from pm.store import tree_digest
@@ -193,4 +207,8 @@ class StagedPlugin:
             if self.target.exists():
                 os.replace(self.target, backup)
             os.replace(self.staged, self.target)
+            # The staging folder's private Windows DACL must not travel with the plugin (#111804 is the
+            # unreadable-at-install sibling); the plugin takes plugins/'s entries like any new file.
+            if not inherit_parent_acl(self.target) and os.name == "nt":
+                _warn_acl_not_inherited(self.target)
             durable_write_bytes(self.metadata, proposed)

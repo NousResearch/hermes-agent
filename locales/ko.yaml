@@ -1065,6 +1065,9 @@ platform:
       choice_error: "선택 적용 오류: {error}"
       choice_expired: "⏱ 선택 만료됨 — 변경 사항이 없어요."
     command:
+      start:
+        description: "게이트웨이에 연결할 수 있는지 확인"
+        followup: "Hermes가 준비되었어요~"
       new:
         description: "새 대화 시작"
         followup: "새 대화를 시작했어요~"

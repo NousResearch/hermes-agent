@@ -1065,6 +1065,9 @@ platform:
       choice_error: "選択の適用エラー: {error}"
       choice_expired: "⏱ 選択の有効期限が切れました — 変更は行われていません。"
     command:
+      start:
+        description: "ゲートウェイに接続できるか確認します"
+        followup: "Hermes の準備ができました~"
       new:
         description: "新しい会話を開始します"
         followup: "新しい会話を開始しました~"

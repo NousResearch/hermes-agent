@@ -1065,6 +1065,9 @@ platform:
       choice_error: "خطأ أثناء تطبيق الاختيار: {error}"
       choice_expired: "⏱ انتهت صلاحية الاختيار — لم يُجرَ أي تغيير."
     command:
+      start:
+        description: "تأكيد إمكانية الوصول إلى البوّابة"
+        followup: "Hermes جاهز~"
       new:
         description: "بدء محادثة جديدة"
         followup: "بدأت محادثة جديدة~"

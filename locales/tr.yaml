@@ -1065,6 +1065,9 @@ platform:
       choice_error: "Seçim uygulanırken hata: {error}"
       choice_expired: "⏱ Seçim süresi doldu — değişiklik yapılmadı."
     command:
+      start:
+        description: "Gateway'e erişilebildiğini onayla"
+        followup: "Hermes hazır~"
       new:
         description: "Yeni bir konuşma başlat"
         followup: "Yeni konuşma başlatıldı~"

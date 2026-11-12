@@ -1115,6 +1115,9 @@ platform:
     # Native slash commands: description / parameter description / choice name ≤ 100 chars (baked
     # into Discord at sync time; the sync fingerprint includes the language). Names stay identifiers.
     command:
+      start:
+        description: "Confirm the gateway is reachable"
+        followup: "Hermes is ready~"
       new:
         description: "Start a new conversation"
         followup: "New conversation started~"

@@ -1082,6 +1082,9 @@ platform:
       choice_error: "Hiba a választás alkalmazásakor: {error}"
       choice_expired: "⏱ A választás lejárt — nem történt változás."
     command:
+      start:
+        description: "Ellenőrizd, hogy az átjáró elérhető-e"
+        followup: "A Hermes készen áll~"
       new:
         description: "Új beszélgetés indítása"
         followup: "Új beszélgetés indítva~"

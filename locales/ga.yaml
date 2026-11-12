@@ -1065,6 +1065,9 @@ platform:
       choice_error: "Earráid agus an rogha á cur i bhfeidhm: {error}"
       choice_expired: "⏱ Tá an roghnú imithe in éag — níor athraíodh aon rud."
     command:
+      start:
+        description: "Dearthaigh go bhfuil an Gateway insroichte"
+        followup: "Tá Hermes réidh~"
       new:
         description: "Tosaigh comhrá nua"
         followup: "Comhrá nua tosaithe~"

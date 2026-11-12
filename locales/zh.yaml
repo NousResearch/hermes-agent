@@ -1065,6 +1065,9 @@ platform:
       choice_error: "应用所选项时出错：{error}"
       choice_expired: "⏱ 选择已过期 — 未做任何更改。"
     command:
+      start:
+        description: "确认网关是否可以访问"
+        followup: "Hermes 已就绪~"
       new:
         description: "开始新对话"
         followup: "已开始新对话~"

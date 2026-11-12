@@ -1267,6 +1267,9 @@ platform:
       choice_error: "Erreur lors de l'application de la sélection : {error}"
       choice_expired: "⏱ Sélection expirée — aucune modification effectuée."
     command:
+      start:
+        description: "Confirmer que le Gateway est accessible"
+        followup: "Hermes est prêt~"
       new:
         description: "Démarrer une nouvelle conversation"
         followup: "Nouvelle conversation démarrée~"

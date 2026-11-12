@@ -1065,6 +1065,9 @@ platform:
       choice_error: "套用選擇時發生錯誤：{error}"
       choice_expired: "⏱ 選擇已逾期 — 未做任何變更。"
     command:
+      start:
+        description: "確認閘道是否可以連線"
+        followup: "Hermes 已就緒～"
       new:
         description: "開始新對話"
         followup: "已開始新對話～"

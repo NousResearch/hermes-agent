@@ -1065,6 +1065,9 @@ platform:
       choice_error: "Fout met toepassing van keuse: {error}"
       choice_expired: "⏱ Keuse het verval — geen verandering gemaak nie."
     command:
+      start:
+        description: "Bevestig dat die Gateway bereikbaar is"
+        followup: "Hermes is gereed~"
       new:
         description: "Begin 'n nuwe gesprek"
         followup: "Nuwe gesprek begin~"

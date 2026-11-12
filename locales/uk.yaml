@@ -1065,6 +1065,9 @@ platform:
       choice_error: "Помилка застосування вибору: {error}"
       choice_expired: "⏱ Час вибору минув — змін не внесено."
     command:
+      start:
+        description: "Перевірити, чи шлюз доступний"
+        followup: "Hermes готовий~"
       new:
         description: "Почати нову розмову"
         followup: "Нову розмову почато~"

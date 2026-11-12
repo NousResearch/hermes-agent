@@ -1,12 +1,12 @@
 """m.notice senders arrive flagged as bots so the gateway's bot rungs see them (#143370).
 
 Matrix has no per-event bot flag from the homeserver; ``m.notice`` is the msgtype convention
-bots publish under. The adapter flags notice senders on ``SessionSource.is_bot`` and declares
-``MATRIX_ALLOW_BOTS`` so ``mentions``/``all`` can admit them past the human allowlist while
-"none" stays authorization-only (an allowlisted bot still passes on the human rung).
+bots publish under. The adapter flags notice senders on ``SessionSource.is_bot`` for the loop
+guard and no-pairing rule only: any sender picks the msgtype, so the flag never widens access.
 """
 
 import types
+from types import SimpleNamespace
 
 import pytest
 
@@ -94,9 +94,23 @@ async def test_media_content_is_not_over_flagged():
     assert ctx[5].is_bot is False
 
 
-def test_matrix_declares_allow_bots_env():
-    """Core reads the bundled declaration, so MATRIX_ALLOW_BOTS is enforced even when the
-    plugin entry is missing (user override / safe mode): no declaration = no bot bypass."""
-    from gateway.platform_env import authz_field
+@pytest.mark.parametrize("allow_bots", ["mentions", "all"])
+def test_unlisted_notice_sender_is_denied_even_with_allow_bots_env(monkeypatch, allow_bots):
+    """m.notice is sender-chosen: a stranger sending notices must not get past
+    MATRIX_ALLOWED_USERS, whatever MATRIX_ALLOW_BOTS says (Matrix does not honour it)."""
+    from gateway.run import GatewayRunner
+    from gateway.session import Platform, SessionSource
 
-    assert authz_field("matrix", "allow_bots_env") == "MATRIX_ALLOW_BOTS"
+    for var in ("MATRIX_ALLOW_ALL_USERS", "GATEWAY_ALLOW_ALL_USERS", "GATEWAY_ALLOWED_USERS"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@owner:example.org")
+    monkeypatch.setenv("MATRIX_ALLOW_BOTS", allow_bots)
+    runner = object.__new__(GatewayRunner)
+    runner.pairing_store = SimpleNamespace(is_approved=lambda *_a, **_kw: False)
+
+    def source(user_id):
+        return SessionSource(platform=Platform.MATRIX, chat_id=ROOM, chat_type="dm",
+                             user_id=user_id, user_name="Notice", is_bot=True)
+
+    assert runner._is_user_authorized(source("@stranger:evil.org")) is False
+    assert runner._is_user_authorized(source("@owner:example.org")) is True

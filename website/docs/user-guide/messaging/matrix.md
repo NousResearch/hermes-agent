@@ -323,8 +323,8 @@ MATRIX_PROCESS_NOTICES=true
 ```
 
 Processed notices count as bot messages: they use the gateway's bot loop guard
-and never get a pairing reply. A notice sender still needs `MATRIX_ALLOWED_USERS`
-(or another human rung) unless `MATRIX_ALLOW_BOTS=mentions` or `all` admits bots.
+and never get a pairing reply. Any Matrix user can send `m.notice`, so it grants
+no access: a notice sender still needs `MATRIX_ALLOWED_USERS` (or another human rung).
 
 Outbound whole-room notifications are disabled by default. Keep
 `MATRIX_ALLOW_ROOM_MENTIONS=false` unless the bot is explicitly allowed to wake

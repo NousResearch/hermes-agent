@@ -1990,9 +1990,9 @@ class MatrixAdapter(BasePlatformAdapter):
         if voice_gate is not None:  # decided (parked or passing): don't hold bare mentions any longer
             self._parked_voices.release(room_id, sender, voice_gate)
         display_name = await self._get_display_name(room_id, sender)
-        # m.notice is the bot msgtype convention: flag it so the gateway's bot rungs apply
-        # (loop guard, no pairing DM, MATRIX_ALLOW_BOTS opt-in). An allowlisted bot still
-        # passes on the human rung first (#143370).
+        # m.notice is the bot msgtype convention: flag it for the loop guard and no-pairing rule.
+        # Any sender can pick the msgtype, so it must never widen access: Matrix declares no
+        # allow_bots_env and a notice sender still needs a human rung (#143370).
         is_bot = source_content.get("msgtype") == "m.notice"
         source = self.build_source(
             chat_id=room_id, chat_name=identity.display_name, chat_type=chat_type, user_id=sender,

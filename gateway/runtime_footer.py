@@ -139,6 +139,19 @@ class FooteredReply(str):
         instance.runtime_footer = footer
         return instance
 
+    # Immutable value: ``copy``/``deepcopy`` must return self. The default str-subclass
+    # reconstruction calls ``cls.__new__(cls)`` with no args, which this __new__ rejects, so a
+    # plain ``deepcopy`` of any payload holding the reply raised TypeError (the gateway's
+    # ``event_stream.publish`` deepcopies its frame, which killed ``message.complete``).
+    def __copy__(self):
+        return self
+
+    def __deepcopy__(self, memo):
+        return self
+
+    def __reduce__(self):
+        return (FooteredReply, (str(self)[: -len(f"\n\n{self.runtime_footer}")], self.runtime_footer))
+
 
 class _FooterCaption(str):
     """A photo caption that carries the runtime footer (``caption_with_footer``)."""

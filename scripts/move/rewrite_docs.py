@@ -279,10 +279,10 @@ def _path(token: str, plan: Plan, stats: Stats):
             return len(base), plan.dirs[base], "path-dir"
     if "*" in token:
         head, _, pattern = token.rpartition("/")
-        if head in AMBIGUOUS_ROOTS and not pattern.strip("*"):
-            stats.skips["bare-dir"] += 1  # ``cron/*`` takes the whole folder, like a bare ``cron/``
-            return None
         if head in plan.dirs or any(PurePosixPath(f).parent.as_posix() == head for f in plan.files):
+            if head in AMBIGUOUS_ROOTS and not pattern.strip("*"):
+                stats.skips["bare-dir"] += 1  # ``cron/*`` takes the whole folder, like a bare ``cron/``
+                return None
             hits = [f for f in plan.files if PurePosixPath(f).parent.as_posix() == head
                     and fnmatch.fnmatch(PurePosixPath(f).name, pattern)]
             if hits:

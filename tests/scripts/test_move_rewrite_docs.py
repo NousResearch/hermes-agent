@@ -25,3 +25,14 @@ def test_whole_folder_glob_on_ambiguous_root_stays_and_file_glob_moves():
     assert rewrite_docs.rewrite_text("the `cron/**` tree", plan) == "the `cron/**` tree"
     # A pattern for source files still follows the move.
     assert rewrite_docs.rewrite_text("each `cron/*.py` file", plan) == "each `hermes_agent/cron/*.py` file"
+
+
+def test_whole_folder_glob_on_another_folder_moves_and_an_unmoved_root_counts_no_skip():
+    rewrite_docs = _load()
+    tree = ["cron/jobs.py", "tui_gateway/server.py"]
+    plan = rewrite_docs.Plan({"tui_gateway": "hermes_agent.tui_gateway"},
+                             [("tui_gateway/server.py", "hermes_agent/tui_gateway/server.py")], tree)
+    stats = rewrite_docs.Stats()
+
+    assert rewrite_docs.rewrite_text("`tui_gateway/*` and cron/*", plan, stats) == "`hermes_agent/tui_gateway/*` and cron/*"
+    assert stats.skips["bare-dir"] == 0  # this chunk does not move cron/, so nothing was skipped for it

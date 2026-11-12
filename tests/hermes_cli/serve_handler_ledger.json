@@ -2,7 +2,7 @@
  "counts": {
   "http": {
    "keep-host-wide": 1,
-   "undecided": 345
+   "undecided": 347
   },
   "rpc": {
    "authority": 108,
@@ -166,6 +166,8 @@
   {"current_path": "hermes_cli.web_routers.sessions:get_session_latest_descendant", "decision": "undecided", "handler": "GET /api/sessions/{session_id}/latest-descendant", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.sessions:get_session_messages", "decision": "undecided", "handler": "GET /api/sessions/{session_id}/messages", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.sessions:get_session_messages_around", "decision": "undecided", "handler": "GET /api/sessions/{session_id}/messages/around", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.web_routers.session_transcript:get_session_match_window", "decision": "undecided", "handler": "GET /api/sessions/{session_id}/messages/match", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.web_routers.session_transcript:search_session_transcript", "decision": "undecided", "handler": "GET /api/sessions/{session_id}/messages/search", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.sessions:get_session_mutation_snapshot", "decision": "undecided", "handler": "GET /api/sessions/{session_id}/mutation-snapshot", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.sessions:get_session_timeline", "decision": "undecided", "handler": "GET /api/sessions/{session_id}/timeline", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.shared_metrics:get_shared_metrics_consent", "decision": "undecided", "handler": "GET /api/shared-metrics/consent", "kind": "http", "ref": ""},

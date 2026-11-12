@@ -306,6 +306,24 @@ def _kept_local_history(db, row, subject=None):
     return False
 
 
+def _same_chat_pin(authority, pinned, live_session_id):
+    """Whether *pinned* names an older session of the chat the door resolved to *live_session_id*.
+
+    A ``/new`` reset (or the reaper's archive) gives the chat a new session id while the producer
+    still pins the titled session it read: ``_bot_chat_tip`` walks the *compression* chain, and a
+    reset fork is deliberately not a continuation of it (``_is_compression_child_row``), so the pin
+    stays on the reset root. The delivery names a chat, not a session, so the live session admits
+    it; without this the chat refused every bot DM for good after one ``/new``. A pin naming a
+    different chat (another ``session_key``) is still an ``admission_conflict``.
+    """
+    if not isinstance(pinned, str) or not pinned or pinned == live_session_id:
+        return False
+    db = authority.db
+    row, live = db.get_session(pinned), db.get_session(live_session_id)
+    key = (row or {}).get('session_key')
+    return bool(key) and key == (live or {}).get('session_key')
+
+
 def _moved_aside_by_this_door(authority, holder, pinned):
     """Whether *pinned*, the Bot Chat the producer discovered, is the title holder this delivery's
     ``_target`` just moved aside. The producer pins the id it read before asking, so the first
@@ -870,7 +888,8 @@ async def _deliver(connection, params):
             holder = authority.db.get_session_by_title('Bot Chat')
             ref, live, entry = await _target(authority, actor)
             pinned = params.get('session_id', entry.session_id)
-            if pinned != entry.session_id and not _moved_aside_by_this_door(authority, holder, pinned):
+            if pinned != entry.session_id and not _moved_aside_by_this_door(authority, holder, pinned) \
+                    and not _same_chat_pin(authority, pinned, entry.session_id):
                 raise RuntimeStoreError('admission_conflict')
             return await _admit(authority, actor, home, root, key, message, ref, live, entry, author=author,
                                 notification_category=category)

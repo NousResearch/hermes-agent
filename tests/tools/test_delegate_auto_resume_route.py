@@ -101,3 +101,19 @@ def test_capacity_counts_only_this_profiles_running_units(tmp_path, monkeypatch)
         assert _capacity() == 2
     with bind_profile_scope(other, hydrate_secrets=False):
         assert _capacity() == 0
+
+
+def test_a_spawn_pause_holds_resumes_without_claiming_or_building_a_stand_in(tmp_path):
+    from tools.delegate_tool_auto_resume import tick
+    from tools.delegate_tool_registry import set_spawn_paused
+    parent, model, sid = _limited_child_of_session(tmp_path)
+    built = []
+    factory, start = _start(_runner(), model, built)
+    set_spawn_paused(True)
+    try:
+        with patch("run_agent.AIAgent", side_effect=factory):
+            assert tick(start, capacity=3) == []
+    finally:
+        set_spawn_paused(False)
+    state, _pinned, record = _db_rows(parent)[sid]
+    assert built == [] and (state, record.get("auto_attempts", 0), record.get("auto_off")) == ("resumable", 0, None)

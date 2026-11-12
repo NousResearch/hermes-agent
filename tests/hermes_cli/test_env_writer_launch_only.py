@@ -46,3 +46,11 @@ def test_remove_env_value_keeps_launch_managed_dir(managed_dirs):
     (home / ".env").write_text("HERMES_MANAGED_DIR=/stale/user/line\n", encoding="utf-8")
     config.remove_env_value("HERMES_MANAGED_DIR")
     assert os.environ["HERMES_MANAGED_DIR"] == str(admin)
+
+
+def test_remove_env_value_keeps_lowercase_launch_only_value(managed_dirs, monkeypatch):
+    """On Windows ``hermes_managed_dir`` IS ``HERMES_MANAGED_DIR``; the publish step must not
+    pop it in any letter case."""
+    monkeypatch.setenv("hermes_managed_dir", "/launch/value")
+    config.remove_env_value("hermes_managed_dir")
+    assert os.environ["hermes_managed_dir"] == "/launch/value"

@@ -15,7 +15,7 @@ from pathlib import Path
 # wiped (#57828) so early recovery provably runs before third-party imports (test_early_recovery).
 # The parser internals are imported lazily below because gateway tests stub ``sys.modules["dotenv"]``.
 import dotenv
-from hermes_constants import LAUNCH_ONLY_ENV_KEYS
+from hermes_constants import is_launch_only_env_key
 from hermes_cli.left_core_migration import profile_env_names
 from utils import atomic_replace, mkstemp_beside
 
@@ -455,8 +455,8 @@ def _load_dotenv_with_fallback(
         for name, value in resolved.items():
             if value is None or (not override and name in os.environ):
                 continue
-            if name in LAUNCH_ONLY_ENV_KEYS:
-                logger.info("dotenv %s: ignoring launch-only key %s — only the launch "
+            if is_launch_only_env_key(name):
+                logger.warning("dotenv %s: ignoring launch-only key %s — only the launch "
                             "environment may set it", path, name)
                 continue  # deployment bootstrap knob (#135200, #144685)
             current = os.environ.get(name)
@@ -474,7 +474,7 @@ def _load_dotenv_with_fallback(
     # Launch-only keys are recorded nowhere: they were never published, so a leftover file entry must
     # not strip the launch value from a routed child either (#135200).
     (_MANAGED_DOTENV_KEYS if managed else _LOADED_DOTENV_KEYS).update(
-        name for name, _value in assignments if name not in LAUNCH_ONLY_ENV_KEYS)
+        name for name, _value in assignments if not is_launch_only_env_key(name))
     _sanitize_loaded_credentials()  # httpx encodes headers as ASCII
 
 

@@ -450,6 +450,14 @@ class TestEnvFileParsing:
         finally:
             ss.reset_secret_scope(token)
 
+    def test_build_profile_secret_scope_drops_lowercase_launch_only_entry(self, tmp_path):
+        """Windows env names are case-insensitive, so the filter folds case."""
+        profile = tmp_path / "profile"
+        profile.mkdir()
+        (profile / ".env").write_text(
+            "hermes_managed_dir=/user/choice\nHermes_Home=/x\nOTHER=1\n", encoding="utf-8")
+        assert ss.build_profile_secret_scope(profile) == {"OTHER": "1"}
+
 
 class TestApiServerListenerGlobals:
     """API_SERVER listener settings are deployment config (#69379), not

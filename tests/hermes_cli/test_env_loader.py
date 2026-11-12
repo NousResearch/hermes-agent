@@ -1,6 +1,8 @@
 import codecs
 import os
 
+import pytest
+
 from hermes_cli.env_loader import load_hermes_dotenv
 
 
@@ -727,15 +729,64 @@ def test_user_env_cannot_repoint_hermes_home_with_launch_value(tmp_path, monkeyp
 
 def test_user_env_cannot_set_hermes_home_without_launch_value(tmp_path, monkeypatch):
     """Same refusal when the launch environment never set the key: the ``.env`` must not
-    introduce it either — otherwise a fresh install's first write would pin the home."""
+    introduce it either, or a fresh install's first write would pin the home."""
     home = tmp_path / "hermes"
     home.mkdir()
-    planted = tmp_path / "planted"
-    planted.mkdir()
-    (home / ".env").write_text(f"HERMES_HOME={planted}\n", encoding="utf-8")
-
+    (home / ".env").write_text(f"HERMES_HOME={tmp_path / 'planted'}\n", encoding="utf-8")
     monkeypatch.delenv("HERMES_HOME", raising=False)
+
+    load_hermes_dotenv(hermes_home=home, load_external_secrets=False)
+
+    assert "HERMES_HOME" not in os.environ
+
+
+def test_lowercase_launch_only_keys_in_user_env_are_ignored(tmp_path, monkeypatch, caplog):
+    """Windows env names are case-insensitive: ``hermes_managed_dir=`` / ``hermes_home=`` would
+    set the real keys there, so the loader refuses every letter case (on POSIX the lowercase
+    name is a distinct variable, and refusing it is harmless)."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text(
+        f"hermes_managed_dir={tmp_path}/untrusted\nHermes_Home={tmp_path}/b\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("hermes_managed_dir", raising=False)
+    monkeypatch.delenv("Hermes_Home", raising=False)
+
+    with caplog.at_level("WARNING", logger="hermes_cli.env_loader"):
+        load_hermes_dotenv(load_external_secrets=False)
+
+    assert "hermes_managed_dir" not in os.environ
+    assert "Hermes_Home" not in os.environ
+    assert os.environ["HERMES_HOME"] == str(home)
+    assert "hermes_managed_dir" in caplog.text  # the operator sees why the line had no effect
+
+
+def test_reload_env_skips_lowercase_launch_only_key(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text("hermes_managed_dir=/user/controlled\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("hermes_managed_dir", raising=False)
+
+    from hermes_cli import config as cfg
+    cfg.invalidate_env_cache()
+    try:
+        cfg.reload_env()
+    finally:
+        cfg.invalidate_env_cache()
+
+    assert "hermes_managed_dir" not in os.environ
+
+
+@pytest.mark.platforms("windows")
+def test_lowercase_managed_dir_line_cannot_repoint_launch_value_on_windows(tmp_path, monkeypatch):
+    """Native Windows fold: ``hermes_managed_dir=`` would overwrite ``HERMES_MANAGED_DIR``."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text(f"hermes_managed_dir={tmp_path / 'untrusted'}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(tmp_path / "admin"))
 
     load_hermes_dotenv(load_external_secrets=False)
 
-    assert "HERMES_HOME" not in os.environ
+    assert os.environ["HERMES_MANAGED_DIR"] == str(tmp_path / "admin")

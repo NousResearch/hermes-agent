@@ -198,6 +198,16 @@ class TestApplyAll:
         reg.apply_all({"vaulty": {"enabled": True}}, tmp_path, environ=env)
         assert "HERMES_MANAGED_DIR" not in env
 
+    def test_launch_only_key_protected_in_any_case(self, tmp_path):
+        """Windows env names are case-insensitive: ``hermes_managed_dir`` from a source would
+        set ``HERMES_MANAGED_DIR`` there."""
+        reg.register_source(_make_source(
+            name="vaulty", secrets={"hermes_managed_dir": "/user/controlled", "Hermes_Home": "/x"}))
+        env: dict = {}
+        report = reg.apply_all({"vaulty": {"enabled": True}}, tmp_path, environ=env)
+        assert env == {}
+        assert set(report.sources[0].skipped_protected) == {"hermes_managed_dir", "Hermes_Home"}
+
 
 
 

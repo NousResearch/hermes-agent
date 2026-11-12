@@ -1,5 +1,5 @@
 import { Button } from '@hermes/plugin-sdk'
-import { Fragment, type MouseEvent, useMemo, useRef, useState } from 'react'
+import { Fragment, type MouseEvent, useMemo, useRef } from 'react'
 
 import type { CanonicalGroupEvent } from './canonical-group-history'
 import type { CanonicalRoomMember } from './canonical-groups'

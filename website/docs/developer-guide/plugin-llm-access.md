@@ -303,6 +303,8 @@ the active chat model when that route is `auto`; Hermes selects
 `openai-api` / `text-embedding-3-small` when its API credentials are available,
 or raises an `EmbeddingError` with code `embedding_unconfigured`. Unsupported
 providers or auth modes raise `embedding_unsupported`.
+Call `embed()` or `aembed()` for vectors; passing `task="embedding"` to a chat
+completion method is rejected because completion cannot serve embedding requests.
 
 ```python
 result = ctx.llm.embed(

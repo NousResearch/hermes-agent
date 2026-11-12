@@ -4,6 +4,7 @@ Card ids ride in Telegram's ``callback_data``; a fresh adapter (a restart) used 
 1 again, so the old card's button carried the new card's id and resolved the new request.
 """
 
+import asyncio
 import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -93,3 +94,32 @@ async def test_update_card_stays_answerable_when_the_answer_could_not_be_written
         with patch("hermes_constants.get_hermes_home", return_value=tmp_path):
             await adapter._handle_callback_query(_tap(card), MagicMock())  # the retry still answers
     assert (tmp_path / ".update_response").read_text() == "y"
+
+
+@pytest.mark.asyncio
+async def test_old_update_card_cannot_answer_while_the_new_card_awaits_its_send_receipt(tmp_path):
+    before = _adapter()
+    await before.send_update_prompt(chat_id="12345", prompt="Restore stash?", session_key=_SESSION)
+    old_yes = _update_card_data(before, "y")
+
+    after = _adapter()
+    posted, receipt = asyncio.Event(), asyncio.Event()
+
+    async def slow_receipt(**_kwargs):
+        posted.set()
+        await receipt.wait()
+        return MagicMock(message_id=43)
+
+    after._bot.send_message = AsyncMock(side_effect=slow_receipt)
+    sending = asyncio.create_task(
+        after.send_update_prompt(chat_id="12345", prompt="Overwrite config?", session_key=_SESSION))
+    response = tmp_path / ".update_response"
+    try:
+        await asyncio.wait_for(posted.wait(), 2)
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False), \
+                patch("hermes_constants.get_hermes_home", return_value=tmp_path):
+            await after._handle_callback_query(_tap(old_yes), MagicMock())
+        assert not response.exists(), "the old /update card answered while the new card was sending"
+    finally:
+        receipt.set()
+        await sending

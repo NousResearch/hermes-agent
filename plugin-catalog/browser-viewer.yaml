@@ -1,7 +1,7 @@
 name: browser-viewer
 repo: https://github.com/vittoriocompagno/hermes-browser-viewer
-sha: e97994de724a3a0cf4492a9cdd0c3cf11a99584a
-description: "Live view and human takeover of the browser Hermes drives: stream its tabs to a web page on another device and click, type and scroll yourself to log in, pass 2FA or a CAPTCHA. Disclosure — starts a detached aiohttp server that listens on explicit IPv4 addresses (loopback plus the Tailscale address if tailscale is installed; never 0.0.0.0) over plain HTTP with a long-lived bearer token in the link, which the start and link actions also return to the session transcript; launches Chromium with a persistent profile (cookies and logins) and CDP on 127.0.0.1; runs chromium --version, tailscale ip -4 and hermes config set|unset browser.cdp_url (the use action changes browser.cdp_url for every session of the profile); reads /proc and Chromium builds under the Hermes tools directory; no outbound network calls and no telemetry. Linux only."
+sha: 9c719733e13efa1e9a6ec0dddb124527cacb6b20
+description: "Live view and human takeover of the browser Hermes drives: stream its tabs to a web page on another device and click, type and scroll yourself to log in, pass 2FA or a CAPTCHA. Disclosure — starts a detached aiohttp server that listens on explicit IPv4 addresses (loopback plus the Tailscale address if tailscale is installed; never 0.0.0.0) over plain HTTP; login links are single-use (10 minutes) and are exchanged for an HttpOnly session cookie (7 days by default), and the start and link actions return such links to the session transcript; launches Chromium with a persistent profile (cookies and logins) and CDP on 127.0.0.1; runs chromium --version, tailscale ip -4 and hermes config set|unset browser.cdp_url (the use action changes browser.cdp_url for every session of the profile); reads /proc and Chromium builds under the Hermes tools directory; no outbound network calls and no telemetry. Linux only."
 maintainer: vittoriocompagno
 tier: community
 category: tools
@@ -10,7 +10,7 @@ docs_url: https://github.com/vittoriocompagno/hermes-browser-viewer#readme
 version: "0.1.0"
 platforms: [linux]
 known_issues:
-  - "The viewer link carries a long-lived token over plain HTTP; use it on a private network such as Tailscale and rotate it with rotate_token."
+  - "The server speaks plain HTTP, so the session cookie and the stream are not encrypted on the wire; use a private network such as Tailscale."
   - "A cold start can block the tool call for up to about 75 seconds."
 capabilities:
   provides_tools:

@@ -66,6 +66,60 @@ function normalizeCookiePath(raw: string | undefined): string {
   return path.startsWith('/') ? path : '/'
 }
 
+type ParsedAttributes = CookieAttributes & { path?: string }
+
+// One reader per Set-Cookie attribute name (lower-cased); unknown attributes are ignored.
+const ATTRIBUTE_READERS = new Map<string, (into: ParsedAttributes, value: string) => void>([
+  [
+    'path',
+    (into, value) => {
+      into.path = value
+    }
+  ],
+  [
+    'secure',
+    into => {
+      into.secure = true
+    }
+  ],
+  [
+    'httponly',
+    into => {
+      into.httpOnly = true
+    }
+  ],
+  [
+    'domain',
+    (into, value) => {
+      if (value) {
+        into.domain = value
+      }
+    }
+  ],
+  [
+    'samesite',
+    (into, value) => {
+      into.sameSite = value.toLowerCase()
+    }
+  ],
+  [
+    'max-age',
+    (into, value) => {
+      if (Number.isFinite(Number(value))) {
+        into.maxAgeSeconds = Number(value)
+      }
+    }
+  ],
+  [
+    'expires',
+    (into, value) => {
+      if (Number.isFinite(Date.parse(value))) {
+        into.expiresMs = Date.parse(value)
+      }
+    }
+  ]
+])
+
 /** First `Name=Value` pair plus effective path/deletion of a Set-Cookie header; null when unparsable. */
 export function parseSetCookie(header: string): ParsedCookie | null {
   if (typeof header !== 'string' || !header.trim()) {
@@ -86,30 +140,16 @@ export function parseSetCookie(header: string): ParsedCookie | null {
     return null
   }
 
-  let path: string | undefined
-  const parsed: CookieAttributes = { secure: false, httpOnly: false }
+  const parsed: ParsedAttributes = { secure: false, httpOnly: false }
 
   for (const attribute of attributes) {
     const attrEq = attribute.indexOf('=')
     const attrName = (attrEq >= 0 ? attribute.slice(0, attrEq) : attribute).trim().toLowerCase()
-    const attrValue = attrEq >= 0 ? attribute.slice(attrEq + 1).trim() : ''
 
-    if (attrName === 'path') {
-      path = attrValue
-    } else if (attrName === 'secure') {
-      parsed.secure = true
-    } else if (attrName === 'httponly') {
-      parsed.httpOnly = true
-    } else if (attrName === 'domain' && attrValue) {
-      parsed.domain = attrValue
-    } else if (attrName === 'samesite') {
-      parsed.sameSite = attrValue.toLowerCase()
-    } else if (attrName === 'max-age' && Number.isFinite(Number(attrValue))) {
-      parsed.maxAgeSeconds = Number(attrValue)
-    } else if (attrName === 'expires' && Number.isFinite(Date.parse(attrValue))) {
-      parsed.expiresMs = Date.parse(attrValue)
-    }
+    ATTRIBUTE_READERS.get(attrName)?.(parsed, attrEq >= 0 ? attribute.slice(attrEq + 1).trim() : '')
   }
+
+  const { path, ...rest } = parsed
 
   // An empty value is how some servers clear a cookie; so are Max-Age<=0 and a past Expires.
   const expired =
@@ -117,7 +157,7 @@ export function parseSetCookie(header: string): ParsedCookie | null {
     (parsed.maxAgeSeconds !== undefined && parsed.maxAgeSeconds <= 0) ||
     (parsed.expiresMs !== undefined && parsed.expiresMs <= Date.now())
 
-  return { name, value, path: normalizeCookiePath(path), expired, attributes: parsed }
+  return { name, value, path: normalizeCookiePath(path), expired, attributes: rest }
 }
 
 /** `protocol//host` origin key for a request URL; null when not http(s). */

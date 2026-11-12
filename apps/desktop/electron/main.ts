@@ -531,7 +531,12 @@ import {
 } from './remote-liveness'
 import { resolveRemoteOauthTicket, rosterSourceEnumerationTimeoutMs } from './remote-oauth-ticket'
 import { createRemoteOwnerCache } from './remote-owner-cache'
-import { jarWriteFromSetCookie, remoteSessionCookies } from './remote-session-cookies'
+import {
+  captureRemoteSessionCookiesIntoMirror,
+  keepMirrorInStepWithJar,
+  recordSetCookies
+} from './remote-session-cookie-sync'
+import { remoteSessionCookies } from './remote-session-cookies'
 import {
   applyRemoteRequestHeaders,
   attachRemoteRequestHeaderListener,
@@ -6984,53 +6989,6 @@ function warmOauthCookieStore(url?) {
 // connection-config.ts (cookiesHaveSession / cookiesHaveLiveSession). See
 // that module for details.
 
-// One rotating refresh token, two cookie stores: the partition jar and the
-// in-memory mirror (#61457). Each store only sees the rotations made through
-// it, so whichever lagged replayed the previous token, and the portal revokes
-// the whole session on a replay. Follow every jar write into the mirror here;
-// fetchJsonViaOauthSession writes the mirror's Set-Cookies into the jar.
-// Install once per session object: both constructors cache theirs and never
-// evict, and a second listener would only rewrite the same value.
-function keepMirrorInStepWithJar(sess, partition) {
-  sess.cookies.on('changed', (_event, cookie, _cause, removed) => {
-    if (!removed) {
-      remoteSessionCookies.followJarWrite(partition, cookie)
-    }
-  })
-}
-
-async function writeSetCookiesIntoJar(sess, url, setCookie) {
-  for (const header of [setCookie ?? []].flat()) {
-    const write = jarWriteFromSetCookie(url, header)
-
-    try {
-      if (write?.kind === 'set') {
-        await sess.cookies.set(write.details)
-      } else if (write?.kind === 'remove') {
-        await sess.cookies.remove(url, write.name)
-      }
-    } catch (error) {
-      rememberLog(`Remote session cookie jar write failed for ${new URL(url).host}: ${error?.message || error}`)
-    }
-  }
-}
-
-// #61457: snapshot a partition jar's session cookies for this gateway into
-// the in-memory mirror, keyed by the SAME partition the jar belongs to.
-// Best-effort: a failed read just means the next response's Set-Cookie
-// capture populates the mirror instead.
-async function captureRemoteSessionCookiesIntoMirror(sess, partition, baseUrl) {
-  if (!sess || !partition) {
-    return
-  }
-
-  try {
-    remoteSessionCookies.recordFromJar(partition, baseUrl, await sess.cookies.get({ url: baseUrl }))
-  } catch (error) {
-    rememberLog(`Remote session cookie mirror capture failed: ${error?.message || error}`)
-  }
-}
-
 async function hasOauthSessionCookie(baseUrl, { connectionId = '', pendingAuthMode = '', pendingKind = '' } = {}) {
   const sess = getOauthSessionForUrl(baseUrl, { connectionId, pendingAuthMode, pendingKind })
 
@@ -7200,7 +7158,7 @@ function openOauthLoginWindow(
         },
         log: rememberLog,
         // #61457: mirror the fresh cookies before the jar can drop them again.
-        onLanded: () => void captureRemoteSessionCookiesIntoMirror(sess, partition, baseUrl),
+        onLanded: () => void captureRemoteSessionCookiesIntoMirror(sess, partition, baseUrl, rememberLog),
         // A crashed sign-in renderer never settles the promise; log it (#81290).
         onWindowCreated: win =>
           installWindowRendererLifecycle(win as BrowserWindow, { kind: 'oauth', callbacks: { log: rememberLog } })
@@ -7306,12 +7264,7 @@ function fetchJsonViaOauthSession(url, options: any = {}) {
           clearTimer: (): void => clearTimeout(timer),
           resolve,
           reject,
-          onSetCookies: setCookie => {
-            remoteSessionCookies.record(partition, url, setCookie)
-            // Fire-and-forget: the mirror, updated synchronously above, is what
-            // the next mirrored request sends; the jar catches up for its own readers.
-            void writeSetCookiesIntoJar(sess, url, setCookie)
-          }
+          onSetCookies: setCookie => recordSetCookies(sess, partition, url, setCookie, rememberLog)
         })
       })
       request.on('error', error => {

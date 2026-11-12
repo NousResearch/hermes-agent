@@ -1,0 +1,58 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: meetstream
+description: >-
+  Send a bot to Zoom, Google Meet, or Teams calls; chat in the call; read
+  transcripts, chats, and summaries.
+source: https://docs.meetstream.ai/build-with-ai/meetstream-mcp-server
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Streamable HTTP, stateless, multi-tenant: the server
+# holds no key and forwards the caller's own MeetStream key upstream. It also
+# speaks OAuth 2.1 + Dynamic Client Registration (RFC 9728 protected-resource
+# metadata -> AS metadata with registration_endpoint, verified live), but an
+# API key sent as `Authorization: Bearer ms_...` is the one-step path. A
+# request with no credential gets 401 + WWW-Authenticate (verified live).
+transport:
+  type: http
+  url: https://mcp.meetstream.ai/mcp
+
+auth:
+  type: api_key
+  env:
+    - name: MCP_MEETSTREAM_API_KEY
+      prompt: "MeetStream API key (starts with ms_; create one at https://app.meetstream.ai/api-key)"
+
+# Excluded: `delete_bot_data` permanently deletes recordings and transcripts
+# (users can opt in with `hermes mcp configure meetstream`), and
+# `webhook_events_guide` is a static payload reference that only costs tokens.
+tools:
+  default_excluded:
+    - delete_bot_data
+    - webhook_events_guide
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - meetstream
+    - meeting bot
+  hosts:
+    - meetstream.ai
+  examples:
+    - Join my Zoom call at 3 pm, take notes, and send me the action items.
+    - Summarize yesterday's customer call and list who said what.
+    - Post the agenda in the meeting chat of the call you are in.
+
+post_install: |
+  Paste a MeetStream API key when prompted (https://app.meetstream.ai/api-key).
+  The key is stored in the profile's .env; config.yaml only references it.
+
+  Bot behaviour that is not a per-call setting lives in your MeetStream
+  dashboard: workspace webhooks, connected calendars, custom storage, and
+  signed-in bot accounts. Change them there; Hermes needs no reinstall.
+
+  The bot announces itself in the meeting chat when you pass a join message.
+  Tell participants they are being recorded. Restart the session (or run
+  /reload-mcp) so the MeetStream tools load.

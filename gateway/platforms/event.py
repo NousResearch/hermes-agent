@@ -137,6 +137,9 @@ class MessageEvent:
     # unknown). For adapters whose ``media_urls`` are random cache names (relay); the name is
     # display data only, never a path. Appended for positional compat.
     media_filenames: list[str] = field(default_factory=list)
+    # Per-attachment voice intent. Empty means use the adapter's message-level type.
+    # Snapshot before merging events: MIME describes encoding, not whether the user dictated.
+    media_is_voice: list[bool] = field(default_factory=list)
 
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)
@@ -165,16 +168,31 @@ class MessageEvent:
         no user, so its author rides only on the event)."""
         return self.user_id if self.user_id is not None else getattr(self.source, "user_id", None)
 
+    def is_voice_attachment(self, index: int) -> bool:
+        mime = self.media_types[index] if index < len(self.media_types) else ""
+        if mime and not mime.startswith("audio/"):
+            return False
+        if index < len(self.media_is_voice):
+            return self.media_is_voice[index]
+        return self.message_type == MessageType.VOICE
+
+    def _attachment_types(self) -> list[str]:
+        # Materialize the old message-level fallback before another event changes its type.
+        fallback = {MessageType.VOICE: "audio/", MessageType.AUDIO: "audio/",
+                    MessageType.PHOTO: "image/", MessageType.VIDEO: "video/"}.get(self.message_type, "")
+        return [(self.media_types[i] if i < len(self.media_types) else "") or fallback
+                for i in range(len(self.media_urls))]
+
     def extend_media(self, other: "MessageEvent") -> None:
-        """Append *other*'s attachments (urls, types and original names) to this event's. Names are
-        padded with ``""`` on either side so each stays on its own attachment; events without names
-        (native adapters keep the name in the cache path) leave ``media_filenames`` untouched."""
+        """Merge attachments without losing their original message's voice/file intent or names."""
         if self.media_filenames or other.media_filenames:
             def pad(msg: "MessageEvent") -> list[str]:
                 return (list(msg.media_filenames) + [""] * len(msg.media_urls))[: len(msg.media_urls)]
             self.media_filenames = pad(self) + pad(other)
+        self.media_is_voice = ([self.is_voice_attachment(i) for i in range(len(self.media_urls))]
+                               + [other.is_voice_attachment(i) for i in range(len(other.media_urls))])
+        self.media_types = self._attachment_types() + other._attachment_types()
         self.media_urls.extend(other.media_urls)
-        self.media_types.extend(other.media_types)
 
     def _command_text(self) -> str:
         """Return the message text with leading Desktop attachment refs stripped.

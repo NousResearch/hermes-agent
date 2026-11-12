@@ -1,17 +1,17 @@
 name: rekindra
 repo: https://github.com/jakeefr/rekindra
-sha: "cd6a29fb9f06e892ff669d1edc249e31088763b7"
+sha: "8d0b7f6fb05f9e2702add994502c92faaf6b80be"
 version: "0.2.0"
 title: Rekindra
-description: "Recover forgotten local files and rebuild them as source-backed original animated worlds. Rekindra reads a folder you name, recovers images and text (including ZIP and PDF text), keeps recovered evidence separate from the agent's interpretation, builds a 3D scene, compares its preview with the source, and holds export until flagged differences are fixed or answered with a recorded reason. Disclosure — the plugin makes no network calls of its own. It reads only the folder you name, read-only, and writes only under its Hermes plugin-data directory. Tool results, including recovered text, go to your active Hermes model like any tool result, and rekindra_plan sends selected images to that model only with send_images=true. It starts short-lived, killable child processes without a shell: an isolated Python reader for images and PDFs, and a headless installed Chrome, Edge or Chromium for previews, with a 45 second limit. It stores no credentials and leaves no background processes."
+description: "Recover forgotten local files and rebuild them as source-backed original animated worlds. Rekindra reads a folder you name, recovers images and text (including ZIP and PDF text), keeps recovered evidence separate from the agent's interpretation, builds a 3D scene, compares its preview with the source, and holds export until flagged differences are fixed or answered with a recorded reason. Disclosure: the plugin makes no network calls of its own. It reads only the folder you name, read-only, and writes only under its Hermes plugin-data directory. Tool results, including recovered text, go to your active Hermes model like any tool result, and rekindra_plan sends selected images to that model only with send_images=true. It starts short-lived, killable child processes without a shell: an isolated Python reader for images and PDFs, and a headless installed Chrome, Edge or Chromium for previews, with a 45 second limit. The browser is started with a minimal environment (PATH, the system and user profile paths, LANG, and temp and cache paths inside the project), so provider keys and other variables are not passed to it. It stores no credentials and leaves no background processes."
 maintainer: jakeefr
 tier: community
 category: tools
 requires_hermes: ">=0.22.7"
-docs_url: https://github.com/jakeefr/rekindra/blob/cd6a29fb9f06e892ff669d1edc249e31088763b7/README.md
-image: https://raw.githubusercontent.com/jakeefr/rekindra/cd6a29fb9f06e892ff669d1edc249e31088763b7/assets/rekindra-banner.png
+docs_url: https://github.com/jakeefr/rekindra/blob/8d0b7f6fb05f9e2702add994502c92faaf6b80be/README.md
+image: https://raw.githubusercontent.com/jakeefr/rekindra/8d0b7f6fb05f9e2702add994502c92faaf6b80be/assets/rekindra-banner.png
 readme: true
-# Empty means all platforms. The CI matrix (Windows, Linux, macOS on Python 3.11 and 3.14) passes at 8b9924b, the last code change; this SHA adds a README-only commit. End to end is verified on Windows only, see known_issues.
+# Empty means all platforms. The CI matrix (Windows, Linux, macOS on Python 3.11 and 3.14) passes at this SHA. End to end is verified on Windows only, see known_issues.
 platforms: []
 capabilities:
   provides_tools:

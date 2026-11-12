@@ -669,6 +669,9 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             _denied = self._check_slash_access(source, _cmd_def_inner.name)
             if _denied is not None:
                 return True, _denied
+            if _cmd_def_inner.name == "stop":
+                from tools.slash_confirm import clear as clear_slash_confirm
+                clear_slash_confirm(_quick_key)
             if _cmd_def_inner.name in ("stop", "new"):
                 await self._hm_stop_owner_turn(_quick_key)
             # Any recognized slash command dispatches per its declared busy_policy (dispatch /

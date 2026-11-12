@@ -8,6 +8,7 @@ import shlex
 import shutil
 import subprocess
 import tempfile
+import weakref
 from pathlib import Path
 from typing import Iterable
 
@@ -58,7 +59,7 @@ def _open_control_dir() -> tuple[Path, bool]:
     names are predictable and the roots may be shared, so a candidate that is not a real directory
     we own (pre-created by another user, or a planted symlink) is refused rather than adopted;
     when every one is squatted, a fresh ``mkdtemp`` dir keeps the backend up. The flag is True
-    only for that fallback: it belongs to this instance alone, so its ``cleanup()`` removes it."""
+    only for that fallback: it belongs to this instance alone and goes when the instance does."""
     if not _SSH_MULTIPLEX:  # no Unix-socket ControlMaster; %TEMP% is per-user
         return Path(ensure_owned_private_dir(Path(tempfile.gettempdir()) / "hermes-ssh")), False
     per_user = f"hermes-ssh-{os.getuid()}"  # windows-footgun: ok — POSIX only (_SSH_MULTIPLEX)
@@ -104,6 +105,8 @@ class SSHEnvironment(BaseEnvironment):
         super().__init__(cwd=coerce_ssh_remote_cwd(cwd, "ssh"), timeout=timeout, persist_env=persistent)
         self.host, self.user, self.port, self.key_path = host, user, port, key_path
         self.control_dir, self._owns_control_dir = _open_control_dir()
+        if self._owns_control_dir:  # not in cleanup(): a poller still reconnects through a cleaned-up env
+            weakref.finalize(self, shutil.rmtree, self.control_dir, True)
         # Short, deterministic socket name: the path must stay under macOS's 104-byte sun_path
         # limit (raw user@host:port + SSH's 16-byte suffix under a deep $TMPDIR exceeds it), and
         # stability across reconnects keeps ControlMaster reuse working. A probe gets its own
@@ -346,5 +349,3 @@ class SSHEnvironment(BaseEnvironment):
                 subprocess.run(cmd, capture_output=True, timeout=5, stdin=subprocess.DEVNULL, check=False)
             with contextlib.suppress(OSError):
                 socket.unlink()
-        if self._owns_control_dir:
-            shutil.rmtree(self.control_dir, ignore_errors=True)

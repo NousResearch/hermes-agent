@@ -3,6 +3,7 @@ scratch TMPDIR is too deep for ``sun_path`` (macOS always). It is used only once
 real directory, our uid, owner-only); a squatted name never hosts our master socket and never
 takes the SSH backend down (#80284, #133436). ``tmp_path`` stands in for the shared root."""
 
+import gc
 import os
 import stat
 
@@ -44,7 +45,7 @@ def test_every_candidate_leaves_room_for_the_openssh_listener(tmp_path, monkeypa
 
 @pytest.fixture
 def make_env():
-    """Keep each env alive until teardown: a dropped fallback env's ``__del__`` removes its dir."""
+    """Keep each env alive until teardown: a collected fallback env takes its dir with it."""
     envs = []
     def make():
         envs.append(ssh_mod.SSHEnvironment(host="h", user="u", probe_only=True))
@@ -88,17 +89,25 @@ def test_squatted_name_is_refused_and_backend_still_gets_a_private_dir(
 
 
 @pytest.mark.platforms("posix")
-def test_cleanup_removes_only_a_fallback_dir_it_created(shared_root):
+def test_fallback_dir_outlives_cleanup_and_goes_with_its_env(shared_root, monkeypatch):
+    monkeypatch.setattr(ssh_mod.logger, "disabled", True)  # a captured record's exc traceback pins the env
     for name in ("hermes-ssh", f"hermes-ssh-{os.getuid()}"):  # windows-footgun: ok — posix-only test
         (shared_root / name).write_text("x", encoding="utf-8")  # squat both names: forces mkdtemp
     fallback = ssh_mod.SSHEnvironment(host="h", user="u", probe_only=True)
+    fallback_dir = fallback.control_dir
     fallback.cleanup()
+    assert fallback_dir.is_dir()  # cleanup_stops_processes=False: a poller's next call reconnects through it
+    del fallback
+    gc.collect()
     (shared_root / f"hermes-ssh-{os.getuid()}").unlink()  # windows-footgun: ok
     shared = ssh_mod.SSHEnvironment(host="h", user="u", probe_only=True)
+    shared_dir = shared.control_dir
     shared.cleanup()
+    del shared
+    gc.collect()
 
-    assert not fallback.control_dir.exists()
-    assert shared.control_dir.is_dir()  # a per-user dir other instances share is kept
+    assert not fallback_dir.exists()
+    assert shared_dir.is_dir()  # a per-user dir other instances share is kept
 
 
 @pytest.mark.platforms("posix")

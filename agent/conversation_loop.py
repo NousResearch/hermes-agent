@@ -35,7 +35,7 @@ from agent.runtime_cwd import resolve_agent_cwd
 from agent.surface_switch import (
     identity_line_value, note_inert_pinned_tools, runtime_host_value, stage_surface_switch_note,
 )
-from agent.turn_context import PRE_LLM_BLOCK_EXIT_REASON, PreflightCompressionTimedOut, build_turn_context
+from agent.turn_context import PRE_LLM_BLOCK_EXIT_REASON, PreflightCompressionTimedOut, build_turn_context, compose_effective_system_tail
 from hermes_cli.observability.shared_metrics_efficiency import record_cache_break, record_prompt_rebuild
 from hermes_cli.plugins_dispatch import held_stream_transforms
 from agent.turn_retry_state import TurnRetryState
@@ -1256,7 +1256,7 @@ def _sync_failover_system_message(agent, api_messages, active_system_prompt):
     if not isinstance(sp, str) or not sp:
         return active_system_prompt
     if api_messages and api_messages[0].get("role") == "system":
-        effective = (sp + "\n\n" + agent.ephemeral_system_prompt).strip() if agent.ephemeral_system_prompt else sp
+        effective = compose_effective_system_tail(agent, sp)
         if not _rewrite_system_content_blocks(api_messages[0], effective):
             api_messages[0]["content"] = effective
     return sp
@@ -1736,6 +1736,19 @@ def _run_conversation_turn(
     agent._ephemeral_reasoning_off = False
     agent._auth_pool_refresh_counts = {}
     agent._last_turn_usage = None
+
+    # ── Per-turn wall-clock stamp ──
+    # Stamp the current time ONCE per turn as a transient attribute (never
+    # persisted, never part of the cached prefix). Dedicated attribute — do
+    # NOT reuse ``agent._current_turn_timestamp``: that name already holds a
+    # float epoch consumed by ``canonicalize_replay_history``; shadowing it
+    # with a string breaks the stale-confirmation expiry math.
+    try:
+        from hermes_time import now as _hermes_now
+        _ts = _hermes_now()
+        agent._turn_wallclock_line = f"Current time: {_ts.strftime('%A %Y-%m-%d %H:%M %Z')}"
+    except Exception:
+        agent._turn_wallclock_line = ""
 
     s = _LoopState(
         system_message=system_message, moa_config=moa_config,

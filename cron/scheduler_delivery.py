@@ -1519,6 +1519,8 @@ def _deliver_standalone(
     if err is not None:
         target_errors.append(err)
         delivery_errors.extend(target_errors)
+        # A partial split send: replies to the chunks that landed are framed as a past report too.
+        record_cron_delivery(t.platform_name, t.chat_id, content.strip(), result or {})
         if t.standalone_in_flight:
             # The payload may be on screen (in full or in part); queueing it would let the
             # redelivery sweep post it twice. Possible loss over certain duplication: surface the

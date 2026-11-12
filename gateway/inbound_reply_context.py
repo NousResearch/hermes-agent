@@ -32,8 +32,10 @@ def record_cron_delivery(platform: Any, chat_id: Any, text: str, send_result: An
         return
     raw = _field(send_result, "raw_response")
     raw = raw if isinstance(raw, dict) else {}
-    # A partial split send (PartialDeliveryError.result) lists the chunks that DID land.
+    # A partial split send (PartialDeliveryError.result, or a standalone sender's failure dict under
+    # the gateway.platforms._shared delivery contract) lists the chunks that DID land.
     ids = [_field(send_result, "message_id"), *(_field(send_result, "continuation_message_ids") or ()),
+           *(_field(send_result, "delivered_message_ids") or ()),
            *(raw.get("message_ids") or ()), raw.get("last_message_id"), *(raw.get("continuation_message_ids") or ()),
            *(raw.get("delivered_message_ids") or ())]
     from gateway import rich_sent_store

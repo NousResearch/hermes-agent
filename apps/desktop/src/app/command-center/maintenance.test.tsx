@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as HermesApi from '@/hermes'
-import { getActionStatus, runDebugShare } from '@/hermes'
+import { getActionStatus, runDebugShare, setApiRequestConnection, setApiRequestProfile } from '@/hermes'
 import { $desktopActionTasks } from '@/store/activity'
 import { $confirmRequest, settleConfirm } from '@/store/confirm'
 
@@ -106,5 +106,32 @@ describe('MaintenancePanel debug share', () => {
     await act(async () => settleConfirm(true))
 
     expect(vi.mocked(runDebugShare)).toHaveBeenCalledTimes(1)
+  })
+
+  // Profile shortcuts stay live behind the modal: the upload must publish the
+  // logs of the profile the user confirmed for, not whichever is active later.
+  it('uploads the profile that was active when the confirmation opened', async () => {
+    const actual = await vi.importActual<typeof HermesApi>('@/hermes')
+    const api = vi.fn(async (_request: { connectionId?: string; path: string; profile?: string }) => ({ auto_delete_seconds: 21600, failures: [], ok: true, redacted: true, urls: {} }))
+    vi.stubGlobal('hermesDesktop', { api })
+    vi.mocked(runDebugShare).mockImplementationOnce(actual.runDebugShare)
+    setApiRequestConnection('gw-a')
+    setApiRequestProfile('alpha')
+
+    try {
+      render(<MaintenancePanel />)
+
+      await act(async () => void fireEvent.click(button('Debug share')))
+      setApiRequestConnection('gw-b')
+      setApiRequestProfile('beta')
+      await act(async () => settleConfirm(true))
+
+      expect(api).toHaveBeenCalledTimes(1)
+      expect(api.mock.calls[0][0]).toMatchObject({ connectionId: 'gw-a', path: '/api/ops/debug-share', profile: 'alpha' })
+    } finally {
+      setApiRequestConnection(null)
+      setApiRequestProfile(null)
+      vi.unstubAllGlobals()
+    }
   })
 })

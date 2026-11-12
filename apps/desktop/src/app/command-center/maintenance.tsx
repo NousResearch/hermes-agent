@@ -12,6 +12,7 @@ import {
   getMemoryStatus,
   type MemoryStatusResponse,
   resetMemory,
+  resolveOwnerNow,
   runBackup,
   runCurator,
   runDebugShare,
@@ -142,6 +143,9 @@ export function MaintenancePanel() {
 
   const shareDebug = useCallback(async () => {
     // The backend refuses an unconfirmed upload; ask before anything leaves the machine.
+    // The consent covers the profile shown when it was asked, not one switched to behind the dialog.
+    const owner = resolveOwnerNow()
+
     if (
       !(await confirm({
         confirmLabel: mm.debugShare,
@@ -158,7 +162,7 @@ export function MaintenancePanel() {
     setError('')
 
     try {
-      setShare(await runDebugShare())
+      setShare(await runDebugShare(owner))
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
       notifyError(err, mm.debugShareFailed)

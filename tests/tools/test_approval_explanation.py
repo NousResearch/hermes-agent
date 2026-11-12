@@ -232,3 +232,23 @@ def test_unquoted_off_in_yaml_means_off(tmp_path, monkeypatch):
     assert hc.load_config_readonly()["approvals"]["explain"] is False  # the YAML quirk, pinned
     assert approval_explain._mode() == "off"
     assert approval._explanation_for("rm -rf /tmp/x", "recursive delete", "recursive delete", "s") is None
+
+def test_aux_is_cut_off_at_the_wall_clock_budget(monkeypatch):
+    """``call_llm(timeout=)`` bounds one HTTP attempt, not the wait at the prompt (model lookup,
+    the aux semaphore and provider retries all sit outside it; a 5 s budget measured 6.2 s live).
+    The explainer must hand back control at the deadline and let the caller fall back."""
+    import time as _time
+
+    _config(monkeypatch, explain="aux", explain_timeout=1)
+
+    def _hangs(**kwargs):
+        _time.sleep(10)
+        return _model_says("never seen")  # pragma: no cover - the thread is abandoned
+
+    monkeypatch.setattr("agent.auxiliary_client.call_llm", _hangs)
+    started = _time.monotonic()
+    line = approval_explain.explanation_for("rm -rf ~/build", "recursive delete", "recursive delete")
+    waited = _time.monotonic() - started
+
+    assert waited < 2.5, f"prompt waited {waited:.1f}s on a 1s budget"
+    assert line and "cannot be undone" in line  # static fallback, not silence

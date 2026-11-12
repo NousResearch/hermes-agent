@@ -21,7 +21,9 @@ in the command is never shipped to a model provider or echoed back in prose.
 from __future__ import annotations
 
 import logging
+import threading
 import time
+from typing import Any, Callable
 
 from tools import approval_context as _ctx
 
@@ -135,7 +137,8 @@ def _mode() -> str:
 
 
 def _timeout_seconds() -> float:
-    """``approvals.explain_timeout``: how long the explainer model may take before we give up."""
+    """``approvals.explain_timeout``: the wall-clock ceiling the prompt will wait, not just the
+    HTTP timeout — see ``_call_with_deadline``."""
     try:
         raw = float(_ctx._get_approval_config().get("explain_timeout", _DEFAULT_TIMEOUT_SECONDS))
     except (TypeError, ValueError):
@@ -205,6 +208,32 @@ def _explain_reasoning() -> dict | None:
     return {"enabled": False}
 
 
+def _call_with_deadline(fn: Callable[[], Any], deadline: float) -> Any:
+    """Run *fn*, giving up after *deadline* seconds of wall clock.
+
+    ``call_llm(timeout=...)`` bounds one HTTP attempt; model resolution, the auxiliary semaphore,
+    DNS/TLS and the provider client's own retries sit outside it, so a 5 s budget measured 6.2 s at
+    the prompt. A human is waiting on this line, so the budget is enforced here. The thread is a
+    daemon on purpose: an abandoned request must never block shutdown or the next approval.
+    """
+    result: dict[str, object] = {}
+
+    def _target() -> None:
+        try:
+            result["value"] = fn()
+        except BaseException as exc:  # re-raised in the caller's thread
+            result["error"] = exc
+
+    thread = threading.Thread(target=_target, name="approval-explain", daemon=True)
+    thread.start()
+    thread.join(deadline)
+    if thread.is_alive():
+        raise TimeoutError(f"explainer exceeded {deadline:g}s")
+    if "error" in result:
+        raise result["error"]
+    return result.get("value")
+
+
 def _aux_explanation(command: str, description: str) -> str | None:
     """Ask the auxiliary model; None on any failure, including a timeout. Never raises."""
     from agent.redact import redact_approval_display
@@ -216,14 +245,14 @@ def _aux_explanation(command: str, description: str) -> str | None:
 
         redacted = redact_approval_display(command, force=True) or ""
         body = redacted[:_MAX_COMMAND_CHARS]
-        response = call_llm(
+        response = _call_with_deadline(lambda: call_llm(
             task="approval", temperature=0, max_tokens=160, timeout=timeout,
             reasoning_config=_explain_reasoning(),
             messages=[
                 {"role": "system", "content": _SYSTEM_PROMPT},
                 {"role": "user", "content": f"It was flagged as: {description}\n\n<command>\n{body}\n</command>"},
             ],
-        )
+        ), timeout)
         content = (response.choices[0].message.content or "") if getattr(response, "choices", None) else ""
     except Exception as exc:
         logger.info("Approval explanation model unavailable (%.1fs): %s", time.monotonic() - started, exc,

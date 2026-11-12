@@ -3145,7 +3145,7 @@ An approval prompt shows the raw command and the detector's terse pattern label 
 ```yaml
 approvals:
   explain: static     # off | static (default) | aux
-  explain_timeout: 5  # aux only: seconds the model may take
+  explain_timeout: 5  # aux only: wall-clock ceiling; the prompt never waits longer
 ```
 
 | Value | Where the line comes from |

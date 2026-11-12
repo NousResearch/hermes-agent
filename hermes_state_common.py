@@ -8,6 +8,7 @@ import logging
 import os
 import sys
 import time
+from pathlib import Path
 from typing import Any
 
 from hermes_cli.timefmt import EPOCH_MAX, EPOCH_MIN
@@ -79,6 +80,11 @@ def _sql_literal(text: str) -> str:
 # is exactly what distinguishes a never-drained accept row from a dispatched-then-interrupted
 # turn's row (which #123532 deliberately keeps active).
 QUEUED_PROMPT_METADATA_KEY = "_queued_prompt"
+
+
+# ``display_metadata = <this>`` merges a JSON object parameter into the column (its keys win, a null value
+# removes a key): a row-addressed rewrite must not wipe a key another writer added meanwhile (a reaction).
+_MERGE_DISPLAY_META = "json_patch(CASE WHEN json_valid(display_metadata) THEN display_metadata ELSE '{}' END, COALESCE(?, '{}'))"
 
 
 def _sql_json_extract(expression: str, path: str) -> str:
@@ -286,7 +292,8 @@ def _sql_session_last_active_by_id(session_id_expr: str) -> str:
 # (schema_read_probe_statements), never by this number, and its catch-up is the declarative
 # executescript(SCHEMA_SQL) + _reconcile_columns() every writable open already runs (additive,
 # idempotent). The bump only records that the declared shape changed; a new table or column needs no bump.
-SCHEMA_VERSION = 32
+# v33: data-only — re-tag delegate subagent rows that lost ``_delegate_from`` (see _run_data_migrations).
+SCHEMA_VERSION = 33
 
 # Auto-maintenance VACUUMs only above this freelist fraction; below it a rewrite costs more I/O than it returns.
 # Auto-maintenance only VACUUMs when at least this fraction of the database file is reclaimable (``PRAGMA
@@ -745,6 +752,21 @@ CREATE TABLE IF NOT EXISTS async_delegations (
     -- ever run, breaking rebuild/replay pipelines that reconstruct state.db
     -- from the canonical schema (#94691).
     origin_session_id TEXT NOT NULL DEFAULT ''
+);
+
+-- Durable subagent records (tools/delegate_tool_resumable.py): what delegate_task(action='continue') rebuilds a
+-- child from after a restart or crash, and the worktree pin the startup sweep honours (``pinned``).
+CREATE TABLE IF NOT EXISTS resumable_subagents (
+    subagent_id TEXT PRIMARY KEY,
+    state TEXT NOT NULL,
+    pinned INTEGER NOT NULL DEFAULT 0,
+    stop_cause TEXT,
+    owner_pid INTEGER,
+    owner_started_at INTEGER,
+    record_json TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    expires_at REAL
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
@@ -1497,3 +1519,14 @@ def _json_or(raw: Any, fallback: Any, warning: str) -> Any:
     except (json.JSONDecodeError, TypeError):
         logger.warning(warning)
         return fallback
+
+
+def path_is_under(path: Path, root: Path) -> bool:
+    """True when *path* is *root* or a file inside it (normcase, resolved)."""
+    try:
+        path_key = os.path.normcase(str(path.resolve()))
+        root_key = os.path.normcase(str(root.resolve()))
+    except OSError:
+        path_key = os.path.normcase(str(path))
+        root_key = os.path.normcase(str(root))
+    return path_key == root_key or path_key.startswith(root_key + os.sep)

@@ -1,34 +1,41 @@
 name: field-academy
 title: Field Academy
 repo: https://github.com/Dgardenhire/hermes-field-academy
-sha: 9d4b342535fdcb9948b0b2334b78fcbd1fd14675
-description: "Learn Hermes by doing real work. Four paths (Messenger, Traveler, Crossroads, Boundary Keeper) climb Beginner, Intermediate and Advanced to a capstone on a problem of your own, and a fifth, Guide, covers setting Hermes up for a client: practice labs built from made-up data, a proposal, one real service run by a scheduled job for several days, a recovery drill, and a review signed by a reviewer you choose. Every mission ends with a check on something you made; your own Hermes scores your written answers in a new chat; passed missions come back for short spaced reviews; and at the end of a path you can create a Field Record, your own self-issued learning record. Field Academy is an independent community plugin. It is not made, issued or endorsed by Nous Research. Disclosure — no network calls (a source link opens in your browser only when you click it); no credentials, telemetry, shell commands, background processes or self-updates; registers six tools, two hooks, the /academy command and one skill: pre_llm_call may add one sentence offering a practice to the user message, only in interactive desktop, TUI and CLI sessions, and post_tool_call records which tool was used; pressing Try it or a scoring button opens a new chat and sends the practice or scoring prompt there (on an older Hermes it goes to the clipboard instead); the Desktop page calls gateway list methods only (session.list, cron.manage list, skills.manage list, tools.list, mcp.catalog, commands.catalog, setup.runtime_check); stores progress, pasted documents, practice labs, review packets and saved Field Records in $HERMES_HOME/plugin-data/field-academy/; reads a file you name (UTF-8 text, max 5 MiB) and hashes a recording you name without copying it; Guide labs write and check made-up .env and auth.json files inside its own labs folder (refusing to build in a real Hermes home) and never read Hermes's real ones; on the Guide path reads Hermes's run-history database read-only, jobs.json and up to 25 log files (2 MiB each), keeping only timestamps for the job you name, and reads install-stamp.json for the Hermes version; no private Hermes imports."
+sha: d5ec84cf4997864fb5b6a346df2699a08cd1b764
+description: "The School of Hermes. Hermes will sometimes tell you it saved something when it didn't, and Field Academy teaches you to catch that. In Foundations you work through 11 missions in a throwaway copy of Hermes with one thing quietly broken: you do a real job, say how you think it went, then look at what Hermes actually wrote to its files. After that come 34 missions on five trails in your own Hermes, each trail ending with a Field Record of your work. New in 0.9: Foundations and the trail map. Independent community plugin, not made or endorsed by Nous Research. Disclosure — no network calls of its own and no telemetry; registers six tools, two hooks, the /academy command and one skill. It creates and deletes practice profiles (named academy-practice) through Hermes, which copies your provider sign-in into each; Field Academy never reads .env, auth.json or other sign-in files. Before a practice profile's first chat it writes allowlisted settings, memory, a sample skill and sample files into that profile only, and may turn on its memory or skill write-approval setting; it never changes approvals.* or the command allowlist, and never writes your own profiles. Some missions add a filesystem connector (@modelcontextprotocol/server-filesystem, pinned) that Hermes downloads with npx, and scheduled practice jobs that, once repaired, run hourly on your model provider until you pause them. AI help (on by default) sends mission text, your answers and key-scrubbed practice excerpts to your own model; the in-chat practice offer (pre_llm_call, interactive sessions only) is off until you turn it on. It reads a file you name (UTF-8, max 5 MiB); on the Guide path it reads Hermes's run-history database read-only, jobs.json and up to 25 log files; progress, practice labs and Field Records stay in $HERMES_HOME/plugin-data/field-academy/."
 maintainer: Dgardenhire
 tier: community
 category: desktop
 requires_hermes: ">=0.22.0"
 docs_url: https://linchpin.studio/school-of-hermes/manual/
-version: "0.8.5"
-image: "https://raw.githubusercontent.com/Dgardenhire/hermes-field-academy/9d4b342535fdcb9948b0b2334b78fcbd1fd14675/docs/card.png"
+known_issues:
+- "Live-tested on macOS only. Linux and Windows run the same code and tests, but nobody has walked a mission there in Hermes."
+- "Only the author has walked Field Academy in Hermes; nobody else has finished a trail yet. Walked live on Nov 11, 2026, on Hermes 0.23.1: Foundations mission 3 (Save a fact to memory and check it stuck) end to end, with AI help on Claude and the practice chat on the OpenAI route, and its Field Record saved and checked with shasum. In the connector mission, the practice chat was refused access outside its folder. Every screen was also checked in a test harness."
+- "A repaired practice job runs every hour on your model provider until you pause it or delete the practice profile. Field Academy doesn't pause it for you."
+- "The Field Record is self-issued. Its manifest shows a file changed after saving, but someone who edits the files and the manifest together can fake a pass."
+- "Practice chats get Hermes's own file and terminal tools as any profile does. Hermes's file tools refuse to read sign-in files; a terminal command follows your approval settings."
+- "The peak names drawn on the banner art are small and hard to read; the trail map below names every trail at full size."
+version: "0.9.0"
+image: "https://raw.githubusercontent.com/Dgardenhire/hermes-field-academy/d5ec84cf4997864fb5b6a346df2699a08cd1b764/docs/card.jpg"
 screenshots:
-  - "https://raw.githubusercontent.com/Dgardenhire/hermes-field-academy/9d4b342535fdcb9948b0b2334b78fcbd1fd14675/docs/shots/home.png"
-  - "https://raw.githubusercontent.com/Dgardenhire/hermes-field-academy/9d4b342535fdcb9948b0b2334b78fcbd1fd14675/docs/shots/mission.png"
-  - "https://raw.githubusercontent.com/Dgardenhire/hermes-field-academy/9d4b342535fdcb9948b0b2334b78fcbd1fd14675/docs/shots/miss.png"
-  - "https://raw.githubusercontent.com/Dgardenhire/hermes-field-academy/9d4b342535fdcb9948b0b2334b78fcbd1fd14675/docs/shots/certificate.png"
-  - "https://raw.githubusercontent.com/Dgardenhire/hermes-field-academy/9d4b342535fdcb9948b0b2334b78fcbd1fd14675/docs/shots/deployer.png"
-  - "https://raw.githubusercontent.com/Dgardenhire/hermes-field-academy/9d4b342535fdcb9948b0b2334b78fcbd1fd14675/docs/shots/home-light.png"
+- "https://raw.githubusercontent.com/Dgardenhire/hermes-field-academy/d5ec84cf4997864fb5b6a346df2699a08cd1b764/docs/shots/live/home.jpg"
+- "https://raw.githubusercontent.com/Dgardenhire/hermes-field-academy/d5ec84cf4997864fb5b6a346df2699a08cd1b764/docs/shots/live/sample-run.jpg"
+- "https://raw.githubusercontent.com/Dgardenhire/hermes-field-academy/d5ec84cf4997864fb5b6a346df2699a08cd1b764/docs/shots/live/compare-replay.jpg"
+- "https://raw.githubusercontent.com/Dgardenhire/hermes-field-academy/d5ec84cf4997864fb5b6a346df2699a08cd1b764/docs/shots/live/check-and-hint-claude.jpg"
+- "https://raw.githubusercontent.com/Dgardenhire/hermes-field-academy/d5ec84cf4997864fb5b6a346df2699a08cd1b764/docs/shots/guide-camps.jpg"
+- "https://raw.githubusercontent.com/Dgardenhire/hermes-field-academy/d5ec84cf4997864fb5b6a346df2699a08cd1b764/docs/shots/record-trails.jpg"
 readme: true
 platforms: []
 capabilities:
   provides_tools:
-    - field_academy_snapshot
-    - field_academy_mission
-    - field_academy_grade_explanation
-    - field_academy_grade_review
-    - field_academy_grade_deployer
-    - field_academy_record_evidence
+  - field_academy_snapshot
+  - field_academy_mission
+  - field_academy_grade_explanation
+  - field_academy_grade_review
+  - field_academy_grade_deployer
+  - field_academy_record_evidence
   provides_hooks:
-    - post_tool_call
-    - pre_llm_call
+  - post_tool_call
+  - pre_llm_call
   provides_middleware: []
   requires_env: []

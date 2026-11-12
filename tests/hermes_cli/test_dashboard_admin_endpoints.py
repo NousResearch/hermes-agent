@@ -1266,3 +1266,23 @@ def test_desktop_lifespan_reaps_orphans_with_a_startup_grace(monkeypatch):
         pass
 
     assert seen["min_age_s"] == _REAP_MIN_AGE_SECONDS
+
+
+class TestSkillHubUpdatesEndpoint:
+    @pytest.fixture(autouse=True)
+    def _setup(self, _isolate_hermes_home):
+        self.client, _ = _client()
+
+    def test_lists_only_skills_with_an_upstream_update(self, monkeypatch):
+        rows = [
+            {"name": "gif-search", "identifier": "official/gifs/gif-search", "source": "official",
+             "status": "update_available", "bundle": object()},
+            {"name": "ascii-art", "identifier": "official/creative/ascii-art", "source": "official",
+             "status": "up_to_date"},
+            {"name": "gone", "identifier": "x/gone", "source": "github", "status": "orphaned"},
+        ]
+        monkeypatch.setattr("tools.skills_hub_install.check_for_skill_updates", lambda **_: rows)
+        r = self.client.get("/api/skills/hub/updates")
+        assert r.status_code == 200
+        assert r.json() == {"updates": [
+            {"name": "gif-search", "identifier": "official/gifs/gif-search", "source": "official"}]}

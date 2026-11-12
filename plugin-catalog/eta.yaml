@@ -1,0 +1,17 @@
+name: eta
+repo: https://github.com/FrederickSonsAI/hermes-eta
+sha: f91ddda119a233d07199e61b6221a018f1afded6
+description: "Honest finish-time ranges for agent work from real run history: kanban boards and cron jobs read live, delegated subagent runs recorded automatically, 'no honest ETA' when work keeps failing, 'clock starts when...' when a step waits on a person, and labelled rough guesses when history is thin. Disclosure — writes only its own SQLite file in plugin-data/eta (lane, start time, duration, success flag); calls Hermes's kanban_list/kanban_show when the kanban toolset is offered (kanban_list promotes dependency-cleared tasks to ready); reads, read-only (SQLite mode=ro), the cron run ledger (cron/executions.db) and, once on first use, Hermes's session history (state.db), keeping only each past delegated run's role, start, duration and success (off with read_history: false); reads the time zone and kanban concurrency settings from config.yaml/HERMES_TIMEZONE; no network, shell, credentials or background processes."
+maintainer: FrederickSonsAI
+tier: community
+category: automation
+requires_hermes: ">=0.22.7"
+version: "0.1.0"
+title: "ETA"
+docs_url: https://github.com/FrederickSonsAI/hermes-eta#readme
+readme: true
+capabilities:
+  provides_tools: [eta_estimate, eta_record_run, eta_history]
+  provides_hooks: [subagent_stop]
+  provides_middleware: []
+  requires_env: []

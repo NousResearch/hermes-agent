@@ -172,7 +172,6 @@ class TestResetCommandWithTitle:
         runner.session_store._generate_session_key.return_value = session_key
         runner._running_agents = {}
         runner._pending_messages = {}
-        runner._pending_approvals = {}
         runner._session_db = AsyncMock()
         runner._session_db.set_session_title.side_effect = ValueError(
             "Title 'Dup' is already in use by session abc-123"

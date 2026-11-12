@@ -1,0 +1,23 @@
+name: idm-radio
+repo: https://github.com/discodirector/idm-session-radio
+sha: 28049184e695661b98568334333bfe8493eb96fa
+title: IDM Session Radio
+description: 'Generative ambient in the Hermes Desktop status bar with the session''s work written into it: reads drip, edits blip, commands ring, a failed call sends the radio dial through static, and a finished task lands a drop and becomes a track you can save as WAV. Three pictures (tunnel, sky, mosaic) read from the score. Synthesized live, no samples, no network. Adds the idm_radio tool, the /idm command and two hooks that report tool outcomes to the Desktop.'
+maintainer: discodirector
+tier: community
+category: desktop
+requires_hermes: ">=0.23.1"
+version: "0.1.0"
+docs_url: https://github.com/discodirector/idm-session-radio
+image: https://raw.githubusercontent.com/discodirector/idm-session-radio/28049184e695661b98568334333bfe8493eb96fa/assets/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/discodirector/idm-session-radio/28049184e695661b98568334333bfe8493eb96fa/assets/panel.png
+  - https://raw.githubusercontent.com/discodirector/idm-session-radio/28049184e695661b98568334333bfe8493eb96fa/assets/tunnel.png
+  - https://raw.githubusercontent.com/discodirector/idm-session-radio/28049184e695661b98568334333bfe8493eb96fa/assets/sky.png
+  - https://raw.githubusercontent.com/discodirector/idm-session-radio/28049184e695661b98568334333bfe8493eb96fa/assets/mosaic.png
+platforms: []
+capabilities:
+  provides_tools: [idm_radio]
+  provides_hooks: [post_tool_call, pre_api_request]
+  provides_middleware: []
+  requires_env: []

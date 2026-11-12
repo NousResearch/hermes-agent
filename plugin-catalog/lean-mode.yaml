@@ -1,0 +1,19 @@
+name: lean-mode
+repo: https://github.com/aoyamari/hermes-lean-mode
+sha: "d41b4ef8e0a9fa222ceaee15c017fd8317b61a7b"
+subdir: ""
+description: "Cheap-model subagent (quick_run) with a dollar cap, auto-escalation when the cheap model fails, and an honest cost receipt. Each child call starts with 4-10k prompt tokens vs the parent's 100-300k. Per-run budget cap (soft, stops within one call), watchdog timeout, escalation to the parent model, a restricted toolset (no delegation/memory/skills/clarify/cronjob), and a JSON audit logged to plugin-data/lean-mode/runs.jsonl. Requires the operator to configure lean: in config.yaml with a cheap model, parent model, prices and presets. Tested on Hermes v0.23.0. MIT licensed. Disclosure — the model can start cheap-model subagents with quick_run and may set the model id, budget and timeout per call; the dollar cap is soft, works only for models priced under lean.prices, and is off by default. When the parent's toolsets cannot be narrowed, and on every escalation, the child runs with all of the parent's toolsets (skills included) on the parent model. Run metadata (tokens, cost estimate, model, child session id, result hash; no message content) is logged to plugin-data/lean-mode/runs.jsonl. No network calls, shell commands or credentials of its own."
+maintainer: Aoyama
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+version: "0.1.0"
+capabilities:
+  provides_tools:
+    - quick_run
+  provides_hooks:
+    - post_api_request
+    - subagent_start
+    - subagent_stop
+  provides_middleware: []
+  requires_env: []

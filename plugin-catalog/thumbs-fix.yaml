@@ -1,0 +1,20 @@
+name: thumbs-fix
+repo: https://github.com/LikemDzokoto/thumbs-fix
+sha: "298f7a3bf171012214b4774f473fa954b8995592"
+description: "React with a thumbs-down to a bad Hermes reply on Telegram and it names the skill behind it, asks one question, shows a proposed edit as a diff, and changes the skill only after you approve. Disclosure - registers pre_gateway_dispatch (records private-chat messages as turns and takes your one answer; never drops other messages), pre_llm_call (adds a short note after a repair is applied), post_tool_call (watches skill_view to log which skills a reply used) and gateway_platform_event (Telegram reactions). Stores turns, repairs and message ids in ctx.state, and one backup copy of SKILL.md per applied repair under plugin-data/thumbs-fix/backups. Edits a skill only after you approve a diff with a thumbs-up or /feedback approve, through skill_manage, and /feedback undo restores the backup. Makes one call per repair to your own configured model with ctx.llm.complete_structured; the prompt contains the skill text and your answer. No network requests of its own, no tools, no environment variables, no secrets, no processes. Disclosure — registers pre_gateway_dispatch (records private Telegram chat messages as turns, including from senders not yet approved, and consumes your one answer to a pending repair; never drops other messages), pre_llm_call (adds a short note after a repair is applied), post_tool_call (watches skill_view to log which skills a reply used) and gateway_platform_event (Telegram reactions). It stores turns, repairs and message ids in ctx.state, and one backup copy of SKILL.md per applied repair under plugin-data/thumbs-fix/backups. It edits a skill only after you approve a diff with a thumbs-up or /feedback approve, through skill_manage. /feedback undo restores the backup, writing the original bytes directly to the skill's SKILL.md if skill_manage's restore differs. It makes one call per repair to your own configured model with ctx.llm.complete_structured; the prompt contains the skill text and your answer. It makes no network requests of its own and uses no tools, secrets or processes."
+maintainer: LikemDzokoto
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/LikemDzokoto/thumbs-fix#readme
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_gateway_dispatch
+    - pre_llm_call
+    - post_tool_call
+    - gateway_platform_event
+  provides_middleware: []
+  requires_env: []

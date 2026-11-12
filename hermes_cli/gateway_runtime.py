@@ -192,6 +192,13 @@ def _standalone_multiplexer_reason(root: Path) -> str | None:
     return reason[:500] if reason else None
 
 
+def _awaited_root_refusal(home: Path, reserved: Path | None, waiting) -> str | None:
+    """The live standalone refusal of a multiplexer root *home* is joining (``reserved``) or already
+    awaits (in ``waiting``), else None. *home*'s own pending start is never a root."""
+    roots = dict.fromkeys(root for root in (reserved, *waiting) if root is not None and root != home)
+    return next(filter(None, map(_standalone_multiplexer_reason, roots)), None)
+
+
 def _parked_by_multiplexer(payload: dict, home: Path) -> GatewayDiscovery | None:
     """A secondary the multiplexer could not serve (unusable store, home owned elsewhere) is
     published under ``parked_profiles`` (name -> reason). That is a terminal verdict for its
@@ -404,9 +411,13 @@ def _observe_replacing_stale(home: Path, deadline: float, replaced: set[Path]) -
     return GatewayDiscovery("draining", reason_code="replaced")
 
 
-def ensure_gateway_runtime(profile_home: str | Path, *, timeout: float = DEFAULT_ENSURE_TIMEOUT,
+def ensure_gateway_runtime(profile_home: str | Path, *, timeout: float | None = None,
                            idle_exit: bool = False) -> GatewayDiscovery:
     """Ensure once; pending remains pending at deadline.
+
+    ``timeout`` None: :data:`DEFAULT_ENSURE_TIMEOUT`, extended while the pending start's owner keeps
+    burning CPU (a starved host), never past ``gateway_runtime_progress.MAX_ADAPTIVE_TIMEOUT``. An
+    explicit ``timeout`` is a hard deadline (``hermes_cli.gateway_runtime_progress``).
 
     Never installs anything. The one owner it replaces is a gateway an older Hermes left running on
     this install's own home (``incompatible``/``runtime_protocol``, the upgrade case): it is stopped
@@ -427,13 +438,15 @@ def ensure_gateway_runtime(profile_home: str | Path, *, timeout: float = DEFAULT
     )
     from hermes_constants import get_default_hermes_root, get_process_hermes_home
 
-    if not math.isfinite(timeout) or timeout <= 0:
-        raise ValueError("timeout must be finite and positive")
-    deadline = time.monotonic() + timeout
+    from hermes_cli.gateway_launchd_runtime import GatewayJob
+    from hermes_cli.gateway_runtime_progress import StartRunway
+    runway = StartRunway(timeout, DEFAULT_ENSURE_TIMEOUT)
+    deadline = runway.deadline
     home = _overlay_owner_home(Path(_canonical_home(profile_home)))
     requested = False
     child = None
     child_home, child_offset = home, 0
+    waiting: dict[Path, None] = {}  # the homes whose pending start this call awaits: their owners are sampled
     # A gateway ending through its own idle exit is not a refusal: wait for it to go (its lock is
     # still held for a moment after its control socket closes, which reads as "starting"), then
     # start the replacement this call owes the client.
@@ -445,17 +458,29 @@ def ensure_gateway_runtime(profile_home: str | Path, *, timeout: float = DEFAULT
             # The install-root marker also covers profiles.
             if _update_fenced({home, get_process_hermes_home(), get_default_hermes_root()}):
                 return _fenced_verdict(home, remaining(deadline))
+            # Sampled before every probe, for the starts this call awaits (``waiting``: one it saw
+            # pending, joined or started, multiplexer root included), so a probe that spent its whole
+            # budget on a starved owner is still followed by a progress verdict. An owner never seen
+            # starting (a wedged READY gateway, which may spin forever) is never sampled: its control
+            # timeout is a deadline, as before. A progressing owner moves this loop's deadline, and a
+            # macOS launchd job's, whose poll() would otherwise stop reporting an exit at the old one.
+            deadline = runway.extend(tuple(waiting), child)
+            if isinstance(child, GatewayJob):
+                child.extend_deadline(deadline)
             # Poll BEFORE discovering: an exit observed first, then "absent", cannot be a child that
             # published its owner a moment later. A winning racer shows up as starting/ready instead.
             status = child.poll() if child is not None else None
             observed = _observe_replacing_stale(home, deadline, replaced)
             if observed.reason_code == "control_timeout":
-                return GatewayDiscovery("starting", reason_code="deadline")
+                continue  # the probe used its whole budget; the next one raises unless extended
             if observed.state == "draining" and observed.reason_code in _RETIRING:
                 retiring, requested, child = True, False, None
+                waiting.clear()
                 time.sleep(min(0.1, remaining(deadline)))
                 continue
             if observed.state not in {"absent", "starting"}:
+                from hermes_cli.gateway_runtime_service import refresh_ready_owner_launcher
+                refresh_ready_owner_launcher(home, observed)
                 return observed
             if status is not None and observed.state == "absent":
                 # The one start this invocation requested died without leaving an owner: waiting
@@ -466,15 +491,19 @@ def ensure_gateway_runtime(profile_home: str | Path, *, timeout: float = DEFAULT
                                         detail=startup_failure_report(child_home, child_offset, status, child.pid))
             if observed.state == "starting" and not retiring:
                 requested = True
+                waiting[home] = None
             if observed.state == "absent":
                 retiring = False
             reserved = _starting_multiplexer_root(home) if observed.state == "absent" and not requested else None
-            if reserved is not None and (reason := _standalone_multiplexer_reason(reserved)):
+            # Every pass, not only before joining: a root reserves before it publishes a standalone
+            # refusal, and its CPU (now sampled) must not stretch a doomed wait.
+            if reason := _awaited_root_refusal(home, reserved, waiting):
                 return GatewayDiscovery("inaccessible", reason_code="profile_parked", detail=reason)
             # A default multiplexer that is still starting will serve this named profile; never
             # spawn a competing per-profile daemon while its reservation is pending.
             if reserved is not None:
                 requested = True
+                waiting[reserved] = None
             if observed.state == "absent" and not requested:
                 # A named profile the default multiplexer serves has no daemon of its own: start
                 # (or await) the MULTIPLEXER. A per-profile spawn here would become a second owner
@@ -490,6 +519,7 @@ def ensure_gateway_runtime(profile_home: str | Path, *, timeout: float = DEFAULT
                 # Runtime locks settle races remaining after this second probe.
                 observed = discover_gateway_endpoint(home, timeout=remaining(deadline))
                 if observed.state != "absent":
+                    waiting.update(dict.fromkeys([home] if observed.state == "starting" else []))
                     continue
                 if service is not None:
                     start_existing_gateway_service(service, deadline=deadline)
@@ -498,14 +528,16 @@ def ensure_gateway_runtime(profile_home: str | Path, *, timeout: float = DEFAULT
                     child_home, child_offset = target, stdio_log_size(target)
                     child = spawn_unmanaged_gateway(target, deadline=deadline, idle_exit=idle_exit)
                 requested = True
-            time.sleep(min(delay, remaining(deadline)))
+                waiting[target] = None
+            # Never raises: an exhausted budget gets one more sample (top of loop) before its verdict.
+            time.sleep(min(delay, max(0.0, deadline - time.monotonic())))
             # Capped low: each probe is a lock-file read or one local identify, and READY is noticed
             # within ~50 ms instead of up to 250 ms later on every cold start.
             delay = min(delay * 1.5, 0.05)
     except TimeoutError:
         return GatewayDiscovery("starting", reason_code="deadline")
     except RuntimeStartError as exc:
-        return GatewayDiscovery(exc.state, reason_code=exc.reason)
+        return GatewayDiscovery(exc.state, reason_code=exc.reason, detail=exc.detail)
     except PermissionError:
         return _refused(home)
     except OSError:

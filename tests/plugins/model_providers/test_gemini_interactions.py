@@ -53,6 +53,14 @@ HISTORY = [
 ]
 
 
+def test_xhigh_thinking_level_reaches_the_request(gemini):
+    _, wire = gemini
+    request = wire.build_interactions_request(
+        model="gemini-4-hydrogen", messages=[{"role": "user", "content": "hi"}],
+        thinking_config={"thinkingLevel": "xhigh", "includeThoughts": True})
+    assert request["generation_config"]["thinking_level"] == "xhigh"
+
+
 def test_request_is_stateless_typed_steps_with_signatures_replayed_as_thought_steps(gemini):
     _, wire = gemini
     request = wire.build_interactions_request(

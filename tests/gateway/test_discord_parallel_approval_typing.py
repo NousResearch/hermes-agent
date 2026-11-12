@@ -38,7 +38,9 @@ async def test_real_parallel_file_approvals_keep_typing_paused(tmp_path, monkeyp
     # The actual dispatch planner, file-write guard, queue and card renderer stay real.
     monkeypatch.setattr(discord.ui.View, "remove_item", lambda self, item: None, raising=False)
     monkeypatch.setattr("agent.title_generator.maybe_auto_title", lambda *args, **kwargs: None)
-    home = tmp_path / "home"
+    # A synthetic default home must terminate named-profile ancestry discovery,
+    # even when the test workspace itself is nested under a real profile tree.
+    home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
@@ -82,6 +84,13 @@ async def test_real_parallel_file_approvals_keep_typing_paused(tmp_path, monkeyp
 
     def launch(turn_runner, turn_agent, turn_calls, rows):
         def conversation(message, **kwargs):
+            # Establish the native full-content baseline before protected-file overwrites.
+            # The longer task-owned temp root is not a special exemption from stale-write guards.
+            from tools.file_tools import read_file_tool
+            for call in turn_calls:
+                path = json.loads(call.function.arguments)["path"]
+                read = json.loads(read_file_tool(path, task_id=turn_runner._ctx.session_key))
+                assert not read.get("error"), read
             turn_agent._execute_tool_calls(SimpleNamespace(tool_calls=turn_calls), rows, turn_runner._ctx.session_key)
             return {"final_response": "done"}
         monkeypatch.setattr(turn_agent, "run_conversation", conversation)

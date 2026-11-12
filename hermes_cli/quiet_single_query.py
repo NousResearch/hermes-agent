@@ -33,6 +33,15 @@ KANBAN_WORKER_EXIT_TRAILER = "[kanban-worker-exit] rc="
 def exit_single_query(code: int) -> None:
     """``sys.exit(code)`` for a one-shot turn; a Kanban worker first writes the exit trailer to its log."""
     if os.environ.get("HERMES_KANBAN_TASK"):
+        # Run-side exit handler (campaign memory-architecture): a clean rc=0 exit with
+        # no terminal kanban call synthesizes one here (complete if the workspace/run
+        # left artifacts or steps, else blocked) so the retry budget is not burned on a
+        # protocol violation the worker itself could have settled. Idempotent via the
+        # current_run_id SQL fence; a real terminal call already made this a no-op.
+        if int(code) == 0:
+            with contextlib.suppress(Exception):
+                from hermes_cli.kanban_db_worker_exit import synthesize_from_env
+                synthesize_from_env(int(code))
         with contextlib.suppress(Exception):
             # stderr: stdout may be the ``--stream-json`` record stream, and the worker log
             # captures both streams.

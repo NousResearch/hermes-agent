@@ -1,7 +1,7 @@
 name: hot-hermes
 title: Hot Hermes
 repo: https://github.com/firetussin/hermes-hot-hermes
-sha: 55f2441294fa2738afcaf74675d1d728576e5704
+sha: e5bba328bd2ed247bc07f314de85d7acf92cad3d
 description: >-
   Compact profile service-state monitoring, resource planning and explicit Desktop
   connection retention. Detects shared gateways; no model keepalive prompts or
@@ -12,10 +12,10 @@ category: desktop
 requires_hermes: ">=0.23.0"
 version: "0.1.2"
 platforms: []
-image: https://raw.githubusercontent.com/firetussin/hermes-hot-hermes/55f2441294fa2738afcaf74675d1d728576e5704/docs/banner.png
+image: https://raw.githubusercontent.com/firetussin/hermes-hot-hermes/e5bba328bd2ed247bc07f314de85d7acf92cad3d/docs/hot-hermes.png
 screenshots:
-  - https://raw.githubusercontent.com/firetussin/hermes-hot-hermes/55f2441294fa2738afcaf74675d1d728576e5704/preview/shared-gateway.png
-  - https://raw.githubusercontent.com/firetussin/hermes-hot-hermes/55f2441294fa2738afcaf74675d1d728576e5704/preview/light.png
+  - https://raw.githubusercontent.com/firetussin/hermes-hot-hermes/e5bba328bd2ed247bc07f314de85d7acf92cad3d/preview/shared-gateway.png
+  - https://raw.githubusercontent.com/firetussin/hermes-hot-hermes/e5bba328bd2ed247bc07f314de85d7acf92cad3d/preview/light.png
 known_issues:
   - Requires supported Desktop profile-route and retention APIs.
   - Socket retention does not guarantee tool, session or provider-cache residency; no speed improvement has been measured.

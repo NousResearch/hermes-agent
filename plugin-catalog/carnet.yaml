@@ -1,19 +1,19 @@
 name: carnet
 repo: https://github.com/404BugX/carnet
-sha: "45cf3478043baa3ab4811fcef99b315822e80916"
+sha: "137c33a830cd24b9bc54e3555eff3ec3b607179e"
 description: "A memory that stays bounded: core rules always in mind, facts recalled only when relevant, long sheets read on demand, and a memory graph inside the app."
 maintainer: 404BugX
 tier: community
 category: memory
 requires_hermes: ">=0.23.0"
-version: "0.9.1"
+version: "0.9.5"
 title: Carnet
 readme: true
 platforms: [macos, linux]
 screenshots:
-  - https://raw.githubusercontent.com/404BugX/carnet/45cf3478043baa3ab4811fcef99b315822e80916/docs/screenshots/facts.png
-  - https://raw.githubusercontent.com/404BugX/carnet/45cf3478043baa3ab4811fcef99b315822e80916/docs/screenshots/graph.png
-  - https://raw.githubusercontent.com/404BugX/carnet/45cf3478043baa3ab4811fcef99b315822e80916/docs/screenshots/onboarding.png
+  - https://raw.githubusercontent.com/404BugX/carnet/137c33a830cd24b9bc54e3555eff3ec3b607179e/docs/screenshots/facts.png
+  - https://raw.githubusercontent.com/404BugX/carnet/137c33a830cd24b9bc54e3555eff3ec3b607179e/docs/screenshots/graph.png
+  - https://raw.githubusercontent.com/404BugX/carnet/137c33a830cd24b9bc54e3555eff3ec3b607179e/docs/screenshots/onboarding.png
 capabilities:
   provides_tools:
     - remember
@@ -28,7 +28,6 @@ capabilities:
     - sync_turn
     - on_pre_compress
     - on_session_switch
-    - on_profile_created
     - recall_status
   provides_middleware: []
   requires_env: []

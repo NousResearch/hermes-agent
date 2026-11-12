@@ -1,8 +1,8 @@
 name: sidecar
 title: Sidecar
 repo: https://github.com/rkfshakti/hermes-sidecar
-sha: "2b14296716b9742ff2dfa3246e83993e949e053e"
-version: "1.0.0"
+sha: "33351728ae27beeea6643155e7fc56bc56878a86"
+version: "1.1.0"
 description: >-
   Remote brain, local hands: a paired execution backend that lets a remote Hermes run
   terminal, file, patch, search and execute_code commands on the user's local machine.
@@ -24,9 +24,9 @@ category: tools
 requires_hermes: ">=0.22.3"
 docs_url: https://github.com/rkfshakti/hermes-sidecar
 readme: true
-image: https://raw.githubusercontent.com/rkfshakti/hermes-sidecar/2b14296716b9742ff2dfa3246e83993e949e053e/video/slides/01-title.png
+image: https://raw.githubusercontent.com/rkfshakti/hermes-sidecar/33351728ae27beeea6643155e7fc56bc56878a86/video/slides/01-title.png
 screenshots:
-  - https://raw.githubusercontent.com/rkfshakti/hermes-sidecar/2b14296716b9742ff2dfa3246e83993e949e053e/demo/demo.gif
+  - https://raw.githubusercontent.com/rkfshakti/hermes-sidecar/33351728ae27beeea6643155e7fc56bc56878a86/demo/demo.gif
 platforms: [linux, macos]
 known_issues:
   - "Under plugins.isolation: host, Hermes skips plugin CLI subcommands and hands the provider an opaque placeholder; run Sidecar in the default in-process plugin isolation."

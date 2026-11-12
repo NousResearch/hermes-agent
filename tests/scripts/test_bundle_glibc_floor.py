@@ -104,6 +104,25 @@ def test_links_and_private_versions_are_not_requirements(tmp_path):
     assert scan(app, "arm64") == (1, [])
 
 
+def test_a_file_whose_needs_cannot_be_read_fails_instead_of_passing(tmp_path, capsys):
+    app = tmp_path / "linux-unpacked"
+    # The loader reads needs through the dynamic segment, so an executable runs without a section table.
+    stripped = write_elf(app / "sstripped", {"libc.so.6": ["GLIBC_2.99"]})
+    data = bytearray(stripped.read_bytes())
+    struct.pack_into("<Q", data, 0x28, 0)
+    stripped.write_bytes(data)
+    truncated = write_elf(app / "lib/truncated.so", {"libc.so.6": ["GLIBC_2.17"]})
+    truncated.write_bytes(truncated.read_bytes()[:-8])
+    write_elf(app / "lib/ok.so", {"libc.so.6": ["GLIBC_2.17"]})
+
+    assert main(["--arch", "arm64", str(app)]) == 1
+    out = capsys.readouterr().out
+    assert "::error::sstripped: can't read its version needs (no ELF section headers)" in out
+    assert "::error::lib/truncated.so: can't read its version needs (truncated ELF file)" in out
+    assert "lib/ok.so" not in out
+    assert "3 ELF files" in out
+
+
 def test_the_command_fails_the_build_and_names_each_requirement(tmp_path, capsys):
     app = tmp_path / "linux-unpacked"
     write_elf(app / "chrome-sandbox", {"libc.so.6": ["GLIBC_2.36"]})

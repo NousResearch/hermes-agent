@@ -41,9 +41,15 @@ _VERSION = re.compile(r"(GLIBC|GLIBCXX)_(\d+(?:\.\d+)*)")
 
 @dataclass(frozen=True)
 class Violation:
+    """A need above its ceiling, or (ceiling None) a file whose needs can't be read, with ``need`` saying why."""
     path: str
     need: str
-    ceiling: str
+    ceiling: str | None
+
+    def __str__(self) -> str:
+        if self.ceiling is None:
+            return f"{self.path}: can't read its version needs ({self.need})"
+        return f"{self.path} needs {self.need} (above {self.ceiling})"
 
 
 def parse_need(name: str) -> tuple[str, Version] | None:
@@ -77,8 +83,9 @@ def _sections(handle: BinaryIO, ident: bytes) -> tuple[str, list[tuple[int, ...]
         shoff, = struct.unpack_from(order + "I", header, 0x20)
         shentsize, shnum = struct.unpack_from(order + "HH", header, 0x2E)
         layout = order + "IIIIIIIIII"
+    # The loader finds needs through the dynamic segment, so "no section table" is not "no needs".
     if shoff == 0:
-        return order, []
+        raise ValueError("no ELF section headers")
     size = struct.calcsize(layout)
     if shentsize != size:
         raise ValueError("unexpected ELF section header size")
@@ -136,11 +143,16 @@ def scan(app: Path, arch: str) -> tuple[int, list[Violation]]:
             path = Path(directory) / name
             if path.is_symlink() or not path.is_file():
                 continue
-            needs = version_needs(path)
+            relative = path.relative_to(app).as_posix()
+            try:
+                needs = version_needs(path)
+            except (ValueError, IndexError, struct.error) as error:
+                scanned += 1
+                violations.append(Violation(relative, str(error), None))
+                continue
             if needs is None:
                 continue
             scanned += 1
-            relative = path.relative_to(app).as_posix()
             ceilings = _ceilings(relative, arch)
             for need in sorted(needs):
                 parsed = parse_need(need)
@@ -160,9 +172,9 @@ def main(argv: list[str] | None = None) -> int:
     floor = ", ".join(f"{family}_{_text(version)}" for family, version in FLOORS[args.arch].items())
     print(f"{scanned} ELF files under {args.app}; linux-{args.arch} floor {floor}")
     for violation in violations:
-        print(f"::error::{violation.path} needs {violation.need} (above {violation.ceiling})")
+        print(f"::error::{violation}")
     if violations:
-        print(f"{len(violations)} requirement(s) above the linux-{args.arch} glibc floor", file=sys.stderr)
+        print(f"{len(violations)} problem(s) against the linux-{args.arch} glibc floor", file=sys.stderr)
         return 1
     return 0
 

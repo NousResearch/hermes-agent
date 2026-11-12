@@ -164,6 +164,37 @@ def test_specify_resets_loop_counter_and_records_event(kanban_home: Path) -> Non
         assert events and (events[-1].payload or {}).get("loop_counter_reset") is True
 
 
+def test_kind_change_does_not_launder_recurrences(kanban_home: Path) -> None:
+    """Second storm mechanism (operator canary, 2026-11-12, live on t_6dfc6d9c):
+    the recurrence counter used to be keyed on ``block_kind``, so a worker or
+    cron that re-labels its block reason (needs_input -> capability) reset the
+    count and the card never reached ``BLOCK_RECURRENCE_LIMIT`` — bypassing
+    both the breaker's triage entry and the auto-decomposer exit guard that
+    keys on ``block_recurrences``. Recurrence now counts kind-independently;
+    only a human specify (or completion) clears the memory."""
+    from hermes_cli import kanban_decompose as decomp
+
+    with kbc.connect_closing() as conn:
+        tid = _running_task(conn, title="kind-flipper")
+        kb.block_task(conn, tid, reason="waiting on founder", kind="needs_input")
+        row = kb.get_task(conn, tid)
+        assert (row.status, row.block_recurrences) == ("blocked", 1)
+
+        # unblock -> re-dispatch -> re-block under a DIFFERENT kind
+        assert kb.unblock_task(conn, tid)
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (tid,))
+        assert kb.claim_task(conn, tid, claimer="worker") is not None
+        assert kb.block_task(conn, tid, reason="no access after all", kind="capability")
+
+        row = kb.get_task(conn, tid)
+        assert row.status == "triage", "re-labeled block must still hit the breaker"
+        assert row.block_recurrences == kb.BLOCK_RECURRENCE_LIMIT
+        # ...and the exit guard therefore sees the flag (counter not laundered)
+        assert tid not in decomp.list_triage_ids(exclude_loop_limited=True)
+        assert tid in decomp.list_triage_ids()
+
+
 def test_rearmed_card_can_still_escalate(kanban_home: Path) -> None:
     """The reset grants a *fresh budget*, not immunity: a re-armed card that
     loops again still escalates to triage."""

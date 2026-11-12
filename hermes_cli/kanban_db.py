@@ -3224,15 +3224,21 @@ def _route_block(
     incomplete parent are re-kinded to ``needs_input`` before this runs
     (see :func:`block_task`). Every other kind counts unblock-loop
     recurrences: block_task only fires from running/ready (AFTER an unblock
-    returned the task to the pool), so a stored ``block_kind`` equal to the
-    incoming one means blocked -> unblocked -> re-block for the same cause
-    (un-typed None compares equal to a prior un-typed block). At
-    ``BLOCK_RECURRENCE_LIMIT`` the task routes to ``triage`` for a human.
+    returned the task to the pool), so any growing count means
+    blocked -> unblocked -> re-block without a human re-scope. The count is
+    deliberately kind-INDEPENDENT: a worker or cron that re-labels its block
+    kind each attempt (needs_input -> capability -> ...) must not launder the
+    breaker's memory (live 2026-11-12 canary: kind change reset 2 -> 1,
+    bypassing both this triage entry and the auto-decomposer's exit guard,
+    which keys on ``block_recurrences``). The only mid-life reset is the
+    human re-arm in :func:`specify_triage_task`; ``complete_task`` clears it
+    as terminal progress. At ``BLOCK_RECURRENCE_LIMIT`` the task routes to
+    ``triage`` for a human.
     """
     payload = {"reason": reason, "kind": kind, "source_status": source_status}
     if kind == "dependency":
         return "todo", "dependency_wait", "block_kind    = ?", (kind,), payload
-    recurrences = prev_recurrences + 1 if prev_kind == kind else 1
+    recurrences = prev_recurrences + 1
     set_sql = "block_kind    = ?,\n                       block_recurrences = ?"
     payload = {"reason": reason, "kind": kind, "recurrences": recurrences, "source_status": source_status}
     if recurrences >= BLOCK_RECURRENCE_LIMIT:

@@ -27,17 +27,39 @@ _VERSION_TAG = "hashline:v1"
 
 
 def verify_anchor(file_text: str, old_string: str) -> Tuple[str, Optional[str]]:
-    """Return ('ok', None) when old_string occurs exactly once, else ('block', reason)."""
+    """Return ('ok', None) when old_string occurs exactly once, else ('block', reason).
+
+    Matching is tolerant of trailing-whitespace differences: an anchor that
+    matches after rstrip()-ing each line is accepted (the patch tool applies
+    its own exact match; this guard's job is catching stale/ambiguous anchors,
+    not pedantic whitespace). When no match is found, the reason includes a
+    snippet of the file near the closest line so the caller can see the drift.
+    """
     if not old_string:
         return "block", _EMPTY_REASON
 
     canonical = _canonicalize(file_text)
-    count = canonical.count(_canonicalize(old_string))
-    if count == 0:
-        return "block", "old_string not found in live file — anchor drifted"
+    anchor = _canonicalize(old_string)
+    count = canonical.count(anchor)
+    if count == 1:
+        return "ok", None
     if count > 1:
         return "block", f"old_string is ambiguous: found {count} times in live file"
-    return "ok", None
+
+    # Tolerant pass: rstrip each line, then retry.
+    stripped_text = "\n".join(line.rstrip() for line in canonical.split("\n"))
+    stripped_anchor = "\n".join(line.rstrip() for line in anchor.split("\n"))
+    scount = stripped_text.count(stripped_anchor)
+    if scount == 1:
+        return "ok", None
+    if scount > 1:
+        return "block", f"old_string is ambiguous after whitespace normalization: found {scount} times"
+
+    # No match at all — produce a helpful snippet.
+    snippet = _nearest_snippet(canonical, anchor)
+    if snippet:
+        return "block", f"old_string not found in live file — anchor drifted. Nearest lines:\n{snippet}"
+    return "block", "old_string not found in live file — anchor drifted"
 
 
 def context_hash(file_text: str, old_string: str, window: int = 2) -> str:
@@ -118,6 +140,33 @@ def verify_anchor_by_hash(file_text: str, old_string: str, expected_hashline: st
     else:
         reason = f"hashline is ambiguous: matched {len(exact_matches)} occurrences"
     return "block", {"reason": reason, "found": found, "lines": lines}
+
+
+def _nearest_snippet(file_text: str, anchor: str, radius: int = 3) -> str:
+    """Return a few lines of file_text around the line containing the first
+    word of anchor, to help diagnose drift. Empty string if no candidate."""
+    if not anchor.strip():
+        return ""
+    first_line = anchor.splitlines()[0].strip() if anchor.splitlines() else ""
+    if not first_line:
+        return ""
+    # Find the line in file_text whose stripped form shares the most
+    # leading tokens with the anchor's first line.
+    anchor_tokens = first_line.split()[:4]
+    best_idx = -1
+    best_score = 0
+    for i, line in enumerate(file_text.splitlines()):
+        ls = line.strip().split()[:4]
+        score = sum(1 for a, b in zip(anchor_tokens, ls) if a == b)
+        if score > best_score:
+            best_score = score
+            best_idx = i
+    if best_idx < 0 or best_score == 0:
+        return ""
+    start = max(0, best_idx - radius)
+    end = min(len(file_text.splitlines()), best_idx + radius + 1)
+    lines = file_text.splitlines()[start:end]
+    return "\n".join(f"{start + j + 1}: {ln}" for j, ln in enumerate(lines))
 
 
 def _canonicalize(text: str) -> str:

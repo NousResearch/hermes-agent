@@ -193,10 +193,8 @@ def on_pre_tool_call(*args: Any, **kwargs: Any) -> Optional[Dict[str, str]]:
         return None
 
     args = kwargs.get("args") or {}
-    mode = args.get("mode", "")
-    if mode != "replace":
-        return None
-
+    # Guard applies to every patch call; the core patch tool does not send a
+    # "mode" field, so gating on mode=="replace" made the hook inert.
     target_rel = args.get("path")
     old_string = args.get("old_string")
     if not target_rel or old_string is None:

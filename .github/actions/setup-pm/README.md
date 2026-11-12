@@ -26,8 +26,9 @@ publish an application selection. It does not enable plugins.
 
 Subsequent steps get `python`, `python3`, `node`, `pnpm`, `npm` and `npx`
 for the selected toolchain on PATH. The pinned npm precedes Node's bundled npm.
-pnpm installs the workspace; npm serves the standalone npm projects (website/ and
-the sidecars). `pnpm_config_store_dir` points pnpm's store into the runner's temp
+pnpm installs the workspace and the standalone website/bridge projects; npm
+serves the remaining standalone npm project (the Photon sidecar).
+`pnpm_config_store_dir` points pnpm's store into the runner's temp
 dir, on the checkout's drive, so pnpm can hard-link from it on Windows too.
 On Windows, PM selects the host architecture even if the bootstrap interpreter
 runs under x64 emulation. A disposable command environment supplies the missing
@@ -67,11 +68,11 @@ Keep an installed-tree cache in the caller if that job needs one.
 and node caches. Each defaults to `true`; language-specific caches run only for
 that toolchain. `python-cache-dependency-glob` defaults to `pyproject.toml` and
 `uv.lock`. `node-package-manager` selects whose downloads the node cache holds:
-`pnpm` (default) for the workspace, `npm` for the standalone npm projects.
-`node-cache-dependency-path` defaults to `pnpm-lock.yaml` and `pnpm-workspace.yaml`;
-site jobs use `npm` with `website/package-lock.json`. Both accept multiline glob
-strings. A node cache without a matching lockfile fails, rather than caching an
-unversioned dependency set.
+`pnpm` (default) for the workspace and the standalone website/bridge projects,
+`npm` for the Photon sidecar. `node-cache-dependency-path` defaults to
+`pnpm-lock.yaml` and `pnpm-workspace.yaml`; site jobs use `pnpm` with
+`website/pnpm-lock.yaml`. Both accept multiline glob strings. A node cache without
+a matching lockfile fails, rather than caching an unversioned dependency set.
 
 `prune-python-cache: true` registers PM's lock-exact cache-pruning operation at teardown,
 after the caller's installs and before the cache save. It is skipped on an

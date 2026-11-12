@@ -651,8 +651,8 @@ def _no_move(*_targets, **_bound):
 
 
 def _discard_lockfile_churn(git_cmd, repo_root, *, checkout_move=None):
-    """Restore ``package-lock.json`` files npm rewrote non-deterministically (the npm projects: WhatsApp
-    bridge, Photon sidecar), so the update sees a clean tree instead of autostashing every run. A lock is
+    """Restore ``package-lock.json`` files npm rewrote non-deterministically (the Photon sidecar, the
+    last npm project), so the update sees a clean tree instead of autostashing every run. A lock is
     kept when its sibling ``package.json`` is dirty: reverting it alone desyncs spec and lock and every
     later ``npm ci`` fails (#112378). ``pnpm-lock.yaml`` is never touched: pnpm's frozen installs do not
     rewrite it, so a change there is the user's own. Best-effort."""

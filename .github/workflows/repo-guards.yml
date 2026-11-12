@@ -192,7 +192,7 @@ jobs:
 
       # ── Pull requests, npm_lock lane: JS lockfile semantic diff (advisory) ───────────────
 
-      # Covers pnpm-lock.yaml and the standalone npm projects' package-lock.json. The raw
+      # Covers pnpm-lock.yaml (root, website, bridge) and the Photon sidecar's package-lock.json. The raw
       # textual diff of a lockfile is unreadable (entries reorder and integrity hashes churn),
       # so scripts/ci/lockfile_diff.py set-diffs the locked package versions at the merge base
       # and at HEAD, plus (pnpm) the project and package dependency edges those versions

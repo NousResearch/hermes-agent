@@ -1,7 +1,7 @@
 name: dataprobe
 repo: https://github.com/rodricksz4h5/dataprobe
-sha: 9894ee9737a2fae2e12c734e114fc3b1b1fae2fb
-version: "1.0.0"
+sha: 6dddd12cf70686eea372fdb93e8e8c88907286b6
+version: "1.0.1"
 title: Dataprobe
 description: >-
   Exact, local structure and quality checks over large CSV/TSV and JSONL data
@@ -19,7 +19,7 @@ maintainer: rodricksz4h5
 tier: community
 category: tools
 requires_hermes: ">=0.22.0"
-docs_url: https://github.com/rodricksz4h5/dataprobe/tree/9894ee9737a2fae2e12c734e114fc3b1b1fae2fb
+docs_url: https://github.com/rodricksz4h5/dataprobe/tree/6dddd12cf70686eea372fdb93e8e8c88907286b6
 capabilities:
   provides_tools:
     - data_profile

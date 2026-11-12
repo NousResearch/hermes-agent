@@ -52,6 +52,17 @@ def _report_context_length_detection(model_name: str, base_url: str, api_key: st
               f"(set model.context_length in config.yaml to override)")
 
 
+def _endpoint_key_env(url: str) -> str:
+    """The .env slot this flow stores *url*'s key in, keyed on host:port so two servers on one
+    machine keep separate credentials (#69449)."""
+    from hermes_cli.config import custom_endpoint_key_env
+    parsed = urllib.parse.urlparse(url)
+    identity = parsed.hostname or ""
+    if parsed.port:
+        identity = f"{identity}_{parsed.port}"
+    return custom_endpoint_key_env(identity)
+
+
 def _probe_custom_endpoint(effective_key: str, effective_url: str) -> tuple[dict, str]:
     """Verify a custom endpoint via ``probe_api_models`` and report; returns
     ``(probe, effective_url)`` where the URL may be the working fallback base."""
@@ -98,7 +109,7 @@ def _model_flow_custom(config):
     it appears in the provider menu on subsequent runs."""
     from hermes_cli.main_provider_setup import _auto_provider_name, _prompt_custom_api_mode_selection, _save_custom_provider
     from hermes_cli.auth import _save_model_choice, deactivate_provider
-    from hermes_cli.config import custom_endpoint_key_env, get_env_value, save_env_value
+    from hermes_cli.config import drop_credentials_of_other_route, get_env_value, save_env_value
     from hermes_cli.secret_prompt import masked_secret_prompt
     current_url = get_env_value("OPENAI_BASE_URL") or ""
     current_key = get_env_value("OPENAI_API_KEY") or ""
@@ -124,7 +135,6 @@ def _model_flow_custom(config):
     if not effective_url.startswith(_HTTP):
         print(f"Invalid URL: {effective_url} (must start with http:// or https://)")
         return
-    effective_key = api_key or current_key
 
     # Most local servers (Ollama, vLLM, llama.cpp) need /v1 for OpenAI-compatible
     # chat completions — offer to append it when the URL looks local without it.
@@ -137,6 +147,19 @@ def _model_flow_custom(config):
             effective_url = effective_url.rstrip("/") + "/v1"
             print(f"  Updated URL: {effective_url}")
         print()
+
+    # A blank key reuses only a key stored for THIS endpoint: OPENAI_API_KEY was entered for
+    # OPENAI_BASE_URL, and the probes below already send whatever key is chosen here.
+    from hermes_cli.route_identity import normalize_route_base_url
+    effective_key = api_key
+    if not effective_key:
+        if normalize_route_base_url(effective_url) == normalize_route_base_url(current_url):
+            effective_key = current_key
+        else:
+            effective_key = get_env_value(_endpoint_key_env(effective_url)) or ""
+            if current_key and not effective_key:
+                print(f"  The current key belongs to {current_url or 'another endpoint'}; "
+                      f"no key will be sent to {effective_url}.")
 
     probe, effective_url = _probe_custom_endpoint(effective_key, effective_url)
 
@@ -161,22 +184,18 @@ def _model_flow_custom(config):
     if context_length is None and model_name:
         _report_context_length_detection(model_name, effective_url, effective_key)
 
-    # The key goes to .env and config.yaml only references it. Keyed on host:port
-    # so two servers on one machine keep separate credentials.
-    # See #69449.
+    # The key goes to .env and config.yaml only references it.
     custom_key_env = ""
     if effective_key:
-        _parsed = urllib.parse.urlparse(effective_url)
-        _identity = _parsed.hostname or ""
-        if _parsed.port:
-            _identity = f"{_identity}_{_parsed.port}"
-        custom_key_env = custom_endpoint_key_env(_identity)
+        custom_key_env = _endpoint_key_env(effective_url)
         save_env_value(custom_key_env, effective_key)
         print(f"  API key saved to .env as {custom_key_env}")
 
     def _apply_endpoint(model: dict) -> None:
+        prior = dict(model)
         model["provider"] = "custom"
         model["base_url"] = effective_url
+        drop_credentials_of_other_route(model, prior)
         # A previous endpoint's key_env pointer would outrank the credential written below.
         model.pop("key_env", None)
         model.pop("api_key_env", None)
@@ -324,7 +343,7 @@ def _model_flow_named_custom(config, provider_info):
     saved model is pre-selected and is the fallback when probing fails."""
     from hermes_cli.main_provider_setup import _custom_provider_api_key_config_value, _custom_provider_base_url_config_value, _save_custom_provider
     from hermes_cli.auth import _save_model_choice
-    from hermes_cli.config import load_config, save_config
+    from hermes_cli.config import drop_credentials_of_other_route, load_config, save_config
     from hermes_cli.model_switch import _entry_models_discovered, _models_config_is_allowlist
     name = provider_info["name"]
     base_url = provider_info["base_url"]
@@ -389,6 +408,7 @@ def _model_flow_named_custom(config, provider_info):
     # Activate and save the model to the custom_providers entry
     _save_model_choice(model_name)
     cfg, model = _load_config_model_section()
+    prior = dict(model)
     # The endpoint being activated owns the credential: drop the previous endpoint's pointer
     # (key_env outranks the provider entry's own key at resolution time).
     model.pop("key_env", None)
@@ -402,6 +422,8 @@ def _model_flow_named_custom(config, provider_info):
         model["base_url"] = _custom_provider_base_url_config_value(provider_info, base_url)
         if config_api_key:
             model["api_key"] = config_api_key
+        else:
+            drop_credentials_of_other_route(model, prior)
     # Apply api_mode from custom_providers entry, or clear stale value
     if api_mode:
         model["api_mode"] = api_mode

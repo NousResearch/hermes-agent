@@ -98,11 +98,10 @@ def _commit_model_config(cfg: dict) -> None:
 
 
 def _persist_model(selected: str, provider: str, *, base_url: str | None = None, api_mode: str | None = None,
-                   drop_base_url: bool = False, drop_api_mode: bool = False, clear_creds: bool = True,
-                   finish=None) -> dict:
+                   drop_base_url: bool = False, drop_api_mode: bool = False, finish=None) -> dict:
     """The standard persist step: ``_save_model_choice`` → model section with ``provider``,
     ``base_url`` then ``api_mode`` (that order is the config.yaml key order) → scrub inline
-    endpoint credentials (``clear_creds``; ``drop_api_mode`` also pops ``api_mode``) →
+    endpoint credentials (``drop_api_mode`` also pops ``api_mode``) →
     *finish(cfg, model)* for extra sections → save + deactivate OAuth provider."""
     cfg, model = _begin_model_config(selected, provider)
     if base_url is not None:
@@ -111,10 +110,7 @@ def _persist_model(selected: str, provider: str, *, base_url: str | None = None,
         model["api_mode"] = api_mode
     if drop_base_url:
         model.pop("base_url", None)
-    if clear_creds:
-        clear_model_endpoint_credentials(model, clear_api_mode=drop_api_mode)
-    elif drop_api_mode:
-        model.pop("api_mode", None)
+    clear_model_endpoint_credentials(model, clear_api_mode=drop_api_mode)
     if finish is not None:
         finish(cfg, model)
     _commit_model_config(cfg)

@@ -26,6 +26,10 @@ export interface KanbanTask {
   current_run_started_at?: null | number
   worker_pid?: null | number
   last_heartbeat_at?: null | number
+  /** The server's own clock for the read this card arrived in (`board.now`), stamped
+   *  on by `fetchBoard`. The freshness arc compares against THIS, so a client clock
+   *  that is minutes off cannot report a live worker as having no heartbeat. */
+  heartbeat_now?: null | number
   /** Typed block reason set by the backend on kanban_block (one of
    *  VALID_BLOCK_KINDS — `dependency`, `needs_input`, `capability`,
    *  `transient`; null for legacy/un-typed blocks). Kept across unblock, so
@@ -47,6 +51,37 @@ export interface KanbanBoard {
   assignees: string[]
   latest_event_id: number
   now: number
+  /** Opaque token of the exact state this board was read at. Sent back with `latest_event_id` to ask
+   *  for a delta; absent from a backend that predates deltas (and then every read is a full one). */
+  etag?: string
+  /** Client-only: when this board last came from a FULL fetch (ms since the epoch). `deltaCursor` ages
+   *  it and asks for another full snapshot past FULL_RESYNC_MS. Never on the wire. */
+  fullFetchedAt?: number
+}
+
+/** One column of a delta: the ids in the exact order a snapshot would list them, done column included. */
+export interface KanbanColumnOrder {
+  name: string
+  ids: string[]
+}
+
+/** GET /board with `since` and `etag`: what moved, or (`unchanged`) that nothing did. */
+export interface KanbanBoardDelta {
+  delta: true
+  latest_event_id: number
+  now: number
+  etag?: string
+  /** Nothing changed since the client's etag: keep the held data, adopt only etag / cursor / now. */
+  unchanged?: boolean
+  /** Every changed card, and every card in a non-terminal status, as a full snapshot card. */
+  cards?: KanbanTask[]
+  /** Every column a snapshot would have, in snapshot order. */
+  column_order?: KanbanColumnOrder[]
+  removed?: string[]
+  tenants?: string[]
+  assignees?: string[]
+  /** Echo of the request's `since`, for diagnosing a stuck client. */
+  since?: number
 }
 
 /** A structured recovery action attached to a diagnostic. */

@@ -239,6 +239,7 @@
     "plugins/model-providers/gemini/client.py agent.gemini_native_adapter.gemini_uses_thinking_level": 1,
     "plugins/model-providers/gemini/interactions.py agent.gemini_native_adapter.GeminiAPIError": 1,
     "plugins/model-providers/gemini/interactions.py agent.gemini_native_adapter._FREE_TIER_GUIDANCE": 1,
+    "plugins/model-providers/gemini/interactions.py agent.gemini_native_adapter._SKIP_SIGNATURE": 1,
     "plugins/model-providers/gemini/interactions.py agent.gemini_native_adapter._coerce_content_to_text": 1,
     "plugins/model-providers/gemini/interactions.py agent.gemini_native_adapter._effective_gemini_max_output_tokens": 1,
     "plugins/model-providers/gemini/interactions.py agent.gemini_native_adapter._envelope": 1,

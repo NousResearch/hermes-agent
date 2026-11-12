@@ -1078,7 +1078,10 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                 logger.warning("[%s] STT: ASR returned empty transcript", self._log_tag)
             return transcript
         except (OSError, httpx.HTTPStatusError, httpx.TransportError) as exc:
-            logger.warning("[%s] STT failed for voice attachment: %s: %s", self._log_tag, type(exc).__name__, exc)
+            # httpx puts the full download URL (signed query included) in the exception text.
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            logger.warning("[%s] STT failed for voice attachment: %s (status=%s)", self._log_tag, type(exc).__name__, status)
+            logger.debug("[%s] STT failure detail: %s", self._log_tag, exc)
             return None
 
     @staticmethod

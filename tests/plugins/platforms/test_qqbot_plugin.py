@@ -163,3 +163,27 @@ async def test_qq_voice_stt_failure_keeps_the_attachment_url_out_of_info(caplog,
     ]
     assert any("Voice STT failed" in line for line in info), info
     assert all("private-sentinel" not in line and "files.example.test" not in line for line in info), info
+
+
+@pytest.mark.asyncio
+async def test_qq_voice_download_http_error_keeps_the_url_out_of_warning(caplog, monkeypatch):
+    """httpx's HTTPStatusError text carries the signed download URL (#46006)."""
+    import logging
+
+    import httpx
+
+    from gateway.config import PlatformConfig
+    from plugins.platforms.qqbot.adapter import QQAdapter
+
+    adapter = QQAdapter(PlatformConfig(enabled=True, extra={}))
+    adapter._http_client = httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(403, request=request)))
+    monkeypatch.setattr("tools.url_safety.is_safe_url", lambda _url: True)
+    caplog.set_level(logging.DEBUG, logger="plugins.platforms.qqbot.adapter")
+    assert await adapter._stt_voice_attachment("https://files.example.test/v?sig=private-sentinel", "voice", "a.silk") is None
+    info = [
+        r.getMessage() for r in caplog.records
+        if r.name == "plugins.platforms.qqbot.adapter" and r.levelno >= logging.INFO
+    ]
+    assert any("status=403" in line for line in info), info
+    assert all("private-sentinel" not in line for line in info), info

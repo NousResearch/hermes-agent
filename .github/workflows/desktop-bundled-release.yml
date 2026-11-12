@@ -1238,6 +1238,7 @@ jobs:
             runner: blacksmith-32vcpu-ubuntu-2404
             image: ubuntu:22.04
             python: python3.11
+            alsa: libasound2
     env: &linux-env
       DEBIAN_FRONTEND: noninteractive
       HERMES_DESKTOP_VARIANT: bundled
@@ -1250,16 +1251,20 @@ jobs:
       CLOUDFLARE_R2_PUBLIC_URL: ${{ needs.validate.outputs.public-root }}
     steps: &linux-steps
       # The bootstrap scripts need Python >= 3.11; PM probes run node (libatomic)
-      # and cua-driver (X11, xkbcommon) while staging the payload.
+      # and cua-driver (X11, xkbcommon) while staging the payload. Preparation's
+      # native probe starts the downloaded Electron, which loads GTK, NSS, GBM
+      # and ALSA even as node; 24.04 renamed ALSA's package libasound2t64.
       - name: Install the build userland
         shell: bash
         env:
           BOOTSTRAP_PYTHON: ${{ matrix.target.python }}
+          ALSA_PACKAGE: ${{ matrix.target.alsa }}
         run: |
           apt-get update -qq
           apt-get install -y -qq --no-install-recommends \
             ca-certificates git build-essential cmake file xz-utils zstd \
-            libatomic1 libx11-6 libxi6 libxkbcommon0 "$BOOTSTRAP_PYTHON"
+            libatomic1 libx11-6 libxi6 libxkbcommon0 \
+            libgtk-3-0 libnss3 libgbm1 "$ALSA_PACKAGE" "$BOOTSTRAP_PYTHON"
           ln -sf "/usr/bin/$BOOTSTRAP_PYTHON" /usr/local/bin/python3
           ln -sf "/usr/bin/$BOOTSTRAP_PYTHON" /usr/local/bin/python
           # The checkout belongs to the runner's uid, not the container's root.
@@ -1378,6 +1383,7 @@ jobs:
             runner: blacksmith-32vcpu-ubuntu-2404-arm
             image: ubuntu:24.04
             python: python3.12
+            alsa: libasound2t64
     env: *linux-env
     steps: *linux-steps
 

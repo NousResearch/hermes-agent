@@ -579,11 +579,11 @@ export default {
 
           const group = $groupChatWorkspace.get()
 
-          // Follow the chat on screen before publishing: a selection left
-          // behind by an earlier click must not re-own the workspace over the
-          // bot the user is reading (#154651) — the publish below would aim
-          // "+" at it.
-          reconcileSelectionToFocusedChat()
+          if (!group) {
+            // Follow the chat on screen before publishing (#154651 — see
+            // reconcileSelectionToFocusedChat).
+            reconcileSelectionToFocusedChat()
+          }
 
           const selected = selectedRosterBot($lastRoster.get(), $selectedRosterKey.get())
 

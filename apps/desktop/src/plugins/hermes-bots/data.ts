@@ -1399,18 +1399,24 @@ export function newBotChat(bot: RosterRow) {
     return
   }
 
-  const route = botConnectionRoute(bot)
+  // Passive lookup: an orphaned row (connection deleted) must read as "no
+  // route" here, not throw out of the context menu the way the strict
+  // botConnectionRoute would.
+  const resolved = resolveBotConnectionRoute(bot)
 
-  if (!route) {
+  if (!resolved.route) {
+    // A distinct message: this build is current — the row simply has no
+    // routable connection. The outdated-app text would send the user chasing
+    // an update that does not exist (#154651).
     host.notify?.({
       kind: 'error',
-      message:
-        getPluginCtx()?.i18n?.t('bot.openAnotherChatUnsupported') ?? 'Update Hermes Desktop to open another bot chat.'
+      message: getPluginCtx()?.i18n?.t('bot.noRoutableConnection') ?? 'This bot has no routable connection to chat on.'
     })
 
     return
   }
 
+  const route = resolved.route
   const ownerKey = botWorkspaceOwnerKey(bot)
   setBotsWorkspaceOwner(ownerKey, bot)
   host.newChat(route, {

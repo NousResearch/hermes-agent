@@ -12,8 +12,11 @@ import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as Hermes from '@/hermes'
+import { notifyError } from '@/store/notifications'
 
 import { deferred } from '../test/deferred'
+
+import { closeSecondaryGateways } from './gateway'
 
 const gatewayMocks = vi.hoisted(() => {
   const instances: { close: ReturnType<typeof vi.fn>; connectionState: string }[] = []
@@ -81,39 +84,49 @@ function descriptorFor(profile: string) {
 }
 
 function stubDescriptorLookup(): void {
-  installDesktop({ getConnection: vi.fn(async ({ profile }: { profile: string }) => descriptorFor(profile)) })
+  // resolveConnectionForProfile passes the profile name directly.
+  installDesktop({ getConnection: vi.fn(async (profile: string) => descriptorFor(profile)) })
 }
 
 beforeEach(() => {
+  // mockReset also restores the vi.fn factory implementation — a rejected or
+  // gated connect from an earlier test must not poison the next one.
+  gatewayMocks.connect.mockReset()
   gatewayMocks.instances.length = 0
   $newChatProfile.set(null)
 })
 
 afterEach(() => {
   vi.clearAllMocks()
+  // A failed dial arms a real reconnect timer and a wantOpen secondary; drop
+  // them so no background re-dial races the next test's mock.
+  closeSecondaryGateways()
   delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
 })
 
 describe('wakeSessionInProfile — the ambient wake pin is scoped to the swap (#149779)', () => {
-  it('drops the pin once the dial settles, so later "+" sessions resolve from the window state again', async () => {
+  it('dials the target and drops the pin once the dial settles', async () => {
     stubDescriptorLookup()
 
     await wakeSessionInProfile('wake-a')
 
+    expect(gatewayMocks.connect).toHaveBeenCalledWith(expect.stringContaining('wake-a.invalid'))
     expect($newChatProfile.get()).toBeNull()
   })
 
-  it('keeps the pin when the dial fails — the wake draft still targets the failed profile', async () => {
+  it('keeps the pin when the dial fails and surfaces the failure', async () => {
     gatewayMocks.connect.mockRejectedValue(new Error('backend unreachable'))
     stubDescriptorLookup()
 
     // The failure is surfaced (#81094) instead of rejecting out of the handler.
     await expect(wakeSessionInProfile('wake-b')).resolves.toBeUndefined()
 
+    expect(gatewayMocks.connect).toHaveBeenCalledWith(expect.stringContaining('wake-b.invalid'))
+    expect(notifyError).toHaveBeenCalledTimes(1)
     expect($newChatProfile.get()).toBe('wake-b')
   })
 
-  it('does not clobber a deliberate pick made while the dial was in flight', async () => {
+  it('does not clobber a deliberate pick of another profile made mid-dial', async () => {
     const gate = deferred<void>()
     gatewayMocks.connect.mockImplementation(async () => {
       await gate.promise
@@ -131,6 +144,27 @@ describe('wakeSessionInProfile — the ambient wake pin is scoped to the swap (#
     gate.resolve()
     await settled
 
+    expect(gatewayMocks.connect).toHaveBeenCalledWith(expect.stringContaining('wake-c.invalid'))
     expect($newChatProfile.get()).toBe('home')
+  })
+
+  it('does not clobber a deliberate re-pin of the same profile made mid-dial', async () => {
+    const gate = deferred<void>()
+    gatewayMocks.connect.mockImplementation(async () => {
+      await gate.promise
+    })
+    stubDescriptorLookup()
+
+    const settled = wakeSessionInProfile('wake-d')
+    expect($newChatProfile.get()).toBe('wake-d')
+
+    // A deliberate pick of the SAME profile mid-dial re-pins with identical
+    // values — only the intent revision can tell it from the ambient pin.
+    pinNewChatProfile('wake-d')
+
+    gate.resolve()
+    await settled
+
+    expect($newChatProfile.get()).toBe('wake-d')
   })
 })

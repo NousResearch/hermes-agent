@@ -79,16 +79,27 @@ describe('reconcileSelectionToFocusedChat — the selection follows the chat on 
   it('re-points a stale persisted selection at the focused chat\'s owner', async () => {
     state.focusedOwner = { connectionId: 'source-b', profile: 'worker' }
 
-    const { $botChatFocused, $lastRoster, $selectedRosterKey, reconcileSelectionToFocusedChat } = await load()
+    const {
+      $botChatFocused,
+      $lastRoster,
+      $selectedBot,
+      $selectedRosterHydrated,
+      $selectedRosterKey,
+      reconcileSelectionToFocusedChat
+    } = await load()
 
     $lastRoster.set(roster)
     // Left behind by an earlier click on alpha; the worker chat is on screen.
     $selectedRosterKey.set('source-a::alpha')
+    $selectedRosterHydrated.set(true)
     $botChatFocused.set(true)
 
     reconcileSelectionToFocusedChat()
 
     expect($selectedRosterKey.get()).toBe('source-b::worker')
+    // The Routines tile scope follows too — botSelectionKey for a
+    // source-scoped row is the same source-qualified key.
+    expect($selectedBot.get()).toBe('source-b::worker')
   })
 
   it('leaves the selection when no session owns the workspace', async () => {

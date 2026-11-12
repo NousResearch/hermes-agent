@@ -222,6 +222,7 @@ const en: BotsMessages = {
     advancedHint: 'Advanced — model, skills, toolsets, SOUL.md',
     advancedFailed: 'Advanced configuration failed',
     openAnotherChatUnsupported: 'Update Hermes Desktop to open another bot chat.',
+    noRoutableConnection: 'This bot has no routable connection to chat on.',
     remoteConnectionsUnsupported: 'Update Hermes Desktop to chat with bots on other connections.',
     openNeedsUpdateTitle: 'This bot lives on an older Hermes',
     openNeedsUpdateMessage: connectionLabel => `Update ${connectionLabel}, then try again.`,

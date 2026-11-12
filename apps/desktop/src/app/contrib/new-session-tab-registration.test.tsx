@@ -1,11 +1,15 @@
 /**
- * The tab-strip "+" registration is churn-proof (#154651): the atom never
- * tears down while the component is mounted, no matter how often the action's
- * identity changes — host.newChat's bots door refuses while the atom is null,
- * so a re-registration window told an up-to-date desktop to update itself.
+ * The tab-strip "+" registration is mount-stable (#154651): no
+ * teardown/re-register churn across action identity changes. The old
+ * identity-keyed effect wrote null on every churn — the strip glyph reads the
+ * atom and cycled hidden→visible with it, and correctness leaned on the
+ * teardown and re-register staying one synchronous step. Null writes are
+ * confined to unmount (where the sdk's host.newChat gate is meaningful) and
+ * StrictMode's dev-only mount replay.
  */
 
 import { act, cleanup, renderHook } from '@testing-library/react'
+import { StrictMode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { $newSessionTabAction } from '@/components/pane-shell/tree/store'
@@ -23,6 +27,7 @@ describe('useNewSessionTabActionRegistration', () => {
     const second = vi.fn()
     let stillMounted = true
     const nullWrites: number[] = []
+
     const unlisten = $newSessionTabAction.listen(value => {
       if (value === null && stillMounted) {
         nullWrites.push(nullWrites.length)
@@ -42,7 +47,7 @@ describe('useNewSessionTabActionRegistration', () => {
     unlisten()
 
     // While mounted the atom is never torn down — only the unmount writes
-    // null. host.newChat's bots door refuses while it is null.
+    // null, and host.newChat's bots door refuses while the atom is null.
     expect(nullWrites).toEqual([])
   })
 
@@ -79,5 +84,24 @@ describe('useNewSessionTabActionRegistration', () => {
     unmount()
 
     expect($newSessionTabAction.get()).toBeNull()
+  })
+
+  it('ends registered after StrictMode replays the mount, dispatching the latest action', () => {
+    const second = vi.fn()
+
+    const { rerender } = renderHook(({ action }) => useNewSessionTabActionRegistration(action), {
+      initialProps: { action: vi.fn() },
+      wrapper: ({ children }) => <StrictMode>{children}</StrictMode>
+    })
+
+    // The dev replay writes null once between the replayed unmount and mount;
+    // the end state must be a live registration, not the replayed cleanup.
+    rerender({ action: second })
+
+    act(() => {
+      $newSessionTabAction.get()?.()
+    })
+
+    expect(second).toHaveBeenCalledTimes(1)
   })
 })

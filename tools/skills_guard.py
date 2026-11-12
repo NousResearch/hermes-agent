@@ -837,8 +837,8 @@ def _unscanned_text_padded_code(file_path: Path, rel_path: str) -> list[Finding]
         data = file_path.read_bytes()
         if b"\0" in data[:8192]:
             return []  # binary
-        return _padded_code_findings(data.decode("utf-8-sig").split("\n"), rel_path)
-    except (UnicodeDecodeError, OSError):
+        return _padded_code_findings(data.decode("utf-8-sig", errors="replace").split("\n"), rel_path)
+    except OSError:
         return []
 
 

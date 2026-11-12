@@ -141,22 +141,33 @@ class TestIgnoreUserConfigDelegationDefault:
         assert DEFAULT_MAX_ITERATIONS == _default("delegation", "max_iterations")
         assert cli._cli_config_defaults()["delegation"]["max_iterations"] == DEFAULT_MAX_ITERATIONS
 
-    def test_ignore_user_config_resolves_the_shared_iteration_cap(self, tmp_path, monkeypatch):
-        """End-to-end through the reader ``delegate_task`` calls for its iteration cap."""
-        from tools import delegate_tool_config
-        from tools.delegate_tool import DEFAULT_MAX_ITERATIONS
+    def test_ignore_user_config_resolves_the_shared_iteration_cap(self, tmp_path):
+        """Fresh startup sees the user cap without the flag and the shared cap with it."""
+        import json
+        from pathlib import Path
+        import subprocess
+        import sys
 
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        root = Path(__file__).resolve().parents[2]
         (tmp_path / "config.yaml").write_text("delegation:\n  max_iterations: 7\n")
-        monkeypatch.setenv("HERMES_IGNORE_USER_CONFIG", "1")
-
-        cfg = delegate_tool_config._load_config()
-
-        assert cfg["max_iterations"] == DEFAULT_MAX_ITERATIONS, (
-            "an --ignore-user-config run resolved a different subagent iteration cap than "
-            "delegation.max_iterations; migration 36 raised this to 250 because a smaller cap "
-            "truncated substantial delegated work"
+        script = (
+            "import json, cli; from tools import delegate_tool_config; "
+            "print(json.dumps([cli.CLI_CONFIG['delegation']['max_iterations'], "
+            "delegate_tool_config._load_config()['max_iterations']]))"
         )
+        for ignored in (False, True):
+            env = {"HOME": str(tmp_path), "USERPROFILE": str(tmp_path), "HERMES_HOME": str(tmp_path),
+                   "PATH": os.environ["PATH"], "PYTHONPATH": str(root), "PYTHONDONTWRITEBYTECODE": "1"}
+            for name in ("SYSTEMROOT", "WINDIR", "COMSPEC"):
+                if name in os.environ:
+                    env[name] = os.environ[name]
+            if ignored:
+                env["HERMES_IGNORE_USER_CONFIG"] = "1"
+            result = subprocess.run([sys.executable, "-B", "-c", script], cwd=root, env=env,
+                                    capture_output=True, text=True, check=True, timeout=60)
+            expected = _default("delegation", "max_iterations") if ignored else 7
+            assert json.loads(result.stdout.splitlines()[-1]) == [expected, expected]
+
 
     def test_example_config_documents_the_same_cap(self):
         """cli-config.yaml.example is the user-facing statement of the same number."""
@@ -209,7 +220,7 @@ class TestSharedDefaults:
 @pytest.mark.parametrize("limit,label", [(19, "19"), (None, "unlimited")])
 def test_classic_config_renders_the_resolved_budget(capsys, limit, label):
     from datetime import datetime
-    from cli import HermesCLI
+    from cli import HermesCLI, _t
     from hermes_cli.config import resolve_turn_limit
     resolved = resolve_turn_limit(limit)
     stand_in = HermesCLI.__new__(HermesCLI)
@@ -218,6 +229,8 @@ def test_classic_config_renders_the_resolved_budget(capsys, limit, label):
     stand_in.session_start = datetime(2026, 1, 1)
     HermesCLI.show_config(stand_in)
     output = capsys.readouterr().out
-    assert label in output
+    turn_label = _t("cli.config.label_max_turns")
+    row = next(line.strip() for line in output.splitlines() if line.strip().startswith(turn_label + " "))
+    assert row.removeprefix(turn_label).strip() == label
     if limit is None:
         assert str(resolved) not in output

@@ -1,0 +1,22 @@
+name: esimtao
+title: EsimTao
+repo: https://github.com/AbigailDavised/esimtao-mcp
+sha: 161d95f6cbc3faa024a282112ac23fca1c0bd8f2
+version: "1.0.0"
+description: "Global travel eSIM data usage calculator, phone hardware eSIM compatibility matrix (US eSIM-only vs HK dual physical nano-SIM), and international provider price comparison through EsimTao's official MCP server (Streamable HTTP at https://esimtao.com/api/mcp, no sign-in, no keys in config). Bundles the esimtao workflow skill. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure — hosted-only connector with no local runtime code, binaries, hooks, telemetry or self-updater; every tool call goes over HTTPS to esimtao.com/api/mcp with only the travel data or device parameters. All tools are public, free, and annotated read-only (readOnlyHint: true, destructiveHint: false). The package marks the server untrusted (trust: untrusted), so Hermes asks before any tool not annotated read-only and refuses them in unattended runs. The remote tool inventory is served at runtime and is not covered by the pinned sha."
+maintainer: EsimTao
+tier: community
+category: tools
+docs_url: https://esimtao.com
+requires_hermes: ">=0.21.6"
+image: https://raw.githubusercontent.com/AbigailDavised/esimtao-mcp/161d95f6cbc3faa024a282112ac23fca1c0bd8f2/assets/cover.png
+screenshots:
+  - https://raw.githubusercontent.com/AbigailDavised/esimtao-mcp/161d95f6cbc3faa024a282112ac23fca1c0bd8f2/assets/screenshot.png
+  - https://raw.githubusercontent.com/AbigailDavised/esimtao-mcp/161d95f6cbc3faa024a282112ac23fca1c0bd8f2/assets/editorial.png
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -1,48 +1,31 @@
 name: offense
 repo: https://github.com/offense-research/offense-hermes-plugin
-sha: 3a426e6be1f27a551c7a6f7a8f6a9dccce57d423
-version: "0.2.1"
+sha: 3689398072bfe6f5960e387d8b5cdddf75bea631
+version: "0.3.0"
 description: >-
-  Spin up isolated Offense security sandboxes and summon swarms of independent
-  investigators against a verified staging target: register and verify control
-  of the target, launch a focused sandbox or a broad swarm with per-agent
-  budgets, read deduplicated findings and checksummed evidence, verify a
-  candidate in a fresh sandbox, and retest after a fix. Disclosure — the plugin
-  sends assessment tasks, the registered target URL, and run results to the
-  configured Offense API (https://app.offense.sh by default, overridable for
-  self-hosted); it reads OFFENSE_API_KEY through Hermes'
-  agent.secret_scope.get_secret and never a key file or another tool's
-  credential store; it runs no shell commands and reads no local files;
-  launches spend real money on the user's Offense account ($1 per sandbox by
-  default, agents x $1 per swarm, stated before launch and refunded when
-  stopped); no telemetry.
+  Offense security tools for Hermes: free npm/pnpm dependency advisory audits
+  and prepaid hosted security tools (source, infrastructure, target, TLS, API)
+  through the official Offense MCP server, exposed as mcp__offense__* tools.
+  Disclosure — the plugin connects to the configured Offense origin
+  (https://app.purpleteam.sh by default, moving to https://offense.sh) over
+  HTTPS; the free audit sends sanitized dependency names, exact versions and
+  relative paths, and hosted tools send only the selected source, artifact,
+  target or infrastructure after a reviewed quote and an explicit run; the
+  free audit needs no account; OFFENSE_API_KEY is read through Hermes'
+  agent.secret_scope and stored in the active profile, never in the package;
+  hosted calls spend prepaid Offense credit on the user's account and are
+  gated by trust: untrusted, a $5.00 per-chat spend limit and a $0.05-$1.00
+  per reviewed quote; no bundled code, no shell commands, no self-updater, no
+  telemetry.
 maintainer: offense-research
 tier: community
 category: tools
-requires_hermes: ">=0.19.0"
-docs_url: https://github.com/offense-research/offense-hermes-plugin/blob/3a426e6be1f27a551c7a6f7a8f6a9dccce57d423/README.md
+requires_hermes: ">=0.23.1"
+docs_url: https://github.com/offense-research/offense-hermes-plugin/blob/3689398072bfe6f5960e387d8b5cdddf75bea631/README.md
 readme: true
 capabilities:
-  provides_tools:
-    - offense_status
-    - offense_register_target
-    - offense_verify_target
-    - offense_launch_sandbox
-    - offense_list_sandboxes
-    - offense_get_sandbox
-    - offense_wait_sandbox
-    - offense_sandbox_findings
-    - offense_sandbox_evidence
-    - offense_stop_sandbox
-    - offense_verify_finding
-    - offense_retest_finding
-    - offense_list_swarms
-    - offense_summon_swarm
-    - offense_get_swarm
-    - offense_wait_swarm
-    - offense_stop_swarm
-  provides_hooks:
-    - pre_llm_call
+  provides_tools: []
+  provides_hooks: []
   provides_middleware: []
   requires_env:
     - OFFENSE_API_KEY

@@ -1,10 +1,7 @@
 name: rocketchat-team-gateway
 repo: https://github.com/csabatatrai-ulx/hermes-rocketchat-team-gateway
 sha: 1f9c11170838e190e3b5c64197a5a563ec4cf6d7
-description: >-
-  Rocket.Chat gateway adapter for Hermes Agent, built for shared team rooms. Per-person sessions with
-  room context since the asker's previous mention, a default-deny guard for Hermes commands, approval
-  buttons, restart catch-up and duplicate suppression that survive a restart. Supports Rocket.Chat 8.7 - 9.x.
+description: "Rocket.Chat gateway adapter for Hermes Agent, built for shared team rooms. Per-person sessions with room context since the asker's previous mention, a default-deny guard for Hermes commands, approval buttons, restart catch-up and duplicate suppression that survive a restart. Supports Rocket.Chat 8.7 - 9.x. Disclosure — By default each @mention sends up to 50 recent room messages from other room members to your model provider as context (`ROCKETCHAT_TEAM_HISTORY_LIMIT=0` turns this off), and the optional webhook transport opens an HTTP listener on 127.0.0.1:8645 that requires `ROCKETCHAT_TEAM_WEBHOOK_SECRET`."
 maintainer: csabatatrai-ulx
 tier: community
 category: platform

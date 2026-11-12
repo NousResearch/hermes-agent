@@ -209,3 +209,39 @@ async def test_pem_header_typed_char_by_char_holds_the_block():
     await _stream(adapter, "Here: ", *block[:40], block[40:], " done.")
     for line in _PEM_LINES:
         assert not _raw_runs([content for _op, _id, content in adapter.ops], line, width=16), line
+
+
+# A Bearer token whose body holds a credential keyword (pw, key, sig, auth...) looks like a
+# ``NAME: value`` label of its own while it arrives.
+_KW_TOKENS = ("abcdef" + "PW" + "ghijklmnopqrstuvwxyz012345", "Zx9" + "sig" + "Q2w8e7r6t5y4u3i2o1p0aSdFgHjK",
+              "abcdefghijklmn" + "KEY" + "opqrstuvwxyz01234")
+
+
+def _random_deltas(text: str, seed: int) -> list[str]:
+    import random
+
+    rnd, deltas, i = random.Random(seed), [], 0
+    while i < len(text):
+        k = rnd.choice((1, 1, 2, 3, 5, 7, 15))
+        deltas.append(text[i:i + k])
+        i += k
+    return deltas
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("token", "split", "draft"), [
+    (_KW_TOKENS[0], "char", False), (_KW_TOKENS[0], "char", True),
+    (_KW_TOKENS[1], "random", False), (_KW_TOKENS[2], "random", True),
+], ids=["pw-char-edit", "pw-char-stream-is-message", "sig-random-edit", "key-random-stream-is-message"])
+async def test_bearer_token_holding_a_keyword_is_never_shown_raw(token, split, draft):
+    from agent.redact import redact_for_egress
+
+    reply = "Use " + _AUTH + token + " now."
+    assert token[:8] not in redact_for_egress(reply)  # the non-streamed send masks it
+    frames = []
+    adapter = _draft_adapter(frames) if draft else _adapter()
+    deltas = list(reply) if split == "char" else _random_deltas(reply, seed=3)
+    await _stream(adapter, *deltas, **({"transport": "auto", "chat_type": "dm"} if draft else {}))
+    shown = [*frames, *(content for _op, _id, content in adapter.ops)]
+    assert not _raw_runs(shown, token)
+    assert all(later.startswith(earlier) for earlier, later in pairwise(frames)), frames

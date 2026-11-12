@@ -122,10 +122,18 @@ def settled_end(text: str) -> int:
         run = m.group(0)
         if redact_for_egress(run + _PROBE) != redact_for_egress(run) + _PROBE:
             end = m.start()
-    # Last: a key block must not be cut by any boundary the rules above chose.
-    if (begin := _open_key_block(text, block_lo, end)) >= 0:
-        end = min(end, begin)
-    return end
+    # Fixpoint: the settled text must not itself end in an open label (``Authorization: Bearer ``
+    # with its value held by a later rule), and no boundary may cut a key block. Settling a label
+    # apart from its value lets its redaction mask the label alone (the scheme word becomes
+    # ``***``), after which the value no longer redacts at all.
+    while True:
+        prev = end
+        if (m := _OPEN_TAIL_RE.search(text, max(0, end - _TAIL_SCAN), end)) and m.start() < end:
+            end = m.start()
+        if (begin := _open_key_block(text, block_lo, end)) >= 0:
+            end = min(end, begin)
+        if end == prev:
+            return end
 
 
 def _lookback_start(text: str, upto: int) -> int:
@@ -137,6 +145,19 @@ def _lookback_start(text: str, upto: int) -> int:
     if newline >= 0 or lo == 0:
         return newline + 1
     return max(text.rfind(" ", 0, lo), text.rfind("\t", 0, lo)) + 1
+
+
+def _redact_to_fixpoint(text: str) -> str:
+    """Redact until stable. The redactor re-masks its own output (``Bearer abcd...wxyz`` ->
+    ``Bearer ***`` -> ``***``), and the settled text is redacted again with later text and at
+    segment end: emitting only a fixpoint keeps those passes from rewriting what was shown. Each
+    pass only adds masks, so the loop ends."""
+    for _ in range(4):
+        again = redact_for_egress(text)
+        if again == text:
+            break
+        text = again
+    return text
 
 
 def redact_settled(text: str, redacted_prefix: str, *, done: bool) -> tuple[str, int]:
@@ -152,13 +173,10 @@ def redact_settled(text: str, redacted_prefix: str, *, done: bool) -> tuple[str,
     start = _lookback_start(text, upto)
     if settled <= start:
         return text, settled
-    redacted = redact_for_egress(text[start:settled])
-    if not done and not redacted.startswith(emitted := text[start:upto]):
-        # The lookback would rewrite emitted text. The redactor re-masks its own masks
-        # (``Bearer abcd...wxyz`` -> ``Bearer ***``): keep the emitted text and take only what the
-        # new text redacts to. Otherwise new text changes how emitted text redacts: hold it.
-        again = redact_for_egress(emitted)
-        if not redacted.startswith(again):
-            return text, upto
-        redacted = emitted + redacted[len(again):]
+    redacted = _redact_to_fixpoint(text[start:settled])
+    if not done and not redacted.startswith(text[start:upto]):
+        # The new text changes how emitted text redacts. Emitted text cannot be rewritten and
+        # nothing may be appended after it, since the redaction of the new text is only correct
+        # in that changed context: hold until the segment ends and is redacted whole.
+        return text, upto
     return text[:start] + redacted + text[settled:], start + len(redacted)

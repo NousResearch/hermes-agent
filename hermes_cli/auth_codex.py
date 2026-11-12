@@ -69,8 +69,8 @@ def _codex_access_token_is_expiring(access_token: Any, skew_seconds: int) -> boo
 
 
 def _codex_base_url() -> str:
-    """Host a singleton Codex credential is sent to: the ``HERMES_CODEX_BASE_URL`` override of the
-    profile that owns the credential, else canonical chatgpt.com.
+    """The owning profile's ``HERMES_CODEX_BASE_URL`` override, else canonical chatgpt.com (the
+    singleton route itself goes through ``_codex_pool_route_base_url``, which adds ``model.base_url``).
 
     Read through the profile scope, never ``os.environ``, for the same reason the pooled route does
     (#121486): on a multiplexed gateway the raw process env is the *launch* profile's gateway, so a
@@ -81,10 +81,12 @@ def _codex_base_url() -> str:
     canonical host — the same answer ``_codex_pool_route_base_url`` already produces in that state,
     rather than a new failure mode on the credential path.
     """
-    override = ""
-    with suppress(Exception):
-        from agent.secret_scope import get_secret_str
+    from agent.secret_scope import UnscopedSecretError, get_secret_str
+    try:
         override = get_secret_str("HERMES_CODEX_BASE_URL", "").strip().rstrip("/")
+    except UnscopedSecretError:
+        logger.debug("No profile secret scope bound; Codex base URL falls back to canonical", exc_info=True)
+        override = ""
     return override or DEFAULT_CODEX_BASE_URL
 
 

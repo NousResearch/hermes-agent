@@ -571,6 +571,24 @@ def test_unscoped_multiplexed_read_degrades_to_canonical_like_the_pooled_route(m
         CHATGPT, CHATGPT)
 
 
+def test_unscoped_multiplexed_base_url_fallback_is_logged(monkeypatch, caplog):
+    """The unscoped degrade to chatgpt.com leaves a debug trace naming the cause, so an operator
+    whose gateway override was ignored has something to go on."""
+    import logging
+
+    from agent import secret_scope
+    from hermes_cli.auth_codex import _codex_base_url
+
+    _home(monkeypatch)
+    monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
+    monkeypatch.setenv("HERMES_CODEX_BASE_URL", OTHER_GW)
+    with caplog.at_level(logging.DEBUG, logger="hermes_cli.auth"):
+        assert _codex_base_url() == CHATGPT
+    assert [r for r in caplog.records
+            if "No profile secret scope bound" in r.getMessage()
+            and r.exc_info and r.exc_info[0] is secret_scope.UnscopedSecretError]
+
+
 def test_singleton_credential_respects_config_only_codex_gateway(monkeypatch):
     """With model.base_url but no scoped .env override, a singleton must use the
     same gateway host as a pooled Codex credential, even under multiplexing.

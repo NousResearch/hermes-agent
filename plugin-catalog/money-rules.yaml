@@ -1,11 +1,12 @@
 name: money-rules
 repo: https://github.com/seedless-labs/hermes-money-rules
-sha: c0e392d8a7bba34ea2e0b6c257b46abee7826741
+sha: 0862459bcfac37157513dee61c29dbac55df8441
 description: >-
   Money rules for Hermes: pay, split, sweep and alert on USDC from your own Solana wallet,
   under rules you set in chat. You sign one capped USDC allowance (SPL approve) to a local
   helper key; USDC stays in your wallet until a rule pays, and every new rule waits for
-  /money approve. Rules fire on a schedule, when USDC comes in, or when a balance crosses
+  /money approve. Every payment started from chat goes through the Hermes approval prompt,
+  and the relay fee is capped on the client (max_fee_usd, default 0.05). Rules fire on a schedule, when USDC comes in, or when a balance crosses
   a line. Gasless: a relay pays the Solana fee for a small USDC fee in the same
   transaction and only co-signs connect, revoke and pay. Disclosure — network calls to
   hermes-money-rules.vercel.app (connect page, fee co-sign, read-only RPC proxy) or your
@@ -16,7 +17,7 @@ maintainer: seedless-labs
 tier: community
 category: tools
 docs_url: https://github.com/seedless-labs/hermes-money-rules#readme
-version: "0.1.0"
+version: "0.2.0"
 platforms: []
 capabilities:
   provides_tools:
@@ -29,5 +30,7 @@ capabilities:
     - money_history
   provides_hooks:
     - pre_llm_call
+    - pre_tool_call
   provides_middleware: []
   requires_env: []
+

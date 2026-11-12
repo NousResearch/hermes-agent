@@ -77,10 +77,10 @@ SOUL editor) show only the launch profile.
 
 :::warning `--isolated` is not a security boundary
 `--isolated` is a routing and operations convenience, not tenant isolation.
-Every profile under one OS user can read every other profile's files: the
-dedicated server still answers `?profile=<sibling>` and file-browser
-requests for sibling homes, and its own agent's terminal and file tools can
-read `~/.hermes/profiles/*` directly. Different auth per profile's server
+Every profile under one OS user can read every other profile's files: on
+the dedicated server, routes that take a profile selector, `/api/fs/*` and
+the agent's own terminal and file tools can still reach sibling profiles
+(`~/.hermes/profiles/*`). Different auth per profile's server
 does not change that. To keep people's data apart (family members,
 customers, teams), run each tenant's Hermes as a **separate OS user** or in
 a **separate container**. See [SECURITY.md](https://github.com/NousResearch/hermes-agent/blob/main/SECURITY.md) §2.2.

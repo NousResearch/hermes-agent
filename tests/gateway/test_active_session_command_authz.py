@@ -216,6 +216,27 @@ async def test_a_pre_gateway_dispatch_rewrite_does_not_hide_an_accepted_stop(mon
 
 
 @pytest.mark.asyncio
+async def test_accepted_stop_drops_a_held_burst_before_its_slow_reply(monkeypatch):
+    """A non-serial adapter's held busy burst whose window ends while the /stop reply is still in
+    flight: dropped at the runner's acceptance, it never commits past the stop's route fence."""
+    from gateway.session_ingress_burst import holds_busy_burst
+    from tests.gateway.test_busy_burst_serial_reader import _busy_owner, _signal
+    adapter, source = _signal(monkeypatch)
+    monkeypatch.setattr(adapter, "serial_receive_loop", False, raising=False)  # Telegram/Matrix-like
+    owner = await _busy_owner(monkeypatch, adapter, source, busy_text_mode="queue", busy_text_timing=(0.3, 1.0))
+    burst = asyncio.create_task(adapter.handle_message(MessageEvent(text="B", source=source, message_id="B")))
+    await async_wait_until(lambda: holds_busy_burst(adapter, owner.key), timeout=5)
+
+    async def slow_send(chat_id, content, reply_to=None, metadata=None):
+        await async_wait_until(lambda: not holds_busy_burst(adapter, owner.key), timeout=5)
+        return SendResult(success=True, message_id="sent")
+    monkeypatch.setattr(adapter, "send", slow_send)
+    await adapter.handle_message(MessageEvent(text="/stop", source=source, message_id="S"))
+    assert await owner.settle(1) == []
+    burst.cancel()
+
+
+@pytest.mark.asyncio
 async def test_held_text_runs_when_the_owner_finishes_during_a_refusal_reply():
     """The owner's turn ends while the adapter is still sending a refused member's /stop reply: no
     owner task is left to drain the held follow-up, so it must run now, not sit in the pending slot."""

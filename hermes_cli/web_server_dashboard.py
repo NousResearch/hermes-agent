@@ -181,7 +181,9 @@ def mount_spa(application: FastAPI):
             from gateway.webapp_listener import bundle_stale_reason
             stale = bundle_stale_reason(web_dist())
             if stale:
-                return JSONResponse({"error": stale}, status_code=503, headers=_NO_STORE)
+                from gateway.webapp_restart_page import document_refusal
+                return (document_refusal(request.scope, "not_rebuilt")
+                        or JSONResponse({"error": stale}, status_code=503, headers=_NO_STORE))
         chat_js = "true" if _DASHBOARD_EMBEDDED_CHAT_ENABLED else "false"
         gated = bool(getattr(application.state, "auth_required", False))
         # Only a host that records its surface (the gateway's Webapp) names it to the page.

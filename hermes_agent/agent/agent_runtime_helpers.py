@@ -1856,7 +1856,7 @@ def _provider_supplied_client(agent, client_kwargs: dict) -> Any | None:
     """Ask the registered ProviderProfile for a custom client: by provider name, then by ``base_url``
     prefix (``acp://…``). A raising HTTP profile is skipped; a process profile's error propagates (#139807)."""
     try:
-        from providers import get_provider_profile
+        from hermes_agent.providers import get_provider_profile
     except Exception:
         return None
     profile = None
@@ -1889,7 +1889,7 @@ def _profile_for_base_url(base_url: str) -> Any | None:
     resolve). Prefix, not equality: an ACP profile's ``acp://<vendor>`` root must also resolve a
     path or user override under the same root."""
     try:
-        from providers import list_providers
+        from hermes_agent.providers import list_providers
         candidates = list_providers()
     except Exception:
         return None
@@ -1958,7 +1958,7 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     if client_kwargs.get("base_url"):
         client_kwargs["base_url"] = _to_openai_base_url(client_kwargs["base_url"])
     try:
-        from providers import get_provider_profile
+        from hermes_agent.providers import get_provider_profile
 
         profile = get_provider_profile(getattr(agent, "provider", ""))
         if profile is not None:
@@ -3188,7 +3188,7 @@ def looks_like_codex_intermediate_ack(
         r"\s+now\s*[—–-]\s*see\s+https?://\S+"
         r"(?:\s+for\s+progress)?\s*$"
     )
-    from providers import list_providers  # "relaunching it on <an ACP agent: its name, alias or binary>"
+    from hermes_agent.providers import list_providers  # "relaunching it on <an ACP agent: its name, alias or binary>"
     provider_names = sorted({n.lower() for p in list_providers() if p.auth_type == "external_process"
                              for n in (p.name, *p.aliases, p.process_command) if n})
     provider_tail_pattern = re.compile(

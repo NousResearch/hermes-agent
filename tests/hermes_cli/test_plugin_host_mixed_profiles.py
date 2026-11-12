@@ -29,7 +29,7 @@ register_provider(Local(name="mixlocal", base_url="acp://mixlocal"))
 
 @pytest.mark.platforms("any")  # the host is a child process: its env/home resolution is per-OS
 def test_create_client_profile_loads_in_process_and_its_sibling_stays_hosted(tmp_path, monkeypatch, caplog):
-    import providers
+    import hermes_agent.providers as providers  # noqa: PLR0402
 
     home = tmp_path / ".hermes"
     plugin_dir = home / "plugins" / "model-providers" / "mixpair"
@@ -40,7 +40,7 @@ def test_create_client_profile_loads_in_process_and_its_sibling_stays_hosted(tmp
     monkeypatch.setenv("HOME", str(tmp_path / "os-home"))
     monkeypatch.setenv("HERMES_HOME", str(home))
 
-    with caplog.at_level(logging.WARNING, logger="providers"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.providers"):
         hosted = providers.get_provider_profile("mixhosted")
         local = providers.get_provider_profile("mixlocal")
     try:
@@ -64,7 +64,7 @@ def test_create_client_profile_loads_in_process_and_its_sibling_stays_hosted(tmp
 def test_a_rescan_keeps_the_hosted_plugin_it_already_loaded(tmp_path, monkeypatch, caplog):
     """Another plugin dir landing while the process runs rescans the home: the plugin already loaded
     is not imported again (no second warning, the same hosted profile object)."""
-    import providers
+    import hermes_agent.providers as providers  # noqa: PLR0402
 
     home = tmp_path / ".hermes"
     plugin_dir = home / "plugins" / "model-providers" / "mixpair"
@@ -76,7 +76,7 @@ def test_a_rescan_keeps_the_hosted_plugin_it_already_loaded(tmp_path, monkeypatc
     monkeypatch.setenv("HERMES_HOME", str(home))
 
     try:
-        with caplog.at_level(logging.WARNING, logger="providers"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.providers"):
             first = providers.get_provider_profile("mixhosted")
             assert providers.get_provider_profile("mixlocal") is not None
             (home / "plugins" / "model-providers" / "other").mkdir()

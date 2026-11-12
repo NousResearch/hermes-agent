@@ -164,7 +164,7 @@ register_provider(HostModel(name="hostmodel", base_url="https://hostmodel.exampl
 
 @pytest.mark.platforms("any")  # the host is a child process: its env/home resolution is per-OS
 def test_model_provider_profile_data_is_local_and_overrides_run_in_the_host(tmp_path, monkeypatch):
-    import providers
+    from hermes_agent import providers
 
     home = _home_with_plugins(tmp_path, monkeypatch, {})
     plugin_dir = home / "plugins" / "model-providers" / "hostmodel"

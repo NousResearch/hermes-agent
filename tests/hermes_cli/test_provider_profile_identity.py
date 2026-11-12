@@ -22,7 +22,7 @@ ACCEPT = {"accepted": True, "persist": True, "recognized": True, "message": None
 @pytest.fixture
 def install_profile(monkeypatch):
     """Write one model-provider plugin, rediscover, and mirror it into the auth registry."""
-    import providers as profiles
+    import hermes_agent.providers as profiles
 
     monkeypatch.setattr(profiles, "_REGISTRY", dict(profiles._REGISTRY))
     monkeypatch.setattr(profiles, "_ALIASES", dict(profiles._ALIASES))

@@ -569,14 +569,14 @@ def static_catalog(provider: str) -> list[str]:
     provider name with different models (or only one of them has the plugin)."""
     if provider in _PROVIDER_MODELS:
         return _PROVIDER_MODELS[provider]
-    from providers import get_provider_profile
+    from hermes_agent.providers import get_provider_profile
     profile = get_provider_profile(provider) if provider else None
     return list(profile.static_models) if profile is not None else []
 
 
 def static_catalog_providers() -> list[str]:
     """Every provider with a static catalog row in the bound home: built-ins, then plugin profiles."""
-    from providers import list_providers
+    from hermes_agent.providers import list_providers
     plugin_rows = [p.name for p in list_providers() if p.static_models and p.name not in _PROVIDER_MODELS]
     return [*_PROVIDER_MODELS, *dict.fromkeys(plugin_rows)]
 
@@ -1554,8 +1554,8 @@ def _catalog_fetcher(normalized: str):
     fetcher = _PROVIDER_CATALOG_FETCHERS.get(normalized)
     if fetcher is not None:
         return fetcher
-    from providers import get_provider_profile
-    from providers.base import ProviderProfile
+    from hermes_agent.providers import get_provider_profile
+    from hermes_agent.providers.base import ProviderProfile
 
     profile = get_provider_profile(normalized)
     hook = profile.picker_catalog if isinstance(profile, ProviderProfile) else None
@@ -1571,7 +1571,7 @@ def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
     curated entries stop polluting the top. Plugin providers without a static entry use the
     profile's ``fallback_models`` as the curated list (Fireworks lists an image model first).
     """
-    from providers import get_provider_profile
+    from hermes_agent.providers import get_provider_profile
 
     profile = get_provider_profile(normalized)
     if not profile:
@@ -1668,7 +1668,7 @@ def _configured_relay_base_url(provider: str) -> str:
     # canonical URLs, and OAuth providers (Codex) need native discovery.
     try:
         from hermes_cli.auth import PROVIDER_REGISTRY
-        from providers import get_provider_profile
+        from hermes_agent.providers import get_provider_profile
 
         profile_url = getattr(get_provider_profile(normalized), "base_url", "")
         registry_url = getattr(PROVIDER_REGISTRY.get(normalized), "inference_base_url", "")
@@ -1685,7 +1685,7 @@ def _relay_model_catalog(normalized: str, relay: str) -> Optional[list[str]]:
     catalog, and a failed/empty probe degrades to the canonical fetchers untouched.
     """
     try:
-        from providers import get_provider_profile
+        from hermes_agent.providers import get_provider_profile
 
         profile = get_provider_profile(normalized)
         if profile is None or getattr(profile, "auth_type", "") != "api_key":
@@ -1945,7 +1945,7 @@ def _credential_fingerprint(provider: str) -> str:
                 _mtime_part(rel, get_hermes_home() / rel)
         except Exception:
             pass
-        from providers import list_providers
+        from hermes_agent.providers import list_providers
         profile_files = [rel for profile in list_providers() for rel in profile.catalog_credential_files]
         for rel in ("~/.codex/auth.json", "~/.claude/.credentials.json", *profile_files, "~/.minimax/credentials.json"):
             path = os.path.expanduser(rel)
@@ -2075,7 +2075,7 @@ def clear_provider_models_cache(provider: Optional[str] = None) -> None:
         _OLLAMA_LOCAL_PROBE_REACHABLE.clear()
         # Provider-owned in-process memos (e.g. an external CLI's session catalog) must re-probe so a
         # fresh login shows on the next switch.
-        from providers import list_providers
+        from hermes_agent.providers import list_providers
         for profile in list_providers():
             profile.invalidate_catalog_cache()
         from hermes_cli.models_cache_lock import write_under_cache_lock
@@ -2318,7 +2318,7 @@ def probe_api_models(
     normalized = (base_url or "").strip().rstrip("/")
     if not normalized:
         return _probe_result(None, None, "")
-    from providers import profile_for_host
+    from hermes_agent.providers import profile_for_host
 
     owner = profile_for_host(normalized, metadata=True)
     owned = owner.probe_models(base_url=normalized, api_key=api_key, timeout=timeout) if owner else None

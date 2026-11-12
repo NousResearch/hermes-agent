@@ -220,9 +220,9 @@ class TestRuntimeProviderResolution:
         assert result["api_key"] == "auto-kimi-key"
 
     def test_runtime_external_process_provider_uses_process_runtime(self, monkeypatch, tmp_path):
-        import providers
+        from hermes_agent import providers
         from hermes_cli import auth
-        from providers.base import ProviderProfile
+        from hermes_agent.providers.base import ProviderProfile
 
         profile = ProviderProfile(name="acme-acp", auth_type="external_process", base_url="acp://acme",
                                   process_command="acme", process_args=("--acp", "--stdio"),
@@ -697,7 +697,7 @@ class TestMinimaxOAuthProvider:
         # of truth; _get_aux_model_for_provider() reads from it first
         # and only falls back to the dict when no profile is registered.
         from hermes_agent import model_tools
-        import providers
+        from hermes_agent import providers
 
         profile = providers.get_provider_profile("minimax-oauth")
         assert profile is not None, "minimax-oauth provider profile must be registered"
@@ -1010,7 +1010,7 @@ class TestDeepInfraProviderProfile:
     """plugins/model-providers/deepinfra registration + aux resolution."""
 
     def test_profile_registered_with_alias_and_aux(self):
-        from providers import get_provider_profile
+        from hermes_agent.providers import get_provider_profile
         from hermes_agent.agent.auxiliary_client import _get_aux_model_for_provider
         from hermes_cli.auth import resolve_provider
         from hermes_cli.config import OPTIONAL_ENV_VARS

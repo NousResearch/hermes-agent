@@ -598,8 +598,8 @@ def _profile_catalog(normalized: str, base_url: Optional[str] = None) -> tuple[l
     its own and it is available; a bare ``fetch_models`` override may just re-shape the generic
     listing, and an unavailable/empty catalog keeps the generic listing as the validator.
     ``([], False)`` for profiles without a catalog of their own."""
-    from providers import get_provider_profile
-    from providers.base import ProviderProfile
+    from hermes_agent.providers import get_provider_profile
+    from hermes_agent.providers.base import ProviderProfile
 
     profile = get_provider_profile(normalized)
     if profile is None:
@@ -700,7 +700,7 @@ def _validate_external_process(req: _Request) -> Optional[dict[str, Any]]:
     CLI's live catalog merged with the declared one) plus the profile's short aliases is the whole
     truth, so a listed id is accepted outright and an unlisted one gets the catalog verdict without
     the misleading "endpoint was unreachable" note."""
-    from providers import get_provider_profile
+    from hermes_agent.providers import get_provider_profile
 
     profile = get_provider_profile(req.normalized)
     if profile is None or profile.auth_type != "external_process":
@@ -796,7 +796,7 @@ def validate_requested_model(
     normalized = _m.normalize_provider(provider)
     if normalized == "openrouter" and base_url and not base_url_host_matches(base_url, "openrouter.ai"):
         normalized = "custom"
-    from providers import get_provider_profile
+    from hermes_agent.providers import get_provider_profile
     profile = get_provider_profile(normalized) if normalized else None
     lookup = (profile.normalize_model_id(requested, api_key=api_key or "") if profile is not None else None) or requested
 

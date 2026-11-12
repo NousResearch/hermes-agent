@@ -7,9 +7,9 @@ from __future__ import annotations
 
 import pytest
 
-import providers as _providers
-from providers import register_provider
-from providers.base import ProviderProfile
+import hermes_agent.providers as _providers
+from hermes_agent.providers import register_provider
+from hermes_agent.providers.base import ProviderProfile
 
 MSGS = [{"role": "user", "content": "summarize"}]
 

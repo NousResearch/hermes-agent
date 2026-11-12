@@ -40,7 +40,7 @@ class TestGenericProviderLiveCuratedMerge:
         profile = self._make_profile(live)
 
         with (
-            patch("providers.get_provider_profile", return_value=profile),
+            patch("hermes_agent.providers.get_provider_profile", return_value=profile),
             patch(
                 "hermes_cli.auth.resolve_api_key_provider_credentials",
                 return_value={"api_key": "k", "base_url": ""},
@@ -62,7 +62,7 @@ class TestGenericProviderLiveCuratedMerge:
         live = ["a", "b"]
         # zai = curated-first
         with (
-            patch("providers.get_provider_profile", return_value=self._make_profile(live)),
+            patch("hermes_agent.providers.get_provider_profile", return_value=self._make_profile(live)),
             patch(
                 "hermes_cli.auth.resolve_api_key_provider_credentials",
                 return_value={"api_key": "k", "base_url": ""},
@@ -74,7 +74,7 @@ class TestGenericProviderLiveCuratedMerge:
 
         # opencode-zen = live-first
         with (
-            patch("providers.get_provider_profile", return_value=self._make_profile(live)),
+            patch("hermes_agent.providers.get_provider_profile", return_value=self._make_profile(live)),
             patch(
                 "hermes_cli.auth.resolve_api_key_provider_credentials",
                 return_value={"api_key": "k", "base_url": ""},
@@ -93,7 +93,7 @@ class TestGenericProviderLiveCuratedMerge:
         live = ["deepseek-v4-flash", "kimi-k3", "omen-alpha", "ox-alpha-free"]
 
         with (
-            patch("providers.get_provider_profile", return_value=self._make_profile(live)),
+            patch("hermes_agent.providers.get_provider_profile", return_value=self._make_profile(live)),
             patch(
                 "hermes_cli.auth.resolve_api_key_provider_credentials",
                 return_value={"api_key": "k", "base_url": ""},
@@ -114,7 +114,7 @@ class TestGenericProviderLiveCuratedMerge:
         live = ["kimi-k3", "gpt-5.6-sol", "claude-opus-5"]  # current Zen relay (no x-preview-f-free)
 
         with (
-            patch("providers.get_provider_profile", return_value=self._make_profile(live)),
+            patch("hermes_agent.providers.get_provider_profile", return_value=self._make_profile(live)),
             patch(
                 "hermes_cli.auth.resolve_api_key_provider_credentials",
                 return_value={"api_key": "k", "base_url": ""},
@@ -129,7 +129,7 @@ class TestGenericProviderLiveCuratedMerge:
         """#115496 without a key: no live fetch, so provider_model_ids serves the curated floor merged
         with models.dev — both still carry the retired x-preview-f-free. The final rows must not."""
         with (
-            patch("providers.get_provider_profile", return_value=self._make_profile(None)),
+            patch("hermes_agent.providers.get_provider_profile", return_value=self._make_profile(None)),
             patch(
                 "hermes_cli.auth.resolve_api_key_provider_credentials",
                 return_value={"api_key": "", "base_url": ""},

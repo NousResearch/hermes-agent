@@ -144,7 +144,7 @@ class TestSessionNoneReachesDeepSeekWire:
 
     def test_effort_none_override_emits_thinking_disabled(self) -> None:
         from hermes_agent import model_tools
-        import providers
+        from hermes_agent import providers
         from hermes_agent.agent.transports.chat_completions import ChatCompletionsTransport
 
         profile = providers.get_provider_profile("deepseek")

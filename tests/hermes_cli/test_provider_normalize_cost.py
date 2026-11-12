@@ -8,12 +8,12 @@ from __future__ import annotations
 
 import pytest
 
-from providers.base import ProviderProfile
+from hermes_agent.providers.base import ProviderProfile
 
 
 @pytest.fixture
 def counted_profiles(monkeypatch):
-    import providers
+    from hermes_agent import providers
 
     overlaid = ProviderProfile(
         name="zz-overlaid", models_dev_id="zz-catalog", overlay_aliases=("zz-alias",),

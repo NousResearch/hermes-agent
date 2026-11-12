@@ -19,7 +19,7 @@ from hermes_agent.agent.transports import get_transport
 
 
 def _router_plugin_module():
-    from providers import get_provider_profile
+    from hermes_agent.providers import get_provider_profile
 
     profile = get_provider_profile("router")
     assert profile is not None, "router profile must be registered"

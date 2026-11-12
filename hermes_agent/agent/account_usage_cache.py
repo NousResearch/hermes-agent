@@ -54,8 +54,8 @@ def _key(provider: str, identity_id: Optional[str] = None, base_url: Optional[st
 def has_account_usage(provider: str) -> bool:
     """Whether *provider* can report usage windows at all (a built-in fetcher or a plugin hook)."""
     from hermes_agent.agent.account_usage import _USAGE_FETCHERS
-    from providers import get_provider_profile
-    from providers.base import ProviderProfile
+    from hermes_agent.providers import get_provider_profile
+    from hermes_agent.providers.base import ProviderProfile
 
     slug = str(provider or "").strip().lower()
     if slug in _USAGE_FETCHERS:

@@ -14,7 +14,7 @@ description: "如何为 Hermes Agent 构建模型提供商（推理后端）插�
 
 ## 发现机制
 
-`providers/__init__.py._discover_providers()` 在任何代码首次调用 `get_provider_profile()` 或 `list_providers()` 时懒加载执行。发现顺序：
+`hermes_agent/providers/__init__.py._discover_providers()` 在任何代码首次调用 `get_provider_profile()` 或 `list_providers()` 时懒加载执行。发现顺序：
 
 1. **内置插件** — `<repo>/plugins/model-providers/<name>/` — 随 Hermes 一同发布
 2. **用户插件** — `$HERMES_HOME/plugins/model-providers/<name>/` — 放入任意目录；后续会话无需重启即可生效
@@ -37,8 +37,8 @@ plugins/model-providers/my-provider/
 
 ```python
 # plugins/model-providers/acme-inference/__init__.py
-from providers import register_provider
-from providers.base import ProviderProfile
+from hermes_agent.providers import register_provider
+from hermes_agent.providers.base import ProviderProfile
 
 acme = ProviderProfile(
     name="acme-inference",
@@ -85,7 +85,7 @@ author: Your Name
 
 ## ProviderProfile 字段
 
-完整定义见 `providers/base.py`。最常用的字段：
+完整定义见 `hermes_agent/providers/base.py`。最常用的字段：
 
 | 字段 | 类型 | 用途 |
 |---|---|---|
@@ -111,7 +111,7 @@ author: Your Name
 
 ```python
 from typing import Any
-from providers.base import ProviderProfile
+from hermes_agent.providers.base import ProviderProfile
 
 class AcmeProfile(ProviderProfile):
     def prepare_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -144,7 +144,7 @@ class AcmeProfile(ProviderProfile):
 
 ## ProviderProfile fields and hooks
 
-`providers/base.py` 声明的全部字段与 hook，按声明顺序排列（下表保留英文原文）。名称以 `()` 结尾的是需在子类中覆盖的方法，其余为 dataclass 字段（其中少数，如 `picker_catalog` 和设备码登录相关字段，接收可调用对象）。按端点区分的 hook（`client_headers`、`request_headers`、`max_tokens_param`）接收请求的 `base_url`，对不属于你的端点返回 `None` / `{}`；`responses_*`、`message_carrier_*` 字段及推理回放 hook 仅作用于 profile 在 `hostnames` 中声明的主机。热路径 hook 必须是纯函数且开销低（无 I/O），除非说明中另有注明。
+`hermes_agent/providers/base.py` 声明的全部字段与 hook，按声明顺序排列（下表保留英文原文）。名称以 `()` 结尾的是需在子类中覆盖的方法，其余为 dataclass 字段（其中少数，如 `picker_catalog` 和设备码登录相关字段，接收可调用对象）。按端点区分的 hook（`client_headers`、`request_headers`、`max_tokens_param`）接收请求的 `base_url`，对不属于你的端点返回 `None` / `{}`；`responses_*`、`message_carrier_*` 字段及推理回放 hook 仅作用于 profile 在 `hostnames` 中声明的主机。热路径 hook 必须是纯函数且开销低（无 I/O），除非说明中另有注明。
 
 | Name | Meaning | Default |
 |---|---|---|
@@ -273,8 +273,8 @@ class AcmeProfile(ProviderProfile):
 假设你想将 `gmi` 指向私有测试端点进行测试。创建 `~/.hermes/plugins/model-providers/gmi/__init__.py`：
 
 ```python
-from providers import register_provider
-from providers.base import ProviderProfile
+from hermes_agent.providers import register_provider
+from hermes_agent.providers.base import ProviderProfile
 
 register_provider(ProviderProfile(
     name="gmi",
@@ -326,7 +326,7 @@ hermes doctor
 编程方式检查：
 
 ```python
-from providers import list_providers
+from hermes_agent.providers import list_providers
 for p in list_providers():
     print(p.name, p.base_url, p.api_mode)
 ```
@@ -339,8 +339,8 @@ for p in list_providers():
 export HERMES_HOME=/tmp/hermes-plugin-test
 mkdir -p $HERMES_HOME/plugins/model-providers/my-provider
 cat > $HERMES_HOME/plugins/model-providers/my-provider/__init__.py <<'EOF'
-from providers import register_provider
-from providers.base import ProviderProfile
+from hermes_agent.providers import register_provider
+from hermes_agent.providers.base import ProviderProfile
 register_provider(ProviderProfile(
     name="my-provider",
     env_vars=("MY_API_KEY",),
@@ -355,7 +355,7 @@ hermes -z "hello" --provider my-provider -m some-model
 
 ## 通用 PluginManager 集成
 
-通用 `PluginManager`（即 `hermes plugins` 操作的对象）**能看到**模型提供商插件，但不会导入它们——`providers/__init__.py` 负责管理其生命周期。Manager 记录 manifest 用于自省，并按 `kind: model-provider` 分类。当你将一个未标记的用户插件放入 `$HERMES_HOME/plugins/`，而该插件恰好调用了带 `ProviderProfile` 的 `register_provider`，Manager 会通过源码文本启发式检测自动将其归类为 `kind: model-provider`——因此即使没有 `plugin.yaml`，插件仍能正确路由。
+通用 `PluginManager`（即 `hermes plugins` 操作的对象）**能看到**模型提供商插件，但不会导入它们——`hermes_agent/providers/__init__.py` 负责管理其生命周期。Manager 记录 manifest 用于自省，并按 `kind: model-provider` 分类。当你将一个未标记的用户插件放入 `$HERMES_HOME/plugins/`，而该插件恰好调用了带 `ProviderProfile` 的 `register_provider`，Manager 会通过源码文本启发式检测自动将其归类为 `kind: model-provider`——因此即使没有 `plugin.yaml`，插件仍能正确路由。
 
 ## 通过 pip 分发
 

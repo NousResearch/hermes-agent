@@ -110,7 +110,7 @@ OPERATOR_SECRETS = ["MY_APP_KEY", "DEPLOY_WEBHOOK_SECRET", "SLACK_USER_TOKEN", "
 
 @pytest.mark.parametrize("builder", ["foreground", "background", "nonterminal"])
 def test_adapter_and_provider_profile_secrets_never_reach_children(child_env, monkeypatch, builder):
-    from providers import list_providers
+    from hermes_agent.providers import list_providers
     from hermes_agent.tools.env_passthrough import is_env_passthrough, register_env_passthrough
     secrets = set(ADAPTER_SECRETS)
     # child_env's HERMES_HOME has no provider plugins, so these are the bundled profiles.

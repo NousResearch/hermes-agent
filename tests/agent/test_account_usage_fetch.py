@@ -14,7 +14,7 @@ from hermes_agent.agent.account_usage import (
     render_account_usage_lines,
 )
 from hermes_agent.agent.billing_usage import fetch_nous_account as _billing_fetch_nous_account
-from providers.base import ProviderProfile
+from hermes_agent.providers.base import ProviderProfile
 
 
 class _UsageProfile(ProviderProfile):
@@ -119,7 +119,7 @@ def test_fetch_account_usage_codex(monkeypatch):
 
 
 def _register_profile(monkeypatch, profile):
-    import providers
+    from hermes_agent import providers
 
     monkeypatch.setattr(providers, "_REGISTRY", dict(providers._REGISTRY))
     monkeypatch.setattr(providers, "_ALIASES", dict(providers._ALIASES))

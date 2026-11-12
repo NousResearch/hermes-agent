@@ -19,9 +19,9 @@ from pathlib import Path
 
 import pytest
 
-import providers
+from hermes_agent import providers
 import hermes_cli.auth as auth_mod
-from providers.base import ProviderProfile
+from hermes_agent.providers.base import ProviderProfile
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -94,7 +94,7 @@ def test_plugins_discovered_after_auth_import_resolve(tmp_path):
 
     probe = _run_probe(
         hermes_home,
-        "import providers\n"
+        "from hermes_agent import providers\n"
         "names = {p.name for p in providers.list_providers()}\n"
         "assert {'aaa-early-probe', 'zzz-late-probe'} <= names, names\n"
         "from hermes_cli.auth import PROVIDER_REGISTRY, resolve_provider\n"

@@ -7,10 +7,10 @@ import json
 import time
 
 import hermes_cli.auth
-import providers
+from hermes_agent import providers
 from hermes_cli import auth_oauth_pkce_plugin as pkce
-from providers import register_provider
-from providers.base import ProviderProfile
+from hermes_agent.providers import register_provider
+from hermes_agent.providers.base import ProviderProfile
 
 
 def _pool_row(provider: str, *, access: str, expires_at_ms: int) -> dict:

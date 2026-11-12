@@ -216,7 +216,7 @@ class TestAuxFallbackRespectsPolicy:
 
     def _patch(self, monkeypatch, *, allowed, recommended):
         import hermes_agent.agent.auxiliary_client as aux
-        import providers
+        from hermes_agent import providers
 
         monkeypatch.setattr(models_pricing, "nous_policy_allowed_ids", lambda **_k: allowed)
         monkeypatch.setattr(

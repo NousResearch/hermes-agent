@@ -701,7 +701,7 @@ def provider_install_hint(name: str) -> str:
 
 def _load_error(feature: LeftCoreFeature) -> str:
     """The error *feature*'s provider plugin raised on import in the active home, else ``""``."""
-    from providers import plugin_load_error
+    from hermes_agent.providers import plugin_load_error
     return plugin_load_error(feature.plugin)
 
 
@@ -711,7 +711,7 @@ def provider_left_core(name: str) -> bool:
     vendor's endpoint through a generic client)."""
     if _provider_feature(name) is None:
         return False
-    from providers import get_provider_profile
+    from hermes_agent.providers import get_provider_profile
     return get_provider_profile(str(name).strip().lower()) is None
 
 
@@ -738,7 +738,7 @@ def recover_for_provider(name: Optional[str]) -> None:
     ``hermes update`` migrated. Outcomes print in a declared terminal front end (:func:`serve_notices_on_stderr`),
     else wait for the home's next turn someone sees."""
     from hermes_constants import get_hermes_home, hermes_home_key
-    from providers import get_provider_profile
+    from hermes_agent.providers import get_provider_profile
     home = Path(get_hermes_home())
     name = str(name or "").strip().lower()
     if name in ("", "auto"):  # the auto rung follows auth.json's active_provider (a core-era choice)
@@ -1170,7 +1170,7 @@ def _install_one(home: Path, feature: LeftCoreFeature, *, install: Callable[[str
     except Exception as exc:  # network, uv, kill list — report, do not raise
         result = {"ok": False, "error": str(exc)}
     if result.get("ok"):
-        from providers import refresh_bound_home
+        from hermes_agent.providers import refresh_bound_home
         refresh_bound_home()  # a provider plugin resolves in this same call, not after the stamp TTL
         try:
             _record_migration(home, feature)

@@ -24,7 +24,7 @@ def contains_profile_reasoning_fields(value: Any) -> bool:
 def profile_forwards_max_tokens(provider_norm: str) -> bool:
     """Whether the provider's profile declares that its wire honors an explicit ``max_tokens``."""
     try:
-        from providers import get_provider_profile
+        from hermes_agent.providers import get_provider_profile
         profile = get_provider_profile(provider_norm)
     except Exception:  # health: allow BLE001 -- lazy plugin discovery must not break cap routing
         return False

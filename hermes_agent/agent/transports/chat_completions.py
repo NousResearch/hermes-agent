@@ -273,7 +273,7 @@ def _profile_replays_tool_call_signatures(provider: Any) -> bool:
     name = (provider or "").strip().lower()
     if not name:
         return False
-    from providers import get_provider_profile
+    from hermes_agent.providers import get_provider_profile
 
     profile = get_provider_profile(name)
     return profile is not None and profile.name == name and profile.replays_tool_call_signatures
@@ -392,7 +392,7 @@ def _base_kwargs(model: str, sanitized: list, tools: Any, params: dict, profile:
     """
     api_kwargs: dict[str, Any] = {"model": model, "messages": sanitized}
     if profile is not None:
-        from providers.base import OMIT_TEMPERATURE
+        from hermes_agent.providers.base import OMIT_TEMPERATURE
 
         if profile.fixed_temperature is OMIT_TEMPERATURE:
             pass

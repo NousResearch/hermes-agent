@@ -15,11 +15,11 @@ import copy
 import logging
 from typing import Any
 
-from providers.base import ProviderProfile
+from hermes_agent.providers.base import ProviderProfile
 
 logger = logging.getLogger(__name__)
 
-# Per-request hooks documented pure in providers/base.py: one answer per argument set, so a hosted
+# Per-request hooks documented pure in hermes_agent/providers/base.py: one answer per argument set, so a hosted
 # plugin pays one IPC round trip per distinct request shape instead of one per API call.
 _PURE_HOOKS = frozenset({"request_headers", "max_tokens_param", "reasoning_payload",
                          "replays_function_thought_signature"})
@@ -37,7 +37,7 @@ def _overrides(profile: Any, hook: str) -> bool:
 
 def route_profiles(hook: str, provider: str = "", base_url: str = "") -> list[Any]:
     """Profiles overriding *hook*: the one registered for *provider*, then the one serving *base_url*'s host."""
-    from providers import get_provider_profile, profile_for_host
+    from hermes_agent.providers import get_provider_profile, profile_for_host
 
     named = get_provider_profile(provider) if provider else None
     ordered = [named] if named is not None and _overrides(named, hook) else []
@@ -58,7 +58,7 @@ def _freeze(value: Any) -> Any:
 def _ask(profile: Any, hook: str, args: tuple, kwargs: dict[str, Any]) -> Any:
     if hook not in _PURE_HOOKS:
         return getattr(profile, hook)(*args, **kwargs)
-    from providers import registry_generation
+    from hermes_agent.providers import registry_generation
 
     key = (registry_generation(), id(profile), type(profile), hook, _freeze(args), _freeze(kwargs))
     try:

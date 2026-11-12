@@ -22,10 +22,10 @@ ADDRESS = 'process://proc-provider'
 
 @pytest.fixture
 def home(monkeypatch):
-    import providers
+    from hermes_agent import providers
     from hermes_agent.gateway import run
     from hermes_constants import get_hermes_home
-    from providers.base import ProviderProfile
+    from hermes_agent.providers.base import ProviderProfile
     profile = ProviderProfile(name=PROVIDER, auth_type='external_process', base_url=ADDRESS,
                               api_mode='chat_completions')
     real = providers.get_provider_profile

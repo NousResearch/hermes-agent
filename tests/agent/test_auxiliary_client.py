@@ -2979,7 +2979,7 @@ class TestAnthropicAuxiliaryReasoningTranslation:
         # class that overrides build_api_kwargs_extras (so the generic extra_body.reasoning
         # fallback the adapter used to read is suppressed). The adapter must still be told.
         from hermes_agent import model_tools
-        import providers
+        from hermes_agent import providers
 
         assert providers.get_provider_profile("commandcode-anthropic") is not None
         rc = {"enabled": False}
@@ -3407,10 +3407,10 @@ class TestCodexAdapterGithubResponsesMessageIdDrop:
         ]
 
     def test_drops_message_id_for_connection_scoped_id_host(self):
-        from providers.base import ProviderProfile
+        from hermes_agent.providers.base import ProviderProfile
         acme = ProviderProfile(name="acme-replay", hostnames=("api.acme-replay.test",), responses_replay_item_ids=False)
         adapter, captured = self._build_adapter(base_url="https://api.acme-replay.test")
-        with patch("providers.profile_for_host", side_effect=lambda url, **_kw: acme if "acme-replay" in str(url) else None):
+        with patch("hermes_agent.providers.profile_for_host", side_effect=lambda url, **_kw: acme if "acme-replay" in str(url) else None):
             adapter.create(messages=self._replay_messages())
         message_item = next(item for item in captured["input"] if item.get("type") == "message")
         assert "id" not in message_item
@@ -5051,7 +5051,7 @@ class TestAutoRoutedProviderProfileHooks:
     def test_cached_auto_route_projects_selected_provider_on_every_request(self):
         """Auto routing must retain the concrete provider for request hooks."""
         import hermes_agent.agent.auxiliary_client as aux
-        from providers.base import ProviderProfile
+        from hermes_agent.providers.base import ProviderProfile
 
         hook_calls = []
 
@@ -5084,7 +5084,7 @@ class TestAutoRoutedProviderProfileHooks:
                     "hermes_agent.agent.auxiliary_client._resolve_auto_route",
                     return_value=(client, "gateway/model", "agentgateway"),
                 ) as resolve_auto,
-                patch("providers.get_provider_profile", side_effect=lookup_profile),
+                patch("hermes_agent.providers.get_provider_profile", side_effect=lookup_profile),
                 patch(
                     "hermes_agent.agent.auxiliary_client._relay_sync_completion",
                     return_value=response,

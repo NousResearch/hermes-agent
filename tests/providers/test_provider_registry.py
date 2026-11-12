@@ -1,7 +1,7 @@
 import pytest
 
-from providers.base import ProviderProfile
-import providers
+from hermes_agent.providers.base import ProviderProfile
+from hermes_agent import providers
 
 
 @pytest.fixture(autouse=True)

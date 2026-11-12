@@ -445,7 +445,7 @@ def _kilo_pricing_scope() -> str:
     """The kilocode provider profile's gateway base (``KILOCODE_BASE_URL`` overrides it) —
     the endpoint the doctor connectivity probe and chat requests already use, so pricing reads
     the same server the user is actually wired to."""
-    from providers import get_provider_profile
+    from hermes_agent.providers import get_provider_profile
 
     base_url = (
         os.getenv("KILOCODE_BASE_URL", "").strip()
@@ -581,7 +581,7 @@ def resolve_pricing_provider(provider: str, *, base_url: str = "") -> str:
         return ""
     try:
         from hermes_agent.agent.model_metadata import _URL_TO_PROVIDER, _infer_provider_from_url
-        from providers import get_provider_profile
+        from hermes_agent.providers import get_provider_profile
         from utils import base_url_host_matches, base_url_hostname
 
         inferred = _infer_provider_from_url(base_url)

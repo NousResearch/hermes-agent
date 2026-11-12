@@ -8,8 +8,8 @@ from typing import Any
 
 from hermes_agent.agent import reasoning_effort as re_
 from hermes_cli.version_info import hermes_user_agent
-from providers import register_provider
-from providers.base import LazyHeaders, ProviderProfile
+from hermes_agent.providers import register_provider
+from hermes_agent.providers.base import LazyHeaders, ProviderProfile
 from datetime import UTC
 
 # Attribution headers (same values as OpenRouter / Vercel / Fireworks); via

@@ -21,7 +21,7 @@ import pytest
 from hermes_cli.auth import resolve_provider
 from hermes_cli.models import normalize_provider as models_normalize
 from hermes_cli.providers import LLAMACPP_ALIASES, normalize_provider as providers_normalize
-from providers import get_provider_profile
+from hermes_agent.providers import get_provider_profile
 
 _CUSTOM_ALIASES = tuple(get_provider_profile("custom").aliases)
 

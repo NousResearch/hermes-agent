@@ -229,7 +229,7 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
 
     # A profile that owns its id space (alias table, dash-to-dot repair) answers first; a wrong
     # notation otherwise hits HTTP 400 model_not_supported. See issue #6879.
-    from providers import get_provider_profile
+    from hermes_agent.providers import get_provider_profile
 
     profile = get_provider_profile(provider)
     try:

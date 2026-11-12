@@ -1,5 +1,5 @@
 """``api_mode_for_model`` answering None keeps the profile's declared ``api_mode`` at runtime resolution
-(``providers/base.py`` contract), so a Responses-default provider with a few chat-only exceptions
+(``hermes_agent/providers/base.py`` contract), so a Responses-default provider with a few chat-only exceptions
 never sends its other models through Chat Completions."""
 
 import pytest
@@ -8,8 +8,8 @@ import pytest
 @pytest.fixture
 def responses_default(monkeypatch):
     import hermes_cli.auth
-    import providers
-    from providers.base import ProviderProfile
+    from hermes_agent import providers
+    from hermes_agent.providers.base import ProviderProfile
 
     class ResponsesDefault(ProviderProfile):
         def api_mode_for_model(self, model, *, api_key=None):

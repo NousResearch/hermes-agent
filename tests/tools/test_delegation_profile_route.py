@@ -296,9 +296,9 @@ def test_profile_route_is_refused_under_a_managed_worker_config_snapshot(two_pro
 def test_profile_pinned_to_a_missing_acp_command_is_refused_at_routing(two_profiles, monkeypatch):
     """Same rule as ``delegation.provider`` (#80450): a profile whose provider is pinned to an ACP binary
     that is not on PATH refuses the spawn, naming the profile, instead of building a broken child."""
-    import providers
+    from hermes_agent import providers
     from hermes_cli import auth
-    from providers.base import ProviderProfile
+    from hermes_agent.providers.base import ProviderProfile
 
     _, coder = two_profiles
     profile = ProviderProfile(name="acme-acp", auth_type="external_process", base_url="acp://acme",

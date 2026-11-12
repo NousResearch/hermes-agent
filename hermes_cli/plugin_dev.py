@@ -173,7 +173,7 @@ def _load_model_provider(plugin_dir: Path, manifest):
     """Doctor path for ``kind: model-provider``: those register a ProviderProfile at import through
     providers/ discovery (PluginManager skips the kind), so demanding ``register(ctx)`` would fail
     every valid provider plugin. Registry additions are undone on exit."""
-    import providers
+    import hermes_agent.providers as providers  # noqa: PLR0402
 
     # The live install may already have imported this very plugin (same directory name) during
     # startup discovery; import the copy fresh and put the live module/profiles back afterwards.

@@ -47,7 +47,7 @@ def test_optional_wire_caps_omitted_required_and_internal_preserved():
         max_tokens_param_fn=lambda value: {"max_tokens": value},
     )
     assert "max_tokens" not in chat
-    from providers import get_provider_profile
+    from hermes_agent.providers import get_provider_profile
     custom = ChatCompletionsTransport().build_kwargs(
         "fixture", messages, provider_profile=get_provider_profile("custom"),
         max_tokens_param_fn=lambda value: {"max_tokens": value},

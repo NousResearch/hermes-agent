@@ -75,14 +75,14 @@ def _same_provider_override(monkeypatch, provider, model, api_mode, base_url, se
 
 def test_same_provider_override_runs_on_the_targets_wire(monkeypatch):
     """A provider serving GPT-5 on the Responses API and Claude on chat completions (``api_mode_for_model``)."""
-    from providers.base import ProviderProfile
+    from hermes_agent.providers.base import ProviderProfile
 
     class _PerModelWire(ProviderProfile):
         def api_mode_for_model(self, model, *, api_key=None):
             return "codex_responses" if model.startswith("gpt-5") else "chat_completions"
 
     acme = _PerModelWire(name="acme-wire", base_url="https://api.acme-wire.test")
-    monkeypatch.setattr("providers.get_provider_profile", lambda name: acme if name == "acme-wire" else None)
+    monkeypatch.setattr("hermes_agent.providers.get_provider_profile", lambda name: acme if name == "acme-wire" else None)
     runtime = _same_provider_override(
         monkeypatch, "acme-wire", "gpt-5.4", "codex_responses", "https://api.acme-wire.test",
         {"base_url": "https://api.acme-wire.test", "api_mode": "chat_completions"})
@@ -276,10 +276,10 @@ def test_a_same_provider_alias_without_an_endpoint_keeps_the_session_route(monke
 def test_a_process_providers_declared_model_keeps_the_session_command(monkeypatch, typed):
     """An ``external_process`` provider's own alias or declared id resolves like an alias, and the turn
     still runs on the session's command."""
-    from providers.base import ProviderProfile
+    from hermes_agent.providers.base import ProviderProfile
     profile = ProviderProfile(name="proc-provider", auth_type="external_process", base_url="process://proc-provider",
                               fallback_models=("claude-sonnet-5", "claude-opus-5"), model_aliases={"opus": "claude-opus-5"})
-    monkeypatch.setattr("providers.get_provider_profile", lambda name: profile if name == profile.name else None)
+    monkeypatch.setattr("hermes_agent.providers.get_provider_profile", lambda name: profile if name == profile.name else None)
     cfg = {"model": {"default": "claude-sonnet-5", "provider": profile.name}}
     monkeypatch.setattr("hermes_cli.config.load_config", lambda *a, **k: cfg)
     monkeypatch.setattr("hermes_cli.runtime_provider.load_config", lambda *a, **k: cfg)

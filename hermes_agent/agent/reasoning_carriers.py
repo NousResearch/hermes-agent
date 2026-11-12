@@ -26,7 +26,7 @@ _GEMINI_KEY = "extra_content"
 def declared_carrier_keys() -> tuple[tuple[str, ...], tuple[str, ...]]:
     """``(opaque keys, text keys)`` declared by the registered profiles, in registration order. Call once per
     message/stream/request, never per delta."""
-    from providers import list_providers
+    from hermes_agent.providers import list_providers
 
     profiles = list_providers()
     opaque = (p.message_carrier_opaque for p in profiles if p.message_carrier_opaque)
@@ -119,7 +119,7 @@ class _WireRoute(NamedTuple):
 
 
 def _wire_route(model: Any, base_url: Any, scope: Any = None) -> _WireRoute:
-    from providers import profile_for_host
+    from hermes_agent.providers import profile_for_host
     from hermes_agent.agent.provider_route_hooks import ask_profile
     from hermes_agent.agent.transports.chat_completions import _model_consumes_thought_signature
 
@@ -132,7 +132,7 @@ def _wire_route(model: Any, base_url: Any, scope: Any = None) -> _WireRoute:
                       scope)
 
 
-# ``replay_message_carriers`` answers by which carrier keys are present (providers/base.py), so its answer
+# ``replay_message_carriers`` answers by which carrier keys are present (hermes_agent/providers/base.py), so its answer
 # for one key set is kept as a key mapping and applied to every message with that key set: one hook call
 # per (route, key set) instead of one per carrier-bearing message per request.
 _REPLAY_PLANS: dict[tuple, Any] = {}
@@ -157,7 +157,7 @@ def _replay_plan(answer: Any, values: dict) -> Any:
 
 
 def _replay_carriers(route: _WireRoute, values: dict) -> dict:
-    from providers import registry_generation
+    from hermes_agent.providers import registry_generation
     from hermes_agent.agent.provider_route_hooks import ask_profile, hook_failed
 
     if hook_failed(route.profile, "replay_message_carriers", route.scope):

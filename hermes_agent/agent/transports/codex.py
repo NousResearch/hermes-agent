@@ -458,7 +458,7 @@ def _profile_declared_efforts(provider: Any, model: Optional[str], base_url: Any
     discovery.
     """
     try:
-        from providers import get_provider_profile
+        from hermes_agent.providers import get_provider_profile
 
         name = str(provider or "").strip().lower()
         declared = None

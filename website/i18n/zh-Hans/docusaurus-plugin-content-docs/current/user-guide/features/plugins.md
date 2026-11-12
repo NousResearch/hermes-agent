@@ -137,7 +137,7 @@ def register(ctx):
 | `plugins/image_gen/<name>/` | 图像生成后端（`ctx.register_image_gen_provider()`） | `PluginManager`（kind: `backend`，深一层） |
 | `plugins/memory/<name>/` | Memory provider（继承 `MemoryProvider`） | **独立加载器**，位于 `plugins/memory/__init__.py`（kind: `exclusive` — 同时只有一个激活） |
 | `plugins/context_engine/<name>/` | 上下文压缩引擎（`ctx.register_context_engine()`） | **独立加载器**，位于 `plugins/context_engine/__init__.py`（同时只有一个激活） |
-| `plugins/model-providers/<name>/` | LLM provider profile（`register_provider(ProviderProfile(...))`） | **独立加载器**，位于 `providers/__init__.py`（首次调用 `get_provider_profile()` 时懒加载扫描） |
+| `plugins/model-providers/<name>/` | LLM provider profile（`register_provider(ProviderProfile(...))`） | **独立加载器**，位于 `hermes_agent/providers/__init__.py`（首次调用 `get_provider_profile()` 时懒加载扫描） |
 
 `~/.hermes/plugins/model-providers/<name>/` 和 `~/.hermes/plugins/memory/<name>/` 下的用户插件会覆盖同名内置插件 — `register_provider()` / `register_memory_provider()` 中后写者胜出。放入一个目录即可替换内置实现，无需修改仓库。
 

@@ -10,8 +10,8 @@ import os
 from typing import Any
 
 from hermes_agent.agent.reasoning_effort import META_AI_EFFORTS, clamp_effort
-from providers import register_provider
-from providers.base import ProviderProfile
+from hermes_agent.providers import register_provider
+from hermes_agent.providers.base import ProviderProfile
 
 
 class MetaAIProfile(ProviderProfile):

@@ -146,7 +146,7 @@ class VisionMessagePrepMixin:
         """True if the active provider accepts list-type tool content (some, e.g. Xiaomi MiMo, take
         multimodal user messages but 400 on list-type tool content; profile ``supports_vision_tool_messages``)."""
         try:
-            from providers import routed_model_rejects_vision_tool_messages
+            from hermes_agent.providers import routed_model_rejects_vision_tool_messages
             return not routed_model_rejects_vision_tool_messages(
                 (getattr(self, "provider", "") or "").strip(),
                 (getattr(self, "model", "") or "").strip(),

@@ -10,8 +10,8 @@ from pathlib import Path
 
 import pytest
 
-from providers import register_provider
-from providers.base import ProviderProfile
+from hermes_agent.providers import register_provider
+from hermes_agent.providers.base import ProviderProfile
 
 LIVE = ["fake-large[1m]", "fake-credit[1m]", "fake-small"]
 

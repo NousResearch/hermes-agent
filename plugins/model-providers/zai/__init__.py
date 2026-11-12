@@ -8,8 +8,8 @@ import re
 from typing import Any
 
 from hermes_agent.agent import reasoning_effort as re_
-from providers import register_provider
-from providers.base import ProviderProfile
+from hermes_agent.providers import register_provider
+from hermes_agent.providers.base import ProviderProfile
 
 _GLM_VERSION_RE = re.compile(r"^glm-(\d+)(?:\.(\d+))?")
 # Alias spellings seen on relays (Fireworks ``glm-5p2``, ``zai-org-glm-5-2``…).

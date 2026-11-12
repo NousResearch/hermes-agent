@@ -107,7 +107,7 @@ def audit(event, args):
         opens[current[0]] = opens.get(current[0], 0) + 1
 sys.addaudithook(audit)
 from hermes_agent.agent import skill_utils
-import providers
+from hermes_agent import providers
 from hermes_cli import free_tier_bootstrap, model_switch, profiles
 calls = {
     "skills": skill_utils.get_external_skills_dirs,

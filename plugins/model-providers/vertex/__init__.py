@@ -7,8 +7,8 @@ keeps it out of the api_key provider path so a credentials-file path is never mi
 
 from typing import Any
 
-from providers import register_provider
-from providers.base import ProviderProfile
+from hermes_agent.providers import register_provider
+from hermes_agent.providers.base import ProviderProfile
 
 
 class VertexProfile(ProviderProfile):

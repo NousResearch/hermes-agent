@@ -487,7 +487,7 @@ def test_actual_setup_keeps_provider_settings_in_yaml(
     from hermes_cli import model_setup_flows as setup
     from hermes_cli.auth import resolve_api_key_provider_credentials
     from hermes_cli.runtime_provider import resolve_runtime_provider
-    from providers import get_provider_profile
+    from hermes_agent.providers import get_provider_profile
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("ACTUAL_API_KEY", "actual-test-key")

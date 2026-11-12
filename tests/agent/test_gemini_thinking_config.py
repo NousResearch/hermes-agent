@@ -78,7 +78,7 @@ def test_snake_case_translation_carries_thinking_controls():
     ],
 )
 def test_gemini4_maps_effort_to_thinking_level_and_long_decode_budget(reasoning, level, shown, budget):
-    from providers import get_provider_profile
+    from hermes_agent.providers import get_provider_profile
 
     config = _build_gemini_thinking_config("gemini-4-argon", reasoning)
     assert config == {"includeThoughts": shown, "thinkingLevel": level}  # never thinkingBudget (400 with a level)

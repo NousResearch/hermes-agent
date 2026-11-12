@@ -13,8 +13,8 @@ from __future__ import annotations
 
 import pytest
 
-import providers as _providers
-from providers.base import ProviderProfile
+import hermes_agent.providers as _providers
+from hermes_agent.providers.base import ProviderProfile
 
 _PROBE_ENV_VAR = "AUX_SEAM_PROBE_AUTH"
 _PROBE_KEY = "probe-sentinel"

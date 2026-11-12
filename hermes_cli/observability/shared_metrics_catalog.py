@@ -85,7 +85,7 @@ def provider_names() -> frozenset[str]:
     """Provider ids Hermes itself ships: built-in auth rows, overlays, alias tables and the
     in-tree ``plugins/model-providers`` profiles. Never the live registries (``PROVIDER_REGISTRY``,
     picker labels): ``$HERMES_HOME`` and pip provider plugins add their user-chosen names there."""
-    import providers
+    from hermes_agent import providers
     from hermes_cli.auth import _PROVIDER_ALIASES, BUILTIN_PROVIDER_IDS
     from hermes_cli.models_catalog_static import _PROVIDER_ALIASES as _CATALOG_ALIASES
     from hermes_cli.providers import ALIASES, HERMES_OVERLAYS

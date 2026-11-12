@@ -844,7 +844,7 @@ def resolve_alias(raw_input: str, current_provider: str, user_providers: Optiona
 
 def _external_process_catalog(provider: str) -> tuple[list[str], dict[str, str]]:
     """``(declared model ids, own aliases)`` of an ``external_process`` profile, else empty."""
-    from providers import get_provider_profile
+    from hermes_agent.providers import get_provider_profile
     profile = get_provider_profile(provider)
     if profile is None or profile.auth_type != "external_process":
         return [], {}
@@ -1740,7 +1740,7 @@ def model_derived_api_mode(provider: str, model: str, api_key: str = "") -> Opti
     key = str(provider or "").strip().lower()
     override = _PROVIDER_API_MODE_OVERRIDES.get(opencode_provider_family(key) or key)
     if override is None and key:
-        from providers import get_provider_profile
+        from hermes_agent.providers import get_provider_profile
         profile = get_provider_profile(key)
         if profile is not None:
             from hermes_agent.agent.provider_route_hooks import model_api_mode

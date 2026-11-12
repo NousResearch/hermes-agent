@@ -1,6 +1,6 @@
 """Tests for pip entry-point provider discovery (hermes_agent.plugins group).
 
-Verifies that ``providers/__init__.py`` imports provider plugins exposed via a
+Verifies that ``hermes_agent/providers/__init__.py`` imports provider plugins exposed via a
 distribution's ``hermes_agent.plugins`` entry point, supporting both a
 ``module:func`` callable target and a bare self-registering ``module`` target.
 """
@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-import providers
+from hermes_agent import providers
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -82,7 +82,7 @@ class _FakeEntryPoints:
 
 
 def _register_via_callable():
-    from providers.base import ProviderProfile
+    from hermes_agent.providers.base import ProviderProfile
 
     def register():
         providers.register_provider(
@@ -95,7 +95,7 @@ def _register_via_callable():
 def _register_via_module():
     # ep.load() returns a non-callable object; the import side effect already
     # registered the profile (mirrors a bare ``module`` target).
-    from providers.base import ProviderProfile
+    from hermes_agent.providers.base import ProviderProfile
 
     providers.register_provider(
         ProviderProfile(name="ep-module", base_url="https://b.test/v1")
@@ -200,7 +200,7 @@ def test_filesystem_plugins_win_over_entry_points(monkeypatch):
     """Entry points are discovered FIRST (lowest precedence): last-writer-wins
     in register_provider() means a bundled/user profile of the same name
     overrides a pip impostor."""
-    from providers.base import ProviderProfile
+    from hermes_agent.providers.base import ProviderProfile
 
     def _register_ep_openrouter():
         def register():

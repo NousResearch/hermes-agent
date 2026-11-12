@@ -2,7 +2,7 @@
 from copy import deepcopy
 
 from hermes_agent.agent.transports.chat_completions import ChatCompletionsTransport
-from providers.base import ProviderProfile
+from hermes_agent.providers.base import ProviderProfile
 
 OPENROUTER = "https://openrouter.ai/api/v1"
 

@@ -24,7 +24,7 @@ from hermes_cli.models import normalize_provider as normalize_model_provider
 from hermes_cli.models import provider_model_ids
 from hermes_cli.providers import determine_api_mode
 from hermes_cli.providers import normalize_provider as normalize_overlay_provider
-from providers import get_provider_profile
+from hermes_agent.providers import get_provider_profile
 
 def _clear_actual_env(monkeypatch):
     monkeypatch.delenv("ACTUAL_API_KEY", raising=False)

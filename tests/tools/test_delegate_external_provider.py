@@ -5,14 +5,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from providers.base import ProviderProfile
+from hermes_agent.providers.base import ProviderProfile
 from hermes_agent.tools.delegate_tool_config import _resolve_child_runtime
 
 
 @pytest.fixture
 def process_profiles(monkeypatch):
     """Swap the provider registry the resolver reads for a fixed set of profiles."""
-    import providers
+    from hermes_agent import providers
 
     def install(*profiles):
         by_name = {p.name: p for p in profiles}

@@ -7,8 +7,8 @@ from hermes_agent.agent.portal_tags import get_affinity_scope, get_conversation_
 from hermes_agent.agent.prompt_cache_scope import GROK_AGGREGATOR_MODEL_PREFIXES, is_fork_cache_scope
 from hermes_agent.agent.reasoning_effort import codex_supported_efforts
 from hermes_agent.agent.transports.codex import _cache_scope_from_session_id
-from providers import register_provider
-from providers.base import ProviderProfile
+from hermes_agent.providers import register_provider
+from hermes_agent.providers.base import ProviderProfile
 
 logger = logging.getLogger(__name__)
 

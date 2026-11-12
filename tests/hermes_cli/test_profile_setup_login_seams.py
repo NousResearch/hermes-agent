@@ -1,4 +1,4 @@
-"""Provider-profile setup/sign-in seams (``providers.base`` L6 block) through the real routes.
+"""Provider-profile setup/sign-in seams (``hermes_agent.providers.base`` L6 block) through the real routes.
 
 A model-provider plugin installed in ONE profile's home declares an in-app device-code login, an
 Accounts card and a ``hermes model`` step; core drives them with no provider-specific code:
@@ -66,7 +66,7 @@ register_provider(ProviderProfile(
 
 
 def _rediscover() -> None:
-    import providers as _pkg
+    import hermes_agent.providers as _pkg
     _pkg._discovered = False
     for mod in [m for m in sys.modules if m.startswith("_hermes_user_provider")]:
         del sys.modules[mod]
@@ -92,7 +92,7 @@ def acme(tmp_path, monkeypatch):
         return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
 
     yield coder, events
-    import providers as _pkg
+    import hermes_agent.providers as _pkg
     _pkg._PROVIDER_LIST_CACHE = None
     _rediscover()
 

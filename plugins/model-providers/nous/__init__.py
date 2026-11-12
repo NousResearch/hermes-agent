@@ -4,8 +4,8 @@ from typing import Any
 
 from hermes_agent.agent.portal_tags import get_affinity_scope, get_conversation_context, nous_portal_tags
 from hermes_agent.agent.transports.codex import _cache_scope_from_session_id
-from providers import register_provider
-from providers.base import ProviderProfile
+from hermes_agent.providers import register_provider
+from hermes_agent.providers.base import ProviderProfile
 
 
 class NousProfile(ProviderProfile):

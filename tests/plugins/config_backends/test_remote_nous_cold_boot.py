@@ -32,7 +32,7 @@ from pm.recovery import refresh_dependencies  # stage2-hook.sh's import
 assert "hermes_cli.auth" not in sys.modules and "hermes_cli.config" not in sys.modules  # cold
 from pm.workspace import enabled_member_dirs
 enabled_member_dirs()  # refresh_dependencies -> venv_is_current -> expected_stamp reads this first
-import providers
+from hermes_agent import providers
 if os.environ.get("PROBE_PROVIDER"):  # a $HERMES_HOME provider plugin loads once config is loaded
     assert providers.get_provider_profile("probe-provider") is not None
 from hermes_cli.config import load_config

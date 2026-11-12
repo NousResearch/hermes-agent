@@ -15,7 +15,7 @@ def missing_credentials_suffix(provider) -> str:
     "No usable credentials found" message, else ``""``. Plugin boundary: a raising hook (or a plugin
     host that is down) or a non-string answer yields ``""`` and is logged once per provider, so the
     AuthError it decorates (and the fallback chain walking on it) is never replaced."""
-    from providers import get_provider_profile
+    from hermes_agent.providers import get_provider_profile
     name = str(provider or "").strip().lower()
     profile = get_provider_profile(name) if name else None
     if profile is None:

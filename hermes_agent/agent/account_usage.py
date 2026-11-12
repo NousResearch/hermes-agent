@@ -931,7 +931,7 @@ def _call_plugin_usage_hook(profile, base_url: Optional[str], api_key: Optional[
     """Run the profile hook under the shared deadline; past it → None. Exceptions re-raise in the
     caller so ``fetch_account_usage`` fails open without a worker-thread traceback on ``/usage``."""
     from hermes_agent.agent.deadline import run_bounded_sync
-    from providers.base import ProviderProfile
+    from hermes_agent.providers.base import ProviderProfile
 
     if type(profile).fetch_account_usage is ProviderProfile.fetch_account_usage:
         return None  # base no-op: no thread to spawn
@@ -960,7 +960,7 @@ def fetch_account_usage(
         if fetcher:
             snapshot = fetcher(base_url, api_key)
         else:
-            from providers import get_provider_profile
+            from hermes_agent.providers import get_provider_profile
 
             profile = get_provider_profile(slug)
             snapshot = _call_plugin_usage_hook(profile, base_url, api_key) if profile else None

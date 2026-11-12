@@ -63,7 +63,7 @@ def unset_reasoning_default(agent) -> dict | None:
     provider = str(getattr(agent, "provider", "") or "")
     model = str(getattr(agent, "model", "") or "")
     try:
-        from providers import get_provider_profile
+        from hermes_agent.providers import get_provider_profile
 
         profile = get_provider_profile(provider)
         default = profile.default_reasoning_config(model) if profile is not None else None
@@ -146,7 +146,7 @@ class ReasoningParamsMixin:
         if ((self.provider or "").strip().lower() == "lmstudio" or self._is_openrouter_url()
                 or any(base_url_host_matches(url, host) for host in _CORE_REASONING_GATED_HOSTS)):
             return None
-        from providers import profile_for_host
+        from hermes_agent.providers import profile_for_host
 
         return profile_for_host(str(getattr(self, "base_url", None) or ""))
 

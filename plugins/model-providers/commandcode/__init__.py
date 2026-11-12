@@ -7,8 +7,8 @@ import logging
 import urllib.request
 
 from hermes_cli.urllib_security import open_credentialed_url
-from providers import get_provider_profile, register_provider
-from providers.base import ProviderProfile, _profile_user_agent
+from hermes_agent.providers import get_provider_profile, register_provider
+from hermes_agent.providers.base import ProviderProfile, _profile_user_agent
 
 logger = logging.getLogger(__name__)
 

@@ -1409,8 +1409,8 @@ class TestStripProviderPrefix:
         assert _strip_provider_prefix("https://example.com") == "https://example.com"
 
     def test_registered_profile_name_and_alias_are_stripped(self, monkeypatch):
-        import providers
-        from providers.base import ProviderProfile
+        from hermes_agent import providers
+        from hermes_agent.providers.base import ProviderProfile
 
         monkeypatch.setattr(providers, "_REGISTRY", {})
         monkeypatch.setattr(providers, "_ALIASES", {})

@@ -304,7 +304,7 @@ def gate_manifest(
             "exclusive plugin — activate via <category>.provider config", logging.DEBUG,
             "Skipping '%s' (exclusive, handled by category discovery)",
         )
-    # Model providers load via providers/__init__.py; a second import here would create two ProviderProfile
+    # Model providers load via hermes_agent/providers/__init__.py; a second import here would create two ProviderProfile
     # instances and break the bundled-vs-user "last writer wins" override.
     if manifest.kind == "model-provider":
         return _placeholder(

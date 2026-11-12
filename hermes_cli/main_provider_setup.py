@@ -14,7 +14,7 @@ def _is_profile_api_key_provider(provider_id: str) -> bool:
     """True when *provider_id* maps to a profile with ``auth_type='api_key'`` — the catch-all
     in select_provider_and_model() so plugin providers dispatch to the generic key flow."""
     try:
-        from providers import get_provider_profile
+        from hermes_agent.providers import get_provider_profile
         _p = get_provider_profile(provider_id)
         return _p is not None and _p.auth_type == "api_key"
     except Exception:
@@ -684,7 +684,7 @@ def _main_model_reasoning_efforts(model: str, provider: str) -> Optional[list[st
     """Levels to offer for *model* on *provider*: None when the route has no reasoning control."""
     from hermes_constants import VALID_REASONING_EFFORTS
     slug = (provider or "").strip().lower()
-    from providers import get_provider_profile
+    from hermes_agent.providers import get_provider_profile
     profile = get_provider_profile(slug) if slug else None
     declared = profile.setup_reasoning_efforts(model) if profile and profile.setup_reasoning_efforts else None
     if declared is not None:

@@ -1,6 +1,6 @@
 """Model-provider plugins as first-class citizens of ``hermes auth`` and the credential pool.
 
-A ``plugins/model-providers/<name>/`` profile (``providers.base.ProviderProfile``) is mirrored into
+A ``plugins/model-providers/<name>/`` profile (``hermes_agent.providers.base.ProviderProfile``) is mirrored into
 ``hermes_cli.auth.PROVIDER_REGISTRY`` with the ``auth_type`` it declares, so ``resolve_provider()``
 accepts it whatever its auth shape. Non-api-key plugins own their login through two optional profile
 callables that core consults BEFORE any built-in, name-keyed path:
@@ -80,7 +80,7 @@ class HomeScopedRegistry(dict):
         later, higher-priority registration replaces (discovery's completion sync runs then)."""
         if not self._sync_pending or getattr(_SYNCING, "active", False):
             return
-        import providers
+        from hermes_agent import providers
         if getattr(providers, "_discovering", False):
             return
         _SYNCING.active = True  # the sync reads the registry
@@ -126,7 +126,7 @@ class HomeScopedRegistry(dict):
 
 
 def _resolver() -> Callable[[str], tuple]:
-    from providers import bound_profile_resolver
+    from hermes_agent.providers import bound_profile_resolver
     return bound_profile_resolver()
 
 
@@ -217,7 +217,7 @@ def _insert_row(registry: dict, pconfig: Any, after: str) -> None:
 def _user_owns_alias(pp: Any, alias: str) -> bool:
     """True when *alias* resolves to the ``$HERMES_HOME`` plugin *pp* in the ``providers`` layer."""
     try:
-        from providers import get_provider_profile, provider_source
+        from hermes_agent.providers import get_provider_profile, provider_source
     except Exception:
         return False
     owner = get_provider_profile(alias)
@@ -271,7 +271,7 @@ def sync_plugin_provider_registry() -> int:
     from hermes_cli.auth import BUILTIN_PROVIDER_IDS, PROVIDER_REGISTRY
 
     try:
-        from providers import list_providers, provider_source
+        from hermes_agent.providers import list_providers, provider_source
         profiles = list_providers()
         home_profile = lambda name: _resolver()(name)[0]
     except Exception:
@@ -317,7 +317,7 @@ def registry_lookup(provider_id: str) -> Optional[Any]:
 def plugin_profile(provider: str) -> Optional[Any]:
     """The registered ``ProviderProfile`` for *provider*, or None (also when the layer is unavailable)."""
     try:
-        from providers import get_provider_profile
+        from hermes_agent.providers import get_provider_profile
     except Exception:
         return None
     return get_provider_profile(provider)

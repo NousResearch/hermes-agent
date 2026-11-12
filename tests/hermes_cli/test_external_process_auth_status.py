@@ -21,7 +21,7 @@ from hermes_cli.auth import (
     get_external_process_provider_status,
     resolve_external_process_provider_credentials,
 )
-from providers.base import ProviderProfile
+from hermes_agent.providers.base import ProviderProfile
 
 
 class _AcmeAcpProfile(ProviderProfile):
@@ -36,7 +36,7 @@ class _AcmeAcpProfile(ProviderProfile):
 @pytest.fixture()
 def acme_acp(tmp_path, monkeypatch):
     """Register a fake external-process profile and neutralize host state so tests pin behaviour."""
-    import providers
+    from hermes_agent import providers
     from pathlib import Path
 
     from hermes_cli import auth

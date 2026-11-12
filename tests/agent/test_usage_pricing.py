@@ -362,7 +362,7 @@ def test_vertex_default_model_estimates_cached_usage(monkeypatch):
     Google snapshot pricing when the OpenAI-compatible endpoint has no model
     metadata, including for cache-read accounting.
     """
-    from providers import get_provider_profile
+    from hermes_agent.providers import get_provider_profile
 
     monkeypatch.setattr(
         "hermes_agent.agent.usage_pricing.fetch_endpoint_model_metadata",

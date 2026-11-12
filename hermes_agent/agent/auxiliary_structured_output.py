@@ -57,7 +57,7 @@ def _profile_unsupported_formats(provider: Optional[str], base_url: Optional[str
     """The provider profile's declared unsupported types; a ``custom`` route whose base_url is a profiled
     provider's own host (``api.deepseek.com``) gets that provider's profile."""
     try:
-        from providers import get_provider_profile
+        from hermes_agent.providers import get_provider_profile
         name = str(provider or "").strip().lower()
         if name == "custom" and base_url:
             from hermes_agent.agent.model_metadata import _infer_provider_from_url

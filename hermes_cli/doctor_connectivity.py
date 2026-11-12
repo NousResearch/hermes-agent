@@ -93,8 +93,8 @@ def _build_apikey_providers_list() -> list:
         "alibaba", "minimax", "minimax-cn", "ai-gateway", "kilocode", "opencode-zen", "opencode-go",
     } | _dedicated_canonical
     try:
-        from providers import list_providers
-        from providers.base import ProviderProfile as _PP
+        from hermes_agent.providers import list_providers
+        from hermes_agent.providers.base import ProviderProfile as _PP
         try:
             from hermes_cli.providers import normalize_provider as _normalize_provider
         except Exception:  # pragma: no cover - normalization is best-effort

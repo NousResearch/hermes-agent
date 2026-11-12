@@ -6,7 +6,7 @@ import sys
 import pytest
 
 from hermes_agent.agent.acp_client import ACPClient
-from providers.base import ProviderProfile
+from hermes_agent.providers.base import ProviderProfile
 
 _HINT = "Run `fake-cli login` to sign in."
 
@@ -21,7 +21,7 @@ def hinted_provider(tmp_path, monkeypatch):
     """A registry api-key provider (a plugin profile) whose key is unset, with or without a hint."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.delenv("FAKE_HINTED_KEY", raising=False)
-    import providers
+    from hermes_agent import providers
     from hermes_cli.auth import PROVIDER_REGISTRY, ProviderConfig
 
     def install(profile_cls):

@@ -156,7 +156,8 @@ class Row:
 _CATALOG: list[Row] | None = None
 
 _DISCOVER = """
-import json, providers
+import json
+from hermes_agent import providers
 from hermes_cli.providers import host_mandated_api_mode
 out = []
 for p in providers.list_providers():

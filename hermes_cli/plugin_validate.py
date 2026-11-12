@@ -322,7 +322,7 @@ if provider_kind:
     # probe records that call instead of demanding an entry point that would
     # be dead code.
     try:
-        import providers as _providers
+        import hermes_agent.providers as _providers
     except Exception as exc:
         emit({"error": "model-provider probe could not import providers: %s" % exc})
         sys.exit(0)

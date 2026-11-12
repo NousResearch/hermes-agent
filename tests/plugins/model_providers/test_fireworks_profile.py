@@ -15,7 +15,7 @@ def fireworks_profile():
     """Resolve the registered Fireworks profile through the real discovery path."""
     # Importing model_tools triggers plugin discovery, registering the profile.
     from hermes_agent import model_tools
-    import providers
+    from hermes_agent import providers
 
     profile = providers.get_provider_profile("fireworks")
     assert profile is not None, "fireworks provider profile must be registered"

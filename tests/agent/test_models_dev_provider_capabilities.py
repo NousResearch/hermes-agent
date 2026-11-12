@@ -3,8 +3,8 @@ models.dev consumer — capability lookup, context lookup, the picker's reasonin
 
 from copy import deepcopy
 
-import providers
-from providers.base import ProviderProfile
+from hermes_agent import providers
+from hermes_agent.providers.base import ProviderProfile
 from hermes_agent.agent import models_dev
 
 

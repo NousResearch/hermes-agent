@@ -58,7 +58,7 @@ def _rediscover() -> None:
     rescanned for the fixture. Fixture modules are evicted so the next
     ``_import_plugin_dir`` actually re-executes them.
     """
-    import providers as _pkg
+    import hermes_agent.providers as _pkg
 
     _pkg._discovered = False
     for mod in [m for m in sys.modules if m.startswith("_hermes_user_provider")]:
@@ -91,7 +91,7 @@ def install_provider(tmp_path, monkeypatch):
     yield _install
 
     # The provider registry is process-global: never leak the fixture profile.
-    import providers as _pkg
+    import hermes_agent.providers as _pkg
 
     for name in installed:
         _pkg._REGISTRY.pop(name, None)

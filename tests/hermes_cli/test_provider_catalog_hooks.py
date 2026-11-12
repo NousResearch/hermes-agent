@@ -6,10 +6,10 @@ from __future__ import annotations
 
 import pytest
 
-import providers
+from hermes_agent import providers
 from hermes_cli import models
 from hermes_cli import models_catalog_static as static
-from providers.base import ProviderProfile
+from hermes_agent.providers.base import ProviderProfile
 
 
 class _AcmeProfile(ProviderProfile):

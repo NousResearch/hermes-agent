@@ -213,7 +213,7 @@ class TestCodexBuildKwargs:
         # it to the input converter so the id never reaches the request.
         from unittest.mock import patch
 
-        from providers.base import ProviderProfile
+        from hermes_agent.providers.base import ProviderProfile
 
         binding = ProviderProfile(name="acme-responses", base_url="https://api.acme-responses.test",
                                   api_mode="codex_responses", responses_replay_item_ids=False)
@@ -234,7 +234,7 @@ class TestCodexBuildKwargs:
                 ],
             },
         ]
-        with patch("providers.profile_for_host",
+        with patch("hermes_agent.providers.profile_for_host",
                    side_effect=lambda url, *_a, **_kw: binding if "api.acme-responses.test" in url else None):
             kw = transport.build_kwargs(
                 model="gpt-5.5", messages=messages, tools=[],

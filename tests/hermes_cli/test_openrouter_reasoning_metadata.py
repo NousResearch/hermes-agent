@@ -219,7 +219,7 @@ class TestSupportsReasoningExtraBodyMetadataGate:
 class TestOpenRouterProfileClamp:
     def test_clamp_applied_in_build_api_kwargs_extras(self, monkeypatch):
         import hermes_cli.models as models_mod
-        from providers import get_provider_profile
+        from hermes_agent.providers import get_provider_profile
 
         monkeypatch.setattr(models_mod, "_openrouter_reasoning_caps_failed_at", None)
         monkeypatch.setattr(models_mod, "_openrouter_reasoning_caps_cache", {
@@ -240,7 +240,7 @@ class TestOpenRouterProfileClamp:
 
     def test_no_clamp_when_catalog_unknown(self, monkeypatch):
         import hermes_cli.models as models_mod
-        from providers import get_provider_profile
+        from hermes_agent.providers import get_provider_profile
 
         monkeypatch.setattr(models_mod, "_openrouter_reasoning_caps_cache", {"a/b": None})
         monkeypatch.setattr(models_mod, "_openrouter_reasoning_caps_failed_at", None)
@@ -258,7 +258,7 @@ class TestOpenRouterProfileClamp:
         """A reasoning-mandatory route 400s on ``{enabled: false}`` — omit it;
         a route that can disable still gets the user's disable verbatim."""
         import hermes_cli.models as models_mod
-        from providers import get_provider_profile
+        from hermes_agent.providers import get_provider_profile
 
         monkeypatch.setattr(models_mod, "_openrouter_reasoning_caps_failed_at", None)
         monkeypatch.setattr(models_mod, "_openrouter_reasoning_caps_cache", {

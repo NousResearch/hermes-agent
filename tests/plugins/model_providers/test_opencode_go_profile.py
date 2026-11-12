@@ -10,7 +10,7 @@ from datetime import UTC
 def opencode_go_profile():
     """Resolve the registered OpenCode Go provider profile."""
     from hermes_agent import model_tools
-    import providers
+    from hermes_agent import providers
 
     profile = providers.get_provider_profile("opencode-go")
     assert profile is not None, "opencode-go provider profile must be registered"
@@ -21,7 +21,7 @@ def opencode_go_profile():
 def opencode_zen_profile():
     """Resolve the registered OpenCode Zen provider profile."""
     from hermes_agent import model_tools
-    import providers
+    from hermes_agent import providers
 
     profile = providers.get_provider_profile("opencode-zen")
     assert profile is not None, "opencode-zen provider profile must be registered"

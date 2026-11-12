@@ -477,7 +477,7 @@ class TestAuxiliaryDualWire:
             # Alias spelling + profile stubbed out so the fallback path is the
             # one under test (profile success already covers session_id).
             with patch(
-                "providers.get_provider_profile",
+                "hermes_agent.providers.get_provider_profile",
                 side_effect=ImportError("no profile"),
             ):
                 kwargs = _build_call_kwargs(

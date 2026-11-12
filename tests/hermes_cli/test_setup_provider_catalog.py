@@ -6,8 +6,8 @@ import pytest
 
 @pytest.mark.parametrize("live", [True, False])
 def test_setup_offers_registered_provider_catalog(monkeypatch, live):
-    import providers
-    from providers.base import ProviderProfile
+    from hermes_agent import providers
+    from hermes_agent.providers.base import ProviderProfile
     from hermes_cli import auth, config, model_setup_flows as flows, models
 
     class SetupProfile(ProviderProfile):
@@ -54,8 +54,8 @@ def test_setup_uses_profile_endpoint_and_headers(tmp_path, monkeypatch):
     from threading import Thread
     from types import SimpleNamespace
 
-    import providers
-    from providers.base import ProviderProfile
+    from hermes_agent import providers
+    from hermes_agent.providers.base import ProviderProfile
     from hermes_cli import model_setup_flows as flows
 
     requests = []
@@ -101,8 +101,8 @@ def test_setup_matches_picker_when_catalog_fetch_fails(monkeypatch):
     ``/model`` shows via ``models.provider_model_ids`` for the same profile."""
     from types import SimpleNamespace
 
-    import providers
-    from providers.base import ProviderProfile
+    from hermes_agent import providers
+    from hermes_agent.providers.base import ProviderProfile
     from hermes_cli import model_setup_flows as flows, models
 
     class DownProfile(ProviderProfile):
@@ -127,8 +127,8 @@ def test_switch_validation_trusts_profile_owned_catalog(monkeypatch):
     """A plugin whose ``fetch_models`` is the catalog (#101705): the model the picker offers is
     accepted even when the generic ``/v1/models`` 200s with a different product catalog; a model in
     neither is still rejected."""
-    import providers
-    from providers.base import ProviderProfile
+    from hermes_agent import providers
+    from hermes_agent.providers.base import ProviderProfile
     from hermes_cli import models, models_validate
 
     class PlanProfile(ProviderProfile):
@@ -152,8 +152,8 @@ def test_setup_keeps_curated_list_when_profile_catalog_is_down_and_declares_no_f
     empty picker."""
     from types import SimpleNamespace
 
-    import providers
-    from providers.base import ProviderProfile
+    from hermes_agent import providers
+    from hermes_agent.providers.base import ProviderProfile
     from hermes_cli import model_setup_flows as flows, models
 
     class DownProfile(ProviderProfile):

@@ -8,7 +8,7 @@ a behavioral regression.
 
 import pytest
 from hermes_agent.agent.transports.chat_completions import ChatCompletionsTransport
-from providers import get_provider_profile
+from hermes_agent.providers import get_provider_profile
 
 
 @pytest.fixture
@@ -29,7 +29,7 @@ class TestNvidiaParity:
 
 
     def test_user_max_tokens_overrides(self, transport):
-        from providers import get_provider_profile
+        from hermes_agent.providers import get_provider_profile
 
         profile = get_provider_profile("nvidia")
         kw = transport.build_kwargs(

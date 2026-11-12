@@ -1,8 +1,8 @@
 """Microsoft Foundry provider profile: OpenAI-compatible, per-resource base URL
 supplied by the user at setup."""
 
-from providers import register_provider
-from providers.base import ProviderProfile
+from hermes_agent.providers import register_provider
+from hermes_agent.providers.base import ProviderProfile
 
 azure_foundry = ProviderProfile(
     name="azure-foundry", aliases=("azure", "azure-ai-foundry", "azure-ai"), display_name="Azure Foundry",

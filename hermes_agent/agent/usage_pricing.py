@@ -715,7 +715,7 @@ def estimate_usage_cost(
     model_name: str, usage: CanonicalUsage, *, provider: Optional[str] = None,
     base_url: Optional[str] = None, api_key: Optional[str] = None,
 ) -> CostResult:
-    from providers import get_provider_profile
+    from hermes_agent.providers import get_provider_profile
     profile = get_provider_profile(provider or '')
     reported = profile.get_usage_cost(model_name, usage) if profile else None
     if reported is not None:

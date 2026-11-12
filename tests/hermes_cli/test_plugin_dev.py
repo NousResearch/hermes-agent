@@ -387,7 +387,7 @@ def test_doctor_never_copies_a_plugin_into_its_own_temp_dir(
 def test_doctor_loads_model_provider_plugins_through_provider_discovery(tmp_path: Path) -> None:
     """`kind: model-provider` registers a ProviderProfile at import and has no register(ctx);
     doctor must judge it by that contract and leave the live registry untouched."""
-    import providers
+    from hermes_agent import providers
     from hermes_cli.plugin_dev import doctor_plugin
 
     plugin = tmp_path / "acme-provider"
@@ -416,7 +416,7 @@ def test_doctor_loads_model_provider_plugins_through_provider_discovery(tmp_path
 def test_doctor_loads_a_model_provider_plugin_from_its_category(tmp_path: Path) -> None:
     """``plugins/model-providers/<name>`` is the runtime layout; the provider loader must get the
     staged plugin directory, not the category around it."""
-    import providers
+    from hermes_agent import providers
     from hermes_cli.plugin_dev import doctor_plugin
 
     plugin = tmp_path / "model-providers" / "acme-provider"

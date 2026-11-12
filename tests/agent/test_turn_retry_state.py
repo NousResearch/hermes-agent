@@ -5,7 +5,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from providers.base import ProviderProfile
+from hermes_agent.providers.base import ProviderProfile
 
 
 class _RefreshingProfile(ProviderProfile):
@@ -16,7 +16,7 @@ class _RefreshingProfile(ProviderProfile):
 def test_refresh_provider_check_accepts_alias_spellings():
     """`/model` and profile configs can leave an alias (any case) as the
     provider spelling; the recovery gates must not silently skip them."""
-    import providers
+    from hermes_agent import providers
     from hermes_agent.agent.conversation_loop import _credential_refresh_profile
 
     providers.list_providers()  # discover first so the patched registry restores to the real one

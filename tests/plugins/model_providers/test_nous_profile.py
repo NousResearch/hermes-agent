@@ -25,7 +25,7 @@ def nous_profile():
     # ``model_tools`` triggers plugin discovery on import, which is what
     # registers the Nous profile in the global provider registry.
     from hermes_agent import model_tools
-    import providers
+    from hermes_agent import providers
 
     profile = providers.get_provider_profile("nous")
     assert profile is not None, "nous provider profile must be registered"

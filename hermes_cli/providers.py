@@ -163,7 +163,7 @@ TRANSPORT_TO_API_MODE: dict[str, str] = {
 
 def _overlay_profiles() -> list:
     """Registered profiles that declare a ``provider_overlay`` (no plugin-dir rescan on a miss)."""
-    from providers import list_providers
+    from hermes_agent.providers import list_providers
     return [prof for prof in list_providers() if prof.provider_overlay]
 
 
@@ -268,7 +268,7 @@ def _plugin_alias_owner(canonical: str) -> str:
     wins over a bundled one, exactly as ``get_provider_profile`` would pick it."""
     if not canonical or _is_static_canonical(canonical):
         return canonical
-    from providers import get_provider_profile, list_providers
+    from hermes_agent.providers import get_provider_profile, list_providers
     profiles = list_providers()
     if any(prof.name == canonical for prof in profiles) or not any(
             canonical in prof.aliases for prof in profiles):
@@ -318,7 +318,7 @@ def _plugin_profile_pdef(name: str) -> Optional[ProviderDef]:
     id is the profile's canonical name so an alias switch persists and resolves credentials under
     the same identity as the profile itself. URL-shaped env vars are the endpoint, not the key."""
     try:
-        from providers import get_provider_profile as _profile
+        from hermes_agent.providers import get_provider_profile as _profile
         prof = _profile(name)
     except Exception:
         return None

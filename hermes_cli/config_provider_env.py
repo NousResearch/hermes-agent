@@ -53,7 +53,7 @@ def _provider_entries() -> dict:
     global _CATALOG
     if _CATALOG is None:
         try:
-            from providers import bundled_profiles
+            from hermes_agent.providers import bundled_profiles
             profiles = bundled_profiles()
         except Exception:  # health: allow BLE001 -- as before: a broken provider layer must not break config readers
             profiles = []
@@ -67,7 +67,7 @@ def sync_registered_providers() -> None:
     record as they stand: never config, never discovery. Not ``provider_source()``: that one is
     profile-aware and scans the bound home's plugin dirs, whose isolation check reads config.
     ``$HERMES_HOME`` plugins (per profile) are not process-wide and are left out."""
-    import providers
+    from hermes_agent import providers
     from hermes_cli.config_defaults import OPTIONAL_ENV_VARS
     sources = dict(providers._SOURCES)
     profiles = [p for name, p in list(providers._REGISTRY.items()) if sources.get(name) != "bundled"]

@@ -6,8 +6,8 @@ bundled, so profiles resolve through normal registry discovery.
 """
 
 
-from providers import get_provider_profile
-from providers.base import ProviderProfile
+from hermes_agent.providers import get_provider_profile
+from hermes_agent.providers.base import ProviderProfile
 
 
 def _profile():

@@ -269,9 +269,9 @@ def _acp_launch_resolvers(monkeypatch: pytest.MonkeyPatch):
     """(command, args) resolvers of an external-process provider's env-driven launch fallback.
 
     The profile is registered like a plugin's, so its launch env names are executable authority."""
-    import providers
+    from hermes_agent import providers
     from hermes_agent.agent.acp_client import ACPClient
-    from providers.base import ProviderProfile
+    from hermes_agent.providers.base import ProviderProfile
 
     acme = ProviderProfile(name="acme-acp", auth_type="external_process", base_url="acp://acme",
                            process_command="acme", process_command_env_vars=("HERMES_ACME_ACP_COMMAND",),

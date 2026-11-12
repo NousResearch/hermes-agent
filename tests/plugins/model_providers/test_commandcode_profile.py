@@ -25,7 +25,7 @@ import pytest
 def commandcode_profile():
     """Resolve the registered CommandCode (chat_completions) profile."""
     from hermes_agent import model_tools
-    import providers
+    from hermes_agent import providers
 
     profile = providers.get_provider_profile("commandcode")
     assert profile is not None, "commandcode provider profile must be registered"
@@ -36,7 +36,7 @@ def commandcode_profile():
 def commandcode_anthropic_profile():
     """Resolve the registered CommandCode Anthropic profile."""
     from hermes_agent import model_tools
-    import providers
+    from hermes_agent import providers
 
     profile = providers.get_provider_profile("commandcode-anthropic")
     assert profile is not None, "commandcode-anthropic profile must be registered"

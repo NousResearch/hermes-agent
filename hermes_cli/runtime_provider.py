@@ -262,8 +262,8 @@ def _effective_model(model_cfg: dict[str, Any], target_model: Optional[str]) -> 
 
 def _per_model_profile(provider: str) -> Any:
     """The provider's profile when it routes ``api_mode`` per model (``ProviderProfile.api_mode_for_model``)."""
-    from providers import get_provider_profile
-    from providers.base import ProviderProfile
+    from hermes_agent.providers import get_provider_profile
+    from hermes_agent.providers.base import ProviderProfile
 
     profile = get_provider_profile(provider) if provider else None
     if profile is None or type(profile).api_mode_for_model is ProviderProfile.api_mode_for_model:
@@ -704,7 +704,7 @@ def _resolve_from_pool(provider: str, requested_provider: str, model_cfg: dict[s
     if provider == "nous":
         entry, pool_api_key = _refresh_nous_pool_entry(pool, entry, pool_api_key)
     else:
-        from providers import get_provider_profile
+        from hermes_agent.providers import get_provider_profile
         if (profile := get_provider_profile(provider)) is not None:
             pool_api_key = profile.prepare_pool_entry(entry, pool_api_key)
     if not has_usable_secret(pool_api_key):

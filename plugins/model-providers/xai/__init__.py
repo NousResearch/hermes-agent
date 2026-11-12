@@ -1,8 +1,8 @@
 """xAI (Grok) provider profile."""
 
 from hermes_cli.version_info import hermes_user_agent
-from providers import register_provider
-from providers.base import LazyHeaders, ProviderProfile
+from hermes_agent.providers import register_provider
+from hermes_agent.providers.base import LazyHeaders, ProviderProfile
 
 xai = ProviderProfile(
     name="xai", aliases=("grok", "x-ai", "x.ai"), api_mode="codex_responses", env_vars=("XAI_API_KEY",),

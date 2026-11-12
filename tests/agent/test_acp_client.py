@@ -151,7 +151,7 @@ _FROZEN_DRIVER = """
 import json, warnings
 with warnings.catch_warnings(record=True) as caught:
     warnings.simplefilter("always")
-    import providers
+    from hermes_agent import providers
     client = providers.get_provider_profile("frozen-acp").create_client()
     import hermes_agent.agent.copilot_acp_client as alias
     alias.CopilotACPClient

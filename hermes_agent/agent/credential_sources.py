@@ -97,7 +97,7 @@ def find_removal_step(provider: str, source: str) -> Optional[RemovalStep]:
 def _profile_removal_step(provider: str, source: str) -> Optional[RemovalStep]:
     """``ProviderProfile.remove_credential_source``: a provider seeding one token under several
     sources suppresses every variant, or the duplicates resurrect the entry."""
-    from providers import get_provider_profile
+    from hermes_agent.providers import get_provider_profile
     profile = get_provider_profile(provider)
     claimed = profile.remove_credential_source(source) if profile else None
     if claimed is None:

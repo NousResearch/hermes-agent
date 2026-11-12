@@ -12,7 +12,7 @@ import pytest
 from hermes_agent.agent.client_lifecycle import ClientLifecycleMixin
 from hermes_agent.agent.error_classifier import classify_api_error
 from hermes_agent.agent.turn_api_error import settle_unrecovered_error
-from providers.base import ProviderProfile
+from hermes_agent.providers.base import ProviderProfile
 
 
 class _HostGone(ProviderProfile):

@@ -14,8 +14,8 @@ HOST = "https://api.wirefake.test/v1"
 
 @pytest.fixture
 def wire_profile():
-    import providers
-    from providers.base import ProviderProfile
+    from hermes_agent import providers
+    from hermes_agent.providers.base import ProviderProfile
     from utils import base_url_host_matches
 
     seen_keys = []

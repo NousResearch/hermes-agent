@@ -656,7 +656,7 @@ class AIAgent(
         if _is_external_process_provider(normalized_provider):
             return False
         # A provider serving several wires behind one endpoint decides per model (pure, no I/O).
-        from providers import get_provider_profile
+        from hermes_agent.providers import get_provider_profile
         profile = get_provider_profile(normalized_provider) if normalized_provider else None
         from hermes_agent.agent.provider_route_hooks import model_api_mode
         derived = model_api_mode(profile, model) if profile is not None else None

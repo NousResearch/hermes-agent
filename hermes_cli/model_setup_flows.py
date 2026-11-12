@@ -748,7 +748,7 @@ def _api_key_provider_model_list(provider_id: str, pconfig, existing_key: str, k
         # Substantial curated list — use it directly, skip live probe
         _show_curated(curated)
         return curated
-    from providers import get_provider_profile
+    from hermes_agent.providers import get_provider_profile
     profile = get_provider_profile(provider_id)
     if profile is not None:
         # The profile owns endpoint (models_url), headers and response shape. Same probe as the
@@ -1001,7 +1001,7 @@ _PLUGIN_FLOW_CREDENTIALS = {
 def _profile_model_setup_flow(provider_id: str):
     """``flow(config, current_model, args)`` for a registered profile that owns its ``hermes model``
     step (``ProviderProfile.model_setup_flow``), else None."""
-    from providers import get_provider_profile
+    from hermes_agent.providers import get_provider_profile
     profile = get_provider_profile(provider_id)
     return getattr(profile, "model_setup_flow", None) if profile is not None else None
 

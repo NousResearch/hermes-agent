@@ -750,7 +750,7 @@ def _profile_declares_native_details(provider_lower: str) -> bool:
     """A profile declaring ``native_reasoning_details_type`` consumes replayed details by contract."""
     if not provider_lower:
         return False
-    from providers import get_provider_profile
+    from hermes_agent.providers import get_provider_profile
 
     return bool(getattr(get_provider_profile(provider_lower), "native_reasoning_details_type", None))
 

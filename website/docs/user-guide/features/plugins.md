@@ -166,7 +166,7 @@ Within each source, Hermes also recognizes sub-category directories that route p
 | `plugins/delegation/<name>/` | Delegation strategies (`ctx.register_delegation_provider()`); `default` is today's routing | `PluginManager` (kind: `backend`, one level deeper) |
 | `plugins/memory/<name>/` | Memory providers (subclass `MemoryProvider`) | **Own loader** in `plugins/memory/__init__.py` (kind: `exclusive` — one active at a time) |
 | `plugins/context_engine/<name>/` | Context-compression engines (`ctx.register_context_engine()`) | **Own loader** in `plugins/context_engine/__init__.py` (one active at a time) |
-| `plugins/model-providers/<name>/` | LLM provider profiles (`register_provider(ProviderProfile(...))`) | **Own loader** in `providers/__init__.py` (lazily scanned on first `get_provider_profile()` call) |
+| `plugins/model-providers/<name>/` | LLM provider profiles (`register_provider(ProviderProfile(...))`) | **Own loader** in `hermes_agent/providers/__init__.py` (lazily scanned on first `get_provider_profile()` call) |
 
 User plugins at `~/.hermes/plugins/model-providers/<name>/` override bundled model providers of the same name (last-writer-wins in `register_provider()`), so you can replace a built-in provider profile without any repo edits. Memory providers resolve the other way round: for `~/.hermes/plugins/memory/<name>/` the **bundled** provider wins on a name collision (bundled, then user, then project, then entry points; first seen wins), so a user memory provider needs its own unique name.
 

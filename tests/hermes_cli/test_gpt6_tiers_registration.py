@@ -55,7 +55,7 @@ def test_gpt61_sol_takes_astra_ladder_without_astra_gating():
 def test_openrouter_omits_disable_the_openai_ladder_rejects(monkeypatch):
     """OpenRouter's catalog advertises ``none`` for both Sol generations; only 6.1 must omit the disable."""
     import hermes_cli.models_reasoning_caps as caps_mod
-    from providers import get_provider_profile
+    from hermes_agent.providers import get_provider_profile
 
     monkeypatch.setattr(caps_mod, "openrouter_model_reasoning_capabilities", lambda model: {
         "supports_reasoning": True, "mandatory": False,

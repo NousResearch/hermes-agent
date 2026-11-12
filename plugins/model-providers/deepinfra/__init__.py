@@ -4,8 +4,8 @@ their own plugin subsystems)."""
 from typing import Any
 
 from hermes_agent.agent.reasoning_effort import OPENAI_COMPAT_WIRE_EFFORTS, clamp_effort, requested_effort
-from providers import register_provider
-from providers.base import ProviderProfile
+from hermes_agent.providers import register_provider
+from hermes_agent.providers.base import ProviderProfile
 
 
 class _DeepInfraProfile(ProviderProfile):

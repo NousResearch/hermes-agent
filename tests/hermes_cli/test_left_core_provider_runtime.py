@@ -278,7 +278,7 @@ def test_a_provider_installed_during_resolution_resolves_in_that_same_call(tmp_p
     see the new profile, not answer "installed but not loaded: run hermes plugins enable"."""
     import sys
 
-    import providers
+    import hermes_agent.providers as providers  # noqa: PLR0402
     home = _copilot_home(tmp_path, monkeypatch)
     monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "stand-in-token")
     monkeypatch.setattr(providers, "_HOME_LAYERS", {})

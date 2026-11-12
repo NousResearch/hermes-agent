@@ -504,7 +504,7 @@ def _merge_nous_portal_messages_extra_body(agent, anthropic_kwargs: dict, api_me
     if getattr(agent, "provider", None) not in {"nous", "nous-portal", "nousresearch"}:
         return anthropic_kwargs
     try:
-        from providers import get_provider_profile
+        from hermes_agent.providers import get_provider_profile
         nous_profile = get_provider_profile("nous")
         if nous_profile is not None:
             anthropic_kwargs.setdefault("extra_body", {}).update(nous_profile.build_extra_body(
@@ -1449,7 +1449,7 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
     _qwen_meta = {"sessionId": agent.session_id or "hermes", "promptId": str(uuid.uuid4())} if _is_qwen else None
     _profile = None
     with contextlib.suppress(Exception):
-        from providers import get_provider_profile
+        from hermes_agent.providers import get_provider_profile
         _profile = get_provider_profile(agent.provider)
 
     _ephemeral_out = _consume_ephemeral_max_output(agent)

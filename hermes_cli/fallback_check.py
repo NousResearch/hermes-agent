@@ -94,7 +94,7 @@ def _reported_model_is_evidence(provider: str, model: str, client: Any) -> bool:
     """
     from openai import OpenAI
     from hermes_agent.agent.model_metadata import is_local_endpoint
-    from providers import get_provider_profile
+    from hermes_agent.providers import get_provider_profile
     from utils import base_url_hostname
     base_url = str(getattr(client, "base_url", "") or "")
     host = f".{base_url_hostname(base_url)}."

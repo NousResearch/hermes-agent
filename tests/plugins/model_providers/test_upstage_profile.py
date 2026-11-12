@@ -19,7 +19,7 @@ def upstage_profile():
     honest about the actual registration path (name + alias resolution).
     """
     from hermes_agent import model_tools
-    import providers
+    from hermes_agent import providers
 
     profile = providers.get_provider_profile("upstage")
     assert profile is not None, "upstage provider profile must be registered"

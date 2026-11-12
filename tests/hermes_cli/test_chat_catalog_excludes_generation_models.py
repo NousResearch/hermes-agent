@@ -6,7 +6,7 @@ Name shape and capability type are the catalog's own signals — not one model i
 import json
 from unittest.mock import MagicMock, patch
 
-from providers.base import ProviderProfile
+from hermes_agent.providers.base import ProviderProfile
 
 
 def _models_response(items):

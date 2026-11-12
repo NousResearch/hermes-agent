@@ -13,7 +13,7 @@ import pytest
 from hermes_agent.agent.chat_completion_helpers import _build_api_kwargs_for_mode
 from hermes_agent.agent.models_dev import ModelCapabilities
 from hermes_agent.agent.transports.chat_completions import ChatCompletionsTransport
-from providers import get_provider_profile
+from hermes_agent.providers import get_provider_profile
 
 
 class _Agent:

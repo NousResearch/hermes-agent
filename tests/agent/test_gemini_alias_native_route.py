@@ -5,7 +5,7 @@ from openai import OpenAI
 
 from hermes_agent.agent.agent_runtime_helpers import create_openai_client
 from hermes_agent.agent.gemini_native_adapter import GeminiNativeClient
-from providers import get_provider_profile
+from hermes_agent.providers import get_provider_profile
 
 
 def test_gemini_aliases_preserve_native_endpoint_selection():

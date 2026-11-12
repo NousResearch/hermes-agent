@@ -281,7 +281,7 @@ def _iter_builtin_candidates(models_dev_data: dict, excluded: set, seen: set):
         if alias_target and alias_target != hermes_id and alias_target in _AGGREGATOR_PROVIDERS:
             continue
         try:
-            from providers import get_provider_profile
+            from hermes_agent.providers import get_provider_profile
             prof = get_provider_profile(hermes_id)
             if prof is not None and prof.name != hermes_id:
                 continue
@@ -1193,7 +1193,7 @@ def _build_curated_lists(current_provider: str, current_base_url: str, current_m
     curated["openrouter"] = [mid for mid, _ in OPENROUTER_MODELS]
     # Plugin profiles without a built-in row: this home's static_models, else fallback_models, are the
     # curated floor, so the non-blocking GUI read (cold catalog cache) never lists an empty provider row.
-    from providers import list_providers
+    from hermes_agent.providers import list_providers
     for _pp in list_providers():
         if not curated.get(_pp.name) and (rows := list(_pp.static_models or _pp.fallback_models)):
             curated[_pp.name] = rows

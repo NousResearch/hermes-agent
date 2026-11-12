@@ -228,6 +228,7 @@ def test_canary_tag_pushed_without_a_draft_is_recovered_on_a_busy_repository(can
 
     body = github_bodies[tag]
     assert builds_table.MARKER in body
+    assert f"(https://github.com/fixture/release/commits/{tag})" in body
     assert len(builds_table.splice(body, _every_download(tag))) <= GITHUB_BODY_LIMIT
     assert [call[1:3] for call in calls].count(["workflow", "run"]) == 1
 

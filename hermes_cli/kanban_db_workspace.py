@@ -668,6 +668,24 @@ def _is_linked_worktree_checkout(path: Path) -> bool:
     )
 
 
+def _has_linked_worktree_gitfile(path: Path) -> bool:
+    """Whether local checkout metadata identifies a linked git worktree."""
+    gitfile = path / ".git"
+    if not gitfile.is_file():
+        return False
+    try:
+        gitdir_line = gitfile.read_text(encoding="utf-8").strip()
+    except OSError:
+        return False
+    prefix = "gitdir:"
+    if not gitdir_line.startswith(prefix):
+        return False
+    gitdir = Path(gitdir_line.removeprefix(prefix).strip())
+    if not gitdir.is_absolute():
+        gitdir = gitfile.parent / gitdir
+    return gitdir.resolve(strict=False).parent.name == "worktrees"
+
+
 def _nearest_existing_path(path: Path) -> Path:
     current = path
     while not current.exists() and current != current.parent:
@@ -772,6 +790,10 @@ def _resolve_worktree_workspace(task: Task, *, board: Optional[str] = None) -> t
 
     repo_root = _git_toplevel(requested)
     if repo_root is not None and _path_key(requested_resolved) == _path_key(repo_root):
+        # If the linked-worktree probe transiently failed, local worktree
+        # metadata plus the task's branch still prove this is its checkout.
+        if _has_linked_worktree_gitfile(requested) and _git_current_branch(requested) == branch_name:
+            return requested_resolved, branch_name
         return _anchored_worktree(repo_root, task.id, branch_name)
 
     repo_root = _repo_root_for_worktree_target(requested.parent)

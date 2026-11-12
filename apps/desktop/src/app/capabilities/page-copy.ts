@@ -8,7 +8,7 @@ const DESCRIPTION: Record<BundledLocale, string> = {
   es: 'Todo lo que Hermes puede usar: lo que existe, lo que está permitido y dónde has iniciado sesión. Para activar o desactivar algo en un agente, abre los ajustes de ese agente.',
   ja: 'Hermes が使えるもの：存在するもの、許可されているもの、サインイン済みのもの。特定のエージェントでオン・オフするには、そのエージェントの設定を開いてください。',
   zh: 'Hermes 能使用的一切：现有的、已允许的和已登录的。要为某个智能体开启或关闭某项内容，请打开该智能体的设置。',
-  'zh-hant': 'Hermes 能使用的一切：現有的、已允許的和已登入的。若要為某個代理開啟或關閉某項內容，請開啟該代理的設定。',
+  'zh-hant': 'Hermes 能使用的一切：現有的、已允許的和已登入的。若要為某個智慧體開啟或關閉某項內容，請開啟該智慧體的設定。',
   ru: 'Всё, что может использовать Hermes: что есть, что разрешено и где выполнен вход. Чтобы включить или выключить что-то для одного агента, откройте настройки этого агента.',
   ar: 'كل ما يمكن لـ Hermes استخدامه: ما هو موجود، وما هو مسموح، وما تم تسجيل الدخول إليه. لتشغيل شيء أو إيقافه لوكيل واحد، افتح إعدادات ذلك الوكيل.'
 }

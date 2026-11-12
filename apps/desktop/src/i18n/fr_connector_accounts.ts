@@ -16,7 +16,7 @@ export const frConnectorAccounts: NonNullable<TranslationOverrides['connectorsPa
   remove: 'Retirer',
   removeTitle: (app: string, name: string) => `Retirer le compte ${app} ${name} ?`,
   removeBody:
-    'Ce compte connecté sera retiré pour tous les agents utilisant le même compte Nous, pas seulement pour cet agent. Vos autres comptes restent connectés.',
+    "Ce compte connecté sera retiré pour tous les profils utilisant le même compte Nous, pas seulement pour ce profil. Vos autres comptes restent connectés.",
   retiredCount: (count: number) => `${count} retiré${count === 1 ? '' : 's'}`,
   status: {
     expired: 'Accès expiré',

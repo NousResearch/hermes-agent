@@ -168,7 +168,7 @@ seed(home / 'profiles' / 'developer' / 'state.db', [{'id': sys.argv[2], 'source'
 
         await entry.click()
         const answer = page.locator('[data-slot="aui_thread-viewport"]').getByText('Historical answer ' + row.id)
-        const failure = page.getByText("Couldn't open this session")
+        const failure = page.getByText("Couldn't open this chat")
         await expect(answer.or(failure).first()).toBeVisible({ timeout: 45_000 }).catch(() => undefined)
         results[row.id].opened = await answer.isVisible()
 

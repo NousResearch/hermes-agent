@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 
-import { I18nProvider, TRANSLATIONS } from '@/i18n'
+import { I18nProvider, resolveTranslations } from '@/i18n'
 
 import { ConfigField } from './config-field'
 import { fieldCopyForSchemaKey } from './field-copy'
@@ -11,7 +11,7 @@ afterEach(cleanup)
 it('renders the translated Echo Transcripts copy without changing its toggle value', () => {
   for (const locale of ['zh', 'zh-hant'] as const) {
     const onChange = vi.fn()
-    const t = TRANSLATIONS[locale]
+    const t = resolveTranslations(locale)
 
     const { unmount } = render(
       <I18nProvider configClient={null} initialLocale={locale}>

@@ -15,7 +15,7 @@ export const esConnectorAccounts: NonNullable<TranslationOverrides['connectorsPa
   remove: 'Quitar',
   removeTitle: (app: string, name: string) => `¿Quitar la cuenta ${name} de ${app}?`,
   removeBody:
-    'Esto elimina la cuenta conectada para todos los agentes que usan la misma cuenta de Nous, no solo para este agente. Tus otras cuentas siguen conectadas.',
+    'Esto elimina la cuenta conectada para todos los perfiles que usan la misma cuenta de Nous, no solo para este perfil. Tus otras cuentas siguen conectadas.',
   retiredCount: (count: number) => `${count} retirada${count === 1 ? '' : 's'}`,
   status: {
     expired: 'Acceso caducado',

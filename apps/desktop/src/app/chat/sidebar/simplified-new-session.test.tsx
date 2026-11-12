@@ -84,7 +84,7 @@ it('cancels without creating anything and keeps identically named agents on diff
 it('starts blank with this gateway’s default agent and makes no automatic routing promise', () => {
   render(<SimplifiedNewSession onFallback={vi.fn()} sessions={[]} />)
   openPicker()
-  fireEvent.click(screen.getByRole('option', { name: /Start blank session/ }))
+  fireEvent.click(screen.getByRole('option', { name: /Start blank chat/ }))
   expect(profile.newSessionInAgent).not.toHaveBeenCalled()
   fireEvent.click(screen.getByRole('button', { name: 'New session' }))
   expect(profile.newSessionInAgent).toHaveBeenCalledWith({ connectionId: 'alpha', profile: 'default' })

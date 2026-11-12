@@ -155,7 +155,7 @@ it('does not attribute a newly settled search to the previous profile while metr
 it('distinguishes a default selection from dismissing the new-session picker', () => {
   render(<SimplifiedNewSession onFallback={vi.fn()} sessions={[]} />)
   fireEvent.keyDown(screen.getByRole('combobox'), { key: 'Enter' })
-  fireEvent.click(screen.getByRole('option', { name: /Start blank session/ }))
+  fireEvent.click(screen.getByRole('option', { name: /Start blank chat/ }))
   expect(actions()['ia.new_session.default|click']).toBeUndefined()
   expect(profile.newSessionInProfile).not.toHaveBeenCalled()
   act(() => {

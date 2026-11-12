@@ -2,16 +2,16 @@ import type { GatewayHostTranslations } from './types_gateway_host'
 
 // Settings → Machines copy where the connection cannot change, spread into es.ts.
 export const esGatewayHost: GatewayHostTranslations = {
-  unavailableTitle: 'Ajustes de la máquina no disponibles',
+  unavailableTitle: 'Ajustes del gateway no disponibles',
   unavailableDesc:
     'Los ajustes de conexión solo se pueden cambiar desde la app Hermes Desktop en el equipo que la ejecuta.',
   webappHostTitle: 'Host de Hermes',
   webappHostDesc:
-    'La Webapp siempre se ejecuta en el host de Hermes que la sirve. Las conexiones guardadas de abajo son la lista de esta máquina, compartida con la app Hermes Desktop; las demás máquinas se alcanzan a través de este host.',
+    'La Webapp siempre se ejecuta en el host de Hermes que la sirve. Las conexiones guardadas de abajo son la lista de esta máquina, compartida con la app Hermes Desktop; los demás gateways se alcanzan a través de este host.',
   webappOauthPaste: {
     title: 'Terminar de iniciar sesión',
     description:
-      'Si la pestaña de inicio de sesión terminó en una dirección que no carga (este navegador no está en la máquina que ejecuta Hermes), pega esa dirección aquí.',
+      'Si la pestaña de inicio de sesión terminó en una dirección que no carga (este navegador no está en la máquina del gateway), pega esa dirección aquí.',
     placeholder: 'http://127.0.0.1:…/webapp/gateway-connections/oauth/callback?…',
     finish: 'Terminar',
     failed: 'No se pudo terminar el inicio de sesión'
@@ -33,25 +33,25 @@ export const esGatewayHost: GatewayHostTranslations = {
     runningPublic: 'Servido a través de tu URL.',
     runningLocal:
       'Solo este ordenador puede abrirla. Detenla y vuelve a iniciarla para abrirla desde otros dispositivos.',
-    pendingOn: 'Guardado. Hermes servirá la aplicación web cuando se reinicie.',
-    pendingOff: 'Desactivado, pero Hermes sigue sirviendo la aplicación web hasta que se reinicie.',
-    unavailableDetail: reason => `Hermes no pudo servir la aplicación web: ${reason}`,
+    pendingOn: 'Guardado. El gateway servirá la aplicación web cuando se reinicie.',
+    pendingOff: 'Desactivado, pero el gateway sigue sirviendo la aplicación web hasta que se reinicie.',
+    unavailableDetail: reason => `El gateway no pudo servir la aplicación web: ${reason}`,
     restartBusy:
-      'Guardado. Hay un chat en curso, así que Hermes no se reinició. Elige «Reiniciar Hermes» cuando termine.',
-    restartFailed: 'Guardado, pero Hermes no pudo reiniciarse. Elige «Reiniciar Hermes» para volver a intentarlo.',
-    restartFailedBecause: reason => `Hermes no pudo reiniciarse: ${reason}`,
-    startTimedOut: 'Hermes no sirvió la aplicación web en 90 segundos.',
-    stopTimedOut: 'Hermes no dejó de servir la aplicación web en 90 segundos.',
+      'Guardado. Hay un chat en curso, así que el gateway no se reinició. Elige «Reiniciar gateway» cuando termine.',
+    restartFailed: 'Guardado, pero el gateway no pudo reiniciarse. Elige «Reiniciar gateway» para volver a intentarlo.',
+    restartFailedBecause: reason => `El gateway no pudo reiniciarse: ${reason}`,
+    startTimedOut: 'El gateway no sirvió la aplicación web en 90 segundos.',
+    stopTimedOut: 'El gateway no dejó de servir la aplicación web en 90 segundos.',
     startStages: {
       preparing: 'Preparando la aplicación web. Compilarla puede tardar unos minutos.',
       building: 'Compilando la aplicación web. Puede tardar unos minutos.',
       registering: 'Configurando el inicio de sesión de Nous para esta dirección.',
-      restarting: 'Reiniciando Hermes para servir la aplicación web.'
+      restarting: 'Reiniciando el gateway para servir la aplicación web.'
     },
     startElapsed: time => `Tiempo transcurrido: ${time}`,
     start: 'Iniciar',
     stop: 'Detener',
-    restartGateway: 'Reiniciar Hermes',
+    restartGateway: 'Reiniciar gateway',
     modeLan: 'Esta red',
     modeLanDetail: url => `Los dispositivos de tu wifi abren ${url}. Úsalo solo en una red de confianza.`,
     lanUnencrypted: 'La conexión no está cifrada: otros en esta red podrían leer lo que envías y recibes.',

@@ -35,8 +35,8 @@ export const deAuxTasks: AuxTaskCopyMap = {
     hint: 'Aufgaben zerlegen'
   },
   profile_describer: {
-    label: 'Agenten-Beschreiber',
-    hint: 'Automatische Agentenbeschreibungen'
+    label: 'Profil-Beschreiber',
+    hint: 'Automatische Profilbeschreibungen'
   },
   curator: {
     label: 'Kurator',

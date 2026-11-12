@@ -2748,6 +2748,7 @@ export interface Translations extends NoticeTranslations {
     tabLinks: string
     noArtifactsTitle: string
     noArtifactsDesc: string
+    partialIndex: (failed: number, total: number) => string
     failedLoad: string
     openFailed: string
     itemsImage: string
@@ -2940,6 +2941,7 @@ export interface Translations extends NoticeTranslations {
     placeholderStarting: string
     placeholderReconnecting: string
     placeholderFollowUp: string
+    browseAllSessions: string
     newSessionPlaceholders: readonly string[]
     followUpPlaceholders: readonly string[]
     startVoice: string
@@ -4226,6 +4228,7 @@ export interface Translations extends NoticeTranslations {
   desktop: {
     audioReadFailed: string
     sessionUnavailable: string
+    sessionOpenFailed: string
     createSessionFailed: string
     promptFailed: string
     providerCredentialRequired: string

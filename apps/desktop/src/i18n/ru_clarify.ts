@@ -2,7 +2,7 @@ import type { ClarifyCopy } from './types_clarify'
 
 export const ruClarify: Partial<ClarifyCopy> = {
   notReady: 'Запрос уточнения ещё не готов',
-  gatewayDisconnected: 'Hermes не подключён',
+  gatewayDisconnected: 'Шлюз Hermes не подключён',
   sendFailed: 'Не удалось отправить ответ на уточнение',
   loadingQuestion: 'Загрузка вопроса…',
   other: 'Другое (введите ответ)',

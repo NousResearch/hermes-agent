@@ -1,5 +1,4 @@
 import type { TranslationOverrides } from './define-locale'
-import { desktopTerms } from './desktop-terms'
 
 export const zhHantCommon = {
   common: {
@@ -17,7 +16,7 @@ export const zhHantCommon = {
     connect: '連線',
     connecting: '連線中',
     continue: '繼續',
-    bots: desktopTerms['zh-hant'].agents,
+    bots: '機器人',
     copied: '已複製',
     copy: '複製',
     copyFailed: '複製失敗',

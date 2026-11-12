@@ -19,7 +19,7 @@ export const frPluginUpdate: PluginUpdateTranslations = {
   updateToPin: (sha: string) => `Mettre à jour vers ${sha}`,
   updateFailed: (name: string) => `Impossible de mettre à jour ${name}`,
   updated: (name: string) =>
-    `${name} mis à jour vers l’épinglage actuel du catalogue. Redémarrez Hermes pour l’appliquer.`,
+    `${name} mis à jour vers l’épinglage actuel du catalogue. Redémarrez le gateway pour l’appliquer.`,
   updateConsentTitle: (name: string) => `${name} demande davantage`,
   updateConsentBody: (name: string, sha: string) =>
     `Le nouvel épinglage de ${name} dans le catalogue (${sha}) ajoute des surfaces que la version installée n’a pas. Appliquez-le uniquement si vous leur faites confiance :`,

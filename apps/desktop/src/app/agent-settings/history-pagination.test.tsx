@@ -104,7 +104,7 @@ function renderHistory() {
 it('keeps earlier history reachable beyond 500 rows and deduplicates pinned backfills', async () => {
   renderHistory()
   await screen.findByText('History entry 24')
-  expect(screen.queryByText('All sessions loaded')).toBeNull()
+  expect(screen.queryByText('All chats loaded')).toBeNull()
   const loadMore = screen.getByRole('button', { name: 'Load more' })
 
   for (let offset = 25; offset <= 500; offset += 25) {
@@ -126,7 +126,7 @@ it('searches the remaining pages instead of calling a loaded-subset miss empty h
   })
   await screen.findByText('History entry 500', {}, { timeout: 15_000 })
   expect(screen.queryByText('History entry 24')).toBeNull()
-  expect(screen.getByText('All sessions loaded')).toBeTruthy()
+  expect(screen.getByText('All chats loaded')).toBeTruthy()
 }, 20_000)
 
 it('applies source unions and archive boundaries to backfilled pins without exposing canonical chats', async () => {
@@ -145,7 +145,7 @@ it('applies source unions and archive boundaries to backfilled pins without expo
   expect(screen.queryByText('Live pinned backfill')).toBeNull()
   expect(screen.queryByText('Bot Chat')).toBeNull()
   fireEvent.click(screen.getByRole('button', { name: 'Done' }))
-  fireEvent.click(screen.getByRole('checkbox', { name: 'Select visible sessions' }))
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Select visible chats' }))
   fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
   const confirmation = await screen.findByRole('dialog')
   expect(within(confirmation).getByText('Archived conversation')).toBeTruthy()
@@ -176,7 +176,7 @@ it('removes applied filter chips independently without resetting the other filte
 it('shows partial selection and selects or clears the visible history together', async () => {
   renderHistory()
   await screen.findByText('History entry 24')
-  const all = screen.getByRole('checkbox', { name: 'Select visible sessions' })
+  const all = screen.getByRole('checkbox', { name: 'Select visible chats' })
   const row = screen.getByRole('checkbox', { name: 'Selected: History entry 0' })
   fireEvent.click(row)
   expect(all.getAttribute('aria-checked')).toBe('mixed')

@@ -7,7 +7,7 @@ export const ruThemePicker: ThemePickerCopy = {
   customColor: 'Свой цвет',
   themeAccent: 'Цвет темы',
   basic: 'Базовый',
-  basicDetail: 'Для общения с агентом.',
+  basicDetail: 'Для общения с Hermes.',
   elite: 'Элитный',
   eliteDetail: 'Для разработчиков: терминал, файлы, диффы.',
   noPick: 'Не выбрано'

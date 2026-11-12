@@ -2,15 +2,15 @@ import type { GatewayHostTranslations } from './types_gateway_host'
 
 // Settings → Machines copy where the connection cannot change, spread into de.ts.
 export const deGatewayHost: GatewayHostTranslations = {
-  unavailableTitle: 'Rechnereinstellungen nicht verfügbar',
-  unavailableDesc: 'Die Desktop-IPC-Brücke stellt keine Rechnereinstellungen bereit.',
+  unavailableTitle: 'Gateway-Einstellungen nicht verfügbar',
+  unavailableDesc: 'Die Desktop-IPC-Brücke stellt keine Gateway-Einstellungen bereit.',
   webappHostTitle: 'Hermes-Host',
   webappHostDesc:
-    'Die Webapp läuft immer auf dem Hermes-Host, der sie bereitstellt. Die gespeicherten Verbindungen unten sind die Liste dieses Rechners, geteilt mit der Hermes-Desktop-App; andere Rechner werden über diesen Host erreicht.',
+    'Die Webapp läuft immer auf dem Hermes-Host, der sie bereitstellt. Die gespeicherten Verbindungen unten sind die Liste dieses Rechners, geteilt mit der Hermes-Desktop-App; andere Gateways werden über diesen Host erreicht.',
   webappOauthPaste: {
     title: 'Anmeldung abschließen',
     description:
-      'Wenn der Anmelde-Tab auf einer Adresse endete, die nicht lädt (dieser Browser läuft nicht auf dem Rechner mit Hermes), füge diese Adresse hier ein.',
+      'Wenn der Anmelde-Tab auf einer Adresse endete, die nicht lädt (dieser Browser läuft nicht auf dem Rechner des Gateways), füge diese Adresse hier ein.',
     placeholder: 'http://127.0.0.1:…/webapp/gateway-connections/oauth/callback?…',
     finish: 'Abschließen',
     failed: 'Anmeldung konnte nicht abgeschlossen werden'
@@ -32,26 +32,26 @@ export const deGatewayHost: GatewayHostTranslations = {
     runningPublic: 'Über deine URL bereitgestellt.',
     runningLocal:
       'Nur dieser Computer kann die Web-App öffnen. Stoppe sie und starte sie erneut, um sie von anderen Geräten aus zu öffnen.',
-    pendingOn: 'Gespeichert. Hermes stellt die Web-App nach seinem Neustart bereit.',
-    pendingOff: 'Ausgeschaltet, aber Hermes stellt die Web-App bis zu seinem Neustart weiter bereit.',
-    unavailableDetail: reason => `Hermes konnte die Web-App nicht bereitstellen: ${reason}`,
+    pendingOn: 'Gespeichert. Das Gateway stellt die Web-App nach seinem Neustart bereit.',
+    pendingOff: 'Ausgeschaltet, aber das Gateway stellt die Web-App bis zu seinem Neustart weiter bereit.',
+    unavailableDetail: reason => `Das Gateway konnte die Web-App nicht bereitstellen: ${reason}`,
     restartBusy:
-      'Gespeichert. Ein Chat läuft, deshalb wurde Hermes nicht neu gestartet. Wähle „Hermes neu starten“, sobald er beendet ist.',
+      'Gespeichert. Ein Chat läuft, deshalb wurde das Gateway nicht neu gestartet. Wähle „Gateway neu starten“, sobald er beendet ist.',
     restartFailed:
-      'Gespeichert, aber Hermes konnte nicht neu starten. Wähle „Hermes neu starten“, um es erneut zu versuchen.',
-    restartFailedBecause: reason => `Hermes konnte nicht neu starten: ${reason}`,
-    startTimedOut: 'Hermes hat die Web-App nicht innerhalb von 90 Sekunden bereitgestellt.',
-    stopTimedOut: 'Hermes hat die Bereitstellung der Web-App nicht innerhalb von 90 Sekunden beendet.',
+      'Gespeichert, aber das Gateway konnte nicht neu starten. Wähle „Gateway neu starten“, um es erneut zu versuchen.',
+    restartFailedBecause: reason => `Das Gateway konnte nicht neu starten: ${reason}`,
+    startTimedOut: 'Das Gateway hat die Web-App nicht innerhalb von 90 Sekunden bereitgestellt.',
+    stopTimedOut: 'Das Gateway hat die Bereitstellung der Web-App nicht innerhalb von 90 Sekunden beendet.',
     startStages: {
       preparing: 'Die Web-App wird vorbereitet. Das Erstellen kann einige Minuten dauern.',
       building: 'Die Web-App wird erstellt. Das kann einige Minuten dauern.',
       registering: 'Die Nous-Anmeldung wird für diese Adresse eingerichtet.',
-      restarting: 'Hermes wird neu gestartet, um die Web-App bereitzustellen.'
+      restarting: 'Das Gateway wird neu gestartet, um die Web-App bereitzustellen.'
     },
     startElapsed: time => `Verstrichene Zeit: ${time}`,
     start: 'Starten',
     stop: 'Stoppen',
-    restartGateway: 'Hermes neu starten',
+    restartGateway: 'Gateway neu starten',
     modeLan: 'Dieses Netzwerk',
     modeLanDetail: url => `Geräte in deinem WLAN öffnen ${url}. Nur in einem vertrauenswürdigen Netzwerk verwenden.`,
     lanUnencrypted:

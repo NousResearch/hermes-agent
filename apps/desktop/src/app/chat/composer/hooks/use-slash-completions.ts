@@ -3,7 +3,7 @@ import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo } from 'react'
 
 import type { HermesGateway } from '@/hermes'
-import { useI18n } from '@/i18n'
+import { translateNow, useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import {
   type CommandsCatalogLike,
@@ -168,7 +168,7 @@ export function useSlashCompletions(options: {
           text: `/resume ${session.id}`,
           display: sessionTitle(session),
           meta: (session.preview ?? '').trim(),
-          group: 'Sessions'
+          group: translateNow('sidebar.sessions')
         }))
 
         // Trailing "more" affordance (Cursor-style): picking it opens the full
@@ -176,9 +176,9 @@ export function useSlashCompletions(options: {
         // submitting it (Enter) still opens the overlay if the action is skipped.
         items.push({
           text: '/resume',
-          display: 'Browse all sessions…',
+          display: translateNow('composer.browseAllSessions'),
           meta: '',
-          group: 'Sessions',
+          group: translateNow('sidebar.sessions'),
           action: 'session-picker'
         })
 

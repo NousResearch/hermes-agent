@@ -24,24 +24,24 @@ export const deDesktopCommands = {
   configHeader: 'Konfiguration (Anzeige, Freigaben, Einfügen und Sprache; alles andere wird nicht angezeigt):',
   configDefaults: '(Standardwerte)',
   configFooter:
-    'Ändere Einstellungen unter Einstellungen oder bearbeite config.yaml mit `hermes config edit` auf dem verbundenen Rechner.',
+    'Ändere Einstellungen unter Einstellungen oder bearbeite config.yaml mit `hermes config edit` auf dem Gateway-Host.',
   historyHeader: (count: string) => `Gesprächsverlauf (${count} Nachrichten):`,
   historyEmpty: 'Noch keine Nachrichten.',
   historyYou: 'Du',
   historyHermes: 'Hermes',
   saveUsage: 'Verwendung: /save [json|md|html] [filename] [redact]',
   saveLegacyRefused:
-    'Nicht gespeichert: Hermes auf diesem Rechner kann keine geschwärzte, benannte oder Nicht-JSON-Kopie exportieren. Aktualisiere Hermes oder führe /save ohne Optionen aus, um rohes JSON auf dem verbundenen Rechner zu schreiben.',
-  savedOnHost: (path: string) => `Auf dem verbundenen Rechner gespeichert: ${path}`,
+    'Nicht gespeichert: Dieses Gateway kann keine geschwärzte, benannte oder Nicht-JSON-Kopie exportieren. Aktualisiere das Gateway oder führe /save ohne Optionen aus, um rohes JSON auf dem Gateway-Host zu schreiben.',
+  savedOnHost: (path: string) => `Auf dem Gateway-Host gespeichert: ${path}`,
   unknownPath: '(unbekannter Pfad)',
   saveUnsupported: 'Fehler: Diese Desktop-Version kann keine Dateien speichern',
   saveDialogTitle: 'Unterhaltung speichern',
   savedTo: (path: string) => `Unterhaltung gespeichert unter ${path}`,
   saveCancelled: 'Nicht gespeichert (abgebrochen).',
   exportRemote:
-    '/export packt einen Agenten auf dem verbundenen Rechner, und das ist nicht dieser Rechner. Führe `hermes profile export` auf dem verbundenen Rechner aus.',
+    '/export packt ein Profil auf dem Gateway-Host, und das ist nicht dieser Rechner. Führe `hermes profile export` auf diesem Host aus.',
   importRemote:
-    '/import installiert einen Agenten auf dem verbundenen Rechner, und das ist nicht dieser Rechner. Führe `hermes profile import <archive>` auf dem verbundenen Rechner aus.',
+    '/import installiert ein Profil auf dem Gateway-Host, und das ist nicht dieser Rechner. Führe `hermes profile import <archive>` auf diesem Host aus.',
   timestampsUsage: 'Verwendung: /timestamps [on|off|status]',
   timestampsOn: 'Zeitstempel: an (dieses Fenster; display.timestamps in config.yaml setzen, um es zu behalten)',
   timestampsOff: 'Zeitstempel: aus (dieses Fenster; display.timestamps in config.yaml setzen, um es zu behalten)'

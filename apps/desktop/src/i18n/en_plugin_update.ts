@@ -17,7 +17,7 @@ export const enPluginUpdate: PluginUpdateTranslations = {
   },
   updateToPin: (sha: string) => `Update to ${sha}`,
   updateFailed: (name: string) => `Could not update ${name}`,
-  updated: (name: string) => `${name} updated to the current catalog pin. Restart Hermes to apply.`,
+  updated: (name: string) => `${name} updated to the current catalog pin. Restart the gateway to apply.`,
   updateConsentTitle: (name: string) => `${name} asks for more`,
   updateConsentBody: (name: string, sha: string) =>
     `The new catalog pin of ${name} (${sha}) adds surfaces the installed version does not have. Apply it only if you trust them:`,

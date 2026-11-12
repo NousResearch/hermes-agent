@@ -23,7 +23,7 @@ export const arAssistant = {
       skill: name => `المهارة ${name}`,
       kind: { plugin: 'إضافة', skill: 'مهارة' },
       tier: { official: 'رسمي', verified: 'موثّق', community: 'مجتمعي' },
-      targetProfile: profile => `يُثبَّت للوكيل ${profile}`,
+      targetProfile: profile => `يُثبَّت في ملفك الشخصي ${profile}`,
       sendFailed: 'تعذّر إرسال ردك. حاول مرة أخرى.',
       commitLabel: 'الإيداع',
       subdirLabel: 'المجلد',
@@ -194,8 +194,8 @@ export const arAssistant = {
           body: 'تسجيل الدخول بحساب Nous مجاني.'
         },
         cron_session_read_only: {
-          title: 'هذه المحادثة تابعة لمهمة روتينية',
-          body: 'إنها مخصصة لتشغيل تلك المهمة الروتينية، لذا لم تُنفَّذ رسالتك. ابدأ محادثة جديدة لإرسالها.'
+          title: 'هذه المحادثة تابعة لمهمة مجدولة',
+          body: 'إنها تشغّل تلك المهمة فقط، لذا لم تُنفَّذ رسالتك. ابدأ محادثة جديدة لإرسالها.'
         },
         session_read_only: {
           title: 'هذه المحادثة للقراءة فقط',
@@ -284,7 +284,7 @@ export const arAssistant = {
       attachingFile: 'جار إرفاق الملف'
     },
     approval: {
-      gatewayDisconnected: 'الجهاز غير متصل',
+      gatewayDisconnected: 'البوابة غير متصلة',
       sendFailed: 'فشل الإرسال',
       run: 'تشغيل',
       command: 'الأمر',
@@ -299,7 +299,7 @@ export const arAssistant = {
     },
     clarify: {
       notReady: 'غير جاهز',
-      gatewayDisconnected: 'الجهاز غير متصل',
+      gatewayDisconnected: 'البوابة غير متصلة',
       sendFailed: 'فشل الإرسال',
       loadingQuestion: 'جار تحميل السؤال...',
       other: 'غير ذلك',
@@ -411,9 +411,9 @@ export const arAssistant = {
           pendingAction: 'جار السؤال'
         },
         cronjob: {
-          done: 'تم إعداد المهمة الروتينية',
-          pending: 'جار إعداد المهمة الروتينية',
-          pendingAction: 'جار الإعداد'
+          done: 'مهمة مجدولة',
+          pending: 'جار جدولة المهمة',
+          pendingAction: 'جار الجدولة'
         },
         edit_file: {
           done: 'تم تحرير الملف',

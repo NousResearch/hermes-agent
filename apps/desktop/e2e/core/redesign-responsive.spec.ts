@@ -308,7 +308,7 @@ async function exerciseHistoryPreview(page: Page) {
   ]) {
     await page.setViewportSize(viewport)
     await page
-      .getByRole('button', { name: /^Session actions/ })
+      .getByRole('button', { name: /^Chat actions/ })
       .first()
       .tap()
     await page.getByRole('menuitem', { name: 'Preview', exact: true }).tap()

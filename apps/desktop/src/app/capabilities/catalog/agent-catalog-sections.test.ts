@@ -11,7 +11,7 @@ const entry = (id: string, patch: Partial<CatalogEntry> = {}) =>
   ({ id, name: id, source: 'community', category: 'general', categoryLabel: 'General', ...patch }) as CatalogEntry
 
 describe('agentCatalogSections', () => {
-  it('splits an agent’s skills into built in, added from the library and not added, dropping empty ones', () => {
+  it('splits an agent’s skills into built in, added from the catalog and not added, dropping empty ones', () => {
     const installed = new Set(['notion', 'honcho'])
 
     const sections = agentCatalogSections({
@@ -23,7 +23,7 @@ describe('agentCatalogSections', () => {
 
     expect(sections.map(section => [section.title, section.entries.map(item => item.id)])).toEqual([
       ['Built in', ['notion']],
-      ['Added from the library', ['honcho']],
+      ['Added from the catalog', ['honcho']],
       ['Not added to this agent', ['dynamic-workflow']]
     ])
     expect(sections[0]!.describe(7, 58)).toBe('Ship with every agent. Showing 7 of 58.')

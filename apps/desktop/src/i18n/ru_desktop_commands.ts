@@ -23,24 +23,24 @@ export const ruDesktopCommands = {
   configHeader: 'Конфигурация (настройки отображения, подтверждений, вставки и голоса; остальное не показывается):',
   configDefaults: '(по умолчанию)',
   configFooter:
-    'Меняйте настройки в «Настройках» или редактируйте config.yaml командой `hermes config edit` на подключённом компьютере.',
+    'Меняйте настройки в «Настройках» или редактируйте config.yaml командой `hermes config edit` на хосте шлюза.',
   historyHeader: (count: string) => `История разговора (сообщений: ${count}):`,
   historyEmpty: 'Сообщений пока нет.',
   historyYou: 'Вы',
-  historyHermes: 'Агент',
+  historyHermes: 'Hermes',
   saveUsage: 'использование: /save [json|md|html] [filename] [redact]',
   saveLegacyRefused:
-    'Не сохранено: Hermes на этом компьютере не умеет экспортировать скрытую, именованную или не-JSON копию. Обновите Hermes или выполните /save без параметров, чтобы записать исходный JSON на подключённом компьютере.',
-  savedOnHost: (path: string) => `Сохранено на подключённом компьютере: ${path}`,
+    'Не сохранено: этот шлюз не умеет экспортировать скрытую, именованную или не-JSON копию. Обновите шлюз или выполните /save без параметров, чтобы записать исходный JSON на хосте шлюза.',
+  savedOnHost: (path: string) => `Сохранено на хосте шлюза: ${path}`,
   unknownPath: '(путь неизвестен)',
   saveUnsupported: 'ошибка: эта сборка приложения не умеет сохранять файлы',
   saveDialogTitle: 'Сохранить разговор',
   savedTo: (path: string) => `Разговор сохранён в ${path}`,
   saveCancelled: 'Не сохранено (отменено).',
   exportRemote:
-    '/export упаковывает агента с подключённого компьютера, а не с этого устройства. Выполните `hermes profile export` на подключённом компьютере.',
+    '/export упаковывает профиль с хоста шлюза, а это не этот компьютер. Выполните `hermes profile export` на том хосте.',
   importRemote:
-    '/import устанавливает агента на подключённый компьютер, а не на это устройство. Выполните `hermes profile import <archive>` на подключённом компьютере.',
+    '/import устанавливает профиль на хост шлюза, а это не этот компьютер. Выполните `hermes profile import <archive>` на том хосте.',
   timestampsUsage: 'использование: /timestamps [on|off|status]',
   timestampsOn: 'Метки времени: вкл. (только это окно; чтобы сохранить, задайте display.timestamps в config.yaml)',
   timestampsOff: 'Метки времени: выкл. (только это окно; чтобы сохранить, задайте display.timestamps в config.yaml)'

@@ -8,6 +8,8 @@ export const arSessionCommands = {
   retryUnsupported: '/retry: لا يمكن إعادة محاولة الوسائط أو أجزاء المحتوى غير المعروفة',
   busy: (command: string) =>
     `الجلسة مشغولة — ما زال Hermes يرد. أوقف الرد الحالي أولاً (زر الإيقاف، أو Ctrl+C في الطرفية)، ثم شغّل /${command}.`,
+  titleSet: (title: string, queued: boolean) => `تم تعيين عنوان الجلسة: ${title}${queued ? ' (في الانتظار حتى تبدأ الجلسة)' : ''}`,
+  titleCleared: 'تم مسح عنوان الجلسة.',
   busyCompressing: (command: string) =>
     `الجلسة مشغولة — يجري تنفيذ /compress؛ شغّل /${command} عند انتهائه.`,
   steerUsage: 'الاستخدام: /steer <الطلب>',

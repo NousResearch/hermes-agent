@@ -3,48 +3,48 @@ import type { BundledLocale } from '@/i18n/types'
 
 const copy = {
   en: {
-    newSessionIn: 'New session in',
-    blank: 'Start blank session',
+    newSessionIn: 'New chat in',
+    blank: 'Start blank chat',
     blankHint: 'Uses the default agent on this machine.'
   },
   fr: {
-    newSessionIn: 'Nouvelle session avec',
-    blank: 'Démarrer une session vierge',
+    newSessionIn: 'Nouvelle discussion avec',
+    blank: 'Démarrer une discussion vierge',
     blankHint: 'Utilise l’agent par défaut de cette machine.'
   },
   de: {
-    newSessionIn: 'Neue Sitzung mit',
-    blank: 'Leere Sitzung starten',
+    newSessionIn: 'Neuer Chat mit',
+    blank: 'Leeren Chat starten',
     blankHint: 'Verwendet den Standardagenten dieses Rechners.'
   },
   es: {
-    newSessionIn: 'Nueva sesión con',
-    blank: 'Iniciar sesión en blanco',
+    newSessionIn: 'Nuevo chat en',
+    blank: 'Iniciar chat en blanco',
     blankHint: 'Usa el agente predeterminado de esta máquina.'
   },
   ja: {
-    newSessionIn: '新しいセッションのエージェント',
-    blank: '空のセッションを開始',
+    newSessionIn: '新しいチャットの開始先',
+    blank: '空のチャットを開始',
     blankHint: 'このマシンのデフォルトエージェントを使用します。'
   },
   zh: {
-    newSessionIn: '新建会话使用',
-    blank: '开始空白会话',
+    newSessionIn: '新建对话位于',
+    blank: '开始空白对话',
     blankHint: '使用此机器的默认智能体。'
   },
   'zh-hant': {
-    newSessionIn: '新建工作階段使用',
-    blank: '開始空白工作階段',
-    blankHint: '使用此機器的預設代理。'
+    newSessionIn: '新對話使用',
+    blank: '開始空白對話',
+    blankHint: '使用此機器的預設智慧體。'
   },
   ru: {
-    newSessionIn: 'Новый сеанс с',
-    blank: 'Начать пустой сеанс',
+    newSessionIn: 'Новый чат в',
+    blank: 'Начать пустой чат',
     blankHint: 'Используется агент по умолчанию на этом компьютере.'
   },
   ar: {
-    newSessionIn: 'جلسة جديدة مع',
-    blank: 'بدء جلسة فارغة',
+    newSessionIn: 'محادثة جديدة مع',
+    blank: 'بدء محادثة فارغة',
     blankHint: 'يستخدم الوكيل الافتراضي على هذا الجهاز.'
   }
 } satisfies Record<BundledLocale, { newSessionIn: string; blank: string; blankHint: string }>

@@ -15,7 +15,7 @@ export const enConnectorAccounts: Translations['connectorsPage']['accounts'] = {
   remove: 'Remove',
   removeTitle: (app: string, name: string) => `Remove the ${name} ${app} account?`,
   removeBody:
-    'This removes the connected account for all agents using the same Nous account, not just this agent. Your other accounts stay connected.',
+    'This removes the connected account for all profiles using the same Nous account, not just this profile. Your other accounts stay connected.',
   retiredCount: (count: number) => `${count} retired`,
   status: {
     expired: 'Access expired',

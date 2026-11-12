@@ -8,6 +8,8 @@ export const zhHantSessionCommands = {
   retryUnsupported: '/retry：無法重試包含媒體或未知內容的訊息',
   busy: (command: string) =>
     `會話忙碌中 — Hermes 仍在回覆。請先停止目前回覆（Stop 按鈕，或在終端機中按 Ctrl+C），然後再執行 /${command}。`,
+  titleSet: (title: string, queued: boolean) => `已設定工作階段標題：${title}${queued ? '（工作階段初始化後生效）' : ''}`,
+  titleCleared: '已清除工作階段標題。',
   busyCompressing: (command: string) =>
     `會話忙碌中 — 正在執行 /compress；完成後再執行 /${command}。`,
   steerUsage: '用法：/steer <提示>',

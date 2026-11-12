@@ -50,6 +50,7 @@ const EMPTY_ARTIFACTS: ArtifactRecord[] = []
 function useSkippedSessionsNotice(index: ArtifactIndex | undefined) {
   const { t } = useI18n()
   const failedLoad = t.artifacts.failedLoad
+  const partialIndex = t.artifacts.partialIndex
   const failures = index?.failures
   const sessions = index?.sessions ?? 0
 
@@ -75,11 +76,11 @@ function useSkippedSessionsNotice(index: ArtifactIndex | undefined) {
       id: 'artifacts-partial-load',
       kind: 'warning',
       title: failedLoad,
-      message: `Skipped ${failures.length} of ${sessions} recent sessions while indexing artifacts.`,
+      message: partialIndex(failures.length, sessions),
       detail,
       durationMs: 10_000
     })
-  }, [failedLoad, failures, sessions])
+  }, [failedLoad, failures, partialIndex, sessions])
 }
 
 /** The Library's index: null until the first index for this machine exists, then the cached one

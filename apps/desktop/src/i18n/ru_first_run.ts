@@ -58,7 +58,7 @@ export const ruFirstRun: FirstRunCopy = {
     notNow: 'Не сейчас'
   },
   intro: {
-    greeting: 'Привет, я ваш агент.',
+    greeting: 'Привет, я Hermes.',
     plan: 'Давайте всё настроим под вас. А потом сделаем что-нибудь классное.'
   },
   rerun: {

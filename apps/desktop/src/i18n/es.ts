@@ -2,7 +2,6 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
-import { desktopTerms } from './desktop-terms'
 import { esBoot } from './es_boot'
 import { esClarify } from './es_clarify'
 import { esConnectorAccounts } from './es_connector_accounts'
@@ -34,7 +33,7 @@ export const esOverrides = {
   simplifiedAgents: simplifiedAgentsCopy['es'],
   gatewayGroupOpen: {
     opening: 'Abriendo el chat de grupo…',
-    lookupFailed: 'No se pudo encontrar este grupo en la máquina. Inténtalo de nuevo.',
+    lookupFailed: "No se pudo encontrar este grupo en la pasarela. Inténtalo de nuevo.",
     missing: 'Este chat de grupo ya no existe.'
   },
   sharedMetrics: esSharedMetrics,
@@ -172,7 +171,7 @@ export const esOverrides = {
       disconnect: 'Desconectar',
       disconnectTitle: (name: string) => `¿Desconectar ${name}?`,
       disconnectBody:
-        'Esto desconecta la cuenta para todos los agentes que usan la misma cuenta de Nous, no solo para este agente. Puedes volver a conectarla cuando quieras.',
+        'Esto desconecta la cuenta para todos los perfiles que usan la misma cuenta de Nous, no solo para este perfil. Puedes volver a conectarla cuando quieras.',
       menuRefreshTools: 'Actualizar herramientas',
       moreActions: 'Más acciones',
       removeServerTitle: (name: string) => `¿Quitar ${name}?`,
@@ -185,7 +184,7 @@ export const esOverrides = {
       turnOffLocal: 'Desactivar el servidor local',
       providedByPlugin: (plugin: string) => `Proporcionado por el plugin ${plugin}`,
       openPlugins: 'Abrir la pestaña Plugins',
-      nousLine: 'Las apps de Nous siguen a tu cuenta, no al agente.',
+      nousLine: 'Las apps de Nous siguen a tu cuenta, no al perfil.',
       rulesReadOnly: 'Las reglas no se pueden cambiar ahora.',
       rulesAppOff: (name: string) => `Activa ${name} para cambiar sus herramientas.`,
       rulesSignIn: 'Inicia sesión para cambiar lo que Hermes puede hacer aquí.',
@@ -364,7 +363,7 @@ export const esOverrides = {
     connect: 'Conectar',
     connecting: 'Conectando',
     continue: 'Continuar',
-    bots: desktopTerms.es.agents,
+    bots: 'Bots',
     copied: 'Copiado',
     copy: 'Copiar',
     copyFailed: 'No se pudo copiar',
@@ -454,7 +453,7 @@ export const esOverrides = {
       diskFull: 'Disco lleno — libera espacio y vuelve a intentarlo.',
       storageFailure: 'Hermes no pudo guardar en su carpeta de datos. Abre Mantenimiento para comprobarla y repararla.',
       gatewayAuthFailed:
-        'Este Hermes ya no acepta tu inicio de sesión guardado. Abre Máquinas y vuelve a iniciar sesión (o pega un nuevo token de acceso) e inténtalo otra vez.',
+        'Este Hermes ya no acepta tu inicio de sesión guardado. Abre Gateways y vuelve a iniciar sesión (o pega un nuevo token de acceso) e inténtalo otra vez.',
       methodNotAllowed:
         'El servicio en segundo plano de Hermes no está sincronizado con la app, probablemente tras una actualización. Reinícialo para solucionarlo.',
       microphonePermission: 'Se denegó el permiso del micrófono.',
@@ -469,7 +468,7 @@ export const esOverrides = {
     actions: {
       restartHermes: 'Reiniciar Hermes',
       openKeys: 'Abrir Claves',
-      openGateways: 'Abrir Máquinas',
+      openGateways: 'Abrir Gateways',
       openMaintenance: 'Abrir Mantenimiento'
     },
     voice: {
@@ -521,7 +520,7 @@ export const esOverrides = {
   sendDiagnostics: {
     title: 'Enviar diagnóstico a Nous',
     privacyNotice:
-      'Esto sube un paquete de depuración a un almacenamiento interno de Nous (no a un sitio público). Incluye información del sistema (SO, versiones, proveedor y qué claves API están configuradas, nunca las claves en sí) y los registros completos del agente, del servicio Hermes y de la app de escritorio (hasta 512 KB cada uno), que probablemente contengan contenido de conversaciones, salidas de herramientas y rutas de archivos. Los secretos se ocultan antes de subirlo. Solo el personal de Nous y los moderadores autorizados de Discord pueden ver el paquete, que se elimina automáticamente a los 14 días.',
+      'Esto sube un paquete de depuración a un almacenamiento interno de Nous (no a un sitio público). Incluye información del sistema (SO, versiones, proveedor y qué claves API están configuradas, nunca las claves en sí) y los registros completos del agente, del gateway y de la app de escritorio (hasta 512 KB cada uno), que probablemente contengan contenido de conversaciones, salidas de herramientas y rutas de archivos. Los secretos se ocultan antes de subirlo. Solo el personal de Nous y los moderadores autorizados de Discord pueden ver el paquete, que se elimina automáticamente a los 14 días.',
     upload: 'Subir',
     uploading: 'Subiendo…',
     cancel: 'Cancelar',
@@ -572,7 +571,7 @@ export const esOverrides = {
     conflictWith: label => `También asignado a “${label}”`,
     categories: {
       composer: 'Compositor',
-      profiles: desktopTerms.es.agents,
+      profiles: 'Perfiles',
       session: 'Sesión',
       navigation: 'Navegación',
       view: 'Vista'
@@ -582,11 +581,11 @@ export const esOverrides = {
       'nav.commandPalette': 'Abrir paleta de comandos',
       'nav.commandCenter': 'Abrir Centro de comandos',
       'nav.settings': 'Abrir configuración',
-      'nav.profiles': 'Abrir agentes',
+      'nav.profiles': 'Abrir perfiles',
       'nav.capabilities': 'Abrir skills',
       'nav.messaging': 'Abrir mensajería',
       'nav.artifacts': 'Abrir artefactos',
-      'nav.cron': 'Abrir rutinas',
+      'nav.cron': 'Abrir tareas programadas',
       'nav.agents': 'Abrir agentes',
       'nav.back': 'Atrás',
       'nav.forward': 'Adelante',
@@ -620,7 +619,7 @@ export const esOverrides = {
       'view.toggleReview': 'Alternar panel de revisión',
       'view.toggleStatusbar': 'Alternar barra de estado',
       'view.toggleTabStrip': 'Mostrar u ocultar pestañas',
-      'view.toggleProfileRail': 'Mostrar u ocultar la barra de agentes',
+      'view.toggleProfileRail': 'Mostrar u ocultar la barra de perfiles',
       'view.toggleSimpleMode': 'Activar o desactivar el modo simple',
       'view.showFiles': 'Mostrar explorador de archivos',
       'view.showBrowser': 'Alternar navegador',
@@ -650,30 +649,30 @@ export const esOverrides = {
       'view.tabSlot.8': 'Cambiar a la pestaña 8',
       'view.tabSlot.9': 'Cambiar a la pestaña 9',
       'appearance.toggleMode': 'Alternar claro / oscuro',
-      'profile.default': 'Cambiar al agente predeterminado',
-      'profile.switch.1': 'Cambiar al agente 1',
-      'profile.switch.2': 'Cambiar al agente 2',
-      'profile.switch.3': 'Cambiar al agente 3',
-      'profile.switch.4': 'Cambiar al agente 4',
-      'profile.switch.5': 'Cambiar al agente 5',
-      'profile.switch.6': 'Cambiar al agente 6',
-      'profile.switch.7': 'Cambiar al agente 7',
-      'profile.switch.8': 'Cambiar al agente 8',
-      'profile.switch.9': 'Cambiar al agente 9',
-      'profile.switch.10': 'Cambiar al agente 10',
-      'profile.switch.11': 'Cambiar al agente 11',
-      'profile.switch.12': 'Cambiar al agente 12',
-      'profile.switch.13': 'Cambiar al agente 13',
-      'profile.switch.14': 'Cambiar al agente 14',
-      'profile.switch.15': 'Cambiar al agente 15',
-      'profile.switch.16': 'Cambiar al agente 16',
-      'profile.switch.17': 'Cambiar al agente 17',
-      'profile.switch.18': 'Cambiar al agente 18',
-      'profile.next': 'Siguiente agente',
-      'profile.prev': 'Agente anterior',
-      'profile.toggleAll': 'Alternar vista de todos los agentes',
-      'profile.create': 'Crear agente',
-      'agents.new': 'Nuevo agente (página Agentes)',
+      'profile.default': 'Cambiar al perfil predeterminado',
+      'profile.switch.1': 'Cambiar al perfil 1',
+      'profile.switch.2': 'Cambiar al perfil 2',
+      'profile.switch.3': 'Cambiar al perfil 3',
+      'profile.switch.4': 'Cambiar al perfil 4',
+      'profile.switch.5': 'Cambiar al perfil 5',
+      'profile.switch.6': 'Cambiar al perfil 6',
+      'profile.switch.7': 'Cambiar al perfil 7',
+      'profile.switch.8': 'Cambiar al perfil 8',
+      'profile.switch.9': 'Cambiar al perfil 9',
+      'profile.switch.10': 'Cambiar al perfil 10',
+      'profile.switch.11': 'Cambiar al perfil 11',
+      'profile.switch.12': 'Cambiar al perfil 12',
+      'profile.switch.13': 'Cambiar al perfil 13',
+      'profile.switch.14': 'Cambiar al perfil 14',
+      'profile.switch.15': 'Cambiar al perfil 15',
+      'profile.switch.16': 'Cambiar al perfil 16',
+      'profile.switch.17': 'Cambiar al perfil 17',
+      'profile.switch.18': 'Cambiar al perfil 18',
+      'profile.next': 'Siguiente perfil',
+      'profile.prev': 'Perfil anterior',
+      'profile.toggleAll': 'Alternar vista de todos los perfiles',
+      'profile.create': 'Crear perfil',
+      'agents.new': 'Nuevo perfil (página Perfiles)',
       'composer.send': 'Enviar mensaje',
       'composer.newline': 'Insertar salto de línea',
       'composer.steer': 'Guiar el turno en ejecución',
@@ -733,7 +732,7 @@ export const esOverrides = {
       advancedOutput: 'Límites de salida',
       advancedDelegation: 'Subagentes',
       advancedDesktop: 'Escritorio e inicio',
-      gatewayConnection: 'Máquina principal',
+      gatewayConnection: 'Gateway principal',
       gatewayDevices: 'Conexiones guardadas',
       gatewayManagedUpdates: 'Actualizaciones remotas',
       gatewayManagedUpdatesUnavailable:
@@ -776,7 +775,7 @@ export const esOverrides = {
       providerApiKeys: 'Claves API',
       providerCustomEndpoints: 'Endpoints personalizados',
       providerLocalModels: 'Modelos locales',
-      gateway: desktopTerms.es.machines,
+      gateway: 'Gateway',
       apiKeys: 'Herramientas y claves',
       keybinds: 'Atajos de teclado',
       keysTools: 'Herramientas',
@@ -810,7 +809,7 @@ export const esOverrides = {
         includesHeading: 'Este paquete incluye',
         agentLabel: 'Plugin del agente',
         desktopLabel: 'Interfaz de escritorio',
-        profileLabel: 'Instalar para el agente',
+        profileLabel: 'Instalar para el perfil',
         agentTargetLocal: (profile, dir) => `Se instala en el backend ${profile} (${dir})`,
         agentTargetRemote: profile => `Se instala en el backend ${profile} conectado`,
         toolsConnected: n => (n === 1 ? '1 herramienta conectada' : `${n} herramientas conectadas`),
@@ -821,7 +820,7 @@ export const esOverrides = {
         missingEnvAction: 'Configurarlo',
         alreadyInstalled: (name: string) => `${name} ya está instalado.`,
         desktopTarget: 'Se instala en la carpeta local desktop-plugins de esta app',
-        desktopTargetFromPackage: 'Se carga en esta app desde el paquete de arriba; es igual para todos los agentes',
+        desktopTargetFromPackage: 'Se carga en esta app desde el paquete de arriba; es igual para todos los perfiles',
         desktopOnlyNote: 'Los paquetes solo de escritorio no instalan un plugin del agente en el backend.',
         insecureWarning:
           'Esta URL usa un esquema inseguro o local. Para instalaciones de producción, usa https:// o git@.',
@@ -974,7 +973,7 @@ export const esOverrides = {
     searchPlaceholder: {
       about: 'Acerca de Hermes Desktop',
       config: 'Buscar configuración...',
-      gateway: 'Conexión de la máquina...',
+      gateway: 'Conexión del gateway...',
       keys: 'Buscar claves API...',
       mcp: 'Buscar servidores MCP...',
       sessions: 'Buscar sesiones archivadas...'
@@ -1101,7 +1100,7 @@ export const esOverrides = {
         'Muestra el explorador de archivos junto al chat cuando hay un espacio de trabajo abierto. El botón de la barra de título también cambia este ajuste.',
       vibeHeartsTitle: 'Corazones de vibra',
       vibeHeartsDesc:
-        'Corazones flotantes cuando dices gracias, te quiero, buen agente o envías un corazón. Independiente de las reacciones a mensajes de arriba.',
+        'Corazones flotantes cuando dices gracias, te quiero, buen bot o envías un corazón. Independiente de las reacciones a mensajes de arriba.',
       embedsTitle: 'Contenido incrustado',
       embedsDesc:
         'Las vistas previas enriquecidas se cargan desde sitios de terceros (YouTube, X, …). Preguntar muestra un marcador de posición hasta que permitas cada una; Siempre las carga automáticamente; Desactivado conserva los enlaces simples.',
@@ -1119,7 +1118,7 @@ export const esOverrides = {
       themeTitle: 'Tema',
       themeDesc: 'Paletas solo para escritorio. Se aplican sobre el modo seleccionado.',
       themeSearchPlaceholder: 'Busca en tus temas o en el VS Code Marketplace…',
-      themeProfileNote: profile => `Guardado para el agente ${profile}; cada agente conserva su propio tema.`,
+      themeProfileNote: profile => `Guardado para el perfil ${profile}; cada perfil conserva su propio tema.`,
       installTitle: 'Instalar desde VS Code',
       installDesc:
         'Pega un ID de extensión de Marketplace (por ejemplo, dracula-theme.theme-dracula) para convertir su tema de color en una paleta de escritorio.',
@@ -1474,7 +1473,7 @@ export const esOverrides = {
         full: {
           title: 'Desinstalar todo',
           description:
-            'Quita la app, el agente y todos los datos de usuario: configuración, chats, rutinas, secretos y registros.',
+            'Quita la app, el agente y todos los datos de usuario: configuración, chats, tareas programadas, secretos y registros.',
           consequence:
             'TODO: la interfaz de chat, el agente de Hermes y toda tu configuración, chats, secretos y registros'
         }
@@ -1634,15 +1633,15 @@ export const esOverrides = {
       clear: 'Limpiar'
     },
     connections: {
-      title: 'Máquinas registradas',
+      title: 'Gateways registrados',
       intro:
-        'Gestiona este dispositivo y cada máquina con Hermes a la que puede llegar mediante conexiones remotas, SSH o Cloud.',
+        'Gestiona este dispositivo y cada gateway de Hermes al que puede llegar mediante conexiones remotas, SSH o Cloud.',
       stagedNote:
-        'Todas las máquinas permanecen conectadas. Los agentes, chats, mensajería y rutinas se quedan en su máquina, y Sesiones puede mostrarlos todos a la vez.',
-      launchModeTitle: 'Al iniciar, volver a Sesiones en la última máquina usada',
-      launchModeDesc: 'Si está desactivado, Sesiones se abre en la máquina principal.',
-      searchPlaceholder: 'Buscar máquinas…',
-      noSearchResults: 'Ninguna máquina coincide con tu búsqueda.',
+        'Todos los gateways permanecen conectados. Los perfiles, chats, mensajería y tareas cron se quedan con su gateway, y Sesiones puede mostrarlos todos a la vez.',
+      launchModeTitle: 'Al iniciar, volver a Sesiones en el último gateway usado',
+      launchModeDesc: 'Si está desactivado, Sesiones se abre en el gateway principal.',
+      searchPlaceholder: 'Buscar gateways…',
+      noSearchResults: 'Ningún gateway coincide con tu búsqueda.',
       loadFailed: 'No se pudieron cargar las conexiones',
       currentPill: 'Actual',
       primaryPill: 'Principal',
@@ -1665,28 +1664,28 @@ export const esOverrides = {
       updateAllFailed: 'Falló el envío de actualizaciones',
       updateSkippedCloud: 'Administrado por Hermes Cloud',
       kindLocal: 'Local',
-      kindRemote: 'Máquina remota',
+      kindRemote: 'Gateway remoto',
       kindCloud: 'Hermes Cloud',
       kindSsh: 'SSH',
       kindLocalDesc: 'El entorno de ejecución de Hermes administrado por esta app.',
-      kindRemoteDesc: 'Una máquina con Hermes accesible por HTTP(S): LAN, Tailscale o internet.',
+      kindRemoteDesc: 'Un gateway de Hermes accesible por HTTP(S): LAN, Tailscale o internet.',
       kindCloudDesc: 'Una instancia alojada detectada a través de tu cuenta de Hermes Cloud.',
       kindSshDesc: 'Una instalación de Hermes accesible por SSH.',
       labelTitle: 'Nombre',
       labelDesc:
         'Obligatorio. Se muestra en todos los lugares donde aparece esta instancia; debe ser único (p. ej., “Homelab”, “Portátil del trabajo”).',
       labelPlaceholder: 'Homelab',
-      urlTitle: 'URL de la máquina',
+      urlTitle: 'URL del gateway',
       sshHostTitle: 'Host SSH',
-      headersTitle: 'Encabezados de conexión adicionales',
+      headersTitle: 'Encabezados adicionales del gateway',
       headersDesc:
-        'Se envían con cada solicitud HTTP y WebSocket a esta máquina, para proxies de acceso como Cloudflare Access (CF-Access-Client-Id / CF-Access-Client-Secret). Los valores se guardan cifrados. Se ignoran los encabezados que gestiona Hermes (Authorization, Cookie, Host…).',
+        'Se envían con cada solicitud HTTP y WebSocket a este gateway, para proxies de acceso como Cloudflare Access (CF-Access-Client-Id / CF-Access-Client-Secret). Los valores se guardan cifrados. Se ignoran los encabezados que gestiona Hermes (Authorization, Cookie, Host…).',
       headerValuePlaceholder: 'Valor',
       headerValueSaved: 'Guardado: déjalo en blanco para conservarlo',
       headerAdd: 'Añadir encabezado',
       headerRemove: 'Quitar',
       duplicateLocal: 'Esta app ya administra una conexión local; solo puede haber una.',
-      duplicateUrl: (label: string) => `Ya existe una conexión a la URL de esta máquina (“${label}”).`,
+      duplicateUrl: (label: string) => `Ya existe una conexión a la URL de este gateway (“${label}”).`,
       duplicateSsh: (label: string) => `Ya existe una conexión a este host SSH (“${label}”).`,
       sameBackendHint: (label: string) => `Mismo backend que “${label}”`,
       localAddHint: 'Local no está disponible: la conexión local administrada ya existe (solo puede haber una).',
@@ -1700,11 +1699,11 @@ export const esOverrides = {
     managedUpdates: {
       title: 'Actualizaciones administradas',
       intro:
-        'Actualiza de forma transaccional las instalaciones SSH administradas por la app: las sesiones se vacían, la copia remota se actualiza y cada agente se restaura con un comprobante correlacionado.',
+        'Actualiza de forma transaccional las instalaciones SSH administradas por la app: las sesiones se vacían, la copia remota se actualiza y cada perfil se restaura con un comprobante correlacionado.',
       sshConnection: 'Instalación SSH administrada por la app',
       update: 'Actualizar',
       updating: 'Actualizando…',
-      progress: 'Vaciando sesiones, actualizando la instalación remota y restaurando agentes…',
+      progress: 'Vaciando sesiones, actualizando la instalación remota y restaurando perfiles…',
       updated: 'Actualizado',
       partial: 'Actualizado, pero falló la restauración',
       refused: 'Rechazado',
@@ -1712,27 +1711,27 @@ export const esOverrides = {
       alreadyRunning: 'Ya hay una actualización en curso',
       receipt: (id: string, outcome: string) => `Comprobante ${id} · ${outcome}`,
       receiptVersions: (pre: string, post: string) => `${pre} → ${post}`,
-      scopesRestored: (profiles: string) => `Agentes restaurados: ${profiles}`,
-      scopeNotRestored: (profile: string, error: string) => `No se restauró el agente “${profile}”: ${error}`
+      scopesRestored: (profiles: string) => `Perfiles restaurados: ${profiles}`,
+      scopeNotRestored: (profile: string, error: string) => `No se restauró el perfil “${profile}”: ${error}`
     },
     gateway: {
-      loading: 'Cargando ajustes de la máquina...',
+      loading: 'Cargando ajustes del gateway...',
       ...esGatewayHost,
-      title: 'Conexión de la máquina',
+      title: 'Conexión del gateway',
       envOverride: 'anulación de entorno',
       intro:
-        'Local por predeterminado. Usa remoto cuando esta app deba controlar un backend de Hermes en otro lugar. Anulaciones por agente a continuación.',
+        'Local por predeterminado. Usa remoto cuando esta app deba controlar un backend de Hermes en otro lugar. Anulaciones por perfil a continuación.',
       envOverrideTitle: 'Esta conexión quedó fijada por la forma en que se inició Hermes.',
       envOverrideDesc:
         'Un ajuste de inicio externo a la app eligió esta conexión, así que las opciones de abajo son de solo lectura. Reinicia Hermes sin ese ajuste (o pregunta a quien lo configuró) para cambiarla aquí.',
       modeTitle: 'Modo de conexión',
-      localTitle: 'Máquina local',
+      localTitle: 'Gateway local',
       localDesc:
         'Inicia un backend privado de Hermes en localhost. Es el valor predeterminado y funciona sin conexión.',
-      remoteTitle: 'Máquina remota',
+      remoteTitle: 'Gateway remoto',
       remoteDesc: 'Conecta esta shell de escritorio a un backend remoto de Hermes.',
       remoteAuthHint:
-        'Las máquinas alojadas usan OAuth o usuario y contraseña; las autoalojadas pueden usar un token de sesión.',
+        'Los gateways alojados usan OAuth o usuario y contraseña; los autohospedados pueden usar un token de sesión.',
       cloudTitle: 'Hermes Cloud',
       cloudDesc:
         'Inicia sesión una vez en Hermes Cloud y elige uno de los agentes de tu cuenta; no tienes que pegar ninguna URL.',
@@ -1754,10 +1753,10 @@ export const esOverrides = {
       },
       cloudRefresh: 'Actualizar',
       cloudConnect: 'Conectar',
-      cloudSavedTitle: 'Máquinas de Cloud guardadas',
+      cloudSavedTitle: 'Gateways de Cloud guardados',
       cloudSavedDesc:
-        'Usa una máquina guardada sin cambiar la predeterminada. Inicia sesión abajo para añadir instancias. Gestiona los nombres y el inicio de sesión en la lista de conexiones guardadas.',
-      cloudUseSaved: 'Usar máquina',
+        'Usa un gateway guardado sin cambiar el predeterminado. Inicia sesión abajo para añadir instancias. Gestiona los nombres y el inicio de sesión en la lista de conexiones guardadas.',
+      cloudUseSaved: 'Usar gateway',
       cloudActive: 'Activo en esta ventana',
       cloudConnecting: 'Conectando…',
       cloudDiscoverFailed: 'No se pudieron cargar tus agentes de Hermes Cloud',
@@ -1772,7 +1771,7 @@ export const esOverrides = {
       cloudStatusLabel: status => `Estado: ${status}`,
       remoteUrlTitle: 'URL remota',
       remoteUrlDesc: 'URL base del backend del dashboard remoto. Se admiten prefijos de ruta, por ejemplo /hermes.',
-      probing: 'Comprobando cómo se autentica esta máquina…',
+      probing: 'Comprobando cómo se autentica este gateway…',
       probeError:
         'Hermes no puede llegar a esa dirección. Comprueba la URL y que el otro equipo esté ejecutando Hermes; las opciones de inicio de sesión aparecen cuando responde.',
       signedIn: 'Sesión iniciada',
@@ -1781,16 +1780,16 @@ export const esOverrides = {
       signInWith: provider => `Iniciar sesión con ${provider}`,
       authTitle: 'Autenticación',
       authSignedInPassword:
-        'Esta máquina usa usuario y contraseña. Ya iniciaste sesión; la sesión se actualiza automáticamente.',
-      authSignedInOauth: 'Esta máquina usa OAuth. Ya iniciaste sesión; la sesión se actualiza automáticamente.',
-      authNeedsPassword: 'Esta máquina usa usuario y contraseña. Inicia sesión para autorizar esta app de escritorio.',
-      authNeedsOauth: provider => `Esta máquina usa OAuth. Inicia sesión con ${provider} para autorizar esta app.`,
+        'Este gateway usa usuario y contraseña. Ya iniciaste sesión; la sesión se actualiza automáticamente.',
+      authSignedInOauth: 'Este gateway usa OAuth. Ya iniciaste sesión; la sesión se actualiza automáticamente.',
+      authNeedsPassword: 'Este gateway usa usuario y contraseña. Inicia sesión para autorizar esta app de escritorio.',
+      authNeedsOauth: provider => `Este gateway usa OAuth. Inicia sesión con ${provider} para autorizar esta app.`,
       tokenTitle: 'Token de sesión',
       tokenDesc: 'Token de sesión del dashboard usado para REST y WebSocket. Déjalo vacío para conservar el guardado.',
       existingToken: value => `Token existente ${value}`,
       savedToken: 'guardado',
       pasteSessionToken: 'Pegar token de sesión',
-      plainTextConfirmTitle: '¿Guardar el token de conexión en texto plano?',
+      plainTextConfirmTitle: '¿Guardar el token de la puerta de enlace en texto plano?',
       plainTextConfirmDesc:
         'No se encontró ningún servicio de llavero del sistema en este equipo, así que el token se guardaría sin cifrar en el archivo de ajustes de conexión de la app, legible por cualquier proceso que se ejecute con este usuario. Instala o activa el llavero del sistema (GNOME Keyring o KWallet en Linux) para guardarlo cifrado.',
       plainTextConfirmAction: 'Guardar como texto plano',
@@ -1799,34 +1798,34 @@ export const esOverrides = {
         'El almacenamiento seguro no está disponible, así que el token guardado está sin cifrar en el archivo de ajustes de conexión de la app en este equipo. Instala o activa el llavero del sistema (GNOME Keyring o KWallet en Linux) para cifrarlo.',
       keychainEncryptionTitle: 'Cifrar los secretos guardados con el llavero del sistema',
       keychainEncryptionDesc:
-        'Desactivado por defecto. Si está activado, los tokens de conexión y las credenciales de inicio de sesión se cifran con el llavero del sistema (Acceso a Llaveros, GNOME Keyring o DPAPI de Windows); es posible que el sistema te pida permiso o una contraseña. Si está desactivado, se guardan como archivos normales que solo tu cuenta de usuario puede leer.',
+        'Desactivado por defecto. Si está activado, los tokens del gateway y las credenciales de inicio de sesión se cifran con el llavero del sistema (Acceso a Llaveros, GNOME Keyring o DPAPI de Windows); es posible que el sistema te pida permiso o una contraseña. Si está desactivado, se guardan como archivos normales que solo tu cuenta de usuario puede leer.',
       keychainEncryptionFailed: 'No se pudo cambiar el cifrado de secretos',
       testRemote: 'Probar remoto',
       saveForRestart: 'Guardar para el próximo reinicio',
       saveAndReconnect: 'Guardar y reconectar',
       diagnostics: 'Diagnóstico',
-      diagnosticsDesc: 'Muestra desktop.log en tu gestor de archivos; útil cuando Hermes no arranca.',
+      diagnosticsDesc: 'Muestra desktop.log en tu gestor de archivos; útil cuando el gateway no arranca.',
       openLogs: 'Abrir registros',
-      incompleteTitle: 'Configuración de la máquina remota incompleta',
+      incompleteTitle: 'Gateway remoto incompleto',
       incompleteSignIn: 'Introduce una URL remota e inicia sesión antes de cambiar a remoto.',
       incompleteToken: 'Introduce una URL remota y un token de sesión antes de cambiar a remoto.',
       incompleteSignInTest: 'Introduce una URL remota e inicia sesión antes de probar.',
       incompleteTokenTest: 'Introduce una URL remota y un token de sesión antes de probar.',
       enterUrlFirst: 'Introduce primero una URL remota.',
-      restartingTitle: 'Restableciendo la conexión con la máquina',
-      savedTitle: 'Ajustes de la máquina guardados',
+      restartingTitle: 'Reiniciando conexión del gateway',
+      savedTitle: 'Ajustes del gateway guardados',
       restartingMessage: 'Hermes Desktop se reconectará con los ajustes guardados.',
       savedMessage: 'Guardado para el próximo reinicio.',
       connectedTo: (baseUrl, version) => `Conectado a ${baseUrl}${version ? ` · Hermes ${version}` : ''}`,
-      reachableTitle: 'Máquina remota accesible',
+      reachableTitle: 'Gateway remoto accesible',
       signedOutTitle: 'Sesión cerrada',
-      signedOutMessage: 'Se borró la sesión de la máquina remota.',
-      failedLoad: 'No se pudieron cargar los ajustes de la máquina',
+      signedOutMessage: 'Se borró la sesión del gateway remoto.',
+      failedLoad: 'No se pudieron cargar los ajustes del gateway',
       signInFailed: 'No se pudo iniciar sesión',
       signOutFailed: 'No se pudo cerrar sesión',
-      testFailed: 'Falló la prueba de conexión con la máquina remota',
-      applyFailed: 'No se pudieron aplicar los ajustes de la máquina',
-      saveFailed: 'No se pudieron guardar los ajustes de la máquina',
+      testFailed: 'Falló la prueba del gateway remoto',
+      applyFailed: 'No se pudieron aplicar los ajustes del gateway',
+      saveFailed: 'No se pudieron guardar los ajustes del gateway',
       sshTitle: 'Conectar por SSH',
       sshDesc:
         'Hermes se inicia en el equipo remoto mediante SSH y se conecta a esta app a través de un túnel; no tienes que iniciar ni exponer nada por tu cuenta. Requiere acceso SSH mediante claves que ya funcione con el host.',
@@ -1879,7 +1878,7 @@ export const esOverrides = {
     },
     profileScope: {
       appliesTo: 'Se aplica a',
-      editsProfile: profile => `Los cambios de esta página se aplican al agente “${profile}”.`
+      editsProfile: profile => `Los cambios de esta página se aplican al perfil “${profile}”.`
     },
     mcp: {
       loading: 'Cargando servidores MCP...',
@@ -2158,10 +2157,10 @@ export const esOverrides = {
           messageBySelf: 'Detuviste el gasto remoto para este terminal.'
         },
         remoteSpendingReconnect: (who: string) =>
-          `${who} Vuelve a conectarte desde Configuración -> Máquinas para autorizar de nuevo este dispositivo.`,
+          `${who} Vuelve a conectarte desde Configuración -> Gateway para autorizar de nuevo este dispositivo.`,
         sessionRevoked: {
           title: 'Sesión cerrada',
-          message: 'Se cerró tu sesión. Vuelve a iniciar sesión desde Configuración → Máquinas.'
+          message: 'Se cerró tu sesión. Vuelve a iniciar sesión desde Configuración → Gateway.'
         },
         cliBillingDisabled: {
           title: 'El gasto remoto está desactivado',
@@ -2222,7 +2221,7 @@ export const esOverrides = {
         },
         transport: {
           title: 'Falló la conexión de facturación',
-          message: 'La solicitud de facturación falló antes de llegar a la máquina.'
+          message: 'La solicitud de facturación falló antes de llegar al gateway.'
         },
         default: {
           title: 'Falló la solicitud de facturación',
@@ -2429,10 +2428,10 @@ export const esOverrides = {
       'Los cambios solo se aplican a este agente. Las conversaciones existentes conservan sus herramientas actuales.',
     toolSecretsHint:
       'Claves API, endpoints y proveedores que usa este agente. Los inicios de sesión de proveedores pueden compartirse entre agentes; las cuentas de conectores alojados se comparten entre los agentes que usan la misma cuenta de Nous.',
-    openAgentSettings: 'Ajustes del agente',
+    openAgentSettings: 'Ajustes del perfil',
     openToolLibrary: 'Explorar la biblioteca de herramientas',
     remotePluginHint:
-      'Abre este agente en su máquina para gestionar sus plugins. La instalación de plugins usa la máquina conectada.',
+      'Abre este perfil en su gateway para gestionar sus plugins. La instalación de plugins usa el gateway conectado.',
     showAllToolsets: (count: number) => `Mostrar los ${count}`,
     tabSkills: 'Skills',
     tabToolsets: 'Conjuntos de herramientas',
@@ -2497,13 +2496,13 @@ export const esOverrides = {
     tabPlugins: 'Plugins',
     plugins: {
       agentTitle: 'Plugins del agente',
-      agentBlurb: 'Amplían el agente seleccionado: herramientas, hooks, proveedores. Se aplican tras reiniciar Hermes.',
+      agentBlurb: 'Amplían el agente del perfil seleccionado: herramientas, hooks, proveedores. Se aplican tras reiniciar el gateway.',
       pageBlurb: 'Un plugin puede ampliar esta app, el agente o ambos; cada mitad tiene su propio interruptor.',
       halfDesktop: 'Escritorio',
-      halfDesktopHint: 'esta app, igual para todos los agentes',
+      halfDesktopHint: 'esta app, igual para todos los perfiles',
       halfAgent: 'Agente',
-      halfAgentIn: (profile: string) => `Agente: ${profile}`,
-      defaultProfile: 'Agente predeterminado',
+      halfAgentIn: (profile: string) => `Agente en ${profile}`,
+      defaultProfile: 'Hermes (predeterminado)',
       kindAgent: 'Agente',
       kindDesktop: 'Escritorio',
       kindBoth: 'Agente + Escritorio',
@@ -2511,7 +2510,7 @@ export const esOverrides = {
       installAgentHereTip: (profile: string) =>
         `La mitad de escritorio está cargada en esta app, pero la mitad del agente no está instalada en ${profile}. Instálala allí.`,
       installAgentHereNoOrigin:
-        'La mitad del agente no está instalada para este agente y este paquete se copió a mano (sin entrada de catálogo ni remoto de git), así que no se puede instalar desde aquí. Copia su carpeta en la del agente o reinstálalo desde Git.',
+        'La mitad del agente no está instalada en este perfil y este paquete se copió a mano (sin entrada de catálogo ni remoto de git), así que no se puede instalar desde aquí. Copia su carpeta en el perfil o reinstálalo desde Git.',
       desktopHalfPending: 'copiando…',
       desktopHalfPendingTip:
         'Este paquete incluye una mitad de escritorio que todavía no se ha copiado en la app. Usa Volver a escanear o reinicia la app.',
@@ -2519,7 +2518,7 @@ export const esOverrides = {
       desktopHalfRemoteTip:
         'La mitad de escritorio de este paquete está en el disco del backend remoto, que esta app no puede leer. Para usarla aquí, ejecuta Instalar desde Git con la URL del repositorio del paquete y el destino Escritorio marcado; eso clona la mitad de escritorio en este equipo.',
       emptyAll: 'Todavía no hay plugins.',
-      empty: 'No hay plugins instalados para este agente.',
+      empty: 'No hay plugins del agente instalados para este perfil.',
       emptyHint: 'Explora el catálogo de abajo e instala un plugin revisado con un clic.',
       loadFailed: 'No se pudieron cargar los plugins del agente',
       toggleFailed: (name: string) => `No se pudo cambiar ${name}`,
@@ -2541,7 +2540,7 @@ export const esOverrides = {
         unsupported_gpu: 'GPU no compatible',
         unknown: 'estado desconocido'
       },
-      alreadyInstalled: (name: string) => `${name} ya está instalado para este agente.`,
+      alreadyInstalled: (name: string) => `${name} ya está instalado en este perfil.`,
       catalogProvenance: (sha: string) =>
         `Instalado desde el catálogo de Hermes${sha ? ` en el commit fijado ${sha}` : ''}.`,
       pinnedProvenance: (sha: string) =>
@@ -2554,9 +2553,9 @@ export const esOverrides = {
       uninstallTip: (name: string, profile: string) => `Desinstalar ${name} de ${profile}`,
       uninstallConfirmTitle: (name: string) => `¿Desinstalar ${name}?`,
       uninstallConfirmBody: (name: string, profile: string) =>
-        `Esto elimina los archivos del plugin del agente ${profile}. Cualquier mitad de escritorio que incluyera se quita con él. Puedes reinstalarlo desde el catálogo o desde Git cuando quieras.`,
+        `Esto elimina los archivos del plugin del perfil ${profile}. Cualquier mitad de escritorio que incluyera se quita con él. Puedes reinstalarlo desde el catálogo o desde Git cuando quieras.`,
       uninstallFailed: (name: string) => `No se pudo desinstalar ${name}`,
-      uninstalled: (name: string) => `${name} desinstalado. Reinicia Hermes para descargarlo.`,
+      uninstalled: (name: string) => `${name} desinstalado. Reinicia el gateway para descargarlo.`,
       uninstallDesktopTip: (name: string) => `Desinstalar ${name} de esta app`,
       uninstallDesktopConfirmBody: (name: string) =>
         `Esto elimina ${name} de la carpeta desktop-plugins de este equipo y lo descarga ahora. Puedes reinstalarlo desde Git o volver a poner la carpeta cuando quieras.`,
@@ -2575,7 +2574,7 @@ export const esOverrides = {
         required: 'Obligatorio',
         secretSet: '•••••••• (configurado)',
         secretStoredAs: (env: string) =>
-          `Se guarda en el .env del agente como ${env}, nunca en config.yaml; déjalo en blanco para conservar el valor actual.`
+          `Se guarda en el .env del perfil como ${env}, nunca en config.yaml; déjalo en blanco para conservar el valor actual.`
       }
     },
     officialCatalog: 'Disponibles para instalar',
@@ -2823,7 +2822,7 @@ export const esOverrides = {
       },
       system: {
         title: 'Panel del sistema',
-        detail: 'Estado de Hermes, registros, reinicio/actualización'
+        detail: 'Estado del gateway, registros, reinicio/actualización'
       },
       usage: {
         title: 'Panel de uso',
@@ -2840,17 +2839,18 @@ export const esOverrides = {
     exportSession: 'Exportar sesión',
     deleteSession: 'Eliminar sesión',
     noSessions: 'Aún no hay sesiones.',
-    gatewayRunning: 'Mensajería en ejecución',
-    gatewayStopped: 'Mensajería detenida',
+    gatewayRunning: 'Gateway de mensajería en ejecución',
+    gatewayStopped: 'Gateway de mensajería detenido',
     hermesActiveSessions: (version, count) => `Hermes ${version} · Sesiones activas ${count}`,
-    restartGateway: 'Reiniciar Hermes',
+    restartGateway: 'Reiniciar gateway',
     openBrowser: 'Alternar navegador',
     toggleBrowser: 'Alternar navegador',
-    gatewayRestartFailed: 'No se pudo reiniciar Hermes.',
-    sharedGatewayRestartTitle: '¿Reiniciar Hermes para todos los agentes?',
-    sharedGatewayRestartDescription: (bots: string) => `Todos los agentes de este dispositivo se reconectan: ${bots}`,
+    gatewayRestartFailed: 'No se pudo reiniciar el gateway.',
+    sharedGatewayRestartTitle: '¿Reiniciar el gateway compartido?',
+    sharedGatewayRestartDescription: (bots: string) => `Todos los bots de este dispositivo se reconectan: ${bots}`,
     sharedGatewayRestartConfirm: 'Reiniciar todo',
-    sharedGatewayRestarted: (count: number) => `Hermes reiniciado (${count} ${count === 1 ? 'agente' : 'agentes'})`,
+    sharedGatewayRestarted: (count: number) =>
+      `Gateway compartido reiniciado (${count} ${count === 1 ? 'bot' : 'bots'})`,
     updateHermes: 'Actualizar Hermes',
     reloadWindow: 'Recargar ventana',
     actionRunning: 'en ejecución',
@@ -2940,19 +2940,19 @@ export const esOverrides = {
       connecting: 'Conectando',
       disabled: 'Deshabilitado',
       fatal: 'Error',
-      gateway_stopped: 'Mensajería detenida',
+      gateway_stopped: 'Gateway de mensajería detenido',
       not_configured: 'Necesita configuración',
       pending_restart: 'Reinicio necesario',
       retrying: 'Reintentando',
       startup_failed: 'Falló el inicio'
     },
     unknown: 'Desconocido',
-    hintPendingRestart: 'Reinicia Hermes desde la barra de estado para aplicar este cambio.',
-    sharedListenerUrl: 'Servido en el punto de escucha compartido de Hermes en',
-    hintGatewayStopped: 'Inicia Hermes desde la barra de estado para conectar.',
+    hintPendingRestart: 'Reinicia el gateway desde la barra de estado para aplicar este cambio.',
+    sharedListenerUrl: 'Servido en el listener del gateway compartido en',
+    hintGatewayStopped: 'Inicia el gateway desde la barra de estado para conectar.',
     credentialsSet: 'Credenciales definidas',
     needsSetup: 'Necesita configuración',
-    gatewayStopped: 'Mensajería detenida',
+    gatewayStopped: 'Gateway de mensajería detenido',
     getCredentials: 'Obtener credenciales',
     openSetupGuide: 'Abrir guía de configuración',
     required: 'Obligatorio',
@@ -2976,11 +2976,11 @@ export const esOverrides = {
     disableAria: name => `Desactivar ${name}`,
     platformEnabled: name => `${name} activado`,
     platformDisabled: name => `${name} desactivado`,
-    restartToApply: 'Reinicia Hermes para que este cambio surta efecto.',
+    restartToApply: 'Reinicia el gateway para que este cambio surta efecto.',
     setupSaved: name => `Configuración de ${name} guardada`,
-    restartToReconnect: 'Reinicia Hermes para reconectar con las credenciales nuevas.',
-    appliedLive: 'Aplicado a Hermes en ejecución.',
-    connectingLive: 'Hermes se está conectando con las credenciales nuevas.',
+    restartToReconnect: 'Reinicia el gateway para reconectar con las credenciales nuevas.',
+    appliedLive: 'Aplicado al gateway en ejecución.',
+    connectingLive: 'El gateway en ejecución se está conectando con las credenciales nuevas.',
     keyCleared: key => `${key} limpiado`,
     setupUpdated: name => `La configuración de ${name} se actualizó.`,
     failedUpdate: name => `No se pudo actualizar ${name}`,
@@ -3004,7 +3004,7 @@ export const esOverrides = {
     failedRevoke: name => `No se pudo revocar a ${name}`,
     pairingLockedOut: 'Demasiados fallos de aprobación — esta plataforma está bloqueada. Inténtalo de nuevo más tarde.',
     waitingSince: minutes => (minutes < 1 ? 'justo ahora' : `hace ${minutes}m`),
-    restartNeeded: 'Guardado. Reinicia Hermes para que la nueva configuración surta efecto.',
+    restartNeeded: 'Guardado. Reinicia el gateway de mensajería para que la nueva configuración surta efecto.',
     restartNow: 'Reiniciar ahora',
     restarting: 'Reiniciando…',
     restartFailedManual: 'Hermes no pudo reiniciarse para aplicar tu configuración de mensajería',
@@ -3034,8 +3034,7 @@ export const esOverrides = {
       refused: (platform: string) => `${platform} rechazó la vinculación. Pide un código nuevo e inténtalo otra vez.`,
       qrAlt: (platform: string) => `Código QR del bot compartido de ${platform}`,
       managed: 'Gestionado por Team Gateway',
-      managedNote: (platform: string) =>
-        `Team Gateway gestiona la mensajería en esta instancia, así que Hermes desactiva la conexión directa de ${platform} en cada inicio. Para usarla junto al relay, define GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true en el entorno de Hermes (una conexión directa impide que la instancia escale a cero y puede entregar mensajes dos veces).`,
+      managedNote: (platform: string) => `Team Gateway gestiona la mensajería en esta instancia, así que el gateway desactiva la conexión directa de ${platform} en cada inicio. Para usarla junto al relay, define GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true en el entorno del gateway (una conexión directa impide que la instancia escale a cero y puede entregar mensajes dos veces).`,
       managedIntro: 'Las cuentas de este agente se vinculan desde Nous Portal.',
       openPortal: 'Vincular cuentas en Nous Portal',
       noNewAccount: (platform: string) =>
@@ -3070,8 +3069,8 @@ export const esOverrides = {
       pairingExpired:
         'La vinculación con Telegram caducó. Inicia una nueva configuración por QR para volver a intentarlo.',
       stillWaiting: (detail: string) => `Seguimos esperando a Telegram. Reintentando tras: ${detail}`,
-      savedRestarting: 'Telegram guardado; reiniciando Hermes…',
-      savedRestartFailed: (detail: string) => `Telegram guardado; falló el reinicio de Hermes${detail}`
+      savedRestarting: 'Telegram guardado; reiniciando el gateway…',
+      savedRestartFailed: (detail: string) => `Telegram guardado; falló el reinicio del gateway${detail}`
     },
     fieldCopy: {
       TELEGRAM_BOT_TOKEN: {
@@ -3105,7 +3104,7 @@ export const esOverrides = {
       },
       DISCORD_HOME_CHANNEL: {
         label: 'ID del canal principal',
-        help: 'Canal donde el bot envía mensajes proactivos (resultados de rutinas, recordatorios).'
+        help: 'Canal donde el bot envía mensajes proactivos (salida de cron, recordatorios).'
       },
       DISCORD_HOME_CHANNEL_NAME: {
         label: 'Nombre del canal principal',
@@ -3126,7 +3125,7 @@ export const esOverrides = {
       },
       QQBOT_HOME_CHANNEL: {
         label: 'Canal principal de QQ',
-        help: 'Canal o grupo predeterminado para entregar resultados de rutinas.'
+        help: 'Canal o grupo predeterminado para entrega cron.'
       },
       QQBOT_HOME_CHANNEL_NAME: {
         label: 'Nombre del canal principal de QQ'
@@ -3207,7 +3206,7 @@ export const esOverrides = {
     empty: 'Aún no hay suscripciones de webhook.',
     disabledTitle: 'Receptor de webhooks desactivado',
     disabledBody:
-      'Los webhooks tienen su propia plataforma de Hermes. Actívalos aquí para aceptar eventos HTTP entrantes; los canales de chat solo son necesarios cuando una suscripción entrega contenido a Telegram, Discord, Slack u otro canal.',
+      'Los webhooks tienen su propia plataforma de gateway. Actívalos aquí para aceptar eventos HTTP entrantes; los canales de chat solo son necesarios cuando una suscripción entrega contenido a Telegram, Discord, Slack u otro canal.',
     enable: 'Activar webhooks',
     enabling: 'Activando…',
     enabled: name => `Activado: "${name}"`,
@@ -3223,13 +3222,13 @@ export const esOverrides = {
     deleteFailed: name => `No se pudo eliminar "${name}"`,
     toggleFailed: (name, enabled) => `No se pudo ${enabled ? 'activar' : 'desactivar'} "${name}"`,
     newSubscription: 'Nueva suscripción',
-    restarting: 'Reiniciando Hermes…',
+    restarting: 'Reiniciando el gateway…',
     restartNeeded:
-      'Los webhooks están activados, pero Hermes todavía debe reiniciarse para que el receptor pueda ponerse en línea.',
-    restartGateway: 'Reiniciar Hermes',
+      'Los webhooks están activados, pero el gateway todavía debe reiniciarse para que el receptor pueda ponerse en línea.',
+    restartGateway: 'Reiniciar gateway',
     restartingGateway: 'Reiniciando…',
-    restartFailed: detail => `Falló el reinicio de Hermes${detail}`,
-    enabledRestarting: 'Webhooks activados; reiniciando Hermes…',
+    restartFailed: detail => `Falló el reinicio del gateway${detail}`,
+    enabledRestarting: 'Webhooks activados; reiniciando el gateway…',
     all: '(todos)',
     deliverOnly: 'solo entrega',
     createdTitle: 'Suscripción creada',
@@ -3265,32 +3264,32 @@ export const esOverrides = {
     }
   },
   profiles: {
-    close: 'Cerrar agentes',
+    close: 'Cerrar perfiles',
     nameHint: 'Letras minúsculas, dígitos, guiones y guiones bajos. Debe empezar con una letra o dígito.',
-    title: desktopTerms.es.agents,
-    count: count => `${count} ${count === 1 ? 'agente' : 'agentes'}`,
-    search: 'Buscar agentes…',
-    loading: 'Cargando agentes...',
-    newProfile: 'Nuevo agente',
-    importProfile: 'Importar agente…',
-    exportProfile: 'Exportar agente…',
-    imported: 'Agente importado',
-    exported: 'Agente exportado',
-    failedImport: 'No se pudo importar el agente',
-    failedExport: 'No se pudo exportar el agente',
+    title: 'Perfiles',
+    count: count => `${count} ${count === 1 ? 'perfil' : 'perfiles'}`,
+    search: 'Buscar perfiles…',
+    loading: 'Cargando perfiles...',
+    newProfile: 'Nuevo perfil',
+    importProfile: 'Importar perfil…',
+    exportProfile: 'Exportar perfil…',
+    imported: 'Perfil importado',
+    exported: 'Perfil exportado',
+    failedImport: 'No se pudo importar el perfil',
+    failedExport: 'No se pudo exportar el perfil',
     exportNeedsHost: name =>
-      `El navegador no puede guardar un archivo de agente. En el host de Hermes, ejecuta: hermes profile export ${name}`,
-    allProfiles: 'Todos los agentes',
-    showAllProfiles: 'Mostrar todos los agentes',
+      `El navegador no puede guardar un archivo de perfil. En el host de Hermes, ejecuta: hermes profile export ${name}`,
+    allProfiles: 'Todos los perfiles',
+    showAllProfiles: 'Mostrar todos los perfiles',
     notServedHere: 'No se ofrece aquí',
     switchToProfile: name => `Cambiar a ${name}`,
     switchToConnection: name => `Cambiar a ${name}`,
     switchConnectionFailed: name => `No se pudo conectar a ${name}`,
-    manageProfiles: 'Gestionar agentes...',
-    connectGateway: 'Gestionar máquinas…',
+    manageProfiles: 'Gestionar perfiles...',
+    connectGateway: 'Gestionar gateways…',
     fleet: {
-      allOnGateway: 'Todos los agentes de esta máquina',
-      gateway: (gateway: string) => `Agentes en ${gateway}`,
+      allOnGateway: 'Todos los perfiles de este gateway',
+      gateway: (gateway: string) => `Perfiles en ${gateway}`,
       gatewayUnreachable: (gateway: string) => `${gateway} · inaccesible`,
       onGateway: (name: string, gateway: string) => `${name} · ${gateway}`,
       switchTo: (name: string, gateway: string) => `Abrir ${name} en ${gateway}`,
@@ -3313,7 +3312,7 @@ export const esOverrides = {
       badge: (host: string) => `Se ejecuta en ${host}`,
       title: (profile: string) => `Conectar ${profile} a un host remoto`,
       description:
-        'Las sesiones de este agente se ejecutarán en el Hermes remoto que indiques, en lugar de en este equipo.',
+        'Las sesiones de este perfil se ejecutarán en el Hermes remoto que indiques, en lugar de en este equipo.',
       urlLabel: 'Dirección remota',
       urlPlaceholder: 'https://hermes.example.com',
       urlInvalid: 'Introduce una dirección completa que empiece por http:// o https://',
@@ -3323,15 +3322,15 @@ export const esOverrides = {
       plainTextOptIn:
         'Este equipo no tiene almacenamiento seguro de claves, así que el token se guardaría sin cifrar en el disco. Guardarlo de todos modos.',
       collisionWarning: (label: string) =>
-        `Ya existe una máquina llamada “${label}” en Configuración. Esta conexión del agente es independiente y no la cambiará.`,
-      confirmTitle: '¿Conectar este agente a un host remoto?',
+        `Ya existe un gateway llamado “${label}” en Configuración. Esta conexión del perfil es independiente y no lo cambiará.`,
+      confirmTitle: '¿Conectar este perfil a un host remoto?',
       confirmNote: (profile: string, host: string) =>
         `Los chats nuevos de ${profile} se ejecutarán en ${host}. Ese equipo ejecutará comandos y leerá archivos allí, no en este. Conéctate solo a un host de confianza.`,
       confirmBack: 'Atrás',
       connect: 'Conectar',
       connecting: 'Conectando…',
       disconnect: 'Quitar conexión remota',
-      savedTitle: 'Agente conectado',
+      savedTitle: 'Perfil conectado',
       savedMessage: (profile: string, host: string) => `${profile} ahora se ejecuta en ${host}`,
       removedTitle: 'Conexión remota quitada',
       removedMessage: (profile: string) => `${profile} ahora se ejecuta en este equipo`,
@@ -3346,17 +3345,17 @@ export const esOverrides = {
     colorFor: 'Color',
     openInNewWindow: 'Abrir en una ventana nueva',
     setAsDefault: 'Establecer como predeterminado',
-    defaultProfile: 'Agente predeterminado',
+    defaultProfile: 'Perfil predeterminado',
     defaultSet: (name: string) => `${name} es ahora el predeterminado`,
     defaultDescription:
-      'Se usa al abrir Hermes y para los chats nuevos. Las sesiones existentes se quedan con sus agentes.',
-    failedSetDefault: 'No se pudo establecer el agente predeterminado',
+      'Se usa al abrir Hermes y para los chats nuevos. Las sesiones existentes se quedan en sus perfiles.',
+    failedSetDefault: 'No se pudo establecer el perfil predeterminado',
     setColor: color => `Definir color ${color}`,
     autoColor: 'Auto',
-    noProfiles: 'Aún no hay agentes.',
-    selectPrompt: 'Selecciona un agente para ver sus detalles.',
-    refresh: 'Actualizar agentes',
-    refreshing: 'Actualizando agentes',
+    noProfiles: 'Aún no hay perfiles.',
+    selectPrompt: 'Selecciona un perfil para ver sus detalles.',
+    refresh: 'Actualizar perfiles',
+    refreshing: 'Actualizando perfiles',
     default: 'predeterminado',
     skills: count => `${count} ${count === 1 ? 'skill' : 'skills'}`,
     env: 'env',
@@ -3370,10 +3369,10 @@ export const esOverrides = {
     modelLabel: 'Modelo',
     skillsLabel: 'Skills',
     notSet: 'Sin definir',
-    soulDesc: 'Las instrucciones y la personalidad de este agente.',
+    soulDesc: 'El prompt de sistema y las instrucciones de persona integrados en este perfil.',
     soulOptional: 'opcional',
     soulPlaceholder: mode =>
-      `Las instrucciones y la personalidad de este agente.\nDéjalo en blanco para conservar el ${mode} predeterminado.`,
+      `El prompt de sistema / persona para este perfil.\nDéjalo en blanco para conservar el ${mode} predeterminado.`,
     soulPlaceholderCloned: 'clonado',
     soulPlaceholderEmpty: 'vacío',
     unsavedChanges: 'Cambios sin guardar',
@@ -3381,43 +3380,43 @@ export const esOverrides = {
     emptySoul: 'SOUL.md vacío; empieza a escribir la persona...',
     saving: 'Guardando...',
     saveSoul: 'Guardar SOUL.md',
-    deleteTitle: '¿Eliminar agente?',
+    deleteTitle: '¿Eliminar perfil?',
     deleteDescPrefix: 'Esto eliminará ',
     deleteDescMid: ' y quitará su directorio ',
     deleteDescSuffix: '. Esto no se puede deshacer.',
     deleting: 'Eliminando...',
-    createDesc: 'Cada agente tiene sus propias instrucciones, ajustes y chats.',
+    createDesc: 'Los perfiles son entornos independientes de Hermes: configuración, skills y SOUL.md separados.',
     nameLabel: 'Nombre',
     cloneFrom: 'Clonar desde',
     cloneFromNone: 'Ninguno (vacío)',
-    cloneFromDesc: 'Copia la configuración, las skills y SOUL.md del agente de origen seleccionado.',
+    cloneFromDesc: 'Copia la configuración, las skills y SOUL.md del perfil de origen seleccionado.',
     cloneFromDefault: 'Clonar desde el predeterminado',
-    cloneFromDefaultDesc: 'Copia configuración, skills y SOUL.md desde tu agente predeterminado.',
+    cloneFromDefaultDesc: 'Copia configuración, skills y SOUL.md desde tu perfil predeterminado.',
     invalidName: hint => `Nombre no válido. ${hint}`,
     nameRequired: 'El nombre es obligatorio.',
     creating: 'Creando...',
-    createAction: 'Crear agente',
-    renameTitle: 'Renombrar agente',
-    renameDescPrefix: 'Renombrar actualiza el directorio del agente y cualquier script wrapper en ',
+    createAction: 'Crear perfil',
+    renameTitle: 'Renombrar perfil',
+    renameDescPrefix: 'Renombrar actualiza el directorio del perfil y cualquier script wrapper en ',
     renameDescSuffix: '.',
     displayNameTitle: 'Ponle nombre a este agente',
     displayNameDesc:
-      'Define un nombre visible que se muestra en toda la app. El ID interno del agente sigue siendo "default".',
+      'Define un nombre visible que se muestra en toda la app. El ID interno del perfil sigue siendo "default".',
     displayNameLabel: 'Nombre visible',
     newNameLabel: 'Nombre nuevo',
     renaming: 'Renombrando...',
-    created: 'Agente creado',
-    renamed: 'Agente renombrado',
-    deleted: 'Agente eliminado',
+    created: 'Perfil creado',
+    renamed: 'Perfil renombrado',
+    deleted: 'Perfil eliminado',
     setupCopied: 'Comando de configuración copiado',
     soulSaved: 'SOUL.md guardado',
-    failedLoad: 'No se pudieron cargar los agentes',
-    failedDelete: 'No se pudo eliminar el agente',
+    failedLoad: 'No se pudieron cargar los perfiles',
+    failedDelete: 'No se pudo eliminar el perfil',
     failedCopy: 'No se pudo copiar el comando de configuración',
     failedLoadSoul: 'No se pudo cargar SOUL.md',
     failedSaveSoul: 'No se pudo guardar SOUL.md',
-    failedCreate: 'No se pudo crear el agente',
-    failedRename: 'No se pudo renombrar el agente'
+    failedCreate: 'No se pudo crear el perfil',
+    failedRename: 'No se pudo renombrar el perfil'
   },
   modelAssignment: {
     saveFailed: 'Hermes no guardó ese cambio de modelo.',
@@ -3428,11 +3427,11 @@ export const esOverrides = {
   },
   cron: {
     control: esCronControl,
-    close: 'Cerrar rutinas',
-    title: desktopTerms.es.routines,
-    count: count => `${count} ${count === 1 ? 'rutina' : 'rutinas'}`,
-    search: 'Buscar rutinas...',
-    loading: 'Cargando rutinas...',
+    close: 'Cerrar cron',
+    title: 'Tareas programadas',
+    count: count => `${count} ${count === 1 ? 'tarea' : 'tareas'}`,
+    search: 'Buscar tareas cron...',
+    loading: 'Cargando tareas cron...',
     states: {
       enabled: 'activada',
       scheduled: 'programada',
@@ -3443,7 +3442,7 @@ export const esOverrides = {
       completed: 'completada'
     },
     lastRunFailed: 'Falló la última ejecución:',
-    editJob: 'Editar rutina',
+    editJob: 'Editar tarea',
     runAgain: 'Ejecutar de nuevo',
     deliveryLabels: {
       local: 'Este escritorio',
@@ -3487,11 +3486,11 @@ export const esOverrides = {
     monthlyOnDayAt: (dayOfMonth, time) => `Mensual el día ${dayOfMonth} a las ${time}`,
     topOfHour: 'Al inicio de cada hora',
     everyHourAt: minute => `Cada hora en :${minute}`,
-    newCron: 'Nueva rutina',
+    newCron: 'Nueva tarea cron',
     emptyDescNew:
-      'Las rutinas ejecutan tus instrucciones automáticamente y envían los resultados al destino que elijas.',
+      'Programa un prompt para ejecutarlo con una expresión cron. Hermes lo ejecutará y entregará los resultados al destino que elijas.',
     emptyDescSearch: 'Prueba una búsqueda más amplia.',
-    emptyTitleNew: 'Aún no hay rutinas',
+    emptyTitleNew: 'Aún no hay tareas programadas',
     emptyTitleSearch: 'Sin coincidencias',
     last: 'Última:',
     next: 'Siguiente:',
@@ -3502,34 +3501,34 @@ export const esOverrides = {
     showRuns: 'Mostrar ejecuciones',
     hideRuns: 'Ocultar ejecuciones',
     runHistory: 'Historial de ejecuciones',
-    actionsTitle: 'Acciones de la rutina',
-    resume: 'Reanudar rutina',
-    pause: 'Pausar rutina',
+    actionsTitle: 'Acciones de tarea cron',
+    resume: 'Reanudar cron',
+    pause: 'Pausar cron',
     resumeTitle: 'Reanudar',
     pauseTitle: 'Pausar',
     triggerNow: 'Ejecutar ahora',
-    edit: 'Editar rutina',
-    deleteTitle: '¿Eliminar rutina?',
+    edit: 'Editar cron',
+    deleteTitle: '¿Eliminar tarea cron?',
     deleteDescPrefix: 'Esto eliminará ',
     deleteDescSuffix: ' permanentemente. Dejará de ejecutarse de inmediato.',
     deleting: 'Eliminando...',
-    resumed: 'Rutina reanudada',
-    paused: 'Rutina pausada',
-    triggered: 'Rutina ejecutada',
-    deleted: 'Rutina eliminada',
-    created: 'Rutina creada',
-    updated: 'Rutina actualizada',
-    failedLoad: 'No se pudieron cargar las rutinas',
-    failedUpdate: 'No se pudo actualizar la rutina',
-    failedTrigger: 'No se pudo ejecutar la rutina',
-    failedDelete: 'No se pudo eliminar la rutina',
-    failedSave: 'No se pudo guardar la rutina',
-    editTitle: 'Editar rutina',
-    createTitle: 'Nueva rutina',
+    resumed: 'Cron reanudado',
+    paused: 'Cron pausado',
+    triggered: 'Cron ejecutado',
+    deleted: 'Cron eliminado',
+    created: 'Cron creado',
+    updated: 'Cron actualizado',
+    failedLoad: 'No se pudieron cargar las tareas cron',
+    failedUpdate: 'No se pudo actualizar la tarea cron',
+    failedTrigger: 'No se pudo ejecutar la tarea cron',
+    failedDelete: 'No se pudo eliminar la tarea cron',
+    failedSave: 'No se pudo guardar la tarea cron',
+    editTitle: 'Editar tarea cron',
+    createTitle: 'Nueva tarea cron',
     editDesc:
-      'Actualiza la frecuencia, las instrucciones o el destino. Los cambios se aplican en la próxima ejecución.',
+      'Actualiza la programación, el prompt o el destino. Los cambios se aplican en la próxima ejecución.',
     createDesc:
-      'Ejecuta instrucciones automáticamente cuando elijas. Usa sintaxis cron o una frase como "cada 15 minutos".',
+      'Programa un prompt para ejecutarlo automáticamente. Usa sintaxis cron o una frase como "cada 15 minutos".',
     nameLabel: 'Nombre',
     namePlaceholder: 'Resumen matutino',
     promptLabel: 'Prompt',
@@ -3548,24 +3547,24 @@ export const esOverrides = {
     promptRequired: 'El prompt es obligatorio.',
     promptScheduleRequired: 'El prompt y la programación son obligatorios.',
     scheduleRequired: 'La programación es obligatoria.',
-    scriptOnlyEditHint: 'Rutina solo con script (sin prompt de IA). ID de la rutina:',
+    scriptOnlyEditHint: 'Tarea solo con script (sin prompt de IA). ID de la tarea:',
     saveChanges: 'Guardar cambios',
-    createAction: 'Crear rutina',
+    createAction: 'Crear cron',
     tabs: {
-      jobs: desktopTerms.es.routines,
+      jobs: 'Tareas',
       blueprints: 'Plantillas'
     },
     blueprints: {
       tab: 'Plantillas',
       startFrom: 'Empezar con',
       custom: 'Personalizada',
-      subtitle: 'Rutinas listas para usar',
+      subtitle: 'Automatizaciones listas para usar',
       dialogDesc: 'Completa los detalles y prográmala.',
-      scheduled: 'Rutina creada desde la plantilla',
+      scheduled: 'Plantilla programada',
       loading: 'Cargando plantillas…',
       failedLoad: 'No se pudieron cargar las plantillas',
       emptyTitle: 'No hay plantillas disponibles',
-      emptyDesc: 'Este backend no ofrece plantillas de rutinas.'
+      emptyDesc: 'Este backend no ofrece plantillas de automatización.'
     }
   },
   artifacts: {
@@ -3578,6 +3577,7 @@ export const esOverrides = {
     tabFiles: 'Archivos',
     tabLinks: 'Enlaces',
     noArtifactsTitle: 'No se encontraron artefactos',
+    partialIndex: (failed: number, total: number) => `Se omitieron ${failed} de ${total} sesiones recientes al indexar los artefactos.`,
     noArtifactsDesc:
       'Las imágenes generadas y las salidas de archivo aparecerán aquí cuando las sesiones las produzcan.',
     failedLoad: 'No se pudieron cargar los artefactos',
@@ -3633,7 +3633,7 @@ export const esOverrides = {
       filters: 'Filtros',
       status: 'Estado',
       pullRequest: 'Pull request',
-      profile: desktopTerms.es.agents,
+      profile: 'Perfil',
       project: 'Proyecto',
       archived: 'Archivados',
       resetToDefaults: 'Restablecer valores predeterminados',
@@ -3658,23 +3658,23 @@ export const esOverrides = {
       noPR: 'Sin PR'
     },
     gatewayGroups: {
-      grouping: 'Máquina y agente',
+      grouping: 'Gateway y perfil',
       rename: 'Renombrar grupo',
       aliasLabel: 'Nombre visible',
-      aliasHint: 'Solo el nombre visible; los nombres de la máquina y del agente no cambian.',
+      aliasHint: 'Solo el nombre visible; los nombres del gateway y del perfil no cambian.',
       resetName: 'Restablecer nombre',
       moveUp: 'Subir',
       moveDown: 'Bajar',
       reorder: 'Reordenar grupo',
       actions: 'Acciones del grupo'
     },
-    profileRail: 'Barra de agentes',
+    profileRail: 'Barra de perfiles',
     nav: {
       'new-session': 'Nueva sesión',
       capabilities: 'Capacidades',
       messaging: 'Mensajería',
       artifacts: 'Artefactos',
-      cron: desktopTerms.es.routines
+      cron: 'Tareas programadas'
     },
     searchAria: 'Buscar sesiones',
     searchPlaceholder: 'Buscar sesiones…',
@@ -3687,7 +3687,7 @@ export const esOverrides = {
     files: 'Archivos',
     review: 'Revisión',
     logs: 'Registros',
-    cronJobs: desktopTerms.es.routines,
+    cronJobs: 'Tareas cron',
     groupAriaGrouped: 'Mostrar sesiones como una sola lista',
     groupAriaUngrouped: 'Agrupar sesiones por espacio de trabajo',
     showProjects: 'Mostrar proyectos',
@@ -3705,7 +3705,7 @@ export const esOverrides = {
       body: (profiles: string) =>
         `Hermes no puede leer todo el historial de sesiones de ${profiles}. Los chats que faltan en esta lista no se eliminaron; el archivo donde se guardan está dañado.`,
       action:
-        'Sal de Hermes para este agente y luego inspecciona el archivo sin modificarlo, o restaura una instantánea:',
+        'Sal de Hermes en este perfil y luego inspecciona el archivo sin modificarlo, o restaura una instantánea:',
       guide: 'Guía de recuperación'
     },
     noFilterMatches: 'Ninguna sesión coincide con estos filtros',
@@ -3743,7 +3743,7 @@ export const esOverrides = {
       backgroundRunning: 'Tarea en segundo plano en ejecución',
       draftSession: 'Borrador — aún no se ha enviado nada',
       handoffOrigin: platform => `Transferido desde ${platform}`,
-      ownedByProfile: profile => `Agente: ${profile}`,
+      ownedByProfile: profile => `Perfil: ${profile}`,
       renamed: 'Renombrada',
       renameFailed: 'No se pudo renombrar',
       renameTitle: 'Renombrar sesión',
@@ -3780,6 +3780,7 @@ export const esOverrides = {
     placeholderStarting: 'Iniciando Hermes...',
     placeholderReconnecting: 'Reconectando con Hermes…',
     placeholderFollowUp: 'Enviar seguimiento',
+    browseAllSessions: 'Ver todas las sesiones…',
     newSessionPlaceholders: [
       '¿Qué vamos a construir?',
       'Dale una tarea a Hermes',
@@ -3861,8 +3862,8 @@ export const esOverrides = {
       '/compress': 'Comprimir el contexto de esta conversación',
       '/rollback':
         'Listar o restaurar puntos de control del sistema de archivos (las restauraciones conservan tus ediciones manuales; --all las sobrescribe)',
-      '/export': 'Exportar un agente (configuración, skills, tema) a un archivo compartible',
-      '/import': 'Importar un archivo de agente compartido como agente nuevo',
+      '/export': 'Exportar un perfil (configuración, skills, tema) a un archivo compartible',
+      '/import': 'Importar un archivo de perfil compartido como perfil nuevo',
       '/stop': 'Detener el turno activo y los procesos en segundo plano',
       '/pause': "Pausar globalmente el trabajo nuevo (parada de emergencia); '/pause off' lo reanuda",
       '/bg': 'Ejecutar un prompt en una sesión independiente en segundo plano',
@@ -3886,7 +3887,7 @@ export const esOverrides = {
       '/context':
         'Mostrar la vista detallada de la ventana de contexto con indicador de uso, desglose por categoría, estadísticas de compresión y rendimiento',
       '/whoami': 'Mostrar tu acceso a los comandos de barra (admin / usuario)',
-      '/profile': 'Cambiar el agente activo',
+      '/profile': 'Cambiar el perfil activo de Hermes',
       '/codex-runtime': 'Activar o desactivar el runtime codex app-server para modelos OpenAI/Codex',
       '/personality': 'Establecer una personalidad predefinida',
       '/battery': 'Mostrar u ocultar un indicador de batería por colores en la barra de estado',
@@ -3905,15 +3906,15 @@ export const esOverrides = {
       '/hatch': 'Generar una mascota nueva (abre el generador)',
       '/learn': 'Aprender una skill reutilizable a partir de lo que describas (carpetas, URL, este chat, notas)',
       '/init': 'Generar o actualizar las instrucciones de proyecto AGENTS.md a partir de un análisis del repositorio',
-      '/suggestions': 'Revisar las rutinas sugeridas (aceptar/descartar)',
-      '/blueprint': 'Configurar una rutina a partir de una plantilla',
+      '/suggestions': 'Revisar las automatizaciones sugeridas (aceptar/descartar)',
+      '/blueprint': 'Configurar una automatización a partir de una plantilla',
       '/browser': 'Gestionar el navegador del agente [connect|disconnect|status]',
       '/palette': 'Abrir la paleta de comandos aproximada (también Ctrl+P)',
       '/usage':
         'Mostrar el uso de tokens y los límites de frecuencia; `reset` canjea un restablecimiento de límite de Codex acumulado',
       '/subscription': 'Ver tu plan de Nous y cambiarlo en el navegador',
       '/topup': 'Mostrar tu saldo de Nous y gestionar la facturación en el portal',
-      '/platform': 'Pausar, reanudar o listar una plataforma de mensajería que falla',
+      '/platform': 'Pausar, reanudar o listar una plataforma del gateway que falla',
       '/version': 'Mostrar la versión de Hermes Agent',
       '/debug': 'Subir un informe de depuración (información del sistema + registros) y obtener enlaces para compartir',
       '/model': 'Cambiar el modelo de esta sesión'
@@ -3957,7 +3958,7 @@ export const esOverrides = {
     queueCancelFailed: 'No se pudo quitar el turno en cola',
     queueLostDiscard: 'Descartar',
     queueLostDiscardTip:
-      'Hermes se reinició a mitad del turno y no puede terminarlo. Descártalo para que se ejecuten los turnos en cola que esperan detrás.',
+      'El gateway se reinició a mitad del turno y no puede terminarlo. Descártalo para que se ejecuten los turnos en cola que esperan detrás.',
     queueStuckTitle: 'Mensaje en cola no enviado',
     queueStuckBody: 'Un turno en cola no llegó a enviarse. Sigue en la cola; vuelve a intentarlo.',
     queueDroppedTitle: 'Entrada en cola descartada',
@@ -4206,7 +4207,7 @@ export const esOverrides = {
     versionUnavailable: 'Versión no disponible',
     bundleOutOfSync: 'La compilación de la app está desactualizada',
     bundleOutOfSyncDesc:
-      'El entorno de ejecución de Hermes se actualizó, pero la app de escritorio sigue siendo una compilación anterior: faltarán funciones nuevas de la interfaz (como el modo Agente) hasta que se actualice. Ejecuta la actualización de abajo para recompilar la app. Si eso no elimina este aviso, reinstala desde el instalador de escritorio más reciente.',
+      'El entorno de ejecución de Hermes se actualizó, pero la app de escritorio sigue siendo una compilación anterior: faltarán funciones nuevas de la interfaz (como el modo Bot) hasta que se actualice. Ejecuta la actualización de abajo para recompilar la app. Si eso no elimina este aviso, reinstala desde el instalador de escritorio más reciente.',
     bundleOutOfSyncAction: 'Obtener el instalador',
     bundleSwapPending: 'Reinicia para terminar la actualización',
     bundleSwapPendingDesc:
@@ -4345,7 +4346,7 @@ export const esOverrides = {
     retryAfterRun: 'Ya lo ejecuté -- reintentar',
     setupChoiceTitle: 'Configurar Hermes Desktop',
     setupChoiceDesc:
-      'Conecta esta app con una máquina que ya ejecute Hermes o instala Hermes localmente en este equipo.',
+      'Conecta esta app con un gateway de Hermes que ya esté en ejecución o instala Hermes localmente en este equipo.',
     connectExistingTitle: 'Conectar con un Hermes existente',
     connectExistingShort: 'Conectar existente',
     connectExistingDesc:
@@ -4355,28 +4356,28 @@ export const esOverrides = {
     localStartUnavailable: 'No se pudo iniciar la instalación local. Reinicia Hermes Desktop e inténtalo de nuevo.',
     remoteSetupTitle: 'Conectar con un Hermes existente',
     remoteSetupDesc:
-      'Introduce la URL de tu máquina. Hermes Desktop detectará si necesita un token o iniciar sesión en el navegador.',
-    remoteUrlTitle: 'URL de la máquina',
-    remoteUrlDesc: 'Usa la URL base de Hermes en la máquina e incluye https:// si es remota.',
+      'Introduce la URL de tu gateway. Hermes Desktop detectará si necesita un token o iniciar sesión en el navegador.',
+    remoteUrlTitle: 'URL del gateway',
+    remoteUrlDesc: 'Usa la URL base del gateway de Hermes e incluye https:// si es remoto.',
     remoteUrlPlaceholder: 'https://gateway.example.com/hermes',
-    probing: 'Detectando la autenticación de la máquina…',
+    probing: 'Detectando la autenticación del gateway…',
     probeError:
       'Hermes no puede llegar a esa dirección. Comprueba la URL y que el otro equipo esté ejecutando Hermes; las opciones de inicio de sesión aparecen cuando responde.',
     probeErrorDetails: 'Detalles',
     identityProvider: 'tu proveedor de identidad',
     authTitle: 'Autenticación',
-    authNeedsOauth: provider => `Inicia sesión con ${provider} antes de probar la conexión con esta máquina.`,
+    authNeedsOauth: provider => `Inicia sesión con ${provider} antes de probar este gateway.`,
     authSignedIn: 'Inicio de sesión en el navegador completado.',
     connected: 'Conectado',
     signIn: 'Iniciar sesión',
     signInWith: provider => `Iniciar sesión con ${provider}`,
-    enterUrlFirst: 'Introduce primero la URL de una máquina.',
+    enterUrlFirst: 'Introduce primero la URL de un gateway.',
     signInIncomplete: 'La ventana de inicio de sesión se cerró antes de completar la autenticación.',
     tokenTitle: 'Token de sesión',
-    tokenDesc: 'Pega el token de sesión del archivo .env de Hermes en la máquina remota.',
+    tokenDesc: 'Pega el token de sesión del archivo .env del gateway remoto.',
     pasteSessionToken: 'Pegar token de sesión',
-    incompleteSignInTest: 'Inicia sesión antes de probar la conexión protegida con OAuth a esta máquina.',
-    incompleteTokenTest: 'Introduce un token de sesión antes de probar la conexión con esta máquina.',
+    incompleteSignInTest: 'Inicia sesión antes de probar este gateway protegido con OAuth.',
+    incompleteTokenTest: 'Introduce un token de sesión antes de probar este gateway.',
     testConnection: 'Probar conexión',
     testSucceeded: (baseUrl, version) => `Conectado a ${baseUrl}${version ? ` (${version})` : ''}.`,
     applyRemote: 'Aplicar y reconectar',
@@ -4561,7 +4562,7 @@ export const esOverrides = {
     gatewayMenu: {
       connectionLabel: 'Conexión',
       inferenceLabel: 'Inferencia',
-      gateway: 'Máquina',
+      gateway: 'Gateway',
       connected: 'Conectado',
       connecting: 'Conectando',
       offline: 'Sin conexión',
@@ -4569,7 +4570,7 @@ export const esOverrides = {
       inferenceNotReady: 'Inferencia no lista',
       checkingInference: 'Comprobando inferencia',
       disconnected: 'Desconectado',
-      reconnectGateway: 'Reconectar máquina',
+      reconnectGateway: 'Reconectar gateway',
       openSystem: 'Abrir panel del sistema',
       connection: label => `Conexión: ${label}`,
       recentActivity: 'Actividad reciente',
@@ -4614,15 +4615,15 @@ export const esOverrides = {
       openCommandCenter: 'Abrir Centro de comandos',
       showTerminal: 'Mostrar terminal',
       hideTerminal: 'Ocultar terminal',
-      gateway: 'Máquina',
-      gatewayReady: 'lista',
+      gateway: 'Gateway',
+      gatewayReady: 'listo',
       gatewayNeedsSetup: 'necesita configuración',
       gatewayUnavailable: 'inferencia no disponible',
       gatewayChecking: 'comprobando',
       gatewayConnecting: 'conectando',
       gatewayOffline: 'sin conexión',
-      gatewayRestarting: 'reiniciando Hermes…',
-      gatewayTitle: 'Máquina',
+      gatewayRestarting: 'reiniciando…',
+      gatewayTitle: 'Puerta de enlace',
       customizeTitle: 'Mostrar en la barra de estado',
       hideStatusbar: 'Ocultar barra de estado',
       resetStatusbar: 'Restablecer a valores predeterminados',
@@ -4647,8 +4648,8 @@ export const esOverrides = {
       subagents: count => `${count} ${count === 1 ? 'subagente' : 'subagentes'}`,
       failed: count => `${count} fallidos`,
       running: count => `${count} en ejecución`,
-      cron: desktopTerms.es.routines,
-      openCron: 'Abrir rutinas',
+      cron: 'Cron',
+      openCron: 'Abrir tareas cron',
       webhooks: 'Webhooks',
       openWebhooks: 'Abrir webhooks',
       starmap: 'Grafo de memoria',
@@ -4747,11 +4748,11 @@ export const esOverrides = {
     terminalCloseOthers: 'Cerrar las demás',
     terminalCloseAll: 'Cerrar todo',
     terminalNewOn: 'Nueva terminal en…',
-    terminalGatewayRemoved: 'Máquina eliminada',
+    terminalGatewayRemoved: 'Gateway eliminado',
     terminalGatewayRemovedBody:
-      'Se eliminó la máquina donde se ejecutaba esta terminal, así que no puede reabrirse. Cierra esta pestaña.',
+      'Se eliminó el gateway donde se ejecutaba esta terminal, así que no puede reabrirse. Cierra esta pestaña.',
     terminalGatewayNoShellBody:
-      'Esta máquina no ofrece acceso a shell, así que esta terminal no puede reabrirse. Cierra esta pestaña.',
+      'Este gateway no ofrece acceso a shell, así que esta terminal no puede reabrirse. Cierra esta pestaña.',
     terminalDisconnectedBody:
       'Terminal desconectada. Pulsa Intro para iniciar una nueva shell; el historial se conserva.',
     addToChat: 'Añadir al chat'
@@ -4788,7 +4789,7 @@ export const esOverrides = {
     editing: 'Edición',
     unsavedChanges: 'Cambios no guardados',
     saveFailed: message => `No se pudo guardar: ${message}`,
-    saveScopeChanged: 'Vuelve a la conexión y al agente originales para guardar este borrador.',
+    saveScopeChanged: 'Vuelve a la conexión y al perfil originales para guardar este borrador.',
     diskChangedTitle: 'Archivo cambiado en el disco',
     diskChangedBody:
       'Este archivo cambió desde que lo abriste. ¿Quieres sobrescribirlo con tu versión o descartar tus cambios y recargar?',
@@ -5197,7 +5198,7 @@ export const esOverrides = {
         skill: 'skill'
       },
       tier: { official: 'oficial', verified: 'verificado', community: 'comunidad' },
-      targetProfile: (profile: string) => `Se instala para tu agente ${profile}`,
+      targetProfile: (profile: string) => `Se instala en tu perfil ${profile}`,
       sendFailed: 'No se pudo enviar tu respuesta. Vuelve a intentarlo.',
       commitLabel: 'Commit',
       subdirLabel: 'Carpeta',
@@ -5332,9 +5333,9 @@ export const esOverrides = {
           pendingAction: 'Preguntando'
         },
         cronjob: {
-          done: 'Rutina configurada',
-          pending: 'Configurando rutina',
-          pendingAction: 'Configurando'
+          done: 'Tarea cron completada',
+          pending: 'Programar una tarea cron',
+          pendingAction: 'Programando'
         },
         edit_file: {
           done: 'Archivo editado',
@@ -5424,7 +5425,7 @@ export const esOverrides = {
       'Revisa el comando antes de introducir tu contraseña de sudo. La contraseña se envía al agente que lo ejecuta y se guarda en caché durante esta sesión.',
     sudoCommandUnavailable: 'Este agente no indicó el comando. Cancela si no puedes verificarlo en la conversación.',
     sudoInstallDesc:
-      'Hermes necesita tu contraseña de sudo para instalar los paquetes de la pantalla del agente (TigerVNC + Xfce) en la máquina conectada. Solo se envía a esa máquina.',
+      'Hermes necesita tu contraseña de sudo para instalar los paquetes de Bot Screen (TigerVNC + Xfce) en el host del gateway. Solo se envía a ese host.',
     sudoPlaceholder: 'contraseña sudo',
     secretTitle: 'Se requiere un secreto',
     secretDesc: 'Hermes necesita una credencial para continuar.',
@@ -5458,6 +5459,7 @@ export const esOverrides = {
   },
   desktop: {
     audioReadFailed: 'No se pudo leer el audio grabado',
+    sessionOpenFailed: 'No se pudo abrir esta sesión',
     sessionUnavailable: 'Sesión no disponible',
     createSessionFailed: 'No se pudo crear una sesión nueva',
     promptFailed: 'Falló el prompt',
@@ -5472,11 +5474,11 @@ export const esOverrides = {
     yoloTitle: 'YOLO',
     yoloToggleFailed: 'No se pudo alternar YOLO',
     profileStatus: current =>
-      `Agente: ${current}. Usa /profile <nombre> o el selector de "Nueva sesión" para iniciar un chat con otro agente.`,
-    unknownProfile: 'Agente desconocido',
-    noProfileNamed: (target, available) => `No hay ningún agente llamado "${target}". Disponibles: ${available}`,
-    newChatsProfile: name => `Los chats nuevos usarán el agente ${name}.`,
-    setProfileFailed: 'No se pudo definir el agente',
+      `Perfil: ${current}. Usa /profile <nombre> o el selector de "Nueva sesión" para iniciar un chat en otro perfil.`,
+    unknownProfile: 'Perfil desconocido',
+    noProfileNamed: (target, available) => `No hay ningún perfil llamado "${target}". Disponibles: ${available}`,
+    newChatsProfile: name => `Los chats nuevos usarán el perfil ${name}.`,
+    setProfileFailed: 'No se pudo definir el perfil',
     sttDisabled: 'Voz a texto está deshabilitado en la configuración.',
     stopFailed: 'No se pudo detener',
     regenerateFailed: 'No se pudo regenerar',
@@ -5490,9 +5492,9 @@ export const esOverrides = {
       'Este chat está abierto como transcripción de solo lectura: el envío está desactivado.',
     resumeStrandedTitle: 'No se pudo cargar esta sesión',
     resumeStrandedBody:
-      'No se pudo conectar con esta sesión y se agotaron los reintentos automáticos. Comprueba que Hermes esté en ejecución en la máquina y vuelve a intentarlo.',
+      'No se pudo conectar con esta sesión y se agotaron los reintentos automáticos. Comprueba que el gateway esté en ejecución y vuelve a intentarlo.',
     poolSlotTimeoutBody:
-      'Hay demasiados agentes en ejecución a la vez para el límite de este equipo. Sube el límite en Configuración → Avanzado o espera a que termine uno y reinténtalo.',
+      'Hay demasiados bots en ejecución a la vez para el límite de este equipo. Sube el límite en Configuración → Avanzado o espera a que termine uno y reinténtalo.',
     poolSlotTimeoutOpenSettings: 'Abrir configuración avanzada',
     resumeRetry: 'Reintentar',
     nothingToBranch: 'No hay nada que ramificar',
@@ -5571,16 +5573,16 @@ export const esOverrides = {
         text: 'Imágenes, archivos y enlaces de cada sesión, indexados en un solo lugar.'
       },
       cron: {
-        title: 'Rutinas automáticas',
-        text: 'Ejecuta instrucciones automáticamente cada hora, cada noche o cuando elijas.'
+        title: 'Trabajo que se ejecuta solo',
+        text: 'Programa un prompt cada hora, cada noche o con una expresión cron.'
       },
       'command-palette': {
         title: 'Un cuadro para todo',
         text: 'Sesiones, configuración, skills y comandos responden a la paleta.'
       },
       profiles: {
-        title: 'Los agentes son independientes',
-        text: 'Cada agente tiene sus propias instrucciones, ajustes y chats.'
+        title: 'Los perfiles son independientes',
+        text: 'Cada uno es su propio Hermes: sus propias claves, su propia memoria, sus propias sesiones.'
       },
       'composer-mentions': {
         title: 'Adjunta y ordena',

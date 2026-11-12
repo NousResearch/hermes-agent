@@ -157,19 +157,42 @@ Overview cards use 436:300 columns with a 24px gap, 16px section-title spacing,
 Global desktop settings remain available outside the agent editor. New agent
 opens creation directly on the captured machine rather than another management page.
 
-User-facing identities are **Machine / Machines** and **Agent / Agents**;
-scheduled automation is **Routine / Routines** in both layouts (a routine *has* a
-schedule: "schedule" stays the word for its timing). Navigation,
-page headings, and plugin surfaces reuse `settings.connections.title`,
-`profiles.title`, and `cron.title`; their nouns come from
-`src/i18n/desktop-terms.ts` for all nine bundled locales. Service operations say
-**Restart Hermes**, not “restart the machine,” which would imply rebooting the
-computer. Reuse existing catalog actions and descriptions rather than introducing
-local synonyms. Team Gateway and Tool Gateway remain product names.
-Actual Telegram/Discord bots, browser profiles, and user-authored names retain
-their meanings. Protocol fields, `/profiles` and `/cron` routes, CLI commands,
-cron expressions, plugin IDs, and the exact stored `Bot Chat` title are technical
-contracts, not copy to rename.
+### Terminology: classic vs redesign
+
+The redesign renames five product nouns; classic keeps `main`'s wording verbatim, so turning
+the **Redesigned interface** preference off restores exactly what `main` ships.
+
+| Classic (base catalog, `main`'s wording) | Redesign |
+|---|---|
+| Sessions | Chats |
+| Artifacts | Library |
+| Profiles / bots (Hermes agents) | Agents |
+| Cron / cron jobs / scheduled jobs | Routines |
+| Gateways (and "host" meaning a Hermes machine) | Machines |
+
+The swap is a wording layer, not a fork: `resolveTranslations(locale)`
+(`src/i18n/registry.ts`) reads the shell from the presentation leaf
+(`src/store/shell-presentation.ts`, i.e. `$portalShell`) and, in the redesigned shell,
+merges `src/i18n/redesign/<locale>.ts` over the base catalog — before backend/plugin
+language packs, which still win. Each overlay holds ONLY the keys whose wording differs,
+typed against `Translations`; a locale inherits the English overlay where its base still
+shows English. Call sites keep reading `t.x.y` / `translateNow(...)`; never branch a string on
+the shell. The HUD and popped-out Browser always render classic, so they read classic
+wording. **New shell wording goes in the overlay, never in the base catalog.** Redesign-only
+surfaces with their own copy modules (`src/i18n/simplified-agents.ts`, `src/app/**/*-copy.ts`)
+use the redesign terms directly. `src/i18n/redesign/terminology-guard.test.ts` fails on a
+classic noun left in the redesign and on a redesign-only word reaching classic.
+
+Rulings: a routine *has* a schedule ("schedule" stays the word for its timing; "cron
+expression" stays the input syntax's name). Service operations say **Restart Hermes**, not
+“restart the machine,” which would imply rebooting the computer. "host" stays only for a
+literal hostname or SSH host; skill/plugin "library" is "catalog", so Library means only the
+artifacts destination. Team Gateway and Tool Gateway remain product names; Group chats and
+Channels keep their names. Actual Telegram/Discord bots, subagents, browser profiles, the
+memory "user profile", sign-in sessions and session tokens, and user-authored names retain
+their meanings. Protocol fields, `/profiles` and `/cron` routes, CLI commands, cron
+expressions, plugin IDs, and the exact stored `Bot Chat` title are technical contracts, not
+copy to rename.
 
 Drift coverage exercises navigation into Agent and Routine editors, cancellation,
 and return to the current view with the redesign enabled and disabled. Component
@@ -1429,6 +1452,10 @@ long transcript or a busy terminal.
 - **Sparse locales** (`ar`, `ru`) override the English base through
   `defineLocale()`. Large catalogs are split by topic: the Arabic source lives
   in `src/i18n/ar_<topic>.ts`, recomposed by `src/i18n/ar.ts`.
+- **Shell wording** — the base catalog is classic's wording. Wording that differs only
+  in the redesigned shell goes in `src/i18n/redesign/<locale>.ts` for every locale
+  (see Terminology above), never in the base catalog and never as a `portal ? a : b`
+  string at the call site.
 
 ## State (TypeScript)
 

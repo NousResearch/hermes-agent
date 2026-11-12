@@ -9,7 +9,9 @@ export const enSessionCommands: SessionCommandNotices = {
   retryNothing: 'nothing to retry',
   retryUnsupported: '/retry: retry does not support media or unknown content parts',
   busy: (command: string) =>
-    `session busy — the agent is still replying. Stop the current reply first (Stop button, or Ctrl+C in a terminal), then run /${command}.`,
+    `session busy — Hermes is still replying. Stop the current reply first (Stop button, or Ctrl+C in a terminal), then run /${command}.`,
+  titleSet: (title: string, queued: boolean) => `Session title set: ${title}${queued ? ' (queued while session initializes)' : ''}`,
+  titleCleared: 'Session title cleared.',
   busyCompressing: (command: string) =>
     `session busy — a /compress is running; run /${command} when it finishes.`,
   steerUsage: 'usage: /steer <prompt>',

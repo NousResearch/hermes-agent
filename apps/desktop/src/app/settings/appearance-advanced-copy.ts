@@ -128,16 +128,16 @@ const COPY: Record<BundledLocale, AppearanceAdvancedCopy> = {
     reactions: ['メッセージのリアクション', 'メッセージへの絵文字リアクション（双方向）。'],
     vibeHearts: ['ハートの演出', 'お礼を言うとハートが浮かびます。'],
     bubble: ['メッセージの吹き出しの透明度', '0% で不透明、100% で枠線のみ。'],
-    collapseThinking: ['思考を折りたたむ', 'Hermes の思考を開くまで折りたたんでおきます。'],
+    collapseThinking: ['思考を折りたたむ', 'エージェントの思考を開くまで折りたたんでおきます。'],
     density: ['サイドバーの密度', '各チャットのタイトルの下に表示する情報量です。'],
     timeline: ['スレッドのタイムライン', '会話の右端に表示されるナビゲーションバーです。'],
     pricing: ['モデルの料金', 'モデル選択に100万トークンあたりの料金を表示します。'],
     welcome: ['ようこそ画面', '空のチャットに表示するロゴと入力の案内です。']
   },
   zh: {
-    groups: { text: '文字', chat: '聊天', layout: '布局', device: '此设备' },
+    groups: { text: '文字', chat: '对话', layout: '布局', device: '此设备' },
     interfaceScale: ['界面缩放', '调整菜单和控件的大小。也可使用 Ctrl/Cmd 加 + 和 −。'],
-    chatFont: ['聊天字体', '换用 OpenDyslexic 等易读字体。'],
+    chatFont: ['对话字体', '换用 OpenDyslexic 等易读字体。'],
     textDirection: ['文字方向', '自动会依据每段的第一个字母。代码始终从左到右。'],
     toolCalls: ['工具调用', '简洁模式隐藏原始数据；技术模式显示完整的输入和输出。'],
     hideCodeDiffs: ['隐藏代码差异', '将文件编辑显示为新增和删除行数的一行摘要。'],
@@ -146,15 +146,15 @@ const COPY: Record<BundledLocale, AppearanceAdvancedCopy> = {
     vibeHearts: ['爱心特效', '道谢时飘出爱心。'],
     bubble: ['消息气泡透明度', '0% 为实心；100% 仅保留轮廓。'],
     collapseThinking: ['折叠思考过程', '在你展开之前，Hermes 的推理保持折叠。'],
-    density: ['侧边栏密度', '每个聊天标题下显示多少细节。'],
+    density: ['侧边栏密度', '每个对话标题下显示多少细节。'],
     timeline: ['对话时间线', '对话右侧边缘的导航条。'],
     pricing: ['模型价格', '在模型选择器中显示每百万 token 的价格。'],
-    welcome: ['欢迎界面', '空白聊天中的标志和提示。']
+    welcome: ['欢迎界面', '空白对话中的标志和提示。']
   },
   'zh-hant': {
-    groups: { text: '文字', chat: '聊天', layout: '版面配置', device: '此裝置' },
+    groups: { text: '文字', chat: '對話', layout: '版面配置', device: '此裝置' },
     interfaceScale: ['介面縮放', '調整選單與控制項的大小。也可使用 Ctrl/Cmd 加 + 與 −。'],
-    chatFont: ['聊天字型', '換用 OpenDyslexic 等易讀字型。'],
+    chatFont: ['對話字型', '換用 OpenDyslexic 等易讀字型。'],
     textDirection: ['文字方向', '自動會依據每段的第一個字母。程式碼一律由左至右。'],
     toolCalls: ['工具呼叫', '簡潔模式隱藏原始資料；技術模式顯示完整的輸入與輸出。'],
     hideCodeDiffs: ['隱藏程式碼差異', '將檔案編輯顯示為新增與刪除行數的一行摘要。'],
@@ -163,10 +163,10 @@ const COPY: Record<BundledLocale, AppearanceAdvancedCopy> = {
     vibeHearts: ['愛心特效', '道謝時飄出愛心。'],
     bubble: ['訊息泡泡透明度', '0% 為實心；100% 只保留外框。'],
     collapseThinking: ['摺疊思考過程', '在你展開之前，Hermes 的推理保持摺疊。'],
-    density: ['側邊欄密度', '每個聊天標題下顯示多少細節。'],
+    density: ['側邊欄密度', '每個對話標題下顯示多少細節。'],
     timeline: ['對話時間軸', '對話右側邊緣的導覽列。'],
     pricing: ['模型價格', '在模型選擇器中顯示每百萬 token 的價格。'],
-    welcome: ['歡迎畫面', '空白聊天中的標誌與提示。']
+    welcome: ['歡迎畫面', '空白對話中的標誌與提示。']
   },
   ru: {
     groups: { text: 'Текст', chat: 'Чат', layout: 'Расположение', device: 'Это устройство' },

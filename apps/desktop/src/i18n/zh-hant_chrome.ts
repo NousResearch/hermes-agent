@@ -1,5 +1,4 @@
 import type { TranslationOverrides } from './define-locale'
-import { desktopTerms } from './desktop-terms'
 
 export const zhHantChrome = {
   fileMenu: {
@@ -39,7 +38,7 @@ export const zhHantChrome = {
   },
 
   sidebar: {
-    profileRail: '智慧體列',
+    profileRail: '設定檔列',
     markAllRead: '全部標示為已讀',
     filter: {
       grouping: '分組',
@@ -48,7 +47,7 @@ export const zhHantChrome = {
       filters: '篩選',
       status: '狀態',
       pullRequest: '提取請求',
-      profile: desktopTerms['zh-hant'].agents,
+      profile: '設定檔',
       project: '專案',
       archived: '已封存',
       resetToDefaults: '重設為預設值',
@@ -73,10 +72,10 @@ export const zhHantChrome = {
       noPR: '無 PR'
     },
     gatewayGroups: {
-      grouping: '機器與智慧體',
+      grouping: '閘道與設定檔',
       rename: '重新命名群組',
       aliasLabel: '顯示名稱',
-      aliasHint: '僅變更顯示名稱；機器和智慧體名稱維持不變。',
+      aliasHint: '僅變更顯示名稱；閘道和設定檔名稱維持不變。',
       resetName: '重設名稱',
       moveUp: '上移',
       moveDown: '下移',
@@ -88,7 +87,7 @@ export const zhHantChrome = {
       capabilities: '技能與工具',
       messaging: '訊息平台',
       artifacts: '成品',
-      cron: desktopTerms['zh-hant'].routines
+      cron: '排程工作'
     },
     searchAria: '搜尋工作階段',
     searchPlaceholder: '搜尋工作階段…',
@@ -101,7 +100,7 @@ export const zhHantChrome = {
     files: '檔案',
     review: '審查',
     logs: '記錄',
-    cronJobs: desktopTerms['zh-hant'].routines,
+    cronJobs: '排程任務',
     groupAriaGrouped: '以單一清單顯示工作階段',
     groupAriaUngrouped: '依工作區分組工作階段',
     showProjects: '顯示專案',
@@ -148,7 +147,7 @@ export const zhHantChrome = {
       reveal: '在資料夾中顯示',
       copyPath: '複製路徑',
       removeFromSidebar: '從側邊欄移除',
-      createdInPreviousContext: '專案已在先前的連線或智慧體中建立。請切換回去；IDEA.md 尚未寫入。',
+      createdInPreviousContext: '專案已在先前的連線或設定檔中建立。請切換回去；IDEA.md 尚未寫入。',
       hiddenFromSidebar: '已從側邊欄移除',
       undoHide: '復原',
       createFailed: '無法建立專案',
@@ -216,7 +215,7 @@ export const zhHantChrome = {
       backgroundRunning: '背景任務執行中',
       draftSession: '草稿 — 尚未傳送',
       handoffOrigin: platform => `從 ${platform} 轉接`,
-      ownedByProfile: profile => `智慧體：${profile}`,
+      ownedByProfile: profile => `設定檔：${profile}`,
       renamed: '已重新命名',
       renameFailed: '重新命名失敗',
       renameTitle: '重新命名工作階段',
@@ -313,7 +312,7 @@ export const zhHantChrome = {
     gatewayMenu: {
       connectionLabel: '連線',
       inferenceLabel: '推論',
-      gateway: '機器',
+      gateway: '閘道',
       connected: '已連線',
       connecting: '連線中',
       offline: '離線',
@@ -321,7 +320,7 @@ export const zhHantChrome = {
       inferenceNotReady: '推論未就緒',
       checkingInference: '正在檢查推論',
       disconnected: '已中斷連線',
-      reconnectGateway: '重新連線機器',
+      reconnectGateway: '重新連線閘道',
       openSystem: '開啟系統面板',
       connection: label => `連線：${label}`,
       recentActivity: '最近活動',
@@ -366,9 +365,9 @@ export const zhHantChrome = {
       openCommandCenter: '開啟命令中心',
       showTerminal: '顯示終端機',
       hideTerminal: '隱藏終端機',
-      gateway: '機器',
+      gateway: '閘道',
       backend: '後端',
-      messagingStopped: '訊息服務已停止',
+      messagingStopped: '訊息閘道已停止',
       messagingDegraded: name => `${name} 異常`,
       gatewayReady: '就緒',
       gatewayNeedsSetup: '需要設定',
@@ -377,15 +376,15 @@ export const zhHantChrome = {
       gatewayConnecting: '連線中',
       gatewayOffline: '離線',
       gatewayRestarting: '重新啟動中…',
-      gatewayTitle: '機器',
-      agents: desktopTerms['zh-hant'].agents,
-      closeAgents: '關閉智慧體',
-      openAgents: '開啟智慧體',
-      subagents: count => `${count} 個子智慧體`,
+      gatewayTitle: '閘道',
+      agents: '代理',
+      closeAgents: '關閉代理',
+      openAgents: '開啟代理',
+      subagents: count => `${count} 個子代理`,
       failed: count => `${count} 個失敗`,
       running: count => `${count} 個執行中`,
-      cron: desktopTerms['zh-hant'].routines,
-      openCron: '開啟例行任務',
+      cron: '排程',
+      openCron: '開啟排程工作',
       starmap: '記憶圖譜',
       openStarmap: '開啟記憶圖譜',
       turnRunning: '執行中',
@@ -407,7 +406,7 @@ export const zhHantChrome = {
           memory: '記憶',
           rules: '規則',
           skills: '技能',
-          subagent_definitions: '子智慧體定義',
+          subagent_definitions: '子代理定義',
           system_prompt: '系統提示詞',
           tool_definitions: '工具定義'
         },
@@ -487,9 +486,9 @@ export const zhHantChrome = {
     terminalCloseOthers: '關閉其他',
     terminalCloseAll: '全部關閉',
     terminalNewOn: '新增終端機於…',
-    terminalGatewayRemoved: '已移除的機器',
-    terminalGatewayRemovedBody: '此終端機所在的機器已被移除，無法重新開啟。請關閉此分頁。',
-    terminalGatewayNoShellBody: '此機器不提供 Shell 存取，此終端機無法重新開啟。請關閉此分頁。',
+    terminalGatewayRemoved: '已移除的閘道',
+    terminalGatewayRemovedBody: '此終端機所在的閘道已被移除，無法重新開啟。請關閉此分頁。',
+    terminalGatewayNoShellBody: '此閘道不提供 Shell 存取，此終端機無法重新開啟。請關閉此分頁。',
     terminalDisconnectedBody: '終端機已中斷連線。按 Enter 啟動新的 shell；捲動記錄會保留。',
     addToChat: '新增至聊天'
   },

@@ -6,8 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { type SessionView, SessionViewProvider } from '@/app/chat/session-view'
 import { CatalogInstallTool } from '@/components/assistant-ui/catalog-install-tool'
-import { I18nProvider } from '@/i18n'
-import { en } from '@/i18n/en'
+import { I18nProvider, resolveTranslations } from '@/i18n'
 import {
   $connectionRequests,
   applyOperationStatus,
@@ -17,6 +16,9 @@ import {
 import { $gateway, setPrimaryGateway, setPrimaryGatewayConnectionId } from '@/store/gateway'
 import { $profiles } from '@/store/profile'
 import { setSessionOwnerHint } from '@/store/session'
+
+// The wording the active shell renders (the redesign by default).
+const en = resolveTranslations('en')
 
 const SESSION_ID = 'session-1'
 const SHA = '5023f3a4ea5023f3a4ea5023f3a4ea5023f3a4ea'

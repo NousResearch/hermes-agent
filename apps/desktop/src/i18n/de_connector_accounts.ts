@@ -16,7 +16,7 @@ export const deConnectorAccounts: NonNullable<TranslationOverrides['connectorsPa
   remove: 'Entfernen',
   removeTitle: (app: string, name: string) => `Das ${app}-Konto ${name} entfernen?`,
   removeBody:
-    'Das verbundene Konto wird für alle Agenten entfernt, die dasselbe Nous-Konto verwenden, nicht nur für diesen Agenten. Ihre anderen Konten bleiben verbunden.',
+    'Das verbundene Konto wird für alle Profile entfernt, die dasselbe Nous-Konto verwenden, nicht nur für dieses Profil. Ihre anderen Konten bleiben verbunden.',
   retiredCount: (count: number) => `${count} ersetzt`,
   status: {
     expired: 'Zugriff abgelaufen',

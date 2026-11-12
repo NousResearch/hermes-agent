@@ -39,7 +39,7 @@ export const frProjects: NonNullable<TranslationOverrides['sidebar']>['projects'
   copyPath: 'Copier le chemin',
   removeFromSidebar: 'Masquer de la barre latérale',
   createdInPreviousContext:
-    'Le projet a été créé sur la connexion ou l’agent précédent. Revenez-y ; IDEA.md n’a pas été écrit.',
+    "Le projet a été créé sur la connexion ou le profil précédent. Revenez-y ; IDEA.md n'a pas été écrit.",
   hiddenFromSidebar: 'Masqué de la barre latérale',
   undoHide: 'Annuler',
   createFailed: 'Impossible de créer le projet',

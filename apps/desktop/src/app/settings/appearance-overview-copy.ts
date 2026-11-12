@@ -29,20 +29,20 @@ const COPY: Record<BundledLocale, AppearanceOverviewCopy> = {
   zh: {
     intro: '选择 Hermes 的外观。下方是基本选项，其他设置都在「高级」中。',
     reading: '阅读与显示', size: '文字大小',
-    sizeDescription: '调整聊天文字和消息输入框的大小。',
+    sizeDescription: '调整对话文字和消息输入框的大小。',
     small: '小', default: '默认', large: '大',
-    languageDescription: '界面语言。聊天仍使用你输入的语言。',
+    languageDescription: '界面语言。对话仍使用你输入的语言。',
     tips: '提示与引导导览', tipsDescription: '在熟悉应用时偶尔显示提示。30 天后自动关闭。',
-    advancedDescription: '主题、缩放、字体、聊天细节和窗口布局'
+    advancedDescription: '主题、缩放、字体、对话细节和窗口布局'
   },
   'zh-hant': {
     intro: '選擇 Hermes 的外觀。下方是基本選項，其他設定都在「進階」中。',
     reading: '閱讀與顯示', size: '文字大小',
-    sizeDescription: '調整聊天文字和訊息輸入框的大小。',
+    sizeDescription: '調整對話文字和訊息輸入框的大小。',
     small: '小', default: '預設', large: '大',
-    languageDescription: '介面語言。聊天仍使用你輸入的語言。',
+    languageDescription: '介面語言。對話仍使用你輸入的語言。',
     tips: '提示與導覽', tipsDescription: '熟悉應用程式時偶爾顯示提示。30 天後自動關閉。',
-    advancedDescription: '主題、縮放、字型、聊天細節和視窗版面配置'
+    advancedDescription: '主題、縮放、字型、對話細節和視窗版面配置'
   },
   ja: {
     intro: 'Hermes の外観を選びます。基本設定は以下に、その他の設定は「詳細」にあります。',
@@ -78,7 +78,7 @@ const COPY: Record<BundledLocale, AppearanceOverviewCopy> = {
     small: 'Petite', default: 'Par défaut', large: 'Grande',
     languageDescription: 'Langue de l’interface. Les conversations restent dans la langue que vous utilisez.',
     tips: 'Astuces et visites guidées', tipsDescription: 'Des conseils occasionnels pour découvrir l’application. Désactivés après 30 jours.',
-    advancedDescription: 'Thèmes, échelle, polices, détails du chat et disposition des fenêtres'
+    advancedDescription: 'Thèmes, échelle, polices, détails des discussions et disposition des fenêtres'
   },
   de: {
     intro: 'Wähle das Aussehen von Hermes. Die Grundlagen stehen unten, alles Weitere unter Erweitert.',

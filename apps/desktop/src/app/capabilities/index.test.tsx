@@ -6,6 +6,7 @@ import type * as ReactRouterDom from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as HermesApi from '@/hermes'
+import { TRANSLATIONS } from '@/i18n'
 import { queryClient } from '@/lib/query-client'
 import type * as HubActions from '@/store/hub-actions'
 
@@ -496,7 +497,7 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
       fireEvent.click(selector)
       fireEvent.click(await screen.findByRole('option', { name: 'inbox-bot — Homelab' }))
       await waitFor(() => expect(getToolsets).toHaveBeenCalledWith({ connectionId: 'homelab', profile: 'default' }))
-      fireEvent.click(screen.getByRole('button', { name: 'Agent settings' }))
+      fireEvent.click(screen.getByRole('button', { name: TRANSLATIONS.en.skills.openAgentSettings }))
       expect(navigateSpy).toHaveBeenCalledWith(
         '/settings?agentProfile=default&panel=capabilities&tab=toolsets&connection=homelab'
       )

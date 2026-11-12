@@ -43,7 +43,7 @@ export const enErrorCodes: ThreadCopy['errorCodes'] = {
   },
   no_reply: {
     title: "The reply didn't arrive",
-    body: 'The agent finished this turn, but no reply reached this window. Retry to send it again.'
+    body: 'Hermes finished this turn, but no reply reached this window. Retry to send it again.'
   },
   upstream_blocked: {
     title: provider => `${provider} blocked this request`,
@@ -98,16 +98,16 @@ export const enErrorCodes: ThreadCopy['errorCodes'] = {
     body: provider => `${provider} returned nothing for this message. Retry in a moment.`
   },
   loop_error: {
-    title: "The agent couldn't finish this step",
+    title: "Hermes couldn't finish this step",
     body: 'Something went wrong handling the reply. Retry; if it happens again, send diagnostics from the details.'
   },
   SESSION_OWNER_BUSY: {
-    title: 'The agent is busy in this chat',
+    title: 'Hermes is busy in this chat',
     body: 'Another turn is running here and your message could not join its queue. Nothing was sent. Retry once that turn ends.'
   },
   cron_session_read_only: {
-    title: 'This chat belongs to a routine',
-    body: 'This chat only runs its routine. Your message was not run. Start a new chat to send it.'
+    title: 'This chat belongs to a scheduled job',
+    body: 'It only runs that job, so your message was not run. Start a new chat to send it.'
   },
   session_read_only: {
     title: 'This chat is read-only',
@@ -129,7 +129,7 @@ export const enErrorCodes: ThreadCopy['errorCodes'] = {
   },
   SESSION_OWNER_UNCONFIRMED: {
     title: 'Your message may already be queued',
-    body: 'Hermes did not confirm your message in time. If it was queued, it runs once the earlier turn finishes or is resolved. Check the chat before sending it again.'
+    body: 'The gateway did not confirm your message in time. If it was queued, it runs once the earlier turn finishes or is resolved. Check the chat before sending it again.'
   },
   agent_init_failed: {
     title: "Couldn't start this chat",

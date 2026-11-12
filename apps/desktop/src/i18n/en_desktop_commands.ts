@@ -24,24 +24,24 @@ export const enDesktopCommands: DesktopCommandNotices = {
   configHeader: 'Configuration (display, approvals, paste and voice settings; everything else is not shown):',
   configDefaults: '(defaults)',
   configFooter:
-    'Change settings in Settings, or edit config.yaml with `hermes config edit` on the machine running Hermes.',
+    'Change settings in Settings, or edit config.yaml with `hermes config edit` on the gateway host.',
   historyHeader: count => `Conversation history (${count} messages):`,
   historyEmpty: 'No messages yet.',
   historyYou: 'You',
-  historyHermes: 'Agent',
+  historyHermes: 'Hermes',
   saveUsage: 'usage: /save [json|md|html] [filename] [redact]',
   saveLegacyRefused:
-    'Not saved: Hermes on this machine cannot export a redacted, named or non-JSON copy. Update Hermes, or run /save with no options to write raw JSON on that machine.',
-  savedOnHost: path => `Saved on the machine running Hermes: ${path}`,
+    'Not saved: this gateway cannot export a redacted, named or non-JSON copy. Update the gateway, or run /save with no options to write raw JSON on the gateway host.',
+  savedOnHost: path => `Saved on the gateway host: ${path}`,
   unknownPath: '(unknown path)',
   saveUnsupported: 'error: this desktop build cannot save files',
   saveDialogTitle: 'Save conversation',
   savedTo: path => `Saved conversation to ${path}`,
   saveCancelled: 'Not saved (cancelled).',
   exportRemote:
-    '/export packages an agent from the machine running Hermes, which is not this computer. Run `hermes profile export` on that machine.',
+    '/export packages a profile from the gateway host, which is not this machine. Run `hermes profile export` on that host.',
   importRemote:
-    '/import installs an agent on the machine running Hermes, which is not this computer. Run `hermes profile import <archive>` on that machine.',
+    '/import installs a profile on the gateway host, which is not this machine. Run `hermes profile import <archive>` on that host.',
   timestampsUsage: 'usage: /timestamps [on|off|status]',
   timestampsOn: 'Timestamps: on (this window; set display.timestamps in config.yaml to keep it)',
   timestampsOff: 'Timestamps: off (this window; set display.timestamps in config.yaml to keep it)'

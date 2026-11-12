@@ -39,7 +39,7 @@ export const enProjects: Translations['sidebar']['projects'] = {
   copyPath: 'Copy path',
   removeFromSidebar: 'Hide from sidebar',
   createdInPreviousContext:
-    "Project created on the previous connection or agent. Switch back to find it; IDEA.md wasn't written.",
+    "Project created on the previous connection or profile. Switch back to find it; IDEA.md wasn't written.",
   hiddenFromSidebar: 'Hidden from sidebar',
   undoHide: 'Undo',
   createFailed: 'Could not create project',

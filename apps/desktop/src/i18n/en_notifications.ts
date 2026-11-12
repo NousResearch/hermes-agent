@@ -12,7 +12,7 @@ export const enNotifications = {
     },
     input: {
       label: 'Input needed',
-      description: 'The agent asked a question or needs a password or secret.'
+      description: 'Hermes asked a question or needs a password or secret.'
     },
     turnDone: {
       label: 'Response ready',

@@ -16,14 +16,17 @@
  */
 
 import type * as HermesSdk from '@hermes/plugin-sdk'
-import { translateNow } from '@hermes/plugin-sdk'
+import { useI18n } from '@hermes/plugin-sdk'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, render, renderHook, screen, waitFor } from '@testing-library/react'
 import type { atom } from 'nanostores'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { translateBots } from './i18n-test-helper'
 import type { RoutineJob } from './types'
+
+/** The core copy this pane renders: it mounts without an I18nProvider here, so the base catalog. */
+const coreCopy = () => renderHook(() => useI18n()).result.current.t
 
 // Radix calls these on open; jsdom doesn't implement them.
 beforeAll(() => {
@@ -108,10 +111,10 @@ describe('the pane follows the roster hydrating after mount', () => {
 
     // The reported "create silently no-ops" symptom starts here: while the
     // owner is stuck unresolved the pane never offers any create control.
-    expect(await screen.findByText(translateNow('cron.emptyTitleNew'))).toBeTruthy()
+    expect(await screen.findByText(coreCopy().cron.emptyTitleNew)).toBeTruthy()
 
     // Both doors: the header action and the empty state's own call to action.
-    const create = screen.getAllByRole('button', { name: translateNow('cron.newCron') })
+    const create = screen.getAllByRole('button', { name: coreCopy().cron.newCron })
 
     expect(create).toHaveLength(2)
 

@@ -4,6 +4,7 @@ import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { AutomationBlueprint, CronJob } from '@/hermes'
+import { TRANSLATIONS } from '@/i18n'
 
 const hermes = vi.hoisted(() => ({
   getAutomationBlueprints: vi.fn(),
@@ -104,7 +105,7 @@ describe('plugin-registered automation blueprints', () => {
     // The dialog's "Start from" select names the plugin next to the title.
     expect(await screen.findByText('· teamtools')).toBeTruthy()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Create routine' }))
+    fireEvent.click(screen.getByRole('button', { name: TRANSLATIONS.en.cron.createAction }))
 
     await waitFor(() =>
       expect(hermes.instantiateAutomationBlueprint).toHaveBeenCalledWith(

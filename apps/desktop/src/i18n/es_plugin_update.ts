@@ -19,7 +19,7 @@ export const esPluginUpdate: PluginUpdateTranslations = {
   updateToPin: (sha: string) => `Actualizar a ${sha}`,
   updateFailed: (name: string) => `No se pudo actualizar ${name}`,
   updated: (name: string) =>
-    `${name} se actualizó al commit fijado actual del catálogo. Reinicia Hermes para aplicarlo.`,
+    `${name} se actualizó al commit fijado actual del catálogo. Reinicia el gateway para aplicarlo.`,
   updateConsentTitle: (name: string) => `${name} pide más`,
   updateConsentBody: (name: string, sha: string) =>
     `El nuevo commit fijado de ${name} en el catálogo (${sha}) añade superficies que la versión instalada no tiene. Aplícalo solo si confías en ellas:`,

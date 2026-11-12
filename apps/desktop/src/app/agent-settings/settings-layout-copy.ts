@@ -238,12 +238,12 @@ const COPY: Record<BundledLocale, AgentSettingsLayoutCopy> = {
       tools: '部分工具集调用的服务所需的 API 密钥和端点'
     },
     rows: {
-      'display.personality': ['个性', '新聊天的默认风格。你仍可在任何聊天中调整语气。'],
+      'display.personality': ['个性', '新对话的默认风格。你仍可在任何对话中调整语气。'],
       'display.show_reasoning': ['显示推理', '模型分享思考时的显示方式。'],
-      'memory.memory_enabled': ['持久记忆', '保存对以后聊天有帮助的长期记忆。'],
+      'memory.memory_enabled': ['持久记忆', '保存对以后对话有帮助的长期记忆。'],
       'memory.user_profile_enabled': ['用户画像', '保留一份简洁的偏好画像。'],
       'memory.provider': ['记忆提供方', '记忆的存储位置。'],
-      'compression.enabled': ['自动压缩', '聊天变长时总结较早的上下文。'],
+      'compression.enabled': ['自动压缩', '对话变长时总结较早的上下文。'],
       'stt.enabled': ['语音转文字', '把你的语音消息转成文字。'],
       'stt.provider': ['语音识别提供方', '转写你说的话。'],
       'voice.auto_tts': ['朗读回复', '自动朗读此智能体的回复。'],
@@ -269,12 +269,12 @@ const COPY: Record<BundledLocale, AgentSettingsLayoutCopy> = {
       tools: '部分工具集呼叫的服務所需的 API 金鑰與端點'
     },
     rows: {
-      'display.personality': ['個性', '新聊天的預設風格。你仍可在任何聊天中調整語氣。'],
+      'display.personality': ['個性', '新對話的預設風格。你仍可在任何對話中調整語氣。'],
       'display.show_reasoning': ['顯示推理', '模型分享思考時的顯示方式。'],
-      'memory.memory_enabled': ['持久記憶', '儲存對日後聊天有幫助的長期記憶。'],
+      'memory.memory_enabled': ['持久記憶', '儲存對日後對話有幫助的長期記憶。'],
       'memory.user_profile_enabled': ['使用者輪廓', '保留一份精簡的偏好輪廓。'],
       'memory.provider': ['記憶提供者', '記憶的儲存位置。'],
-      'compression.enabled': ['自動壓縮', '聊天變長時摘要較早的內容。'],
+      'compression.enabled': ['自動壓縮', '對話變長時摘要較早的內容。'],
       'stt.enabled': ['語音轉文字', '將你的語音訊息轉成文字。'],
       'stt.provider': ['語音辨識提供者', '轉錄你說的話。'],
       'voice.auto_tts': ['朗讀回覆', '自動朗讀此智慧體的回覆。'],
@@ -283,7 +283,7 @@ const COPY: Record<BundledLocale, AgentSettingsLayoutCopy> = {
       'code_execution.mode': ['程式碼執行模式', '程式碼限制在目前專案內的嚴格程度。'],
       'terminal.backend': ['執行後端', '終端機指令執行的位置。'],
       'agent.max_turns': ['最大步數', '一次執行停止前的最多工具呼叫輪數。'],
-      vault: ['密碼與登入', '瀏覽器代理可以使用的憑證。']
+      vault: ['密碼與登入', '瀏覽器智慧體可以使用的憑證。']
     }
   },
   ru: {

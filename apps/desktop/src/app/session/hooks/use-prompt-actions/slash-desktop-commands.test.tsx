@@ -1,8 +1,7 @@
 import { act, cleanup, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { en } from '@/i18n/en'
-import { fr } from '@/i18n/fr'
+import { resolveTranslations } from '@/i18n/registry'
 import { setRuntimeI18nLocale } from '@/i18n/runtime'
 import { toChatMessages } from '@/lib/chat-messages'
 import { resolveDesktopCommand } from '@/lib/desktop-slash-commands'
@@ -34,7 +33,8 @@ vi.mock('@/store/gateway', async importOriginal => ({
   requestGatewayForAgent: vi.fn()
 }))
 
-const copy = en.promptNotices.desktopCommands
+// The wording the active shell renders (the redesign by default).
+const copy = resolveTranslations('en').promptNotices.desktopCommands
 
 type Responder = (method: string, params?: Record<string, unknown>) => unknown
 
@@ -558,7 +558,7 @@ describe('desktop command notices follow the app language', () => {
     await handle.submitText('/history')
 
     const text = renderedText(handle)
-    const fr_ = fr.promptNotices.desktopCommands
+    const fr_ = resolveTranslations('fr').promptNotices.desktopCommands
     expect(fr_.timestampsOff).not.toBe(copy.timestampsOff)
     expect(text).toContain(fr_.timestampsOff)
     expect(text).toContain(fr_.rollbackUsage)

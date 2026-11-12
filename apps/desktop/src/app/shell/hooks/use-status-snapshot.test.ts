@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { NotificationStack } from '@/components/notifications'
 import { getStatus } from '@/hermes'
-import { I18nProvider, type Locale, TRANSLATIONS, type Translations } from '@/i18n'
+import { I18nProvider, type Locale, resolveTranslations, TRANSLATIONS } from '@/i18n'
 import { $freeTierStatus } from '@/store/free-tier'
 import { $setupReadyTick, notifySetupReady } from '@/store/live-sync'
 import { $notifications, clearNotifications } from '@/store/notifications'
@@ -52,9 +52,11 @@ afterEach(() => {
 })
 
 describe('useStatusSnapshot', () => {
-  it.each(Object.entries(TRANSLATIONS) as [Locale, Translations][])(
+  it.each(Object.keys(TRANSLATIONS) as Locale[])(
     'localizes and deduplicates shared-profile warnings in %s',
-    async (locale: Locale, copy: Translations): Promise<void> => {
+    async (locale: Locale): Promise<void> => {
+      // The wording the active shell renders (the redesign by default).
+      const copy = resolveTranslations(locale)
       const warning: string = copy.notifications.sharedProfileWarning
 
       expect(warning).toBeTypeOf('string')

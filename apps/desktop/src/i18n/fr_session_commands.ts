@@ -7,7 +7,9 @@ export const frSessionCommands = {
   retryNothing: 'rien à réessayer',
   retryUnsupported: '/retry : impossible de réessayer un contenu multimédia ou des parties inconnues',
   busy: (command: string) =>
-    `session occupée — l’agent est encore en train de répondre. Arrêtez d’abord la réponse en cours (bouton Arrêter ou Ctrl+C dans un terminal), puis lancez /${command}.`,
+    `session occupée — Hermes est encore en train de répondre. Arrêtez d’abord la réponse en cours (bouton Arrêter ou Ctrl+C dans un terminal), puis lancez /${command}.`,
+  titleSet: (title: string, queued: boolean) => `Titre de la session défini : ${title}${queued ? ' (en attente de l’initialisation de la session)' : ''}`,
+  titleCleared: 'Titre de la session effacé.',
   busyCompressing: (command: string) =>
     `session occupée — un /compress est en cours ; lancez /${command} quand il sera terminé.`,
   steerUsage: 'utilisation : /steer <prompt>',

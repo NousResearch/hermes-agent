@@ -3,7 +3,7 @@ import type { TranslationOverrides } from './define-locale'
 export const zhHantDiagnostics = {
   notifications: {
     sharedProfileWarning:
-      '另一個 Hermes 安裝實例正在使用此智慧體。兩個實例共用此智慧體的設定和資料，因此變更可能發生衝突。你可以繼續使用，也可以在變更前關閉另一個實例。',
+      '另一個 Hermes 安裝實例正在使用此設定檔。兩個實例共用此設定檔的設定和資料，因此變更可能發生衝突。你可以繼續使用，也可以在變更前關閉另一個實例。',
     region: '通知',
     hide: '隱藏',
     show: '顯示',
@@ -39,7 +39,7 @@ export const zhHantDiagnostics = {
       elevenLabsNeedsKey: 'ElevenLabs STT 需要 ELEVENLABS_API_KEY。',
       elevenLabsRejectedKey: 'ElevenLabs 拒絕了該 API 金鑰 (401)。',
       diskFull: '磁碟已滿 — 請騰出一些空間後再試。',
-      gatewayAuthFailed: '機器認證失敗 — 請檢查你的 API_SERVER_KEY。',
+      gatewayAuthFailed: '閘道認證失敗 — 請檢查你的 API_SERVER_KEY。',
       methodNotAllowed: '桌面後端拒絕了該請求 (405 Method Not Allowed)。請嘗試重新啟動 Hermes Desktop。',
       microphonePermission: '麥克風權限已被拒絕。',
       openaiRejectedApiKey: 'OpenAI 拒絕了該 API 金鑰。',
@@ -87,7 +87,7 @@ export const zhHantDiagnostics = {
   sendDiagnostics: {
     title: '向 Nous 傳送診斷資訊',
     privacyNotice:
-      '這會將偵錯套件上傳到 Nous 內部儲存空間（並非公開貼上板）。內容包括系統資訊（作業系統、版本、服務商、已設定的 API 金鑰種類 — 絕不包含金鑰本身）以及完整的智慧體、Hermes 服務與桌面端日誌（每個最多 512 KB，很可能包含對話內容、工具輸出與檔案路徑）。上傳前會先遮罩機密資訊。僅 Nous 員工與獲准的 Discord 版主可檢視，14 天後自動刪除。',
+      '這會將偵錯套件上傳到 Nous 內部儲存空間（並非公開貼上板）。內容包括系統資訊（作業系統、版本、服務商、已設定的 API 金鑰種類 — 絕不包含金鑰本身）以及完整的 agent、gateway 與桌面端日誌（每個最多 512 KB，很可能包含對話內容、工具輸出與檔案路徑）。上傳前會先遮罩機密資訊。僅 Nous 員工與獲准的 Discord 版主可檢視，14 天後自動刪除。',
     upload: '上傳',
     uploading: '上傳中…',
     cancel: '取消',

@@ -64,7 +64,7 @@ export function forHost(wording: HostWording): string {
 const COPY: Record<BundledLocale, SettingsPagesCopy> = {
   en: {
     archive: 'Archive',
-    newSessions: 'New sessions',
+    newSessions: 'New chats',
     version: 'Version',
     hostIntro: {
       notifications: {
@@ -89,22 +89,22 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
     intro: {
       account: 'Your Nous account: plan, credits and payment. The same on every device you sign in to.',
       gateways:
-        'Where your agents run, and the machines Hermes can reach. Agents are discovered from the gateways you connect.',
-      sessions: 'Chat history and where new sessions start, across all agents.',
-      about: 'Version details for this app and your gateways.'
+        'Where your agents run, and the machines Hermes can reach. Agents are discovered from the machines you connect.',
+      sessions: 'Chat history and where new chats start, across all agents.',
+      about: 'Version details for this app and your machines.'
     },
     gateway: {
       connectionMode: 'Connection mode',
-      thisHost: 'This host',
+      thisHost: 'This machine',
       saved: 'Saved connections',
-      savedDesc: 'Every Hermes gateway this app can reach.',
+      savedDesc: 'Every machine running Hermes that this app can reach.',
       manage: 'Manage',
       advancedDesc: 'Remote updates, startup and diagnostics'
     },
     about: {
       whatsNew: 'What’s new',
       checkForUpdates: 'Check for updates',
-      gateway: 'Gateway',
+      gateway: 'Machine',
       detailsDesc: 'Build, runtime and install details'
     },
     keybinds: {
@@ -137,7 +137,7 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
     },
     configuration: {
       title: 'Configuration',
-      exportDesc: "Download this profile's settings as a JSON file.",
+      exportDesc: "Download this agent's settings as a JSON file.",
       importDesc: 'Replace settings with a previously exported JSON file.',
       resetDesc: 'Return every setting to Hermes defaults. This cannot be undone.',
       export: 'Export',
@@ -147,7 +147,7 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
   },
   fr: {
     archive: 'Archives',
-    newSessions: 'Nouvelles sessions',
+    newSessions: 'Nouvelles discussions',
     version: 'Version',
     hostIntro: {
       notifications: {
@@ -164,8 +164,8 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
       period: 'Archiver après',
       off: 'Jamais',
       afterDays: days => (days === 1 ? 'Après 1 jour' : `Après ${days} jours`),
-      archived: 'Conversations archivées',
-      archivedDesc: 'Désarchivez des conversations ou supprimez-les définitivement.',
+      archived: 'Discussions archivées',
+      archivedDesc: 'Désarchivez des discussions ou supprimez-les définitivement.',
       view: 'Voir les archives',
       hide: 'Masquer les archives'
     },
@@ -173,22 +173,22 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
       account:
         'Votre compte Nous : forfait, crédits et paiement. Identique sur chaque appareil où vous vous connectez.',
       gateways:
-        'Où vos agents s’exécutent, et les machines que Hermes peut joindre. Les agents sont découverts via les passerelles connectées.',
-      sessions: 'L’historique des discussions et le point de départ des nouvelles sessions, pour tous les agents.',
-      about: 'Les versions de cette app et de vos passerelles.'
+        'Où vos agents s’exécutent, et les machines que Hermes peut joindre. Les agents sont découverts via les machines connectées.',
+      sessions: 'L’historique des discussions et le point de départ des nouvelles discussions, pour tous les agents.',
+      about: 'Les versions de cette app et de vos machines.'
     },
     gateway: {
       connectionMode: 'Mode de connexion',
-      thisHost: 'Cet hôte',
+      thisHost: 'Cette machine',
       saved: 'Connexions enregistrées',
-      savedDesc: 'Chaque passerelle Hermes que cette app peut joindre.',
+      savedDesc: 'Chaque machine exécutant Hermes que cette app peut joindre.',
       manage: 'Gérer',
       advancedDesc: 'Mises à jour distantes, démarrage et diagnostics'
     },
     about: {
       whatsNew: 'Nouveautés',
       checkForUpdates: 'Rechercher des mises à jour',
-      gateway: 'Passerelle',
+      gateway: 'Machine',
       detailsDesc: 'Détails de build, d’exécution et d’installation'
     },
     keybinds: {
@@ -224,7 +224,7 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
     },
     configuration: {
       title: 'Configuration',
-      exportDesc: 'Télécharger les réglages de ce profil dans un fichier JSON.',
+      exportDesc: 'Télécharger les réglages de cet agent dans un fichier JSON.',
       importDesc: 'Remplacer les réglages par un fichier JSON exporté.',
       resetDesc: 'Rétablir tous les réglages par défaut de Hermes. Action irréversible.',
       export: 'Exporter',
@@ -234,7 +234,7 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
   },
   de: {
     archive: 'Archiv',
-    newSessions: 'Neue Sitzungen',
+    newSessions: 'Neue Chats',
     version: 'Version',
     hostIntro: {
       notifications: {
@@ -259,22 +259,22 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
     intro: {
       account: 'Dein Nous-Konto: Tarif, Guthaben und Zahlung. Auf jedem Gerät gleich, auf dem du angemeldet bist.',
       gateways:
-        'Wo deine Agenten laufen und welche Maschinen Hermes erreicht. Agenten werden über die verbundenen Gateways gefunden.',
-      sessions: 'Chatverlauf und wo neue Sitzungen starten, für alle Agenten.',
-      about: 'Versionen dieser App und deiner Gateways.'
+        'Wo deine Agenten laufen und welche Rechner Hermes erreicht. Agenten werden über die verbundenen Rechner gefunden.',
+      sessions: 'Chatverlauf und wo neue Chats starten, für alle Agenten.',
+      about: 'Versionen dieser App und deiner Rechner.'
     },
     gateway: {
       connectionMode: 'Verbindungsart',
-      thisHost: 'Dieser Host',
+      thisHost: 'Dieser Rechner',
       saved: 'Gespeicherte Verbindungen',
-      savedDesc: 'Jedes Hermes-Gateway, das diese App erreicht.',
+      savedDesc: 'Jeder Rechner mit Hermes, den diese App erreicht.',
       manage: 'Verwalten',
       advancedDesc: 'Remote-Updates, Start und Diagnose'
     },
     about: {
       whatsNew: 'Neuigkeiten',
       checkForUpdates: 'Nach Updates suchen',
-      gateway: 'Gateway',
+      gateway: 'Rechner',
       detailsDesc: 'Build-, Laufzeit- und Installationsdetails'
     },
     keybinds: {
@@ -307,7 +307,7 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
     },
     configuration: {
       title: 'Konfiguration',
-      exportDesc: 'Die Einstellungen dieses Profils als JSON-Datei herunterladen.',
+      exportDesc: 'Die Einstellungen dieses Agenten als JSON-Datei herunterladen.',
       importDesc: 'Einstellungen durch eine exportierte JSON-Datei ersetzen.',
       resetDesc: 'Alle Einstellungen auf die Hermes-Standardwerte zurücksetzen. Nicht umkehrbar.',
       export: 'Exportieren',
@@ -317,7 +317,7 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
   },
   es: {
     archive: 'Archivo',
-    newSessions: 'Sesiones nuevas',
+    newSessions: 'Chats nuevos',
     version: 'Versión',
     hostIntro: {
       notifications: {
@@ -342,22 +342,22 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
     intro: {
       account: 'Tu cuenta de Nous: plan, créditos y pago. Igual en cada dispositivo donde inicies sesión.',
       gateways:
-        'Dónde se ejecutan tus agentes y qué máquinas puede alcanzar Hermes. Los agentes se descubren desde los gateways que conectas.',
-      sessions: 'El historial de chats y dónde empiezan las sesiones nuevas, en todos los agentes.',
-      about: 'Las versiones de esta app y de tus gateways.'
+        'Dónde se ejecutan tus agentes y qué máquinas puede alcanzar Hermes. Los agentes se descubren desde las máquinas que conectas.',
+      sessions: 'El historial de chats y dónde empiezan los chats nuevos, en todos los agentes.',
+      about: 'Las versiones de esta app y de tus máquinas.'
     },
     gateway: {
       connectionMode: 'Modo de conexión',
-      thisHost: 'Este host',
+      thisHost: 'Esta máquina',
       saved: 'Conexiones guardadas',
-      savedDesc: 'Cada gateway de Hermes que esta app puede alcanzar.',
+      savedDesc: 'Cada máquina con Hermes que esta app puede alcanzar.',
       manage: 'Gestionar',
       advancedDesc: 'Actualizaciones remotas, inicio y diagnóstico'
     },
     about: {
       whatsNew: 'Novedades',
       checkForUpdates: 'Buscar actualizaciones',
-      gateway: 'Gateway',
+      gateway: 'Máquina',
       detailsDesc: 'Detalles de compilación, ejecución e instalación'
     },
     keybinds: {
@@ -390,7 +390,7 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
     },
     configuration: {
       title: 'Configuración',
-      exportDesc: 'Descarga los ajustes de este perfil como archivo JSON.',
+      exportDesc: 'Descarga los ajustes de este agente como archivo JSON.',
       importDesc: 'Sustituye los ajustes por un archivo JSON exportado.',
       resetDesc: 'Restablece todos los ajustes a los valores de Hermes. No se puede deshacer.',
       export: 'Exportar',
@@ -400,7 +400,7 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
   },
   ja: {
     archive: 'アーカイブ',
-    newSessions: '新しいセッション',
+    newSessions: '新しいチャット',
     version: 'バージョン',
     hostIntro: {
       notifications: {
@@ -425,22 +425,22 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
     intro: {
       account: 'Nous アカウント：プラン、クレジット、支払い。サインインしたどのデバイスでも同じです。',
       gateways:
-        'エージェントが動く場所と、Hermes が接続できるマシン。エージェントは接続したゲートウェイから検出されます。',
-      sessions: 'すべてのエージェントのチャット履歴と、新しいセッションの開始場所。',
-      about: 'このアプリとゲートウェイのバージョン情報。'
+        'エージェントが動く場所と、Hermes が接続できるマシン。エージェントは接続したマシンから検出されます。',
+      sessions: 'すべてのエージェントのチャット履歴と、新しいチャットの開始場所。',
+      about: 'このアプリとマシンのバージョン情報。'
     },
     gateway: {
       connectionMode: '接続方法',
-      thisHost: 'このホスト',
+      thisHost: 'このマシン',
       saved: '保存済みの接続',
-      savedDesc: 'このアプリが接続できる Hermes ゲートウェイ。',
+      savedDesc: 'このアプリが接続できる、Hermes が動作しているすべてのマシン。',
       manage: '管理',
       advancedDesc: 'リモート更新、起動、診断'
     },
     about: {
       whatsNew: '新機能',
       checkForUpdates: 'アップデートを確認',
-      gateway: 'ゲートウェイ',
+      gateway: 'マシン',
       detailsDesc: 'ビルド、ランタイム、インストールの詳細'
     },
     keybinds: {
@@ -469,7 +469,7 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
     },
     configuration: {
       title: '構成',
-      exportDesc: 'このプロファイルの設定を JSON ファイルとしてダウンロードします。',
+      exportDesc: 'このエージェントの設定を JSON ファイルとしてダウンロードします。',
       importDesc: 'エクスポートした JSON ファイルで設定を置き換えます。',
       resetDesc: 'すべての設定を Hermes の既定値に戻します。元に戻せません。',
       export: 'エクスポート',
@@ -479,7 +479,7 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
   },
   zh: {
     archive: '归档',
-    newSessions: '新会话',
+    newSessions: '新对话',
     version: '版本',
     hostIntro: {
       notifications: {
@@ -496,29 +496,29 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
       period: '归档时间',
       off: '从不',
       afterDays: days => `${days} 天后`,
-      archived: '已归档的聊天',
-      archivedDesc: '取消归档聊天，或将其永久删除。',
+      archived: '已归档的对话',
+      archivedDesc: '取消归档对话，或将其永久删除。',
       view: '查看归档',
       hide: '隐藏归档'
     },
     intro: {
       account: '你的 Nous 账户：套餐、额度和付款。在你登录的每台设备上都一样。',
-      gateways: '你的智能体在哪里运行，以及 Hermes 能连接的机器。智能体从你连接的网关中发现。',
-      sessions: '所有智能体的聊天记录，以及新会话的起始位置。',
-      about: '此应用和你的网关的版本信息。'
+      gateways: '你的智能体在哪里运行，以及 Hermes 能连接的机器。智能体从你连接的机器中发现。',
+      sessions: '所有智能体的对话记录，以及新对话的起始位置。',
+      about: '此应用和你的机器的版本信息。'
     },
     gateway: {
       connectionMode: '连接方式',
-      thisHost: '此主机',
+      thisHost: '此机器',
       saved: '已保存的连接',
-      savedDesc: '此应用能连接的每个 Hermes 网关。',
+      savedDesc: '此应用能连接的每台运行 Hermes 的机器。',
       manage: '管理',
       advancedDesc: '远程更新、启动和诊断'
     },
     about: {
       whatsNew: '新功能',
       checkForUpdates: '检查更新',
-      gateway: '网关',
+      gateway: '机器',
       detailsDesc: '构建、运行时和安装详情'
     },
     keybinds: {
@@ -547,7 +547,7 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
     },
     configuration: {
       title: '配置',
-      exportDesc: '将此配置文件的设置下载为 JSON 文件。',
+      exportDesc: '将此智能体的设置下载为 JSON 文件。',
       importDesc: '用之前导出的 JSON 文件替换设置。',
       resetDesc: '将所有设置恢复为 Hermes 默认值。此操作无法撤销。',
       export: '导出',
@@ -557,7 +557,7 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
   },
   'zh-hant': {
     archive: '封存',
-    newSessions: '新工作階段',
+    newSessions: '新對話',
     version: '版本',
     hostIntro: {
       notifications: {
@@ -574,29 +574,29 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
       period: '封存時間',
       off: '永不',
       afterDays: days => `${days} 天後`,
-      archived: '已封存的聊天',
-      archivedDesc: '取消封存聊天，或將其永久刪除。',
+      archived: '已封存的對話',
+      archivedDesc: '取消封存對話，或將其永久刪除。',
       view: '檢視封存',
       hide: '隱藏封存'
     },
     intro: {
       account: '你的 Nous 帳戶：方案、點數和付款。在你登入的每部裝置上都相同。',
-      gateways: '你的代理在哪裡執行，以及 Hermes 能連線的機器。代理會從你連線的閘道中找到。',
-      sessions: '所有代理的聊天紀錄，以及新工作階段的起始位置。',
-      about: '此 App 與你的閘道的版本資訊。'
+      gateways: '你的智慧體在哪裡執行，以及 Hermes 能連線的機器。智慧體會從你連線的機器中找到。',
+      sessions: '所有智慧體的對話紀錄，以及新對話的起始位置。',
+      about: '此 App 與你的機器的版本資訊。'
     },
     gateway: {
       connectionMode: '連線方式',
-      thisHost: '此主機',
+      thisHost: '此機器',
       saved: '已儲存的連線',
-      savedDesc: '此 App 能連線的每個 Hermes 閘道。',
+      savedDesc: '此 App 能連線的每台執行 Hermes 的機器。',
       manage: '管理',
       advancedDesc: '遠端更新、啟動與診斷'
     },
     about: {
       whatsNew: '新功能',
       checkForUpdates: '檢查更新',
-      gateway: '閘道',
+      gateway: '機器',
       detailsDesc: '建置、執行環境與安裝詳細資料'
     },
     keybinds: {
@@ -612,7 +612,7 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
     providers: { addKey: '新增金鑰' },
     messaging: {
       channels: '頻道',
-      channelsDesc: '傳送到這裡的訊息會送達此代理。',
+      channelsDesc: '傳送到這裡的訊息會送達此智慧體。',
       addChannel: '新增頻道',
       manage: '管理',
       reconnect: '重新連線'
@@ -621,11 +621,11 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
       credentials: '已儲存的憑證',
       credentialsDesc: '登入資訊、卡片和地址，加密儲存。模型永遠看不到密碼。',
       managers: '密碼管理工具',
-      managersDesc: '每個工作階段解鎖一次，代理即可使用。'
+      managersDesc: '每個工作階段解鎖一次，智慧體即可使用。'
     },
     configuration: {
-      title: '設定檔',
-      exportDesc: '將此設定檔的設定下載為 JSON 檔案。',
+      title: '設定',
+      exportDesc: '將此智慧體的設定下載為 JSON 檔案。',
       importDesc: '以先前匯出的 JSON 檔案取代設定。',
       resetDesc: '將所有設定還原為 Hermes 預設值。此操作無法復原。',
       export: '匯出',
@@ -635,7 +635,7 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
   },
   ru: {
     archive: 'Архив',
-    newSessions: 'Новые сеансы',
+    newSessions: 'Новые чаты',
     version: 'Версия',
     hostIntro: {
       notifications: {
@@ -659,22 +659,22 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
     },
     intro: {
       account: 'Ваш аккаунт Nous: тариф, кредиты и оплата. Одинаков на всех устройствах, где вы вошли.',
-      gateways: 'Где работают ваши агенты и какие машины доступны Hermes. Агенты находятся через подключённые шлюзы.',
-      sessions: 'История чатов и место, где начинаются новые сеансы, для всех агентов.',
-      about: 'Версии этого приложения и ваших шлюзов.'
+      gateways: 'Где работают ваши агенты и какие компьютеры доступны Hermes. Агенты обнаруживаются на подключённых вами компьютерах.',
+      sessions: 'История чатов и место, где начинаются новые чаты, для всех агентов.',
+      about: 'Версии этого приложения и ваших компьютеров.'
     },
     gateway: {
       connectionMode: 'Способ подключения',
-      thisHost: 'Этот хост',
+      thisHost: 'Этот компьютер',
       saved: 'Сохранённые подключения',
-      savedDesc: 'Все шлюзы Hermes, доступные этому приложению.',
+      savedDesc: 'Все компьютеры с Hermes, доступные этому приложению.',
       manage: 'Управлять',
       advancedDesc: 'Удалённые обновления, запуск и диагностика'
     },
     about: {
       whatsNew: 'Что нового',
       checkForUpdates: 'Проверить обновления',
-      gateway: 'Шлюз',
+      gateway: 'Компьютер',
       detailsDesc: 'Сборка, среда выполнения и установка'
     },
     keybinds: {
@@ -710,7 +710,7 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
     },
     configuration: {
       title: 'Конфигурация',
-      exportDesc: 'Скачать настройки этого профиля в файле JSON.',
+      exportDesc: 'Скачать настройки этого агента в файле JSON.',
       importDesc: 'Заменить настройки ранее экспортированным файлом JSON.',
       resetDesc: 'Вернуть все настройки Hermes по умолчанию. Это нельзя отменить.',
       export: 'Экспорт',
@@ -720,7 +720,7 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
   },
   ar: {
     archive: 'الأرشيف',
-    newSessions: 'الجلسات الجديدة',
+    newSessions: 'المحادثات الجديدة',
     version: 'الإصدار',
     hostIntro: {
       notifications: {
@@ -744,22 +744,22 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
     },
     intro: {
       account: 'حسابك في Nous: الخطة والأرصدة والدفع. هو نفسه على كل جهاز تسجّل الدخول منه.',
-      gateways: 'أين تعمل وكلاؤك، والأجهزة التي يصل إليها Hermes. تُكتشف الوكلاء من البوابات التي توصلها.',
-      sessions: 'سجل المحادثات وأين تبدأ الجلسات الجديدة، لكل الوكلاء.',
-      about: 'تفاصيل إصدار هذا التطبيق وبواباتك.'
+      gateways: 'أين تعمل وكلاؤك، والأجهزة التي يصل إليها Hermes. يُكتشف الوكلاء من الأجهزة التي توصلها.',
+      sessions: 'سجل المحادثات وأين تبدأ المحادثات الجديدة، لكل الوكلاء.',
+      about: 'تفاصيل إصدار هذا التطبيق وأجهزتك.'
     },
     gateway: {
       connectionMode: 'طريقة الاتصال',
-      thisHost: 'هذا المضيف',
+      thisHost: 'هذا الجهاز',
       saved: 'الاتصالات المحفوظة',
-      savedDesc: 'كل بوابة Hermes يمكن لهذا التطبيق الوصول إليها.',
+      savedDesc: 'كل جهاز يشغّل Hermes يمكن لهذا التطبيق الوصول إليه.',
       manage: 'إدارة',
       advancedDesc: 'التحديثات عن بُعد وبدء التشغيل والتشخيص'
     },
     about: {
       whatsNew: 'الجديد',
       checkForUpdates: 'التحقق من التحديثات',
-      gateway: 'البوابة',
+      gateway: 'الجهاز',
       detailsDesc: 'تفاصيل البناء وبيئة التشغيل والتثبيت'
     },
     keybinds: {
@@ -792,7 +792,7 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
     },
     configuration: {
       title: 'الإعدادات',
-      exportDesc: 'نزّل إعدادات هذا الملف الشخصي كملف JSON.',
+      exportDesc: 'نزّل إعدادات هذا الوكيل كملف JSON.',
       importDesc: 'استبدل الإعدادات بملف JSON صُدّر سابقًا.',
       resetDesc: 'أعد كل الإعدادات إلى قيم Hermes الافتراضية. لا يمكن التراجع عن ذلك.',
       export: 'تصدير',

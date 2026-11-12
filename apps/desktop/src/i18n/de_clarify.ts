@@ -2,7 +2,7 @@ import type { ClarifyCopy } from './types_clarify'
 
 export const deClarify: Partial<ClarifyCopy> = {
   notReady: 'Klärungsanfrage ist noch nicht bereit',
-  gatewayDisconnected: 'Hermes ist nicht verbunden',
+  gatewayDisconnected: 'Hermes-Gateway ist nicht verbunden',
   sendFailed: 'Klärungsantwort konnte nicht gesendet werden',
   loadingQuestion: 'Frage wird geladen…',
   other: 'Anderes (Antwort eingeben)',

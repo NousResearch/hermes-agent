@@ -7,7 +7,7 @@ export const frThemePicker: ThemePickerCopy = {
   customColor: 'Couleur personnalisée',
   themeAccent: 'Par défaut du thème',
   basic: 'Basique',
-  basicDetail: 'Pour discuter avec l’agent.',
+  basicDetail: 'Pour discuter avec Hermes.',
   elite: 'Élite',
   eliteDetail: 'Pour les développeurs : terminal, fichiers, diffs.',
   noPick: 'Aucun choix'

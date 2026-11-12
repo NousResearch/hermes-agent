@@ -4,7 +4,7 @@ import { MemoryRouter, useLocation } from 'react-router'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as ConfigApi from '@/api/config'
-import { I18nProvider, TRANSLATIONS } from '@/i18n'
+import { I18nProvider, resolveTranslations } from '@/i18n'
 import { $notifications, clearNotifications } from '@/store/notifications'
 
 import { ModelSettings } from './model-settings'
@@ -653,7 +653,7 @@ describe('ModelSettings', () => {
       expect(await screen.findByText(/仍由/)).toBeTruthy()
       expect(screen.getByText('openrouter')).toBeTruthy()
       expect(
-        screen.getAllByRole('button', { name: TRANSLATIONS[locale].settings.model.resetAllToMain }).length
+        screen.getAllByRole('button', { name: resolveTranslations(locale).settings.model.resetAllToMain }).length
       ).toBeGreaterThan(0)
       expect(screen.queryByText(/still run on/)).toBeNull()
       expect(setModelAssignment).not.toHaveBeenCalled()
@@ -858,7 +858,7 @@ describe('ModelSettings MoA preset editor', () => {
     'localizes MoA preset and reference controls in %s without changing their saved identities',
     async locale => {
       const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-      const m = TRANSLATIONS[locale].settings.model
+      const m = resolveTranslations(locale).settings.model
       render(
         <MemoryRouter>
           <I18nProvider configClient={null} initialLocale={locale}>
@@ -868,9 +868,9 @@ describe('ModelSettings MoA preset editor', () => {
           </I18nProvider>
         </MemoryRouter>
       )
-      expect(m.moaDescription).not.toBe(TRANSLATIONS.en.settings.model.moaDescription)
-      expect(m.moaReferenceHint).not.toBe(TRANSLATIONS.en.settings.model.moaReferenceHint)
-      expect(m.moaAggregatorBilled).not.toBe(TRANSLATIONS.en.settings.model.moaAggregatorBilled)
+      expect(m.moaDescription).not.toBe(resolveTranslations('en').settings.model.moaDescription)
+      expect(m.moaReferenceHint).not.toBe(resolveTranslations('en').settings.model.moaReferenceHint)
+      expect(m.moaAggregatorBilled).not.toBe(resolveTranslations('en').settings.model.moaAggregatorBilled)
       await screen.findByText(m.moaDescription)
       expect(screen.getByText(m.moaReferenceTitle(1))).toBeTruthy()
       expect(screen.getByText(m.moaAggregator)).toBeTruthy()
@@ -1026,7 +1026,7 @@ describe('ModelSettings stale-aux banner dismissal', () => {
     // First visit: the deliberate cross-provider pin surfaces the banner.
     renderModelSettings()
     expect(await screen.findByText(/still run on/)).toBeTruthy()
-    fireEvent.click(await screen.findByRole('button', { name: TRANSLATIONS.en.settings.model.staleAuxDismiss }))
+    fireEvent.click(await screen.findByRole('button', { name: resolveTranslations('en').settings.model.staleAuxDismiss }))
 
     await waitFor(() => expect(screen.queryByText(/still run on/)).toBeNull())
 
@@ -1043,7 +1043,7 @@ describe('ModelSettings stale-aux banner dismissal', () => {
     renderModelSettings()
     expect(await screen.findByText(/still run on/)).toBeTruthy()
     // The dismiss affordance is offered again for the new configuration.
-    expect(screen.getByRole('button', { name: TRANSLATIONS.en.settings.model.staleAuxDismiss })).toBeTruthy()
+    expect(screen.getByRole('button', { name: resolveTranslations('en').settings.model.staleAuxDismiss })).toBeTruthy()
   })
 
   it('keeps the post-switch notice undismissable — it announces a change that just happened', async () => {
@@ -1061,7 +1061,7 @@ describe('ModelSettings stale-aux banner dismissal', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Apply' }))
 
     expect(await screen.findByText(/still run on/)).toBeTruthy()
-    expect(screen.queryByRole('button', { name: TRANSLATIONS.en.settings.model.staleAuxDismiss })).toBeNull()
+    expect(screen.queryByRole('button', { name: resolveTranslations('en').settings.model.staleAuxDismiss })).toBeNull()
   })
 })
 

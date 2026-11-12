@@ -17,7 +17,7 @@ export const arOverrides = {
   simplifiedAgents: simplifiedAgentsCopy['ar'],
   gatewayGroupOpen: {
     opening: 'جارٍ فتح محادثة المجموعة…',
-    lookupFailed: 'تعذّر العثور على هذه المجموعة على الجهاز. حاول مجددًا.',
+    lookupFailed: "تعذّر العثور على هذه المجموعة على البوابة. حاول مجددًا.",
     missing: 'لم تعد محادثة المجموعة هذه موجودة.'
   },
 
@@ -130,7 +130,7 @@ export const arOverrides = {
     restoreImageDraft: 'استعادة مسودة الصورة',
     queueCancelFailed: 'تعذّر إزالة الدور المنتظر',
     queueLostDiscard: 'تجاهل',
-    queueLostDiscardTip: 'أُعيد تشغيل Hermes أثناء هذا الدور ولا يمكن إكماله. تجاهله لتستمر الأدوار المنتظرة خلفه.'
+    queueLostDiscardTip: 'أعادت البوابة التشغيل أثناء هذا الدور ولا يمكن إكماله. تجاهله لتستمر الأدوار المنتظرة خلفه.'
   },
   statusStack: arChat.statusStack,
   updates: arBoot.updates,

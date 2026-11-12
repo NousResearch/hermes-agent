@@ -197,10 +197,10 @@ class TestNetworkPathUserinfo:
 class TestGoogleOAuthCredentials:
     """#64351: a pasted ``client_secret.json`` / OAuth access token logged as a chat preview leaked."""
 
-    SECRET = "GOCSPX-" + "k1fQ7zP2mX9vLk4nRt8wYb1cDf6"
-    ACCESS = "ya29." + "a0AfH6SMBq7zP2mX9vLk4nRt8wYb1cDf6gHj3sA0"
-    SA_ACCESS = "ya29.c." + "c0ASRK0GaPq7zP2mX9vLk4nRt8wYb1cDf6gHj3sA0"  # service account / GCE metadata
-    STS_ACCESS = "ya29.d." + "c0AZ4bNpq7zP2mX9vLk4nRt8wYb1cDf6gHj3sA0"  # workload identity federation (STS)
+    SECRET = "GOCSPX-" + "k1fQ7z_P2mX9vLk4n-Rt8wYb1cDf6"  # real bodies are base64url: carry "-" and "_"
+    ACCESS = "ya29." + "a0AfH6SMBq7z_P2mX9vLk4n-Rt8wYb1cDf6gHj3sA0"
+    SA_ACCESS = "ya29.c." + "c0ASRK0GaPq7z_P2mX9vLk4n-Rt8wYb1cDf6gHj3sA0"  # service account / GCE metadata
+    STS_ACCESS = "ya29.d." + "c0AZ4bNpq7z_P2mX9vLk4n-Rt8wYb1cDf6gHj3sA0"  # workload identity federation (STS)
 
     @pytest.mark.parametrize("template", [
         "msg='client_secret\":\"{}\",\"redirect_uris\":[\"http://localhost\"]}}}}'",  # cut mid-JSON

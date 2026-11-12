@@ -163,8 +163,8 @@ class TestFileHandleClosedOnError:
 class TestBridgeTokenOffLoop:
     @pytest.mark.asyncio
     async def test_token_minting_never_blocks_the_event_loop(self):
-        """The token is minted under a blocking flock a cron sender may hold; on the loop thread that
-        wait would stall every other platform on the gateway."""
+        """Minting reads, writes and fsyncs the token file; on the loop thread that disk wait would stall
+        every other platform on the gateway."""
         adapter = _make_adapter()
         mock_proc = MagicMock()
         mock_proc.poll.return_value = 1

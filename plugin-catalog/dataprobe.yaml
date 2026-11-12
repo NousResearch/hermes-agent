@@ -1,6 +1,6 @@
 name: dataprobe
 repo: https://github.com/rodricksz4h5/dataprobe
-sha: 6dddd12cf70686eea372fdb93e8e8c88907286b6
+sha: 20d5190ec8e22e0ae7cc92086355d0d722b9d290
 version: "1.0.1"
 title: Dataprobe
 description: >-
@@ -19,7 +19,7 @@ maintainer: rodricksz4h5
 tier: community
 category: tools
 requires_hermes: ">=0.22.0"
-docs_url: https://github.com/rodricksz4h5/dataprobe/tree/6dddd12cf70686eea372fdb93e8e8c88907286b6
+docs_url: https://github.com/rodricksz4h5/dataprobe/tree/20d5190ec8e22e0ae7cc92086355d0d722b9d290
 capabilities:
   provides_tools:
     - data_profile

@@ -1,14 +1,18 @@
 name: detonator
+title: "Plugin Detonator"
 repo: https://github.com/shreyasudupi/hermes-plugin-detonator
-sha: 342db6b77ae98ae75aabd4c27047568535d52c9a
+sha: "a783207de499ae6f1e932c68f2b680f3c3d27938"
 description: >-
-  Dynamic sandbox for plugins you did not write. After you approve the run, /detonate
-  fetches a plugin at an exact commit and loads it inside a disposable Docker container
-  (no network, read-only, non-root, all capabilities dropped) with a throwaway Hermes home
-  full of decoy keys, then drives its hooks and tools and reports what it actually did:
-  decoy secrets read, network attempts, shell commands, persistence, prompt injection,
-  tool poisoning, monkeypatching. Deterministic rules with a plain-language reason and
-  MITRE ATT&CK / ATLAS IDs per finding; advisory only, a clean run is evidence, not proof.
+  Security testing sandbox for Hermes plugins: detonate a plugin you did not write before
+  you install it, and see whether it steals keys, phones home, runs shell commands or plants
+  persistence. After you approve the run, /detonate fetches the plugin at an exact commit and
+  loads it inside a disposable Docker container (no network, read-only, non-root, all
+  capabilities dropped) with a throwaway Hermes home full of decoy keys, drives its hooks and
+  tools, jumps the clock to wake time bombs, and reports what it actually did: credential
+  theft, network attempts, shell commands, persistence, prompt injection, tool poisoning,
+  monkeypatching. A malware and supply-chain safety check you can run in seconds, with
+  deterministic rules, a plain-language reason and MITRE ATT&CK / ATLAS IDs per finding;
+  advisory only, a clean run is evidence, not proof.
   Disclosure — requires Docker; runs git (fetches the target repo over the network) and
   docker (one-time image build pulls a digest-pinned python:3.11-slim) on your machine,
   only after you approve each run; refuses to run unattended; writes reports under its
@@ -18,8 +22,15 @@ tier: community
 category: tools
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/shreyasudupi/hermes-plugin-detonator#readme
-version: "0.2.2"
-platforms: [linux, macos]
+version: "0.2.3"
+image: "https://raw.githubusercontent.com/shreyasudupi/hermes-plugin-detonator/a783207de499ae6f1e932c68f2b680f3c3d27938/docs/store/cover.png"
+screenshots:
+  - "https://raw.githubusercontent.com/shreyasudupi/hermes-plugin-detonator/a783207de499ae6f1e932c68f2b680f3c3d27938/docs/store/1-key-stealer.png"
+  - "https://raw.githubusercontent.com/shreyasudupi/hermes-plugin-detonator/a783207de499ae6f1e932c68f2b680f3c3d27938/docs/store/2-persistence-planter.png"
+  - "https://raw.githubusercontent.com/shreyasudupi/hermes-plugin-detonator/a783207de499ae6f1e932c68f2b680f3c3d27938/docs/store/3-tool-poisoner.png"
+  - "https://raw.githubusercontent.com/shreyasudupi/hermes-plugin-detonator/a783207de499ae6f1e932c68f2b680f3c3d27938/docs/store/4-clean-notes.png"
+  - "https://raw.githubusercontent.com/shreyasudupi/hermes-plugin-detonator/a783207de499ae6f1e932c68f2b680f3c3d27938/docs/store/5-approve.png"
+platforms: [linux, macos, windows]
 capabilities:
   provides_tools: [detonate_plugin, detonator_report]
   provides_hooks: []

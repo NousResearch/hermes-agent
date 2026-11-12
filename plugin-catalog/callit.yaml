@@ -1,0 +1,15 @@
+name: callit
+repo: https://github.com/k58v2hbzkk-del/callit
+sha: f8893c6ab03b70a0ed6899bc8028e8b4045b94c9
+version: "1.2.0"
+title: CALLIT
+description: "Turn any group chat into a prediction league: friends make calls on crypto prices, football or anything, challenge each other to 1v1 duels, run closest-guess pools, and Hermes referees — it settles from live data (or a named judge / weighted group vote) and keeps season leaderboards. Duels staked in SOL/USDC/USDT lock both stakes in an on-chain Solana escrow program (immutable, devnet by default) that can only pay the two players; Hermes signs the result with a per-install referee key and both players are refunded if it never does. Disclosure — read-only HTTPS calls to api.coingecko.com and site.api.espn.com; Solana RPC calls (configured RPC, devnet by default) to read bets and send settle transactions signed by the referee key in CALLIT_RESOLVER_KEY (a secret, never a player's key; holds only fee SOL); stores calls, sides, votes, points, debts, public Solana addresses and an audit log in plugin-data/callit/data.db; '/callit referee on' creates one visible Hermes cron job via cronjob_manage; no shell commands, no telemetry. Unaudited — devnet/testing use."
+maintainer: k58v2hbzkk-del
+tier: community
+category: tools
+requires_hermes: ">=0.22.5"
+capabilities:
+  provides_tools: [callit_make_call, callit_duel, callit_pool, callit_play, callit_join, callit_vote, callit_board, callit_referee]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -2,14 +2,7 @@ name: shadow
 title: Shadow
 repo: https://github.com/salch-cred/shadow
 sha: 0a55597f09623903ff175e5a697b2fea9fb6c416
-description: >-
-  Find out which model is better at your work, from your real prompts. After a
-  plain chat turn, the same conversation goes in the background to a second
-  model you choose, through ctx.llm. /shadow vote shows both answers blind in
-  random order; models are revealed after you vote, and your leaderboard shows
-  wins with a 95% range. Off until you set compare_model and allow the override;
-  tool turns are skipped and answers are deleted after each vote.
-
+description: "Find out which model is better at your work, from your real prompts. After a plain chat turn, the same conversation goes in the background to a second model you choose, through ctx.llm. /shadow vote shows both answers blind in random order; models are revealed after you vote, and your leaderboard shows wins with a 95% range. Off until you set compare_model and allow the override; tool turns are skipped and answers are deleted after each vote. Disclosure — when enabled (compare_model set and llm.allow_model_override on), the last 12 plain-text messages of every eligible chat turn are also sent to the second model/provider you configured, costing one extra model call per compared turn; up to 100 unvoted prompt/answer pairs are kept in plugin-data/shadow until you vote, and each chat can only see the pairs it captured."
 maintainer: salch-cred
 tier: community
 category: models

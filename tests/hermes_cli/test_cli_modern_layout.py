@@ -240,6 +240,9 @@ class _Tty(io.StringIO):
         return 1
 
 
+_COLUMNS, _ROWS = 120, 30  # the terminal the layout is painted and measured in
+
+
 def _paint_once(layout, style) -> str:
     """One frame of the real layout through the CPR-disabled vt100 output the CLI ships; returns
     the painted characters with escapes and whitespace removed (blank cells go out as cursor moves)."""
@@ -249,7 +252,7 @@ def _paint_once(layout, style) -> str:
     from prompt_toolkit.output.vt100 import Vt100_Output
 
     tty = _Tty()
-    output = Vt100_Output(tty, lambda: Size(rows=30, columns=120), term="xterm-256color", enable_cpr=False)
+    output = Vt100_Output(tty, lambda: Size(rows=_ROWS, columns=_COLUMNS), term="xterm-256color", enable_cpr=False)
     frames: list[str] = []
 
     async def run():
@@ -271,31 +274,49 @@ def _paint_once(layout, style) -> str:
     return "".join(re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", frames[0]).split())
 
 
-@pytest.mark.parametrize("blocks_input", [True, False])
-def test_a_running_slash_command_spins_only_in_the_top_rule(monkeypatch, blocks_input):
+@pytest.mark.parametrize("blocks_input", [True, False], ids=["blocks-input", "queues-input"])
+@pytest.mark.parametrize("modern", [True, False], ids=["glyph-layout", "classic-layout"])
+def test_glyph_layout_spins_a_running_slash_command_only_in_its_top_rule(monkeypatch, modern, blocks_input):
     """A slow slash command (``/compress``, ``/skills search``) shows one spinner in this layout: the
-    composer's top rule, which also names the command. The classic hint row and the spinning
-    prompt and placeholder repeated it three more times. The composer still says what typing does."""
+    composer's top rule, which also shows the command's status. The classic hint row and the spinning
+    prompt and placeholder repeated the spinner three more times. The composer still says what typing does,
+    and its prompt shows the working ☤ an agent turn shows."""
     from prompt_toolkit.key_binding import KeyBindings
     from agent.i18n import t
     from cli import _COMMAND_SPINNER_FRAMES, HermesCLI
+    from hermes_cli.cli_modern_layout import _SPIN
 
     monkeypatch.setenv("HERMES_DEFER_AGENT_STARTUP", "1")
     cli = HermesCLI(model="fixture", provider="openai-compat", api_key="fixture", base_url="http://127.0.0.1:1/v1")
     cli._tui_init_run_state()
-    cli._modern_layout = True
+    cli._modern_layout = modern
     layout, style = cli._tui_build_layout(KeyBindings())
-    idle_rows = layout.container.preferred_height(120, 30).preferred
-    cli._command_running, cli._command_blocks_input = True, blocks_input
-    cli._command_status = "Compressing context..."
+    idle_rows = layout.container.preferred_height(_COLUMNS, _ROWS).preferred
+    status = "Compressing context..."
+    cli._command_running, cli._command_blocks_input, cli._command_status = True, blocks_input, status
+    detail = t("cli.tui.hint_input_disabled" if blocks_input else "cli.tui.hint_input_queues")
+    prompt = "".join(text for _, text in cli._get_tui_prompt_fragments()).split()
+
+    if not modern:  # control: the classic layout keeps its hint row, spinning prompt and placeholder
+        hint = "".join(text for _, text in cli._tui_hint_text()).split(maxsplit=1)
+        assert len(hint) == 2 and hint[0] in _COMMAND_SPINNER_FRAMES, hint
+        assert hint[1] == t("cli.tui.hint_command_running", frame="", detail=detail).strip(), hint
+        assert prompt[0] in _COMMAND_SPINNER_FRAMES, prompt
+        placeholder = cli._tui_placeholder_text().split(maxsplit=1)
+        assert len(placeholder) == 2 and placeholder[0] in _COMMAND_SPINNER_FRAMES, placeholder
+        assert placeholder[1] == status, placeholder
+        assert layout.container.preferred_height(_COLUMNS, _ROWS).preferred == idle_rows + 1  # the hint row
+        return
 
     painted = _paint_once(layout, style)
 
-    assert sum(painted.count(frame) for frame in _COMMAND_SPINNER_FRAMES) == 1, painted
-    assert painted.count("Compressingcontext...") == 1, painted
-    detail = t("cli.tui.hint_input_disabled" if blocks_input else "cli.tui.hint_input_queues")
+    spinners = set(_COMMAND_SPINNER_FRAMES) | set(_SPIN)  # the classic indicators' frames and the top rule's
+    assert sum(painted.count(frame) for frame in spinners) == 1, painted
+    assert painted.count("".join(status.split())) == 1, painted
     assert "".join(detail.split()) in painted, painted
-    assert layout.container.preferred_height(120, 30).preferred == idle_rows  # no row added for it
+    assert prompt[0] == "☤", prompt  # read from the prompt itself: the footer paints a ☤ of its own
+    assert cli._tui_hint_text() == []  # the classic hint row's text, even in a row 0 tall here
+    assert layout.container.preferred_height(_COLUMNS, _ROWS).preferred == idle_rows  # no row added for it
 
 
 def test_every_block_is_framed_by_bars_and_blank_lines(monkeypatch):

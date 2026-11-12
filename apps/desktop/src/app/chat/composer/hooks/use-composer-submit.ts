@@ -397,17 +397,20 @@ export function useComposerSubmit({
   const answerParkedCardWithDraft = (text: string, payloadPresent: boolean): 'answered' | 'yielded' | null => {
     // A card parked on this session owns the turn: the agent is blocked inside
     // its tool batch, so a steer or queued follow-up would sit undelivered until
-    // the card's own timeout. Plain text answers the card instead (a clarify
-    // takes it as its next question's answer) and is not sent again.
+    // the card's own timeout. Plain text answers the card instead when it can be
+    // an answer — a clarify takes words that name an offered choice, or any words
+    // for an open question — and is not sent again.
     //
-    // A slash command or attachments cannot be an answer: the card is skipped
-    // and the draft routes normally. An onboarding setup card the message
-    // moves past instead closes as unanswered and its turn ends there, so the
-    // message runs as the next turn. The skip is fire-and-forget, not awaited:
-    // it clears the card synchronously and both RPCs ride the same socket in
-    // call order, so the gateway resolves the clarify before it sees the
-    // follow-up. Awaiting first would leave the draft live for a tick, long
-    // enough for a second Enter to send it twice.
+    // Text that names no offered choice is the user's direction, so the card
+    // yields and the words run as the next turn. A slash command or attachments
+    // cannot be an answer at all: the card is skipped and the draft routes
+    // normally. An onboarding setup card the message moves past instead closes
+    // as unanswered and its turn ends there, so the message runs as the next
+    // turn. The skip is fire-and-forget, not awaited: it clears the card
+    // synchronously and both RPCs ride the same socket in call order, so the
+    // gateway resolves the clarify before it sees the follow-up. Awaiting first
+    // would leave the draft live for a tick, long enough for a second Enter to
+    // send it twice.
     //
     // /btw and /bg run beside the turn (snapshot / separate session) and touch
     // no parked card. With attachments the draft isn't routed as a slash

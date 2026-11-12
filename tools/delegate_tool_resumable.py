@@ -88,10 +88,9 @@ def _db_path_for(parent_agent: Any = None) -> Optional[Path]:
 
 
 def _connect(path: Path):
-    from hermes_cli.sqlite_util import open_db, transaction
-    from tools.async_delegation import _initialize_schema
-    return transaction(open_db(path, db_label="state.db (resumable_subagents)", busy_timeout_ms=10_000, wal=False,
-                               row_factory=None, initialize=_initialize_schema))
+    from hermes_cli.sqlite_util import transaction
+    from tools.async_delegation import open_state_db
+    return transaction(open_state_db(path, "state.db (resumable_subagents)"))
 
 
 def _write(path: Optional[Path], fn) -> Any:
@@ -100,6 +99,9 @@ def _write(path: Optional[Path], fn) -> Any:
     try:
         with _connect(path) as conn:
             return fn(conn)
+    except FileNotFoundError:  # its profile was removed: a late write must not recreate it
+        logger.debug("resumable subagent record skipped: %s is gone", path.parent)
+        return None
     except Exception:
         logger.warning("resumable subagent record write failed (%s)", path, exc_info=True)
         return None

@@ -19,6 +19,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from hermes_constants import get_hermes_home, hermes_home_key
@@ -121,19 +122,20 @@ def _connect() -> sqlite3.Connection:
     from agent.runtime_session_store import WorkerPersistenceError, is_worker_process
     if is_worker_process():
         raise WorkerPersistenceError('worker_delegation_ledger_unavailable')
+    return open_state_db(_db_path(), "state.db (async_delegation)")
+
+
+def open_state_db(path: Path, db_label: str) -> sqlite3.Connection:
+    """A short-lived writer connection to a profile's ``state.db`` that never resurrects a removed named profile
+    (#123265) and keeps the file and its sidecars owner-only (0600, as ``hermes_state.SessionDB`` does)."""
     from hermes_cli.sqlite_util import open_db
-    # Same state.db as hermes_state.SessionDB -- reuse its owner-only (0600)
-    # hardening so this writer doesn't create/leave the file (and its WAL
-    # sidecars) at the process umask. See hermes_state._secure_state_db_files.
     from hermes_constants import mkdir_under_hermes_home
     from hermes_state import _secure_state_db_files
 
-    path = _db_path()
-    # A late replay or writer must not resurrect a removed named profile (#123265).
     mkdir_under_hermes_home(path.parent)
     _secure_state_db_files(path, create_main=True)
     # wal=False: SessionDB owns state.db's journal mode (_initialize_schema applies the barriers).
-    conn = open_db(path, db_label="state.db (async_delegation)", busy_timeout_ms=10_000,
+    conn = open_db(path, db_label=db_label, busy_timeout_ms=10_000,
                    wal=False, row_factory=None, initialize=_initialize_schema)
     _secure_state_db_files(path)
     return conn

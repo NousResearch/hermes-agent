@@ -1,6 +1,6 @@
 name: claim-gate
 repo: https://github.com/Mohamedhazeem/ClaimGate
-sha: 81892eeec56eddd19132257cff9b1111b26fe0fea
+sha: "81892eec56eddd19132257cff9b1111b26fe0fea"
 description: >-
   Deterministic evidence-readiness firewall for insurance claim submissions.
   Resolves model-supplied evidence and incident-fact IDs against an

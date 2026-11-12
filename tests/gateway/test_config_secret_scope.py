@@ -481,3 +481,56 @@ def test_a_moved_route_never_sends_its_frozen_key_to_the_new_endpoint(tmp_path, 
         for server in servers:
             server.shutdown()
             server.server_close()
+
+
+def _pre_151775_identity_policy(policy, monkeypatch):
+    """Rewrite ``bound`` as a gateway from before #151775 would have stamped it: a bare built-in
+    name (``openrouter``) instead of ``custom:<name>`` for the same resolved URL."""
+    from gateway import session_route_identity
+    from gateway.session_policy_credentials import PREFIX, _binding
+    real = session_route_identity.resolved_route
+
+    def legacy(model_cfg, config):
+        identity, url = real(model_cfg, config)
+        if identity.startswith('custom:'):
+            identity = identity.split(':', 1)[1]
+        return identity, url
+
+    monkeypatch.setattr(session_route_identity, 'resolved_route', legacy)
+    source = json.loads(policy.config_secret_ref[len(PREFIX):])
+    config = json.loads(policy.config_json)
+    source['bound'] = [[path, _binding(config, tuple(path))] for path, _digest in source['bound']]
+    monkeypatch.setattr(session_route_identity, 'resolved_route', real)
+    return replace(policy, config_secret_ref=PREFIX + json.dumps(source, sort_keys=True))
+
+
+def test_a_pre_151775_builtin_identity_still_authenticates_the_same_endpoint(tmp_path, monkeypatch):
+    """#154342: after #151775, a bare built-in name that also keys a ``providers:`` entry resolves
+    to ``custom:<name>``. Sessions frozen before that change stored the bare identity in ``bound``.
+    The endpoint URL did not move, so the frozen key must still be accepted; a real URL move is
+    still refused by name."""
+    from hermes_state_runtime import RuntimeStoreError
+    from gateway.session_policy_credentials import PREFIX, _binding
+
+    url = 'https://openrouter.ai/api/v1'
+    cfg = {
+        'model': {'provider': 'openrouter', 'default': 'm', 'base_url': url},
+        'providers': {'openrouter': {'base_url': url, 'api_key_env': 'OPENROUTER_API_KEY'}},
+        'auxiliary': {'vision': {'provider': 'openrouter', 'model': 'qwen/qwen3.7-flash',
+                                 'base_url': url, 'api_key': 'sk-or-v1-test'}},
+    }
+    owner, policy = _bind(tmp_path, monkeypatch, cfg)
+    legacy = _pre_151775_identity_policy(policy, monkeypatch)
+    source = json.loads(legacy.config_secret_ref[len(PREFIX):])
+    current = _binding(json.loads(policy.config_json), ('auxiliary', 'vision', 'api_key'))
+    stored = dict((tuple(path), digest) for path, digest in source['bound'])[
+        ('auxiliary', 'vision', 'api_key')]
+    assert stored != current  # the spelling change really moved the digest
+
+    recovered = legacy.config(owner())
+    assert recovered['auxiliary']['vision']['api_key'] == 'sk-or-v1-test'
+
+    with pytest.raises(RuntimeStoreError, match='launch_credentials_unavailable') as refused:
+        _repointed(legacy, lambda c: c['auxiliary']['vision'].__setitem__(
+            'base_url', 'http://evil.invalid/v1')).config(owner())
+    assert refused.value.field == 'auxiliary.vision.api_key' and 'endpoint' in refused.value.detail

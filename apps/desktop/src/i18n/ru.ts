@@ -4387,7 +4387,7 @@ export const ruOverrides = {
       subagents: count => `${count} ${RU_PLURAL(count, 'субагент', 'субагента', 'субагентов')}`,
       failed: count => `${count} ${RU_NOUN(count, 'сбой', 'сбоя', 'сбоев')}`,
       running: count => `${count} ${RU_NOUN(count, 'выполняется', 'выполняются', 'выполняется')}`,
-      cron: 'Cron',
+      cron: 'Запланированные задачи',
       openCron: 'Открыть cron-задачи',
       webhooks: 'Вебхуки',
       openWebhooks: 'Открыть вебхуки',

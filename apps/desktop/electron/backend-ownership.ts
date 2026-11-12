@@ -1,3 +1,5 @@
+import { isPidOnlyStartMarker } from './backend-claim'
+
 export interface BackendIdentity {
   nonce: string
   pid: number
@@ -271,6 +273,13 @@ export function createBackendOwnership(deps: BackendOwnershipDeps) {
           continue
         }
 
+        // PID-only records have no incarnation proof; preserve, never reap.
+        if (isPidOnlyStartMarker(entry.startMarker)) {
+          survivors.push(entry)
+
+          continue
+        }
+
         let matches: boolean | undefined
 
         try {
@@ -309,6 +318,30 @@ export function createBackendOwnership(deps: BackendOwnershipDeps) {
       write([])
     }
   }
+}
+
+/** Match executable and subcommand tokens, never argument text. */
+export function backendArgvMatches(argv: readonly string[]): boolean {
+  const entry = (token: string) => token === 'hermes_cli.main' || /(?:^|[/\\])hermes_cli[/\\]main\.py$/i.test(token)
+  const executable = (argv[0] || '').split(/[/\\]/).pop() || ''
+  let offset = /^hermes(?:\.exe)?$/i.test(executable) ? 1 : 0
+
+  if (!offset && /^python(?:\d+(?:\.\d+)?)?(?:\.exe)?$/i.test(executable)) {
+    offset = argv[1] === '-m' && entry(argv[2] || '')
+      ? 3
+      : entry(argv[1] || '') || /(?:^|[/\\])hermes$/i.test(argv[1] || '')
+        ? 2
+        : 0
+  }
+
+  if (!offset) {return false}
+
+  if (argv[offset] === '--profile' || argv[offset] === '-p') {
+    if (!argv[offset + 1]) {return false}
+    offset += 2
+  }
+
+  return argv[offset] === 'serve' || argv[offset] === 'dashboard'
 }
 
 export function backendCommandMatches(command: unknown): boolean {

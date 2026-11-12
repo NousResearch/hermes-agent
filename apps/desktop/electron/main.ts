@@ -69,6 +69,7 @@ import { stopBackendChild as stopBackendChildImpl, waitForBackendExit } from './
 import {
   execText,
   isPidOnlyStartMarker,
+  processArgv,
   processStartMarker,
   REAP_PROBE_TIMEOUT_MS
 } from './backend-claim'
@@ -78,6 +79,7 @@ import { BackendDialClaims } from './backend-dial-claim'
 import { buildDesktopBackendEnv, profileBackendParentEnv } from './backend-env'
 import { isReauthRequiredError, waitForHermesReady } from './backend-health'
 import {
+  backendArgvMatches,
   backendCommandMatches,
   createBackendOwnership,
   createBackendShutdownCoordinator
@@ -4071,6 +4073,12 @@ async function backendIdentityMatches(identity) {
     return processMatches
   }
 
+  if (!IS_WINDOWS) {
+    const argv = await processArgv(identity.pid)
+
+    return argv === null ? undefined : backendArgvMatches(argv)
+  }
+
   const command = await backendCommandForPid(identity.pid)
 
   return command === null ? undefined : backendCommandMatches(command)
@@ -4093,7 +4101,12 @@ async function backendParentMatches(entry) {
 }
 
 async function stopOwnedBackend(identity) {
-  const matches = await processIdentityMatches(identity, REAP_PROBE_TIMEOUT_MS)
+  // A PID-only historical record can refer to a replacement process.
+  if (isPidOnlyStartMarker(identity.startMarker)) {
+    throw new Error(`Cannot stop PID-only backend ${identity.pid} without an incarnation marker.`)
+  }
+
+  const matches = await backendIdentityMatches(identity)
 
   if (matches === false) {
     return
@@ -4111,7 +4124,7 @@ async function stopOwnedBackend(identity) {
       forceKillProcessTree(identity.pid)
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error)
-      const stillThere = await processIdentityMatches(identity, REAP_PROBE_TIMEOUT_MS)
+      const stillThere = await backendIdentityMatches(identity)
 
       if (stillThere !== false) {
         throw new Error(`taskkill failed for backend PID ${identity.pid}: ${detail}`)
@@ -4133,16 +4146,23 @@ async function stopOwnedBackend(identity) {
     const deadline = Date.now() + 1500
 
     while (Date.now() < deadline) {
-      if ((await processIdentityMatches(identity, REAP_PROBE_TIMEOUT_MS)) !== true) {
-        return
-      }
+      const current = await backendIdentityMatches(identity)
+
+      if (current === false) {return}
+
+      if (current !== true) {throw new Error(`Could not verify backend PID ${identity.pid} during shutdown.`)}
 
       await new Promise(resolve => setTimeout(resolve, 50))
     }
 
-    // Revalidate immediately before escalation so PID reuse cannot target a
-    // replacement process.
-    if ((await processIdentityMatches(identity, REAP_PROBE_TIMEOUT_MS)) === true) {
+    // Both incarnation and native argv must still match before escalation.
+    const beforeKill = await backendIdentityMatches(identity)
+
+    if (beforeKill !== true && beforeKill !== false) {
+      throw new Error(`Could not verify backend PID ${identity.pid} before escalation.`)
+    }
+
+    if (beforeKill === true) {
       try {
         process.kill(-identity.pid, 'SIGKILL')
       } catch {
@@ -4152,7 +4172,7 @@ async function stopOwnedBackend(identity) {
   }
 
   await new Promise(resolve => setTimeout(resolve, 50))
-  const remaining = await processIdentityMatches(identity, REAP_PROBE_TIMEOUT_MS)
+  const remaining = await backendIdentityMatches(identity)
 
   if (remaining !== false) {
     throw new Error(`Backend PID ${identity.pid} did not stop cleanly.`)

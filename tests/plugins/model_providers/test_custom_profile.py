@@ -93,6 +93,33 @@ class TestCustomReasoningWireShape:
         assert "think" not in eb
         assert tl == {"reasoning_effort": "none"}
 
+    @pytest.mark.parametrize("reasoning_config", [{"enabled": False}, {"effort": "none"}])
+    def test_glm53_disable_uses_the_lightest_supported_effort(self, custom_profile, reasoning_config):
+        """GLM-5.3 cannot disable thinking; Ark maps none/minimal/low to low.
+
+        A custom route must not claim Off while leaving the model to choose its default.
+        Drive the full transport so the assertion covers what actually reaches the wire.
+        """
+        from agent.transports.chat_completions import ChatCompletionsTransport
+
+        kwargs = ChatCompletionsTransport().build_kwargs(
+            model="glm-5.3-flash", messages=[{"role": "user", "content": "ping"}], tools=None,
+            provider_profile=custom_profile, reasoning_config=reasoning_config,
+            base_url="https://ark.cn-beijing.volces.com/api/coding/v3", provider_name="custom",
+        )
+        assert kwargs["reasoning_effort"] == "low"
+
+    def test_glm53_xhigh_uses_the_top_supported_effort(self, custom_profile):
+        """The full custom transport maps Hermes xhigh to GLM-5.3's max tier."""
+        from agent.transports.chat_completions import ChatCompletionsTransport
+
+        kwargs = ChatCompletionsTransport().build_kwargs(
+            model="glm-5.3-flash", messages=[{"role": "user", "content": "ping"}], tools=None,
+            provider_profile=custom_profile, reasoning_config={"enabled": True, "effort": "xhigh"},
+            base_url="https://ark.cn-beijing.volces.com/api/coding/v3", provider_name="custom",
+        )
+        assert kwargs["reasoning_effort"] == "max"
+
     @pytest.mark.parametrize(
         "base_url",
         [
@@ -220,6 +247,33 @@ class TestCustomResponsesEffortVocabulary:
             {"provider": "custom:relay", "base_url": "https://relay.example/v1", "reasoning_config": reasoning},
         )
         assert (effort, enabled) == (top_level["reasoning_effort"], True) == ("max", True)
+
+    @pytest.mark.parametrize("reasoning", [{"enabled": False}, {"effort": "none"}])
+    def test_glm53_disable_uses_the_lightest_supported_effort(self, reasoning):
+        from agent.transports.codex import _resolve_reasoning
+
+        effort, enabled = _resolve_reasoning(
+            "glm-5.3-flash",
+            {
+                "provider": "custom:relay",
+                "base_url": "https://relay.example/v1",
+                "reasoning_config": reasoning,
+            },
+        )
+        assert (effort, enabled) == ("low", True)
+
+    def test_glm53_xhigh_uses_the_top_supported_effort(self):
+        from agent.transports.codex import _resolve_reasoning
+
+        effort, enabled = _resolve_reasoning(
+            "glm-5.3-flash",
+            {
+                "provider": "custom:relay",
+                "base_url": "https://relay.example/v1",
+                "reasoning_config": {"enabled": True, "effort": "xhigh"},
+            },
+        )
+        assert (effort, enabled) == ("max", True)
 
     def test_custom_entry_at_the_official_openai_origin_keeps_the_per_model_ladder(self):
         """api.openai.com's vocabulary is known per model; the custom declaration must not

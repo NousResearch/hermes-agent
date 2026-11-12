@@ -46,3 +46,41 @@ async def test_lazy_session_info_reports_frozen_reasoning_and_tier(tmp_path, mon
         assert (info['service_tier'], info['fast']) == ('priority', False), info
     off = await call('session.create', request_id='off', source='gui', cwd=str(tmp_path), reasoning='none')
     assert (off['info']['reasoning_effort'], off['info']['reasoning_effort_wire']) == ('none', '')
+
+
+def test_glm53_disable_reports_the_lightest_wire_effort():
+    """A custom GLM-5.3 route cannot disable reasoning: the pill says Off→Low, not bare Off."""
+    from gateway.session_local import effort_fields
+
+    fields = effort_fields(
+        {'enabled': False}, '', 'glm-5.3-flash', 'custom:mc',
+        'https://ark.cn-beijing.volces.com/api/coding/v3', 'chat_completions',
+    )
+    assert (fields['reasoning_effort'], fields['reasoning_effort_wire']) == ('none', 'low')
+
+
+def test_glm53_xhigh_reports_the_top_wire_effort():
+    """Canonical session info agrees with the custom transport's xhigh→max mapping."""
+    from gateway.session_local import effort_fields
+
+    fields = effort_fields(
+        {'enabled': True, 'effort': 'xhigh'}, '', 'glm-5.3-flash', 'custom:mc',
+        'https://ark.cn-beijing.volces.com/api/coding/v3', 'chat_completions',
+    )
+    assert (fields['reasoning_effort'], fields['reasoning_effort_wire']) == ('xhigh', 'max')
+
+
+def test_forced_glm53_is_the_only_disabled_route_reporting_a_wire_floor():
+    """The UI cannot infer a sent low effort from a Codex route that omits it."""
+    from gateway.session_local import effort_fields
+
+    glm = effort_fields(
+        {'enabled': False}, '', 'glm-5.3-flash', 'custom:mc',
+        'https://ark.cn-beijing.volces.com/api/coding/v3', 'chat_completions',
+    )
+    astra = effort_fields(
+        {'enabled': False}, '', 'gpt-6-astra', 'openai-codex',
+        'https://api.openai.com/v1', 'codex_responses',
+    )
+    assert (glm['reasoning_effort'], glm['reasoning_effort_wire']) == ('none', 'low')
+    assert (astra['reasoning_effort'], astra['reasoning_effort_wire']) == ('none', '')

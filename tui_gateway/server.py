@@ -39,7 +39,7 @@ from hermes_state_ids import new_session_id
 from tools.environments.local import hermes_subprocess_env
 from agent.fast_mode import STATIC_TIERS
 from agent.replay_cleanup import canonicalize_replay_history
-from agent.reasoning_effort import clamp_effort, route_supported_efforts
+from agent.reasoning_effort import _is_generic_custom_glm53, route_clamp_effort
 from agent.voice_turn_route import session_runtime_view
 from agent.compaction_display import project_compaction_message_for_display
 from agent.skill_commands import describe_skill_invocation
@@ -1484,9 +1484,11 @@ def _session_info(agent, session: dict | None = None) -> dict:
     # Desktop can say "ultra sends max on this route" like `/reasoning` does instead of presenting a
     # Hermes-internal step (#61634) as a wire level the route does not have.
     reasoning_effort_wire = ""
-    if reasoning_effort and reasoning_effort != "none":
-        reasoning_effort_wire = str(clamp_effort(reasoning_effort, route_supported_efforts(
-            pending_provider or provider, model, getattr(agent, "api_mode", None))) or "")
+    if reasoning_effort and (
+        reasoning_effort != "none" or _is_generic_custom_glm53(pending_provider or provider, model)
+    ):
+        reasoning_effort_wire = str(route_clamp_effort(
+            reasoning_effort, pending_provider or provider, model, getattr(agent, "api_mode", None)) or "")
     info: dict = {
         "model": model,
         "provider": pending_provider or provider,

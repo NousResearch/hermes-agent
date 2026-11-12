@@ -434,15 +434,17 @@ def _reasoning_fields(agent, policy, model, authority=None, override=None):
 def effort_fields(config, tier, model, provider, base_url, api_mode=None):
     """Session-info ``reasoning_effort`` / ``_wire`` / ``service_tier`` / ``fast`` for one resolved route."""
     from agent.fast_mode import STATIC_TIERS
-    from agent.reasoning_effort import clamp_effort, route_supported_efforts
+    from agent.reasoning_effort import _is_generic_custom_glm53, route_clamp_effort
     from hermes_cli.models import resolve_fast_mode_overrides
     tier = tier or ''
     effort = ''
     if isinstance(config, dict):
         effort = 'none' if config.get('enabled') is False else str(config.get('effort') or '')
     wire = ''
-    if effort and effort != 'none':
-        wire = str(clamp_effort(effort, route_supported_efforts(provider, model, api_mode)) or '')
+    if effort and (effort != 'none' or _is_generic_custom_glm53(provider, model)):
+        # Only a forced-thinking custom GLM-5.3 route sends low for Off.
+        # Other disabled routes may omit reasoning rather than sending low.
+        wire = str(route_clamp_effort(effort, provider, model, api_mode) or '')
     try:
         fast = tier in STATIC_TIERS and resolve_fast_mode_overrides(
             model, provider=provider or None, base_url=base_url or None, tier=tier) is not None

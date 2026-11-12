@@ -63,10 +63,27 @@ class TestSessionInfoReasoningEffort:
         # Verbatim levels report themselves, so clients only annotate a real clamp.
         assert _session_info(_agent({"enabled": True, "effort": "high"}))["reasoning_effort_wire"] == "high"
         assert _session_info(_agent({"enabled": False}))["reasoning_effort_wire"] == ""
+        # A custom GLM-5.3 route cannot disable thinking: report its lightest real wire level.
+        glm53 = _agent({"enabled": False}, provider="custom:mc", model="glm-5.3-flash")
+        assert _session_info(glm53)["reasoning_effort_wire"] == "low"
         # On the Codex app-server ``ultra`` is codex's own harness mode, sent verbatim.
         app_server = _agent({"enabled": True, "effort": "ultra"}, provider="openai-codex",
                             model="gpt-5.6-sol", api_mode="codex_app_server")
         assert _session_info(app_server)["reasoning_effort_wire"] == "ultra"
+
+    def test_glm53_xhigh_reports_the_top_wire_effort(self) -> None:
+        """Legacy session info agrees with the custom transport's xhigh→max mapping."""
+        glm53 = _agent({"enabled": True, "effort": "xhigh"}, provider="custom:mc", model="glm-5.3-flash")
+        info = _session_info(glm53)
+        assert (info["reasoning_effort"], info["reasoning_effort_wire"]) == ("xhigh", "max")
+
+    def test_disabled_non_glm_codex_does_not_claim_a_low_wire_effort(self) -> None:
+        """Only GLM-5.3 custom routes translate Off into a sent low effort."""
+        glm = _agent({"enabled": False}, provider="custom:mc", model="glm-5.3-flash")
+        astra = _agent({"enabled": False}, provider="openai-codex",
+                       model="gpt-6-astra", api_mode="codex_responses")
+        assert _session_info(glm)["reasoning_effort_wire"] == "low"
+        assert _session_info(astra)["reasoning_effort_wire"] == ""
 
 
 class TestConfigSetReasoningSessionScope:

@@ -120,6 +120,11 @@ import { useProfileScope } from "@/contexts/useProfileScope";
 import { errorMessage } from "@/lib/api-error";
 import { SGR_MOUSE_RE } from "@/lib/pty-mouse-report";
 
+// Text that can only have come from an input method, not from a physical key.
+// Used to spot IMEs that commit through a bare `insertText` and never fire a
+// composition event (Sogou in Edge), which xterm 6 drops on the floor.
+const NON_ASCII_TEXT_RE = /[^\x00-\x7F]/;
+
 // Per-tab keep-alive identity (`?attach=`): lives in pty-attach-token.ts so a
 // second tab — including a Chrome "Duplicate tab" — gets its own PTY instead of
 // taking over this one. See #115304.
@@ -792,6 +797,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     // xterm occasionally drops committed dead-key/IME text instead of emitting
     // onData. The compositionend event supplies the authoritative text.
     let sendComposedText: (data: string) => void = () => undefined;
+    // Bare-insertText IME commits (Sogou in Edge) bypass xterm entirely; this
+    // is the same forwarder, bound once the PTY writer exists.
+    let forwardComposedText: (data: string) => void = () => undefined;
     const compositionForwarder = createPtyCompositionForwarder((data) => {
       sendComposedText(data);
     });
@@ -843,16 +851,50 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           mobileReplacementInputUntilRef.current = Date.now() + MOBILE_REPLACEMENT_WINDOW_MS;
         }
       };
+      // A real composition (Chrome/Edge pinyin, macOS IME) already delivers its
+      // text through xterm. Its compositionend can trail the commit's
+      // beforeinput, so suppress the fallback for this short window instead of
+      // double-sending the word.
+      const COMPOSITION_GRACE_MS = 300;
+      let lastCompositionEndAt = 0;
+      const withinCompositionGrace = () =>
+        Date.now() - lastCompositionEndAt <= COMPOSITION_GRACE_MS;
       const markCompositionEnd = (ev: CompositionEvent) => {
         mobileReplacementInputUntilRef.current = Date.now() + MOBILE_REPLACEMENT_WINDOW_MS;
+        lastCompositionEndAt = Date.now();
         compositionForwarder.onCompositionEnd(ev.data);
+      };
+      // Some desktop IMEs on Chromium (Sogou in Edge, several pinyin engines)
+      // commit CJK text as a bare `beforeinput {inputType:"insertText"}` with
+      // NO compositionstart/compositionend and NO keydown at all. xterm 6
+      // swallows that path whenever `_keyPressHandled` was left set by the
+      // previous ASCII keystroke, so the text reaches the hidden textarea and
+      // then vanishes before onData ever fires. Forward the commit ourselves
+      // and cancel the event so xterm cannot send it a second time.
+      const markImeCommit = (ev: Event) => {
+        const input = ev as InputEvent;
+        if (input.inputType !== "insertText" || !input.data) {
+          return;
+        }
+        // Never re-send a commit that a real composition already delivered.
+        if (withinCompositionGrace()) {
+          return;
+        }
+        if (!NON_ASCII_TEXT_RE.test(input.data)) {
+          return;
+        }
+        input.preventDefault();
+        input.stopPropagation();
+        forwardComposedText(input.data);
       };
 
       textarea.addEventListener("beforeinput", markReplacementInput, true);
       textarea.addEventListener("compositionend", markCompositionEnd, true);
+      textarea.addEventListener("beforeinput", markImeCommit, true);
       mobileInputCleanup = () => {
         textarea.removeEventListener("beforeinput", markReplacementInput, true);
         textarea.removeEventListener("compositionend", markCompositionEnd, true);
+        textarea.removeEventListener("beforeinput", markImeCommit, true);
       };
     }
 
@@ -1515,6 +1557,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // must not consume the mobile replacement window intended for xterm's
       // normal onData path.
       sendComposedText = (data) => forwardPtyData(data, false);
+      forwardComposedText = (data) => forwardPtyData(data, false);
       onDataDisposable = term.onData((data) => {
         if (!SGR_MOUSE_RE.test(data)) {
           compositionForwarder.noteTerminalData(data);

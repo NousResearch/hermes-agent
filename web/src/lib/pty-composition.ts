@@ -15,7 +15,9 @@
 // How long committed text stays comparable across the two input channels.
 // IME re-fires land within a few milliseconds; a human repeating the same
 // commit takes far longer, so the window will not swallow real retypes.
-const ECHO_WINDOW_MS = 80;
+// Desktop CJK commits trail onData by tens to a couple hundred ms, so the
+// window is wide enough to recognize them as the same commit.
+const ECHO_WINDOW_MS = 300;
 
 // Cap on retained plain terminal input; only recent text is compared, and
 // this keeps a long typing burst from growing the record without bound.
@@ -57,6 +59,16 @@ export function createPtyCompositionForwarder(send: (data: string) => void) {
   return {
     onCompositionEnd(data: string | null) {
       if (!data) return;
+      // Desktop CJK IMEs (Chinese pinyin, Japanese, Korean) commit the same
+      // way but their compositionend routinely trails xterm's onData by more
+      // than ECHO_WINDOW_MS, so the endsWith check below misses it and the
+      // fallback re-sends (or, when it lands inside the window, cancels) text
+      // xterm already delivered — the "can't type Chinese" bug. A committed
+      // composition whose text exactly equals what onData just delivered is
+      // already in the PTY: return instead of re-sending.
+      if (withinEchoWindow(lastTerminalData) && lastTerminalData.text === data) {
+        return;
+      }
       // A compositionend trailing terminal data that already carried the
       // commit is a late duplicate, not a new commit — re-sending it
       // through the fallback duplicates the word in the PTY.

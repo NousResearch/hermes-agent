@@ -1,18 +1,18 @@
 name: hermes-market
 repo: https://github.com/snuff12/hermes-market
-sha: 2a8588bba7df0b3482e52e17692be1a92a2abd0e
+sha: 3def9a2c282330a080d6e43f221daa2ca5d9988f
 description: Discover skill APIs across sellers, publish tested services, and buy results with human-approved x402 payments.
 maintainer: snuff12
 tier: community
 category: tools
 requires_hermes: ">=0.22.7"
 version: "0.1.0"
-docs_url: https://github.com/snuff12/hermes-market-server/blob/bf4e0a45eac9dc645eb472ebbac36daa5403fd84/docs/public-hosting.md
+docs_url: https://github.com/snuff12/hermes-market-server/blob/ac916e764b13718e68cacf7588748cc841d83ed7/docs/public-hosting.md
 screenshots:
-  - https://raw.githubusercontent.com/snuff12/hermes-market/2a8588bba7df0b3482e52e17692be1a92a2abd0e/docs/screenshots/directory.png
-  - https://raw.githubusercontent.com/snuff12/hermes-market/2a8588bba7df0b3482e52e17692be1a92a2abd0e/docs/screenshots/analytics.png
-  - https://raw.githubusercontent.com/snuff12/hermes-market/2a8588bba7df0b3482e52e17692be1a92a2abd0e/docs/screenshots/purchases.png
-  - https://raw.githubusercontent.com/snuff12/hermes-market/2a8588bba7df0b3482e52e17692be1a92a2abd0e/docs/screenshots/native-tools.png
+  - https://raw.githubusercontent.com/snuff12/hermes-market/3def9a2c282330a080d6e43f221daa2ca5d9988f/docs/screenshots/directory.png
+  - https://raw.githubusercontent.com/snuff12/hermes-market/3def9a2c282330a080d6e43f221daa2ca5d9988f/docs/screenshots/analytics.png
+  - https://raw.githubusercontent.com/snuff12/hermes-market/3def9a2c282330a080d6e43f221daa2ca5d9988f/docs/screenshots/purchases.png
+  - https://raw.githubusercontent.com/snuff12/hermes-market/3def9a2c282330a080d6e43f221daa2ca5d9988f/docs/screenshots/native-tools.png
 readme: true
 platforms: [linux, macos]
 title: Hermes Market
@@ -20,7 +20,7 @@ known_issues:
   - Seller execution and the local browser approval gateway are separately operated services.
   - The public demo uses a fixed Cloudflare Tunnel and depends on its host computer staying online.
   - Supports local simulation and Base Sepolia test USDC only; mainnet is disabled.
-  - The Desktop SDK page opens public Browse and local owner and purchase workspaces in the browser.
+  - The Desktop SDK page opens the optional public demo and local owner and purchase workspaces only on user selection.
 capabilities:
   provides_tools:
     - service_search

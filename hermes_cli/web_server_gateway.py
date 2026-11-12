@@ -13,7 +13,7 @@ import time
 import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from hermes_cli._subprocess_compat import windows_detach_flags
+from hermes_cli._subprocess_compat import windows_detach_flags, windows_detach_flags_without_breakaway
 from hermes_cli.config import get_hermes_home
 
 # Same logger the code used before extraction (record parity).
@@ -314,6 +314,9 @@ _ACTION_COMMANDS: dict[str, tuple[str, ...]] = {}
 _ACTION_IDS: dict[str, str] = {}
 # ``name`` → synthetic result for actions handled without a subprocess (e.g. unsupported Docker updates).
 _ACTION_RESULTS: dict[str, dict[str, Any]] = {}
+# ``name`` → (pid, byte offset of that child's section in its log): a later spawn that fails after
+# writing its own header must not lend its text to the child that is still on record.
+_ACTION_LOG_STARTS: dict[str, tuple[int, int]] = {}
 
 
 def _terminate_desktop_managed_gateway() -> None:
@@ -479,6 +482,7 @@ def _spawn_hermes_action(
     from hermes_cli.web_server import PROJECT_ROOT
     _ACTION_LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_file = open(_ACTION_LOG_DIR / _ACTION_LOG_FILES[name], "ab", buffering=0)
+    section_start = os.fstat(log_file.fileno()).st_size
     # The header carries the action id durably: the update's completion marker lands in the ROOT
     # update.log every profile shares, and only this id ties one to the action THIS log started.
     action_id = (env_overrides or {}).get("HERMES_ACTION_ID")
@@ -516,15 +520,42 @@ def _spawn_hermes_action(
     # Named-profile actions get a scrubbed, pinned environment so the child cannot inherit the
     # dashboard profile's credentials; see _profile_action_environment (also drops _HERMES_GATEWAY).
     action_env = _profile_action_environment(subcommand, env_overrides)
-    detach = {"creationflags": windows_detach_flags()} if sys.platform == "win32" else {"start_new_session": True}
-    proc = subprocess.Popen(
-        cmd, cwd=str(PROJECT_ROOT), stdin=subprocess.DEVNULL, stdout=log_file, stderr=subprocess.STDOUT,
-        env=action_env, **detach,
-    )
+
+    def _popen(**detach: Any) -> subprocess.Popen:
+        return subprocess.Popen(
+            cmd, cwd=str(PROJECT_ROOT), stdin=subprocess.DEVNULL, stdout=log_file, stderr=subprocess.STDOUT,
+            env=action_env, **detach,
+        )
+
+    try:
+        if sys.platform == "win32":
+            try:
+                proc = _popen(creationflags=windows_detach_flags())
+            except OSError as exc:
+                # CREATE_BREAKAWAY_FROM_JOB is refused ("Access is denied") when the parent's job
+                # object forbids breakaway — an Electron/Tauri-launched dashboard, some Windows
+                # Terminal configs. The flag is best-effort by contract (windows_detach_flags);
+                # retry without it so the action still spawns, and record why for the status route.
+                if getattr(exc, "winerror", None) != 5:
+                    raise
+                log_file.write(
+                    f"{name}: breakaway spawn refused ({exc}); retrying without CREATE_BREAKAWAY_FROM_JOB\n".encode()
+                )
+                proc = _popen(creationflags=windows_detach_flags_without_breakaway())
+        else:
+            # detached-spawn: ok — dashboard gateway start/restart actions, which must outlive the dashboard
+            proc = _popen(start_new_session=True)
+    except OSError as exc:
+        # Without this the action log would hold only the started-header for a spawn that never
+        # happened; close the handle the child would have owned and let the endpoint report it.
+        log_file.write(f"{name}: spawn failed: {exc}\n".encode())
+        log_file.close()
+        raise
     log_file.close()  # child holds its own dup'd fd; keeping ours leaks one per action
     _ACTION_RESULTS.pop(name, None)
     _ACTION_COMMANDS[name] = tuple(subcommand)
     _ACTION_PROCS[name] = proc
+    _ACTION_LOG_STARTS[name] = (proc.pid, section_start)
     if action_id:
         _ACTION_IDS[name] = action_id
     else:
@@ -632,11 +663,29 @@ def multiplexed_profile_refusal(profile: Optional[str], verb: str) -> Optional[s
             f"`hermes -p {requested} gateway install --force` starts a separate one anyway.")
 
 
+def live_session_refusal(profile: Optional[str], verb: str) -> Optional[str]:
+    """Refusal text when the gateway ``verb`` would act on has live sessions, else None. Asked before
+    spawning: the child refuses the same way, but into an action log the UI never reads."""
+    from hermes_cli.gateway_lifecycle_guards import refusal_lines
+    from hermes_cli.web_server_profiles import _resolve_profile_dir
+    homes = [_resolve_profile_dir(_own_profile_selector(profile) or "default")]
+    from gateway.host_attach import host_gateway
+    owner = host_gateway()
+    if owner is not None:
+        homes.append(Path(owner.home))
+    lines = refusal_lines(verb, homes, flag_hint=f"POST /api/gateway/{verb}?interrupt=true")
+    return "\n".join(lines) or None
+
+
 def _restart_gateway_after(profile: Optional[str], *, what: str, label: str) -> dict[str, Any]:
     """Best-effort gateway restart after a config change. The save stays authoritative: a failed
     spawn is reported (``restart_started: False`` + ``restart_error``) so the UI can fall back to
-    its manual restart banner instead of failing the request."""
+    its manual restart banner instead of failing the request. Live sessions refuse it the same way,
+    with ``restart_busy`` set so a UI can say so in its own words."""
     from hermes_cli.web_server import _spawn_gateway_restart
+    refusal = live_session_refusal(profile, "restart")
+    if refusal:
+        return {"restart_started": False, "restart_error": refusal, "restart_busy": True}
     try:
         proc, reused = _spawn_gateway_restart(profile)
     except Exception as exc:
@@ -645,6 +694,50 @@ def _restart_gateway_after(profile: Optional[str], *, what: str, label: str) -> 
     if reused:
         _log.info("%s: reusing in-flight gateway restart (pid %s)", label, proc.pid)
     return {"restart_started": True, "restart_action": "gateway-restart", "restart_pid": proc.pid}
+
+
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+_RESTART_REASON_MAX = 300
+
+
+def _restart_log_last_line(pid: int) -> str:
+    """The last line the ``gateway-restart`` child *pid* wrote to its log, or ``""``: its section
+    runs from the offset ``_spawn_hermes_action`` recorded to the next spawn's header."""
+    start = _ACTION_LOG_STARTS.get("gateway-restart")
+    if start is None or start[0] != pid:
+        return ""
+    log_path = _ACTION_LOG_DIR / _ACTION_LOG_FILES["gateway-restart"]
+    try:
+        with log_path.open("rb") as log:
+            log.seek(start[1])
+            section = log.read(256 * 1024).decode("utf-8", errors="replace")
+    except OSError:
+        return ""
+    header, _, body = section.lstrip("\n").partition("\n")
+    if not header.startswith("=== gateway-restart started"):
+        return ""  # the log was rotated or truncated since
+    body = body.split("\n=== gateway-restart started", 1)[0]
+    lines = [_ANSI_ESCAPE.sub("", line).strip() for line in body.splitlines()]
+    last = next((line for line in reversed(lines) if line), "")
+    return last[:_RESTART_REASON_MAX]
+
+
+def gateway_restart_failure(profile: Optional[str]) -> Optional[dict[str, Any]]:
+    """Why the newest restart of the *profile* gateway failed, or ``None`` while it runs, after it
+    succeeded, or when this process started none. A child that exits nonzero leaves the old
+    gateway serving the old config, so a UI waiting for the new one learns here that none is coming.
+    ``pid`` is the ``restart_pid`` the restart answered, so the UI ignores an older restart."""
+    from hermes_cli import web_server
+    recent = web_server._LAST_GATEWAY_RESTART
+    if recent is None:
+        return None
+    _spawned_at, proc, command = recent
+    if tuple(arg for arg in command if arg != "--interrupt") != tuple(_gateway_subcommand(profile, "restart")):
+        return None
+    exit_code = proc.poll()
+    if not exit_code:
+        return None
+    return {"pid": proc.pid, "exit_code": exit_code, "reason": _restart_log_last_line(proc.pid) or f"exit code {exit_code}"}
 
 
 def _split_text_for_speak_stream(text: str, cap: int) -> list:

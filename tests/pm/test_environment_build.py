@@ -108,6 +108,8 @@ def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
     dist = "construction_root-1.dist-info"
     entries = {
         "construction_root.pth": str(Path.cwd()) + "\\n",
+        # A build-machine pointer of the kind sealing must strip (pm.environment.prune_site_pth).
+        "__editable__.construction_root-1.pth": "# build machine path\\n",
         dist + "/METADATA": "Metadata-Version: 2.1\\nName: construction-root\\nVersion: 1\\nRequires-Dist: base-dep==1.0\\n",
         dist + "/WHEEL": "Wheel-Version: 1.0\\nRoot-Is-Purelib: true\\nTag: py3-none-any\\n",
     }
@@ -155,7 +157,7 @@ def test_public_build_installs_all_extras_at_explicit_destination(installable_pr
     assert executable.parent.parent == tmp_path / "native environment"
     assert not (tmp_path / "wrong-environment").exists()
     assert "root_app" not in sys.modules
-    assert (site / "_virtualenv.pth").exists() is not sealed
+    assert (site / "__editable__.construction_root-1.pth").exists() is not sealed
     assert (site / "construction_root.pth").is_file(), "load-bearing .pth must survive sealing"
     assert (source / "uv.lock").read_bytes() == locked
     assert dict(os.environ) == before
@@ -188,6 +190,29 @@ def test_public_dependency_only_build_needs_no_application_source(installable_pr
     assert result == [*expected, False]
     assert (source / "uv.lock").read_bytes() == locked
     assert not Path(env["HERMES_HOME"]).exists()
+
+
+
+@pytest.mark.platforms("posix")
+def test_a_checkout_venv_built_on_an_external_python_is_not_a_pre_pm_install(installable_project, tmp_path):
+    """`pm.build_env --python <system python> --out .venv`: the env's ``home`` is outside PM's tool
+    store, yet PM built it, so a data root with no recorded selection never carries its extras."""
+    from pm import build_environment
+    from pm.environments import site_packages
+    from pm.extras import pre_pm_baseline
+
+    source, _uv, env = installable_project
+    external = tmp_path / "system-python" / "bin"
+    external.mkdir(parents=True)
+    (external / "python3").symlink_to(Path(sys.executable).resolve())
+    executable = build_environment(explicit=True, source=source, python=external / "python3",
+                                   out=source / ".venv", cache=tmp_path / "cache", env=env, offline=True)
+    venv = executable.parent.parent
+    assert f"home = {external}" in (venv / "pyvenv.cfg").read_text(encoding="utf-8")
+    # Hermes installed into it, as a contributor's checkout `.venv` holds it.
+    (site_packages(venv) / "hermes_agent-0.0.0.dist-info").mkdir()
+
+    assert pre_pm_baseline(source) == []
 
 
 def test_all_extras_build_leaves_out_opt_in_extras(installable_project, tmp_path):
@@ -377,7 +402,8 @@ build_editable = build_wheel
                 cwd=tmp_path, env=env) == "installed from the explicit source"
 
 
-@pytest.mark.parametrize("diagnostic", ["No solution found", "Connection timed out", "Failed to build wheel"])
+@pytest.mark.parametrize("diagnostic", ["No solution found", "Connection timed out", "Failed to build wheel",
+                                        "The build backend returned an error"])
 def test_streaming_bounds_memory_without_losing_failure_class(tmp_path, diagnostic):
     import tracemalloc
     from pm.environment import PythonEnvironment

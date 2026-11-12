@@ -20,8 +20,10 @@ from collections import namedtuple
 from functools import partial
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
+from hermes_dir_acl import make_user_dir
 
-from tools.computer_use.backend import ActionResult, CaptureResult, ComputerUseBackend, UIElement, image_dimensions_from_bytes
+from agent.image_eviction_policy import image_dimensions_from_bytes
+from tools.computer_use.backend import ActionResult, CaptureResult, ComputerUseBackend, UIElement
 
 logger = logging.getLogger(__name__)
 
@@ -787,7 +789,7 @@ def _secure_dir_policy(cache_dir) -> None:
         if managed:
             cache_dir.mkdir(parents=True, exist_ok=True)
             return
-        cache_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        make_user_dir(cache_dir, parents=True, exist_ok=True, mode=0o700)
         try:
             from hermes_cli.config import _secure_dir
 

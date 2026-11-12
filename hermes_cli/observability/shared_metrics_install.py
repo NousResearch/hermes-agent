@@ -61,6 +61,19 @@ def _project_root() -> Path:
     return get_project_root()
 
 
+def detect_client_install_method() -> str:
+    """``detect_install_method()``, except the Microsoft Store build, which the stamp names and
+    that function's update-gating vocabulary has no word for (it would read ``unknown``).
+    Kept out of ``detect_install_method`` on purpose: update and uninstall branch on its result."""
+    from hermes_cli.config import detect_install_method
+    from hermes_cli.steward import read_install_stamp
+
+    root = _project_root()
+    if read_install_stamp(root).get("updateMechanism") == "microsoft-store":
+        return "microsoft-store"
+    return detect_install_method(root)
+
+
 def release_channel(config: dict[str, Any]) -> str:
     """The channel this install follows: a package's baked channel, a source install's channel
     record, else the checkout's branch (``main`` for main/master, ``dev`` for any other)."""

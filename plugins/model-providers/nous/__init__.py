@@ -20,7 +20,9 @@ class NousProfile(ProviderProfile):
         except Exception:
             return ""
 
-    def build_extra_body(self, *, session_id: str | None = None, **context) -> dict[str, Any]:
+    def build_extra_body(
+        self, *, session_id: str | None = None, data_use: frozenset[str] = frozenset(), **context,
+    ) -> dict[str, Any]:
         body: dict[str, Any] = {"tags": nous_portal_tags(session_id=session_id)}
         # Top-level session_id = sticky routing key, so Anthropic-style cache
         # breakpoints stay warm on one upstream instance. Resolved like the
@@ -29,10 +31,10 @@ class NousProfile(ProviderProfile):
         sticky_key = _cache_scope_from_session_id(get_affinity_scope() or get_conversation_context() or session_id)
         if sticky_key:
             body["session_id"] = sticky_key
-        # Nous Portal inference rejects caller-supplied provider routing prefs
-        # (only/ignore/order/sort/data_collection/zdr/require_parameters) with
-        # HTTP 400 — routing is decided centrally per model. provider_routing
-        # from config.yaml is OpenRouter-only, so it is not forwarded here.
+        # The Portal routes centrally and 400s on caller routing fields, except data_collection and
+        # zdr: sent only when an outgoing connector result requires them (``data_use``), never from config.
+        if data_use:
+            body["provider"] = {"data_collection": "deny", **({"zdr": True} if "zero_retention" in data_use else {})}
         return body
 
     @staticmethod

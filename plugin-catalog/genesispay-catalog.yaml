@@ -1,0 +1,17 @@
+name: genesispay-catalog
+repo: https://github.com/GenesisTechAT/genesispay-agent-skill
+sha: e10a628540aea384b6f12f9cea60c6d5bf76fe8a
+subdir: agent-plugins/genesispay-catalog
+title: GenesisPay Catalog
+description: "Search products, services and shops listed on GenesisPay and read their verified-purchase reviews through the hosted, read-only GenesisPay Catalog MCP server (Streamable HTTP at https://catalog.genesispay.finance/mcp/catalog, no sign-in, no key), with a catalog skill bundled. Portable Agent Plugins v1 package (mcp.json + skills/), no Python or executables. Disclosure — network calls to catalog.genesispay.finance, operated by GenesisPay (Genesis Technologies): search terms, filters and ids reach that server; no credentials are stored; all four tools are read-only and none pays, orders or changes anything; the tool set is served by the remote MCP server at runtime and is not covered by the pinned sha."
+maintainer: GenesisTechAT
+category: tools
+docs_url: https://github.com/GenesisTechAT/genesispay-agent-skill/tree/main/agent-plugins/genesispay-catalog#readme
+version: "0.1.0"
+requires_hermes: ">=0.21.6"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

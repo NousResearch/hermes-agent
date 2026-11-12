@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
-from plugins.web._common import BaseWebSearchProvider, keyless_extract, keyless_search, search_fail, search_ok, setup_schema
+from plugins.web._common import BaseWebSearchProvider, keyless_extract, keyless_search, search_fail, search_ok, setup_schema, with_origin_status
 from tools import managed_tool_gateway as _gateway
 from tools import tool_backend_helpers as _backend_helpers
 from tools.url_safety import is_safe_url
@@ -263,6 +263,14 @@ def _extract_scrape_payload(scrape_result: Any) -> dict[str, Any]:
     return plain["data"] if isinstance(plain.get("data"), dict) else plain
 
 
+def _with_scrape_status(entry: dict[str, Any], metadata: Any) -> dict[str, Any]:
+    """Flag a scrape whose target answered >= 400. The REST API reports ``statusCode``; the v4 SDK's
+    ``model_dump`` (direct key and Tool Gateway) reports ``status_code``."""
+    if not isinstance(metadata, dict):
+        return entry
+    return with_origin_status(entry, metadata.get("statusCode", metadata.get("status_code")), metadata.get("error"))
+
+
 def _error_entry(url: str, error: str, *, title: str = "", raw: bool = False, blocked: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     """Per-URL extract failure. ``raw`` adds ``raw_content`` (post-scrape failures carry
     it, pre-scrape ones don't); ``blocked`` adds ``blocked_by_policy``."""
@@ -270,8 +278,14 @@ def _error_entry(url: str, error: str, *, title: str = "", raw: bool = False, bl
     return {"url": url, "title": title, "content": "", **({"raw_content": ""} if raw else {}), "error": error, **policy}
 
 
-_SCRAPE_TIMEOUT_MSG = "Scrape timed out after 60s — page may be too large or unresponsive. Try browser_navigate instead."
+_SCRAPE_TIMEOUT_MSG = "Scrape timed out after 60s — page may be too large or unresponsive. Try browser_exec instead."
 _UNSAFE_REDIRECT_MSG = "Blocked: URL targets a private or internal network address"
+
+
+def _final_url(metadata: dict[str, Any], requested: str) -> str:
+    """The URL Firecrawl actually fetched. ``url`` is the scrape engine's post-redirect URL on every shape
+    (REST, v4 SDK ``model_dump``, Tool Gateway); ``sourceURL`` / ``source_url`` echo the REQUESTED url."""
+    return metadata.get("url") or requested
 
 
 async def _scrape_one(url: str, formats: list[str], format: Optional[str]) -> dict[str, Any]:
@@ -304,7 +318,9 @@ async def _scrape_one(url: str, formats: list[str], format: Optional[str]) -> di
         # SDK may return a typed object for metadata (raw __dict__ here, unlike _to_plain_object).
         if not isinstance(metadata, dict):
             metadata = metadata.model_dump() if hasattr(metadata, "model_dump") else getattr(metadata, "__dict__", {})
-        title, final_url = metadata.get("title", ""), metadata.get("sourceURL", url)
+        # The v4 SDK names it ``source_url``; the extract cache keys a redirected page by ``sourceURL``.
+        metadata.setdefault("sourceURL", metadata.get("source_url") or url)
+        title, final_url = metadata.get("title", ""), _final_url(metadata, url)
         if not is_safe_url(final_url):
             logger.info("Blocked redirected web_extract for unsafe final URL: %s", final_url)
             return _error_entry(final_url, _UNSAFE_REDIRECT_MSG, title=title, raw=True)
@@ -313,7 +329,8 @@ async def _scrape_one(url: str, formats: list[str], format: Optional[str]) -> di
             return _error_entry(final_url, final_blocked["message"], title=title, raw=True, blocked=final_blocked)
         markdown, html = payload.get("markdown"), payload.get("html")
         content = markdown if format == "markdown" or (format is None and markdown) else html or markdown or ""
-        return {"url": final_url, "title": title, "content": content, "raw_content": content, "metadata": metadata}
+        entry = {"url": final_url, "title": title, "content": content, "raw_content": content, "metadata": metadata}
+        return _with_scrape_status(entry, metadata)
     except Exception as scrape_err:
         logger.debug("Firecrawl scrape failed for %s: %s", url, scrape_err)
         return _error_entry(url, str(scrape_err), raw=True)

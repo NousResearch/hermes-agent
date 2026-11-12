@@ -1,11 +1,15 @@
+import { observeCanonicalAdmissions } from '@/api/canonical-protocol'
 import { Codecs, persistentAtom } from '@/lib/persisted'
+import { isMessagingSource } from '@/lib/session-source'
 import { stableArray } from '@/lib/stable-array'
 import { readKey } from '@/lib/storage'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import type { SessionInfo } from '@/types/hermes'
 
+import { $projectTree } from './project-tree'
 import {
   $cronSessions,
+  $lastReadAtBySessionId,
   $messagingSessions,
   $selectedStoredSessionId,
   $sessions,
@@ -205,22 +209,71 @@ function setMarkerBucket(profile: string, ids: readonly string[]): void {
   $unreadFinishedMarkers.set(next)
 }
 
-/** UNREAD WRITER — the live busy→idle edge (session-states.ts) and any surface
- *  that learns out-of-band that a session produced something the user hasn't
- *  seen. Flags the transient atom (immediate paint) AND persists the marker so
- *  the dot survives a restart. The marker lands in the row's own profile; with
- *  no loaded row it lands in `profileHint`'s, falling back to the active
- *  gateway's — the only place a live edge can come from. */
-export function markSessionUnreadFinished(storedSessionId: string, profileHint?: null | string): void {
-  const current = $unreadFinishedSessionIds.get()
+/** Admission ids of turns this Desktop submitted, oldest first, until their
+ *  stamped completion consumes them. Per turn, never per session; bounded so ids
+ *  of turns that never complete here cannot accumulate. */
+const desktopAdmissions = new Set<string>()
+const DESKTOP_ADMISSIONS_CAP = 256
 
-  if (!current.includes(storedSessionId)) {
-    $unreadFinishedSessionIds.set([...current, storedSessionId])
+/** Desktop's own submit was admitted as `admissionId`: that turn's completion is the user's. */
+export function noteDesktopAdmission(admissionId: string | undefined): void {
+  if (!admissionId) {
+    return
   }
 
-  const row = resolveLoadedRow(storedSessionId)
-  const profile = row ? profileKeyForRow(row) : unlistedProfile(profileHint)
-  const durableId = row ? sessionPinId(row) : storedSessionId
+  desktopAdmissions.add(admissionId)
+  trimOldest(desktopAdmissions)
+}
+
+/** A messaging turn Desktop submitted has completed (`admissionId`, the owner's
+ *  stamp on its `message.complete`): mark it unread unless it is on screen. The
+ *  busy-to-idle edge never lights messaging sessions; this stamped completion is
+ *  the one place their unread is decided, so no settle path can misattribute it. */
+export function lightDesktopMessagingCompletion(
+  storedSessionId: string,
+  admissionId: string | undefined,
+  focused: boolean,
+  profile?: string,
+  completedAt = Date.now()
+) {
+  if (!admissionId) {
+    return
+  }
+
+  if (!desktopAdmissions.delete(admissionId)) {
+    // Its receipt may still be in flight: keep the completion until the admission is noted.
+    earlyCompletions.set(admissionId, { storedSessionId, focused, profile, completedAt })
+    trimOldest(earlyCompletions)
+
+    return
+  }
+
+  // A held completion the user has since read (opened, even if left again) is already seen.
+  if (($lastReadAtBySessionId.get()[storedSessionId] ?? -1) >= completedAt) {
+    return
+  }
+
+  // The delivering socket's profile, when it names one, picks the row: another profile's same-id
+  // session must not decide this completion. The row's own id is marked, so a compressed
+  // conversation's listed segment paints at once.
+  const row = resolveOwnedRow(storedSessionId, profile)
+
+  // Written for the resolved row directly: a bare id would be re-resolved, and another profile's
+  // same-id row can win that tie-break.
+  if (row && !focused && isMessagingSource(row.source)) {
+    writeUnread(row.id, profileKeyForRow(row), sessionPinId(row))
+  }
+}
+
+/** The one unread write: the transient dot for `transientId`, plus `durableId`'s marker in
+ *  `profile`'s bucket. */
+function writeUnread(transientId: string, profile: string, durableId: string) {
+  const current = $unreadFinishedSessionIds.get()
+
+  if (!current.includes(transientId)) {
+    $unreadFinishedSessionIds.set([...current, transientId])
+  }
+
   const bucket = $unreadFinishedMarkers.get()[profile] ?? []
 
   if (bucket.includes(durableId)) {
@@ -230,6 +283,108 @@ export function markSessionUnreadFinished(storedSessionId: string, profileHint?:
   const next = [...bucket, durableId]
 
   setMarkerBucket(profile, next.length > MARKERS_CAP ? next.slice(next.length - MARKERS_CAP) : next)
+}
+
+/** Stamped completions that arrived before their admission was noted, keyed by admission. Every
+ *  completion lands here first; a turn this Desktop never sent (a chat or CLI turn) never gets its
+ *  admission noted, so its entry is expected to stay unmatched until the cap evicts it. */
+const earlyCompletions = new Map<
+  string,
+  { storedSessionId: string; focused: boolean; profile?: string; completedAt: number }
+>()
+
+function trimOldest(entries: Set<string> | Map<string, unknown>) {
+  for (const oldest of entries.keys()) {
+    if (entries.size <= DESKTOP_ADMISSIONS_CAP) {
+      break
+    }
+
+    entries.delete(oldest)
+  }
+}
+
+// A turn will run for a queued or started admission; a deduplicated or lost one starts none.
+observeCanonicalAdmissions((admissionId, status) => {
+  if (status !== 'queued' && status !== 'started') {
+    return
+  }
+
+  noteDesktopAdmission(admissionId)
+  const early = earlyCompletions.get(admissionId)
+
+  if (early) {
+    earlyCompletions.delete(admissionId)
+    lightDesktopMessagingCompletion(early.storedSessionId, admissionId, early.focused, early.profile, early.completedAt)
+  }
+})
+
+/** The row of a known owner profile; with no owner, the bare-id tie-break. */
+function resolveOwnedRow(storedSessionId: string, profile?: string): SessionInfo | undefined {
+  return profile
+    ? rowsFor([$sessions.get(), $cronSessions.get(), $messagingSessions.get()]).find(
+        r => sessionMatchesStoredId(r, storedSessionId) && profileKeyForRow(r) === normalizeProfileKey(profile)
+      )
+    : resolveLoadedRow(storedSessionId)
+}
+
+/** A project-tree row for *storedSessionId* in *profile*'s bucket, else the live gateway's (as the
+ *  live-source lookup): the tree mixes profiles, and an unhinted completion comes from the live gateway. */
+function projectTreeRow(storedSessionId: string, profile?: string): SessionInfo | undefined {
+  const owner = normalizeProfileKey(profile ?? $activeGatewayProfile.get())
+
+  return $projectTree
+    .get()
+    .flatMap(project => [
+      ...(project.previewSessions ?? []),
+      ...project.repos.flatMap(repo => repo.groups.flatMap(group => group.sessions))
+    ])
+    .find(row => sessionMatchesStoredId(row, storedSessionId) && profileKeyForRow(row) === owner)
+}
+
+/** Sources the live poll reported, by profile and stored id: a messaging turn can settle before its row
+ *  loads, and another profile's same-id session is a different session. */
+const liveSources = new Map<string, string>()
+
+const liveSourceKey = (profile: null | string | undefined, storedSessionId: string) =>
+  `${normalizeProfileKey(profile)}\n${storedSessionId}`
+
+/** `profile`'s `session.active_list` named `storedSessionId`'s source. */
+export function noteLiveSessionSource(
+  storedSessionId: string,
+  source: null | string | undefined,
+  profile: null | string | undefined
+) {
+  if (source) {
+    liveSources.set(liveSourceKey(profile, storedSessionId), source)
+    trimOldest(liveSources)
+  }
+}
+
+/** A messaging conversation delivers its completion to its own platform; a
+ *  Desktop observer is not an unread recipient of it at the busy-to-idle edge. Looks in every loaded
+ *  slice, the project tree included: it lists messaging rows and is the only loaded copy of one older
+ *  than the messaging page. */
+export function isMessagingCompletion(storedSessionId: string, profile?: string): boolean {
+  const row = resolveOwnedRow(storedSessionId, profile) ?? projectTreeRow(storedSessionId, profile)
+  const polled = liveSources.get(liveSourceKey(profile ?? $activeGatewayProfile.get(), storedSessionId))
+
+  return isMessagingSource(row ? row.source : polled)
+}
+
+/** UNREAD WRITER — the live busy→idle edge (session-states.ts) and any surface
+ *  that learns out-of-band that a session produced something the user hasn't
+ *  seen. Flags the transient atom (immediate paint) AND persists the marker so
+ *  the dot survives a restart. The marker lands in the row's own profile; with
+ *  no loaded row it lands in `profileHint`'s, falling back to the active
+ *  gateway's — the only place a live edge can come from. */
+export function markSessionUnreadFinished(storedSessionId: string, profileHint?: null | string): void {
+  const row = resolveLoadedRow(storedSessionId)
+
+  writeUnread(
+    storedSessionId,
+    row ? profileKeyForRow(row) : unlistedProfile(profileHint),
+    row ? sessionPinId(row) : storedSessionId
+  )
 }
 
 /** ACK — the user opened (or is looking at) this session: watermark := its

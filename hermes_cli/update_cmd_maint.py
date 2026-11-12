@@ -8,7 +8,6 @@ test patches on ``update_cmd`` stay effective).
 import logging
 from contextlib import suppress
 import os
-import shutil
 import subprocess
 import sys
 import time as _time
@@ -135,15 +134,14 @@ def _print_fts_optimize_available_notice() -> None:
     if size_gb < 0.5:
         return
     db = None
-    needs_upgrade = False
+    legacy_inline = False
+    drift: list[str] = []
     try:
         db = SessionDB(db_path=db_path, read_only=True)
         # read_only opens skip schema init; probe the stored layout directly.
-        row = db._conn.execute(
-            "SELECT sql FROM sqlite_master "
-            "WHERE type = 'table' AND name = 'messages_fts'"
-        ).fetchone()
-        needs_upgrade = bool(row) and db._db_needs_fts_storage_upgrade(db._conn)
+        from hermes_state_fts import fts_layout_drift
+        drift = fts_layout_drift(db._conn)
+        legacy_inline = db._db_has_legacy_inline_fts(db._conn)
         # Interrupted optimize-storage: v23 table shape but backfill markers / trash
         # tables remain. Re-running resumes it, so offer the command again.
         interrupted = bool(
@@ -155,10 +153,6 @@ def _print_fts_optimize_available_notice() -> None:
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' "
                 "AND name LIKE 'fts\\_v22\\_trash\\_%' ESCAPE '\\' LIMIT 1"
             ).fetchone()
-            or db._conn.execute(
-                "SELECT 1 FROM state_meta WHERE key IN "
-                "('fts_cjk_rebuild_high_water', 'fts_cjk_stale') LIMIT 1"
-            ).fetchone()
         )
     except Exception:
         return
@@ -166,7 +160,7 @@ def _print_fts_optimize_available_notice() -> None:
         if db is not None:
             with suppress(Exception):
                 db.close()
-    if not needs_upgrade and not interrupted:
+    if not drift and not interrupted:
         return  # current layout already present (fresh/optimized)
 
     if interrupted:
@@ -180,22 +174,34 @@ def _print_fts_optimize_available_notice() -> None:
         print("    hermes sessions optimize-storage")
         return
 
-    est_reclaim = size_gb * 0.6
     print()
-    if mode == "require":
-        print("◆ Session database upgrade required")
-        print(
-            f"  Your search index uses the OLD storage layout and should be "
-            f"upgraded. The new layout typically frees ~60% of state.db "
-            f"(≈{est_reclaim:.1f} GB of your current {size_gb:.1f} GB) and is "
-            f"required for continued optimal operation."
-        )
+    if legacy_inline:
+        # The ~60% figure was measured for this transition only (inline copies of every message dropped).
+        est_reclaim = size_gb * 0.6
+        if mode == "require":
+            print("◆ Session database upgrade required")
+            print(
+                f"  Your search index uses the OLD storage layout and should be "
+                f"upgraded. The new layout typically frees ~60% of state.db "
+                f"(≈{est_reclaim:.1f} GB of your current {size_gb:.1f} GB) and is "
+                f"required for continued optimal operation."
+            )
+        else:
+            print("◆ Reclaim ~60% of your session database disk")
+            print(
+                f"  Your search index uses the old storage layout. Upgrading it "
+                f"typically frees ~60% of state.db — about {est_reclaim:.1f} GB "
+                f"of your current {size_gb:.1f} GB."
+            )
     else:
-        print("◆ Reclaim ~60% of your session database disk")
+        if mode == "require":
+            print("◆ Search index rebuild required by your notice policy")
+        else:
+            print("◆ Search index update available")
         print(
-            f"  Your search index uses the old storage layout. Upgrading it "
-            f"typically frees ~60% of state.db — about {est_reclaim:.1f} GB "
-            f"of your current {size_gb:.1f} GB."
+            "  Your search index is on the compact layout from an earlier "
+            "optimization, but a later release changed it. Running the "
+            "command again rebuilds it in the current layout."
         )
     print("  Run when convenient:  hermes sessions optimize-storage")
     print(
@@ -274,7 +280,8 @@ def _refresh_dashboard_after_update(*, already_restarted_units: set[str] | None 
     stopped and could not bring back, so the receipt records them ``failed`` (#109290).
 
     *already_restarted_units*: systemd unit names (no ``.service``) the fleet-restart loop
-    already restarted, so a Serve-only install isn't restarted a second time here.
+    already handled (restarted, declined, or failed; each already reported), so a Serve-only
+    install isn't restarted a second time here and a declined or failed unit isn't retried (#141021).
 
     See #83595.
     """
@@ -395,19 +402,6 @@ def _print_verified_update_completion(message: str) -> bool:
     return False
 
 
-def _clear_stale_sqlite_sidecars(db_path: Path) -> None:
-    """Delete -wal/-shm/-journal next to *db_path*, immediately before overwriting it with a
-    snapshot image.
-
-    Snapshots are checkpointed ``sqlite3.backup()`` images with no WAL; copying replaces only
-    the main file, so a leftover WAL from the OLD database would be replayed over the fresh
-    image on next open (passes integrity_check while serving old contents). Safe because the
-    caller has already declared that database corrupt.
-    """
-    for suffix in ("-wal", "-shm", "-journal"):
-        db_path.with_name(db_path.name + suffix).unlink(missing_ok=True)
-
-
 def _print_update_summary(*, node_failures: list, desktop_build_ok: bool, pre_update_version: str | None) -> bool:
     """Historical updater hook; old soft-build results cannot establish completion."""
     from hermes_cli._old_updater import stop_for_relaunch
@@ -416,37 +410,23 @@ def _print_update_summary(*, node_failures: list, desktop_build_ok: bool, pre_up
 
 
 def _restore_state_db_from_snapshot(state_path: Path, snap_state: Path) -> bool:
-    """Replace *state_path* with the snapshot image; True when the result passes integrity.
+    """Restore through backup's authority reservation and pre-publication epoch floor.
 
-    Stale sidecars are cleared first so the corrupt DB's WAL can't replay over the image.
-    Refuses (False) while another process — or a live connection in THIS process — holds the
-    DB: copying over a live writer's inode desyncs its page cache and its next checkpoint
-    clobbers pages. Holder scan ``None`` proceeds (gateways drained; refusing on unknown would
-    disable auto-restore on non-Linux). Raises OSError if the copy fails.
+    Use the single-database primitive, not whole-profile restore: post-update config
+    and unrelated files must not roll back with a damaged transcript store.
     """
     from hermes_cli.backup import verify_sqlite_integrity
-    from hermes_cli.backup_restore import _foreign_db_holder_pids
-    from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
-    holders = _foreign_db_holder_pids(state_path)
-    if holders:
-        print(
-            f"  ✗ Auto-restore refused: process(es) {holders} still hold "
-            "state.db or its WAL open. Stop them (hermes gateway stop), "
-            "then restore manually with /snapshot restore."
-        )
+    from hermes_cli.backup_restore import _safe_restore_db
+
+    snap_state.stat()  # Preserve the caller's OSError reporting for missing snapshots.
+    if not verify_sqlite_integrity(snap_state, check_header=True, run_pragma=True).get("valid"):
         return False
-    # The foreign-pid scan excludes THIS process; an in-process SessionDB handle is just as
-    # live (it would checkpoint through deleted-inode sidecars). offline_file_access fails
-    # CLOSED on any tracked connection and holds the lock across clear + copy.
-    try:
-        with offline_file_access(state_path, what="restore a snapshot over"):
-            _clear_stale_sqlite_sidecars(state_path)
-            shutil.copy2(snap_state, state_path)
-    except LiveConnectionError as exc:
-        print(
-            f"  ✗ Auto-restore refused: {exc} Close the in-process database "
-            "handles (or restart Hermes) and retry."
-        )
+    if not _safe_restore_db(snap_state, state_path):
+        print("  ✗ Auto-restore refused or failed; state.db was not restored.")
+        print("    Stop the owning runtime and close database handles before retrying.")
+        print("    If the canonical runtime epoch is unreadable, do not restore in place:")
+        print("    use `hermes sessions recover --source <snapshot> --output <separate-path>`")
+        print("    to salvage transcripts into a separate output.")
         return False
     restored = verify_sqlite_integrity(state_path, check_header=True, run_pragma=True)
     return bool(restored.get("valid"))
@@ -480,7 +460,7 @@ def _verify_and_restore_one_state_db(home: Path, *, label: str) -> None:
                 if _restore_state_db_from_snapshot(state_path, snap_state):
                     print(f"  ✓ Auto-restored from snapshot {snap_dir.name} ({label})")
                 else:
-                    print("  ✗ Auto-restore FAILED — restored copy also failed integrity")
+                    print("  ✗ Auto-restore did not complete; see the restore diagnostic above.")
             except OSError as exc:
                 print(f"  ✗ Auto-restore file copy failed: {exc}")
             return
@@ -521,6 +501,14 @@ def _invalidate_live_plugin_catalog_caches() -> None:
         from hermes_cli.backup import _sibling_profile_homes
         for _name, profile_home in _sibling_profile_homes(home):
             invalidate_live_cache_for_home(profile_home)
+
+
+def _report_catalog_plugin_updates() -> None:
+    from hermes_cli.backup import _sibling_profile_homes
+    from hermes_cli.plugins_auto_update import report_catalog_updates_after_hermes_update
+    from hermes_cli.update_cmd import get_hermes_home
+    home = get_hermes_home()
+    report_catalog_updates_after_hermes_update(home, _sibling_profile_homes(home))
 
 
 def _print_bundled_skills_sync_report() -> None:
@@ -816,13 +804,18 @@ def _sweep_bytecode_after_update(branch: str) -> None:
     Never fails the committed update: a failed sweep is a ``bytecode_sweep`` follow-up and the
     fingerprint stays un-stamped, so the launch-time sweep (fingerprint mismatch) retries it.
     """
+    from hermes_cli.main_web_build import _prune_dropped_directories, _recorded_bytecode_fingerprint
     from hermes_cli.update_cmd import _m
     from hermes_cli.update_receipt import record_followup
     # Timestamp-based .pyc validation can accept old bytecode after the source swap.
     try:
-        removed = _m()._clear_bytecode_cache(_m().PROJECT_ROOT)
+        root = _m().PROJECT_ROOT
+        recorded = _recorded_bytecode_fingerprint(root)
+        removed = _m()._clear_bytecode_cache(root)
         if removed:
             print(f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}")
+        if pruned := _prune_dropped_directories(root, recorded):
+            print(f"  ✓ Removed {pruned} director{'y' if pruned == 1 else 'ies'} the new version no longer has")
         _m()._record_bytecode_fingerprint()
     except Exception as exc:  # health: allow BLE001 -- owed to the next launch's fingerprint sweep
         record_followup("bytecode_sweep", str(exc) or type(exc).__name__)
@@ -847,7 +840,7 @@ def _profile_skill_sync_status(r) -> str:
 
 
 def _sync_profiles_after_update() -> None:
-    """Best-effort per-profile syncs: bundled skills, ``.env`` backfill, Honcho profiles."""
+    """Best-effort per-profile syncs: bundled skills, ``.env`` backfill."""
     # All profiles incl. the active one: seed_profile_skills() subprocesses with an explicit
     # HERMES_HOME, so sync_skills()'s module-level HERMES_HOME cache can't skew it.
     with suppress(Exception):
@@ -862,21 +855,14 @@ def _sync_profiles_after_update() -> None:
                 except Exception as pe:
                     print(f"  {p.name}: error ({pe})")
 
-    # Backfill .env for profiles created before .env seeding (copy the default's) so they
-    # keep the credentials they were effectively using.
+    # Seed the placeholder .env into any named profile lacking one (never a copy of the default's).
     with suppress(Exception):
         # See #44792.
         from hermes_cli.profiles import backfill_profile_envs
         backfilled = backfill_profile_envs(quiet=True)
         if backfilled:
             print()
-            print(f"→ Seeded .env for {len(backfilled)} profile(s) (copied from default): {', '.join(backfilled)}")
-
-    with suppress(Exception):
-        from plugins.memory import import_provider_module
-        synced = import_provider_module("honcho", "cli").sync_honcho_profiles_quiet()
-        if synced:
-            print(f"\n-> Honcho: synced {synced} profile(s)")
+            print(f"→ Seeded .env for {len(backfilled)} profile(s) (empty placeholder): {', '.join(backfilled)}")
 
 
 def _refresh_cua_driver_after_update() -> None:
@@ -906,8 +892,8 @@ def _refresh_cua_driver_after_update() -> None:
 
 
 def _install_default_tools_after_update() -> None:
-    """Give the install its optional default tools: the PM defaults (agent-browser +
-    Chromium, cua-driver). The Browser Use CLI engine (browser-harness) is a venv dependency.
+    """Give the install its optional default tools: the PM defaults (Chromium,
+    cua-driver). browser_exec's engine (browser-harness) is a venv dependency.
 
     Runs at the end of both the installers (via the source completion) and
     ``hermes update``: a source update re-syncs only the venv, so a tool that became
@@ -1004,6 +990,8 @@ def _run_post_update_maintenance(
                 followups.append((name, reason))
 
     from hermes_cli.update_cmd import _check_and_apply_config_migration, _m
+    from hermes_cli.update_windows_acl import repair_windows_home_acl
+    owed_step("windows_home_acl", repair_windows_home_acl)
     # macOS TCC: Desktop bundles are re-signed each update, so old grants can go stale
     # (toggle ON, yet macOS re-prompts with no Allow button). Tell users how to re-grant.
     # With the post-#73681 identifier-pinned DR, new grants survive rebuilds — but a grant made to a pre-fix
@@ -1042,6 +1030,10 @@ def _run_post_update_maintenance(
     except (OSError, subprocess.SubprocessError) as exc:
         detail = (getattr(exc, "stderr", None) or str(exc)).strip().splitlines()[-1:] or [type(exc).__name__]
         print(f"  ⚠ Could not refresh release history ({detail[0]}); the version label may be stale or unknown until the next update")
+    # Keeps every later version lookup off a full history walk; detached, so it never delays this run.
+    with _best_effort('Commit-graph refresh failed to start: %s'):
+        from hermes_cli.git_commit_graph import spawn_commit_graph_refresh
+        spawn_commit_graph_refresh(Path(_m().PROJECT_ROOT))
 
     # Seed the model-catalog cache from the checkout instead of a bot-gated, flaky fetch.
     with _best_effort('Model catalog seed during update failed: %s'):
@@ -1054,6 +1046,10 @@ def _run_post_update_maintenance(
     # rest of the cache TTL (#119340).
     with _best_effort('Live plugin catalog cache invalidation failed: %s'):
         _invalidate_live_plugin_catalog_caches()
+    # New catalog pins are not applied by this update: name them per profile and re-arm each
+    # profile's plugin check so an opted-in (plugins.auto_apply) gateway applies them next tick.
+    with _best_effort('Plugin catalog update notice failed: %s'):
+        _report_catalog_plugin_updates()
 
     with _best_effort('Skills sync during update failed: %s'):
         print()

@@ -84,7 +84,8 @@ def _pairing_store(profile: Optional[str] = None):
 @router.get("/api/pairing")
 async def list_pairing(profile: Optional[str] = None):
     store = _pairing_store(profile)
-    return {"pending": store.list_pending(), "approved": store.list_approved()}
+    # Pairing edits wait on a cross-process lock (gateway, CLI): never on the server's event loop.
+    return {"pending": await asyncio.to_thread(store.list_pending), "approved": store.list_approved()}
 
 
 @router.post("/api/pairing/approve")
@@ -99,7 +100,10 @@ async def approve_pairing(body: PairingApprove):
         raise HTTPException(status_code=400, detail="platform and request_id or code are required")
 
     by_request_id = bool(body.request_id) or store.looks_like_request_id(target)
-    result = store.approve_request(platform, target) if by_request_id else store.approve_code(platform, target.upper())
+    if by_request_id:
+        result = await asyncio.to_thread(store.approve_request, platform, target)
+    else:
+        result = await asyncio.to_thread(store.approve_code, platform, target.upper())
     if result:
         return {"ok": True, "user": result}
     # Lockout only gates the code path — a stale request id must not surface
@@ -119,14 +123,14 @@ async def revoke_pairing(body: PairingRevoke):
     platform = (body.platform or "").lower().strip()
     if not platform or not body.user_id:
         raise HTTPException(status_code=400, detail="platform and user_id are required")
-    if store.revoke(platform, body.user_id):
+    if await asyncio.to_thread(store.revoke, platform, body.user_id):
         return {"ok": True}
     raise HTTPException(status_code=404, detail=f"User {body.user_id} not found in approved list for {platform}.")
 
 
 @router.post("/api/pairing/clear-pending")
 async def clear_pending_pairing(profile: Optional[str] = None):
-    return {"ok": True, "cleared": _pairing_store(profile).clear_pending()}
+    return {"ok": True, "cleared": await asyncio.to_thread(_pairing_store(profile).clear_pending)}
 
 
 # --- Webhooks: same JSON store as the CLI (hermes_cli.webhook); the adapter
@@ -303,22 +307,25 @@ async def start_gateway(profile: Optional[str] = None):
 
 
 @router.post("/api/gateway/stop")
-async def stop_gateway(profile: Optional[str] = None):
-    from hermes_cli.web_server_gateway import multiplexed_profile_refusal
+async def stop_gateway(profile: Optional[str] = None, interrupt: bool = False):
+    from hermes_cli.web_server_gateway import live_session_refusal, multiplexed_profile_refusal
     # A served profile has no gateway of its own to stop: the child prints "No gateway running for this
     # profile" (exit 0) while the multiplexer keeps serving it and the UI flips to "stopped".
     refusal = await asyncio.to_thread(multiplexed_profile_refusal, profile, "stop")
     if refusal:
         raise HTTPException(status_code=409, detail=refusal)
+    # Live sessions refuse a stop unless the caller interrupts them deliberately (`?interrupt=true`).
+    if not interrupt and (refusal := await asyncio.to_thread(live_session_refusal, profile, "stop")):
+        raise HTTPException(status_code=409, detail=refusal)
     with http_failure("Failed to spawn gateway stop", 500, "Failed to stop gateway"):
-        proc = _spawn_hermes_action(_gateway_subcommand(profile, "stop"), "gateway-stop")
+        proc = _spawn_hermes_action(_gateway_subcommand(profile, "stop") + ["--interrupt"] * interrupt, "gateway-stop")
     return {"ok": True, "pid": proc.pid, "name": "gateway-stop"}
 
 
 # --- Credential pool (auth.json -> credential_pool.<provider>[]): secrets are
 # redacted on read; only the agent sees raw values at session start.
 #
-# load_pool() may hit the network synchronously (Copilot token exchange over raw
+# load_pool() may hit the network synchronously (a provider token exchange over raw
 # urllib, whose timeout does NOT bound DNS resolution) — on a networkless host it
 # once froze the uvicorn loop for 17 minutes. Every pool load below runs off-loop.
 

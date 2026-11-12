@@ -12,7 +12,9 @@ import pytest
 
 from agent.prompt_builder import PLATFORM_HINTS
 from agent.system_prompt import platform_hint
+from gateway.platform_registry import platform_registry
 from gateway.session_context import _VAR_MAP
+from hermes_cli.plugins import discover_plugins
 
 EXTRA = "Always attach the report as a .pdf."
 
@@ -26,6 +28,7 @@ def deliver_to(monkeypatch):
     var = _VAR_MAP["HERMES_CRON_AUTO_DELIVER_PLATFORM"]
     token = var.set("slack")
     monkeypatch.delenv("HERMES_DESKTOP_TERMINAL", raising=False)
+    discover_plugins()  # messaging hints ship on each plugin's PlatformEntry
     yield
     var.reset(token)
 
@@ -33,13 +36,13 @@ def deliver_to(monkeypatch):
 def test_cron_agent_gets_delivery_channel_hint_with_its_override(deliver_to):
     hint = platform_hint(_agent("cron", {"slack": {"append": EXTRA}}))
     assert hint.startswith(PLATFORM_HINTS["cron"])
-    assert PLATFORM_HINTS["slack"] in hint
+    assert platform_registry.get("slack").platform_hint in hint
     assert EXTRA in hint
     # The cron hint's own override channel is untouched by the destination's.
     assert platform_hint(_agent("cron", {"cron": {"replace": "X"}})).startswith("X\n\n")
 
 
 def test_delivery_target_only_applies_to_cron_agents(deliver_to):
-    assert platform_hint(_agent("telegram")) == PLATFORM_HINTS["telegram"]
+    assert platform_hint(_agent("telegram")) == platform_registry.get("telegram").platform_hint
     _VAR_MAP["HERMES_CRON_AUTO_DELIVER_PLATFORM"].set("")
     assert platform_hint(_agent("cron")) == PLATFORM_HINTS["cron"]

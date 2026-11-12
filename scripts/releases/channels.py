@@ -444,7 +444,7 @@ class ChannelPublisher:
         target_raw = self.reader.read_bytes(target["head"]["manifestKey"], target["head"]["sha256"])
         manifest = validate_manifest(decode_json(target_raw), target, self.public_base)
         # Clients pin destinationHead and need their own package in it, so a
-        # stable head that left a target out (macOS Intel is opt-in) cannot
+        # stable head that left a target out (no macOS Intel package since it stopped shipping) cannot
         # receive a preview that shipped that target.
         if record["head"] is not None:
             source_raw = self.reader.read_bytes(record["head"]["manifestKey"], record["head"]["sha256"])

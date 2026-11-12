@@ -23,6 +23,8 @@ def test_manual_deferral_survives_receipt_rotation(monkeypatch, capsys, kind, co
     monkeypatch.setattr(process_identity, "ledger_entries", lambda: [{"pid": 900, "purpose": kind, "create_time": 1000.0}])
     monkeypatch.setattr(fleet_verify, "_print_legacy_units_warning", lambda: None)
     monkeypatch.setattr("hermes_cli.update_cmd._finish_dashboard_update_cleanup", lambda *a, **k: None)
+    # The live post-update dashboard pass restarts a managed hermes-dashboard unit.
+    monkeypatch.setattr("hermes_cli.update_cmd_maint._refresh_dashboard_after_update", lambda **k: set())
     monkeypatch.setattr("hermes_cli.gateway_migrate.maybe_auto_migrate_after_update", lambda: None)
     monkeypatch.setattr(update_receipt, "collect_fleet_versions", lambda **k: [])
     restart = fleet._GatewayRestartOutcome(False, [], [], [], [], [], [], set())

@@ -8,7 +8,8 @@ into the WebSocket as binary frames with backpressure both ways, and runs the cl
 only from the viewer that currently holds the lease. noVNC's ``viewOnly`` is UX; this is the gate.
 
 A lease change closes the evicted viewer's socket with 4000 ``control-taken`` so its UI drops back to
-Watch mode and reconnects.
+Watch mode and reconnects. A viewer a browser tab asked for signs out with that tab: ``hermes webapp
+--sign-out`` closes it with 4401, and its ticket opens nothing afterwards.
 
 Design notes. The ticket rides in the query string on purpose: noVNC's Websock owns the socket and
 cannot negotiate a subprotocol or add a header, and the ticket is single-use and expires in 30 s, so
@@ -22,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -86,7 +88,26 @@ async def display_ws(ws: WebSocket) -> None:
     if info is None:
         await ws.close(code=_CLOSE_BAD_TICKET, reason="display ticket missing, expired or used")
         return
+    if _signed_out(ws, info):
+        await ws.close(code=_CLOSE_BAD_TICKET, reason="Signed out")
+        return
     await _bridge(ws, info)
+
+
+def _signed_out(ws: WebSocket, info: dict) -> bool:
+    """True when the browser tab that asked for this viewer has signed out since (the ticket's
+    browser credential generation is no longer current); otherwise the viewer is tracked with that
+    tab's sockets, so signing out closes it too. A ticket a native client minted carries no browser
+    credential and is left alone."""
+    from hermes_cli.browser_credential import is_current
+    from hermes_cli.web_session_sockets import track
+    admitted = info.get("admitted_with")
+    if admitted is None:
+        return False
+    if not is_current(admitted):
+        return True
+    track(ws, admitted)
+    return False
 
 
 async def _open_rfb(profile_home: Path):
@@ -123,7 +144,6 @@ async def _bridge(ws: WebSocket, info: dict) -> None:
     from hermes_constants import hermes_home_key
     from tools.bot_desktop import lease as _lease
     from tools.bot_desktop.rfb_filter import RfbClientFilter
-    from pathlib import Path
 
     profile_home = str(info["hermes_home"])
     profile_key = hermes_home_key(profile_home)

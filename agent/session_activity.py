@@ -136,6 +136,11 @@ class AwakeIdleMeter:
         """Return *idle_s* minus the sleep observed since the agent's last activity."""
         wall, mono = time.time(), time.monotonic()
         slept_s = max(0.0, (wall - self._wall) - (mono - self._mono))
+        # Activity since the previous sample (it is younger than the sampling interval) makes all
+        # earlier credit predate it. A rarely sampled meter (stale-agent eviction samples only
+        # when a message arrives) would otherwise keep charging old sleep against new idle time.
+        if idle_s < wall - self._wall:
+            self._asleep_s = 0.0
         self._asleep_s += slept_s
         self._wall, self._mono = wall, mono
         # The idle sample may predate sleep observed by these clock reads. Keep that new

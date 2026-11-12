@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 
+import { HandoffResult } from '@/components/free-tier/sign-in-dialog'
 import { ModelPickerDialog } from '@/components/model-picker'
 import { Button } from '@/components/ui/button'
 import { ErrorIcon } from '@/components/ui/error-state'
@@ -16,6 +17,7 @@ import {
   copyExternalCommand,
   type OnboardingContext,
   type OnboardingFlow,
+  type OnboardingSignedIn,
   recheckExternalSignin,
   setOnboardingCode,
   setOnboardingModel,
@@ -272,6 +274,8 @@ function ConfirmingModelPanel({
     <div className="grid place-items-center gap-7 py-6 text-center">
       <DecodedLabel leaving={leaving} text={t.onboarding.connectedProvider(flow.label)} />
 
+      {flow.signedIn ? <SignedInLines leaving={leaving} signedIn={flow.signedIn} /> : null}
+
       <div
         className={cn(
           'grid justify-items-center gap-1.5 transition duration-[360ms] ease-out',
@@ -356,6 +360,27 @@ function ConfirmingModelPanel({
         profile={ctx.profile}
         request={ctx.requestGateway}
       />
+    </div>
+  )
+}
+
+/** Which account the sign-in landed on and what moved: the free-tier result's own lines. */
+function SignedInLines({ leaving, signedIn: { email, handoff } }: { leaving: boolean; signedIn: OnboardingSignedIn }) {
+  const { t } = useI18n()
+
+  return (
+    <div
+      className={cn(
+        'grid justify-items-center gap-1.5 transition duration-[360ms] ease-out',
+        leaving ? 'opacity-0 saturate-0' : 'opacity-100 saturate-100'
+      )}
+    >
+      {email ? (
+        <p className="text-sm text-muted-foreground">
+          {t.freeTier.signedInAsLabel} <span className="font-medium text-foreground">{email}</span>
+        </p>
+      ) : null}
+      {handoff ? <HandoffResult handoff={handoff} /> : null}
     </div>
   )
 }

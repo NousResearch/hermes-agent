@@ -13,6 +13,8 @@ from contextvars import ContextVar, Token
 from pathlib import Path
 from typing import Any
 
+from hermes_cli._startup_fast import project_root_str
+
 logger = logging.getLogger(__name__)
 
 _UNSET: Any = object()
@@ -22,7 +24,7 @@ _SESSION_CWD: ContextVar = ContextVar("HERMES_SESSION_CWD", default=_UNSET)
 # The package/source root (<root>/agent/runtime_cwd.py). A backend launched from or
 # self-spawned into this tree (desktop default) must never let an os.getcwd() fallback
 # inject this repo's contributor AGENTS.md as project context.
-_PACKAGE_ROOT = Path(__file__).resolve().parent.parent
+_PACKAGE_ROOT = Path(project_root_str())
 
 
 def _is_install_tree(p: Path) -> bool:

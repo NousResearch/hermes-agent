@@ -1,5 +1,7 @@
+import { ambientOwnerConnectionId, type ProfileScope } from '@/api/client'
+
 /**
- * Single-flight guard for `session.resume`, keyed by STORED session id.
+ * Single-flight guard for `session.resume`, keyed by backend connection + STORED id.
  *
  * After sleep/wake or a reconnect, many independent surfaces discover the same
  * dead runtime at once — submit recovery, slash/rewind recovery, tile resumes,
@@ -11,31 +13,64 @@
  * per stored id, no matter which hook instance it lives in. All participating
  * callers resolve to a `session.resume`-shaped response (an object carrying
  * `session_id`); joiners receive whatever the winning call returns.
+ *
+ * The key is the CONNECTION, not the profile: a stored id is unique within one
+ * backend's state.db but two registry backends can hold the same id, so their
+ * flights must stay apart. Callers that pass no scope (submit/rewind recovery,
+ * the route resolver) dial the ambient socket, as does a bare-profile owner, so
+ * both fold onto the ambient connection and still coalesce with a scoped
+ * foreground resume of the same runtime under any profile.
  */
 
-const _inFlightResumeByStoredSessionId = new Map<string, Promise<unknown>>()
+function flightConnectionId(scope?: ProfileScope): string {
+  const explicit = scope && typeof scope === 'object' ? (scope.connectionId ?? '').trim() : ''
 
-export function singleFlightSessionResume<T>(storedSessionId: string, run: () => Promise<T>): Promise<T> {
-  const existing = _inFlightResumeByStoredSessionId.get(storedSessionId)
+  return explicit || ambientOwnerConnectionId() || ''
+}
 
-  if (existing) {
-    return existing as Promise<T>
+interface SessionResumeFlight {
+  includesMessages: boolean
+  promise: Promise<unknown>
+}
+
+const _inFlightResumeByStoredSessionId = new Map<string, SessionResumeFlight>()
+
+export function singleFlightSessionResume<T>(
+  storedSessionId: string,
+  run: () => Promise<T>,
+  options?: { requiresMessages?: boolean; scope?: ProfileScope }
+): Promise<T> {
+  const flightKey = JSON.stringify([flightConnectionId(options?.scope), storedSessionId])
+  const existing = _inFlightResumeByStoredSessionId.get(flightKey)
+
+  if (existing && (!options?.requiresMessages || existing.includesMessages)) {
+    return existing.promise as Promise<T>
   }
 
   // Promise.resolve().then(run) tolerates run() being synchronous, returning a
   // bare value, or throwing synchronously (test doubles and legacy callers do
   // all three) — a raw run().finally() would crash on a non-promise return.
-  const flight = Promise.resolve()
+  // A message-bearing caller cannot join an omitted-message flight. Queue one
+  // follow-up behind it instead: this preserves same-session ordering while
+  // still letting all later callers join the stronger queued snapshot.
+  const ready = existing ? existing.promise.then(() => undefined, () => undefined) : Promise.resolve()
+
+  const promise = ready
     .then(run)
     .finally(() => {
-      if (_inFlightResumeByStoredSessionId.get(storedSessionId) === flight) {
-        _inFlightResumeByStoredSessionId.delete(storedSessionId)
+      if (_inFlightResumeByStoredSessionId.get(flightKey) === flight) {
+        _inFlightResumeByStoredSessionId.delete(flightKey)
       }
     })
 
-  _inFlightResumeByStoredSessionId.set(storedSessionId, flight)
+  const flight: SessionResumeFlight = {
+    includesMessages: options?.requiresMessages === true,
+    promise
+  }
 
-  return flight
+  _inFlightResumeByStoredSessionId.set(flightKey, flight)
+
+  return promise
 }
 
 /**

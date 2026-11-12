@@ -6,17 +6,17 @@ and verifies the exact native artifacts from `pm/lock.json`. The action does
 not resolve a version range, install another setup action, or modify the lock.
 
 ```yaml
-- uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+- uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
 - uses: ./.github/actions/setup-pm
   with:
     toolchain: all
     extras: '[]'
     test-environment: 'true'
-- run: python --version && node --version && npm --version
+- run: python --version && node --version && pnpm --version
 ```
 
-`toolchain` defaults to `python` (Python and PM's private installer). `node` installs Node and npm;
-`all` installs both pairs. There are no version overrides. `extras` is a JSON
+`toolchain` defaults to `python` (Python and PM's private installer). `node` installs Node, npm and
+pnpm; `all` installs both sets. There are no version overrides. `extras` is a JSON
 array because GitHub action inputs are strings. Omit it for tools only; `[]`
 installs the core Python dependencies. Set `test-environment: 'true'` to build an
 independent interpreter with the `dev` and `test` dependency groups; any `extras`
@@ -24,8 +24,11 @@ then select runtime features in that interpreter. PM checks `uv.lock`, installs
 the requested dependencies, and validates the environment. Only non-test installs
 publish an application selection. It does not enable plugins.
 
-Subsequent steps get `python`, `python3`, `node`, `npm` and `npx`
+Subsequent steps get `python`, `python3`, `node`, `pnpm`, `npm` and `npx`
 for the selected toolchain on PATH. The pinned npm precedes Node's bundled npm.
+pnpm installs the workspace; npm serves the standalone npm projects (website/ and
+the sidecars). `pnpm_config_store_dir` points pnpm's store into the runner's temp
+dir, on the checkout's drive, so pnpm can hard-link from it on Windows too.
 On Windows, PM selects the host architecture even if the bootstrap interpreter
 runs under x64 emulation. A disposable command environment supplies the missing
 `python3.exe` alias without changing the verified interpreter store.
@@ -48,7 +51,7 @@ The official, SHA-pinned `actions/cache` transports three independent caches:
 | --- | --- | --- |
 | Tools | PM store and installed facts | Native target, toolchain and PM lock hash |
 | Python | PM's actual uv download/build cache | Native target, OS version, Python version, prune policy and dependency-file hash |
-| Node | `npm config get cache` | Runner OS, native architecture and npm dependency-lock hash |
+| Node | pnpm's store (`pnpm_config_store_dir`), or `npm config get cache` | Runner OS, native architecture, package manager and dependency-lock hash |
 
 All restores use the exact primary key, without fallback prefixes, matching
 setup-uv and setup-node's npm behavior. Successful jobs save at teardown;
@@ -61,11 +64,13 @@ Dependency caches never contain `node_modules` or virtual environments.
 Keep an installed-tree cache in the caller if that job needs one.
 
 `cache`, `cache-python` and `cache-node` independently disable the store, uv,
-and npm caches. Each defaults to `true`; language-specific caches run only for
+and node caches. Each defaults to `true`; language-specific caches run only for
 that toolchain. `python-cache-dependency-glob` defaults to `pyproject.toml` and
-`uv.lock`. `node-cache-dependency-path` defaults to `package-lock.json`; use
-`website/package-lock.json` for site jobs. Both accept multiline glob strings.
-An npm cache without a matching lockfile fails, rather than caching an
+`uv.lock`. `node-package-manager` selects whose downloads the node cache holds:
+`pnpm` (default) for the workspace, `npm` for the standalone npm projects.
+`node-cache-dependency-path` defaults to `pnpm-lock.yaml` and `pnpm-workspace.yaml`;
+site jobs use `npm` with `website/package-lock.json`. Both accept multiline glob
+strings. A node cache without a matching lockfile fails, rather than caching an
 unversioned dependency set.
 
 `prune-python-cache: true` registers PM's lock-exact cache-pruning operation at teardown,
@@ -79,7 +84,7 @@ bundle ship gate enforces) and keeps downloaded wheels the lock still needs —
 `uv cache prune --ci` would discard them, leaving a snapshot that warms almost
 nothing.
 
-Outputs include `python-version`, `uv-version`, `node-version`, `npm-version`,
+Outputs include `python-version`, `uv-version`, `node-version`, `npm-version`, `pnpm-version`,
 `python-path`, `venv`, `target`, and the three `*-cache-hit` flags.
 Use the version outputs in installed-tree cache keys instead of repeating pins.
 

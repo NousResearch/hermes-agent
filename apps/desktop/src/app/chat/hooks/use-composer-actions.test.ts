@@ -13,6 +13,7 @@ import {
   HERMES_PATHS_MIME,
   partitionDroppedFiles,
   resolveImageAttachmentPreview,
+  stageDroppedFilePath,
   useComposerActions
 } from './use-composer-actions'
 
@@ -266,6 +267,18 @@ describe('extractDroppedFiles', () => {
     expect(result).toHaveLength(1)
     expect(result[0]?.file).toBeInstanceOf(File)
     expect(result[0]?.url).toBeUndefined()
+  })
+
+  // The browser Webapp has no host path for a dropped folder: report it, never drop it silently.
+  it('keeps a path-less dropped folder on the attach pipeline, where it is reported', async () => {
+    const transfer = stubTransfer([{ path: 'my-repo', isDirectory: true }])
+    stubBridge(transfer)
+
+    const result = extractDroppedFiles(transfer)
+
+    expect(result).toEqual([{ file: expect.any(File), isDirectory: true, path: '' }])
+    expect(partitionDroppedFiles(result).osDrops).toHaveLength(1)
+    await expect(stageDroppedFilePath(result[0]!)).rejects.toThrow("Folders can't be attached by dropping them")
   })
 
   it('does not duplicate a folder that appears in both items and files', () => {

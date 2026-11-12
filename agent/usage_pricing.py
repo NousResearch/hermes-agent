@@ -163,6 +163,7 @@ _GOOGLE_URL = "https://ai.google.dev/pricing"
 _OPUS = ("5.00", "25.00", "0.50", "6.25")
 _SONNET = ("3.00", "15.00", "0.30", "3.75")
 _OPUS_5_5 = ("4.00", "20.00", "0.20", "5.00")
+_FABLE_5_2 = ("8.00", "40.00", "0.20", "10.00")
 _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
     # OpenAI GPT-5.6 (Sol/Terra/Luna). Cache write = 1.25x input, cache read =
     # 0.10x input. "-pro" high-effort modes bill at the same per-token rates
@@ -196,6 +197,10 @@ _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
         "claude-opus-5": _OPUS,
         "claude-opus-5-5": _OPUS_5_5,
     }),
+    # Fable 5.2 and Mythos 5.2 share rates; cache hits are 0.025x input.
+    ("anthropic", _ANTHROPIC_URL, "anthropic-pricing-2026-11", {
+        ("claude-fable-5-2", "claude-mythos-5-2"): _FABLE_5_2,
+    }),
     ("openai", "https://openai.com/api/pricing/", "openai-pricing-2026-03-16", {
         "gpt-4o": ("2.50", "10.00", "1.25"), "gpt-4o-mini": ("0.15", "0.60", "0.075"),
         "gpt-4.1": ("2.00", "8.00", "0.50"), "gpt-4.1-mini": ("0.40", "1.60", "0.10"),
@@ -207,6 +212,13 @@ _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
     ("deepseek", "https://api-docs.deepseek.com/quick_start/pricing", "deepseek-pricing-2026-09-10", {
         ("deepseek-flash", "deepseek-v4-flash", "deepseek-chat", "deepseek-reasoner"): ("0.15", "0.60", "0.003"),
         "deepseek-v4-pro": ("0.66", "1.98", "0.022"),
+    }),
+    # Gemini 4 introductory rates through 2026-11-30; from 2026-12-01 they double ($4 / $20 / $0.20).
+    ("google", "https://ai.google.dev/gemini-api/docs/pricing", "google-pricing-2026-11-10", {
+        "gemini-4-carbon": ("2.00", "10.00", "0.10"),
+    }),
+    ("google", "https://ai.google.dev/gemini-api/docs/pricing", "google-pricing-2026-10-13", {
+        "gemini-4-argon": ("2.00", "10.00", "0.10"),
     }),
     ("google", "https://ai.google.dev/gemini-api/docs/pricing", "google-pricing-2026-09-02", {
         ("gemini-3.8-flash", "gemini-3.7-flash"): ("0.75", "3.75", "0.075"),
@@ -227,6 +239,9 @@ _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
     }),
     ("bedrock", _BEDROCK_URL, "anthropic-list-2026-09", {
         "anthropic.claude-opus-5": _OPUS, "anthropic.claude-opus-5-5": _OPUS_5_5,
+    }),
+    ("bedrock", _BEDROCK_URL, "anthropic-list-2026-11", {
+        "anthropic.claude-fable-5-2": _FABLE_5_2,
     }),
     ("bedrock", _BEDROCK_URL, "bedrock-pricing-2026-06", {"anthropic.claude-sonnet-5": _SONNET}),
     ("bedrock", _BEDROCK_URL, "bedrock-pricing-2026-04", {
@@ -341,10 +356,11 @@ _ANTHROPIC_FAST_MODE_PRICING: dict[str, PricingEntry] = {
     for _models, _rates in (
         (("claude-opus-4-8", "claude-opus-5"), ("10.00", "50.00", "1.00", "12.50")),
         (("claude-opus-5-5",), ("8.00", "40.00", "0.40", "10.00")),
+        (("claude-fable-5-2", "claude-mythos-5-2"), ("16.00", "80.00", "0.40", "20.00")),
     )
     for _model in _models
 }
-del _BEDROCK_URL, _ANTHROPIC_URL, _GOOGLE_URL, _OPUS, _SONNET, _OPUS_5_5
+del _BEDROCK_URL, _ANTHROPIC_URL, _GOOGLE_URL, _OPUS, _SONNET, _OPUS_5_5, _FABLE_5_2
 
 # GPT-5.6 / GPT-6 tier "-pro" high-effort variants bill at the base tier's per-token
 # rates (more tokens per task, not a higher rate); the Hermes-side "-900k" Codex
@@ -521,18 +537,32 @@ def _pricing_entry_from_metadata(
     if model_id not in metadata:
         return None
     pricing = metadata[model_id].get("pricing") or {}
+    rejected: set[str] = set()
 
-    def per_million(key: str, *aliases: str) -> Optional[Decimal]:
+    def rate(key: str, *aliases: str) -> Optional[Decimal]:
         raw = pricing.get(key)
         for alias in aliases:  # alias chain is truthiness-based (``a or b or c``)
             raw = raw or pricing.get(alias)
         value = _to_decimal(raw)
+        # A negative rate is a "pricing varies" sentinel (OpenRouter publishes "-1" for
+        # openrouter/auto), not a price: priced through, it books huge negative session costs.
+        # NaN raises in the cost sum and Infinity books an infinite cost, so neither is a price.
+        if value is not None and (not value.is_finite() or value < 0):
+            logger.debug("Ignoring unusable %s rate %s for %s (variable-pricing sentinel)", key, raw, model_id)
+            rejected.add(key)
+            return None
+        return value
+
+    def per_million(key: str, *aliases: str) -> Optional[Decimal]:
+        value = rate(key, *aliases)
         return None if value is None else value * _ONE_MILLION
 
     prompt = per_million("prompt")
     completion = per_million("completion")
-    request = _to_decimal(pricing.get("request"))
-    if prompt is None and completion is None and request is None:
+    request = rate("request")
+    # A missing request rate means "no per-request fee"; a sentinel one means the fee is unknown,
+    # and dropping it would under-count, so the whole entry is unknown.
+    if "request" in rejected or (prompt is None and completion is None and request is None):
         return None
     return PricingEntry(
         input_cost_per_million=prompt, output_cost_per_million=completion,
@@ -648,9 +678,11 @@ def normalize_usage(
 
     # Responses API: output_tokens_details.reasoning_tokens. Chat Completions
     # (OpenAI, OpenRouter, DeepSeek, ...): completion_tokens_details.reasoning_tokens.
-    # Hidden thinking dominates output spend on reasoning models, so read both.
+    # Anthropic Messages: output_tokens_details.thinking_tokens (the full thinking, not the summary).
+    # Hidden thinking dominates output spend on reasoning models, so read all three.
     reasoning_tokens = _first_nonzero(
-        u, ("output_tokens_details", "reasoning_tokens"), ("completion_tokens_details", "reasoning_tokens")
+        u, ("output_tokens_details", "reasoning_tokens"), ("completion_tokens_details", "reasoning_tokens"),
+        ("output_tokens_details", "thinking_tokens"),
     )
 
     # On MiniMax-M3's Anthropic wire, cache_read_input_tokens carries a constant

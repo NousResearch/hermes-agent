@@ -139,6 +139,8 @@ def _persist_plugin_selection(plugin_keys, chosen, disabled, initial, *, expecte
         expected_config = _pc()._plugin_selection_version()
     new_enabled, new_disabled = set(_pc()._get_enabled_set()), set(disabled)
     entries = _pc()._discover_all_plugins()
+    for key in turned_on:  # the kill list, judged as `plugins enable` and the dashboard toggle judge it
+        _pc()._refuse_recalled_entry(next((entry for entry in entries if entry[5] == key), None))
     for keys, enable in ((turned_on, True), (turned_off, False)):
         for key in keys:
             _pc()._apply_activation(new_enabled, new_disabled, key, _pc()._plugin_aliases(key, entries), enable=enable)
@@ -264,6 +266,9 @@ def _run_composite_ui(curses, plugin_keys, plugin_labels, plugin_selected, disab
     try:
         turned_on, turned_off = _persist_plugin_selection(plugin_keys, chosen, disabled, plugin_selected,
                                                           expected_config=expected_config)
+    except _pc().PluginOperationError as exc:  # a ticked plugin is on the kill list
+        console.print(f"[red]✗[/red] Plugin selection refused, not saved: {exc}")
+        return
     except AdmissionRefused as exc:
         console.print(f"[red]✗[/red] Plugin selection refused, not saved: {exc}")
         console.print(
@@ -332,6 +337,8 @@ def _save_plugin_selection_fallback(plugin_keys, chosen, disabled, initial, *, e
 
     try:
         _persist_plugin_selection(plugin_keys, chosen, disabled, initial, expected_config=expected_config)
+    except _pc().PluginOperationError as exc:  # a ticked plugin is on the kill list
+        print(f"  Plugin selection refused, not saved: {exc}")
     except AdmissionRefused as exc:
         print(f"  Plugin selection refused, not saved: {exc}")
         print("  config.yaml and the active environment are unchanged.")

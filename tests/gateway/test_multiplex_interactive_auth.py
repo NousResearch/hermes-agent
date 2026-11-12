@@ -202,7 +202,7 @@ def test_authorization_adapter_ignores_per_turn_active_profile(mux_home):
     runner = _runner(mux_home)
     default_bot = object()
     runner.adapters = {Platform.TELEGRAM: default_bot}
-    runner._profile_failed_platforms = {"secondary": {Platform.TELEGRAM: object()}}
+    runner._profile_bot_platforms = {"secondary": {Platform.TELEGRAM}}
 
     with _profile_runtime_scope(mux_home / "profiles" / "secondary"):
         assert runner._authorization_adapter(Platform.TELEGRAM, profile="secondary") is None

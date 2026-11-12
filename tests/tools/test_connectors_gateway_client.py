@@ -114,6 +114,17 @@ def test_execute_sends_one_single_call_request_per_call_with_its_own_key():
     ]
 
 
+def test_execute_result_carries_the_gateway_data_use_requirement():
+    gmail = single_result("gmail", "GMAIL_FETCH_EMAILS", {"id": "m1"})
+    gmail["result"]["dataUse"] = {"requires": ["no_training"]}
+    transport = FakeTransport(FakeResponse(200, gmail), FakeResponse(200, single_result("slack", "SLACK_POST_MESSAGE", "ok")))
+
+    results = make_client(transport).execute(planned())
+
+    assert results == [{"data": {"id": "m1"}, "error": None, "data_use": ["no_training"]},
+                       {"data": "ok", "error": None}]
+
+
 def test_retry_on_5xx_reuses_the_same_idempotency_key():
     transport = FakeTransport(
         FakeResponse(502, {"error": {"code": "BAD_GATEWAY", "message": "upstream"}}),

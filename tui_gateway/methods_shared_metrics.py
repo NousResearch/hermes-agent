@@ -61,11 +61,22 @@ def _(rid, params: dict) -> dict:
     the setup-completed metric. Answers the stored ``{enabled, send, decided, reask}``."""
     enabled = params.get("enabled") is True
     send = enabled and params.get("send") is True
-    from hermes_cli.observability.shared_metrics_consent import set_answer
+    from hermes_cli.config_backend import ConfigWriteError, supports_file_tooling
+    from hermes_cli.observability.shared_metrics_consent import OFFER_VERSION, set_answer
     try:
-        cfg = _load_cfg_raw()
-        set_answer(cfg, enabled, send)
-        _save_cfg(cfg)
+        if supports_file_tooling():
+            cfg = _load_cfg_raw()
+            set_answer(cfg, enabled, send)
+            _save_cfg(cfg)
+        else:
+            # Explicit keys: refused as a whole when locked, never saved-minus-the-locked-part
+            # while the consent bookkeeping below records the proposed answer.
+            _write_config_changes({"telemetry.shared_metrics.enabled": enabled,
+                                   "telemetry.shared_metrics.send": send,
+                                   "telemetry.shared_metrics.offer_version": OFFER_VERSION})
+            cfg = _load_cfg_raw()
+    except ConfigWriteError as e:
+        return _err(rid, 4002, str(e))
     except Exception as e:
         return _err(rid, 5096, str(e))
     from hermes_cli.setup import _record_send_consent_change

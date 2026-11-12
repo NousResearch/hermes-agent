@@ -58,22 +58,35 @@ export interface DesktopThemeCommandOption {
  * keyed by the id.
  */
 export type DesktopActionId =
+  | 'agents'
   | 'background'
   | 'branch'
   | 'browser'
   | 'btw'
   | 'compress'
+  | 'config'
+  | 'export'
   | 'handoff'
   | 'hatch'
   | 'help'
+  | 'history'
+  | 'import'
   | 'journey'
   | 'new'
+  | 'palette'
   | 'pet'
   | 'profile'
+  | 'queue'
   | 'reasoning'
+  | 'retry'
+  | 'rollback'
+  | 'save'
   | 'skin'
+  | 'steer'
   | 'stop'
+  | 'timestamps'
   | 'title'
+  | 'undo'
   | 'wake'
   | 'yolo'
 
@@ -230,7 +243,7 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
   { name: '/help', description: 'Show desktop slash commands', aliases: ['/commands'], surface: action('help') },
   {
     name: '/browser',
-    description: 'Manage the agent browser [connect|disconnect|status|use]',
+    description: 'Manage the agent browser [connect|disconnect|status]',
     surface: action('browser'),
     argumentMode: 'options'
   },
@@ -289,6 +302,25 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
     surface: action('background'),
     argumentMode: 'text'
   },
+  // /undo /retry /steer /queue must be actions, not exec: the shared gateway refuses them as
+  // slash.exec. They run on the owner's canonical verbs like the Ink TUI (session.mutate rewind,
+  // session.steer) and on the composer's next-turn queue (slash-session-commands.ts).
+  { name: '/undo', description: 'Back up N user turns and re-prompt (default 1)', surface: action('undo') },
+  { name: '/retry', description: 'Retry the last message (resend to agent)', surface: action('retry') },
+  {
+    name: '/steer',
+    description: 'Inject a message after the next tool call without interrupting',
+    aliases: ['/s'],
+    surface: action('steer'),
+    argumentMode: 'text'
+  },
+  {
+    name: '/queue',
+    description: 'Queue a prompt for the next turn',
+    aliases: ['/q'],
+    surface: action('queue'),
+    argumentMode: 'text'
+  },
   {
     name: '/pet',
     description: 'Toggle or adopt a petdex mascot (/pet, /pet list, /pet boba)',
@@ -301,11 +333,45 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
     aliases: ['/generate-pet'],
     surface: action('hatch')
   },
+  // T11: commands the shared gateway refuses as slash.exec (or Desktop marked terminal-only), on the
+  // owner's existing verbs (slash-desktop-commands.ts).
+  {
+    name: '/rollback',
+    description: 'List, diff or restore filesystem checkpoints [list|diff <n>|<n> [file] [--all]]',
+    surface: action('rollback'),
+    argumentMode: 'text'
+  },
+  {
+    name: '/agents',
+    description: 'Show active subagents and background processes',
+    aliases: ['/tasks'],
+    surface: action('agents')
+  },
+  { name: '/config', description: 'Show current configuration', surface: action('config') },
+  { name: '/history', description: 'Show conversation history', surface: action('history') },
+  // /save renders on the owner (session.export) and writes on this machine through Electron: the
+  // gateway may be remote, so it never writes the client's file (T11).
   {
     name: '/save',
-    description: 'Save the current transcript to JSON',
-    surface: rpc('session.save', ctx => ({ session_id: ctx.sessionId }))
+    description: 'Save the transcript to a file [json|md|html] [filename] [redact]',
+    surface: action('save'),
+    argumentMode: 'text'
   },
+  {
+    name: '/export',
+    description: 'Export a profile to a shareable archive',
+    surface: action('export'),
+    argumentMode: 'text'
+  },
+  { name: '/import', description: 'Import a shared profile archive as a new profile', surface: action('import') },
+  {
+    name: '/timestamps',
+    description: 'Toggle message timestamps [on|off|status]',
+    aliases: ['/ts'],
+    surface: action('timestamps'),
+    argumentMode: 'options'
+  },
+  { name: '/palette', description: 'Open the command palette', surface: action('palette') },
   {
     name: '/status',
     description: 'Show current session status',

@@ -11,7 +11,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import PlatformConfig
+from gateway.config import Platform, PlatformConfig
+from gateway.platforms.event import MessageEvent, MessageType
+from gateway.session import SessionSource
 from plugins.platforms.telegram import adapter as telegram_mod
 from plugins.platforms.telegram.adapter import TelegramAdapter
 
@@ -57,3 +59,42 @@ async def test_voice_caption_falls_back_to_plain_on_entity_rejection(
     assert retry_kwargs["caption"] == "*bold* reply"
 
 
+def _bot_enforcing_caption_cap(adapter):
+    """sendVoice that refuses captions the way tdlib does: more than 1024 code points (utf8_length)."""
+    async def send_voice(**kwargs):
+        if len(kwargs.get("caption") or "") > 1024:
+            raise Exception("Bad Request: message caption is too long")
+        return MagicMock(message_id=9)
+    adapter._bot.send_voice = AsyncMock(side_effect=send_voice)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reply, rides_as_caption", [
+    ("Plan \U0001F680 " * 120 + "\U0001F389" * 100, True),  # 940 code points, 1180 UTF-16 units
+    ("a" * 1023 + "\U0001F389", True),  # 1024 code points
+    ("a" * 1024 + "\U0001F389", False),  # 1025 code points
+], ids=["emoji_heavy_fits", "at_cap", "one_over"])
+async def test_auto_tts_caption_gate_counts_code_points(monkeypatch, tmp_path, reply, rides_as_caption):
+    """Telegram caps a caption at 1024 code points, so an emoji-heavy reply that fits rides as
+    the voice caption, and one code point over sends the voice bare (the text goes out normally)."""
+    monkeypatch.setattr(telegram_mod, "_probe_voice_duration_seconds", lambda _p: 3)
+    adapter = _make_adapter()
+    _bot_enforcing_caption_cap(adapter)
+    adapter.send = AsyncMock()
+    event = MessageEvent(
+        source=SessionSource(platform=Platform.TELEGRAM, chat_id="123", user_id="7", chat_type="dm"),
+        text="(voice)", message_type=MessageType.VOICE)
+    receipts = []
+
+    caption_carried_text = await adapter._play_tts_file(
+        event, reply, str(_write_ogg(tmp_path)), True, {}, receipts.append)
+
+    assert caption_carried_text is rides_as_caption
+    assert receipts and receipts[0].success is True
+    assert adapter._bot.send_voice.await_args.kwargs["caption"] == (reply if rides_as_caption else None)
+    adapter.send.assert_not_awaited()
+
+
+def test_media_caption_truncation_keeps_1024_code_points():
+    caption = "\U0001F389" * 1100  # 1100 code points, 2200 UTF-16 units
+    assert TelegramAdapter._caption_1024(caption) == "\U0001F389" * 1024

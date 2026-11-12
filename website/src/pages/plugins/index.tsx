@@ -2,6 +2,7 @@ import React, { useState, useMemo, useCallback, useRef, useEffect } from "react"
 import Layout from "@theme/Layout";
 import Link from "@docusaurus/Link";
 import { useHistory } from "@docusaurus/router";
+import RouteLink, { useKnownRoute } from "../../components/RouteLink";
 import useBaseUrl from "@docusaurus/useBaseUrl";
 import styles from "./styles.module.css";
 
@@ -14,6 +15,7 @@ import {
   TIER_CONFIG,
   authorPagePath,
   capToolChips,
+  cardSummary,
   categoryOf,
   desktopInstallLink,
   formatDate,
@@ -25,6 +27,9 @@ import {
   tierOf,
 } from "../../components/PluginCatalog/catalog";
 import CopyButton from "../../components/PluginCatalog/CopyButton";
+import CatalogFeatured from "../../components/CatalogFeatured";
+import { groupCatalogPlugins, sortCatalogPlugins } from "../../../../apps/shared/src/catalog-browse";
+import { pickFeatured } from "../../../../apps/shared/src/catalog-featured";
 
 // Routes Docusaurus serves the static API JSON from. `baseUrl` is `/docs/`,
 // `static/api/` ends up at `/docs/api/` — same pattern as the Skills Hub.
@@ -33,7 +38,7 @@ const META_URL = "/docs/api/plugins-meta.json";
 /** Mirrors the `max-width: 600px` blocks in styles.module.css. */
 const MOBILE_PANEL_QUERY = "(max-width: 600px)";
 
-const TIER_ORDER = ["all", "official", "community"];
+const TIER_ORDER = ["all", "official", "verified", "community"];
 
 // Sort orders. "stars" is the extractor's own order (stars desc, name), so it
 // needs no client-side work; the two date sorts read the git-derived
@@ -45,17 +50,8 @@ const SORT_OPTIONS: { key: SortKey; label: string; title: string }[] = [
   { key: "updated", label: "Recently updated", title: "Most recently re-pinned or edited first" },
 ];
 
-function dateMs(iso?: string | null): number {
-  const t = iso ? new Date(iso).getTime() : NaN;
-  return Number.isFinite(t) ? t : -Infinity;
-}
-
 function sortPlugins(list: CatalogPlugin[], sort: SortKey): CatalogPlugin[] {
-  if (sort === "stars") return list;
-  const field = sort === "newest" ? "addedAt" : "updatedAt";
-  return [...list].sort(
-    (a, b) => dateMs(b[field]) - dateMs(a[field]) || a.name.localeCompare(b.name),
-  );
+  return sortCatalogPlugins(list, sort);
 }
 
 function highlightMatch(text: string, query: string): React.ReactNode {
@@ -92,7 +88,8 @@ function PluginCard({
   const hookCount = caps.providesHooks?.length || 0;
   const middlewareCount = caps.providesMiddleware?.length || 0;
   const toolChips = capToolChips(caps.providesTools);
-  const description = plugin.description || "No description available.";
+  // Cards show what the plugin does; its disclosure sits at the bottom of the plugin's own page.
+  const description = cardSummary(plugin.description || "") || "No description available.";
   // A broken banner URL swaps to the placeholder instead of collapsing, so the card keeps its
   // height (every card in a grid row shares one height; see .grid in styles.module.css).
   const [imageBroken, setImageBroken] = useState(false);
@@ -100,12 +97,15 @@ function PluginCard({
   const pagePath = pluginPagePath(plugin.name);
   const history = useHistory();
   const pageHref = useBaseUrl(pagePath); // <Link> adds baseUrl itself; history.push does not
+  const routed = useKnownRoute(pagePath);
   // A card IS the link to the plugin's own page: nothing expands or collapses in place. Inside
   // the Desktop picker iframe an in-frame navigation would leave the host's embed, so the page
   // opens in a new tab there instead.
   const onCardClick = onPick
     ? () => window.open(new URL(pageHref, window.location.href).toString(), "_blank", "noopener,noreferrer")
-    : () => history.push(pageHref);
+    : routed
+      ? () => history.push(pageHref)
+      : () => window.location.assign(pageHref);
 
   return (
     <div
@@ -145,9 +145,9 @@ function PluginCard({
           <span className={styles.cardIcon} title={category.label}>{category.icon}</span>
           <div className={styles.cardTitleGroup}>
             <h3 className={styles.cardTitle} title={plugin.name}>
-              <Link className={styles.cardTitleLink} to={pagePath} onClick={(e) => e.stopPropagation()}>
+              <RouteLink className={styles.cardTitleLink} to={pagePath} onClick={(e) => e.stopPropagation()}>
                 {highlightMatch(plugin.name, query)}
-              </Link>
+              </RouteLink>
             </h3>
             {typeof plugin.stars === "number" && (
               <a
@@ -317,9 +317,9 @@ function PluginCard({
               <CopyButton text={plugin.installCommand} />
             </div>
             <div className={styles.cardLinks}>
-              <Link className={styles.docsLink} to={pagePath} onClick={(e) => e.stopPropagation()}>
+              <RouteLink className={styles.docsLink} to={pagePath} onClick={(e) => e.stopPropagation()}>
                 Plugin page →
-              </Link>
+              </RouteLink>
               <a
                 className={styles.docsLink}
                 href={plugin.repo}
@@ -494,13 +494,22 @@ export default function PluginCatalogPage() {
   // than one undifferentiated wall. Filtering or searching flattens to a grid.
   const grouped = useMemo(() => {
     if (search.trim() || categoryFilter !== "all") return null;
-    const buckets = new Map<string, CatalogPlugin[]>();
-    for (const p of filtered) {
-      const key = CATEGORY_CONFIG[p.category] ? p.category : "general";
-      (buckets.get(key) ?? buckets.set(key, []).get(key)!).push(p);
-    }
-    return CATEGORY_ORDER.filter((c) => buckets.has(c)).map((c) => [c, buckets.get(c)!] as const);
+    return groupCatalogPlugins(filtered);
   }, [filtered, search, categoryFilter]);
+
+  // Same pick as the desktop app (apps/shared pickFeatured): curated ranks from
+  // catalog-curation.json, rotated weekly, shown only while browsing everything.
+  const featured = useMemo(
+    () =>
+      pickFeatured(allPlugins, (p) => ({
+        featured: p.featured,
+        official: p.tier === "official",
+        pictured: Boolean(p.image),
+        addedAt: p.addedAt,
+        stars: p.stars,
+      })),
+    [allPlugins],
+  );
 
   const categoryCounts = useMemo(() => {
     const counts: Record<string, number> = {};
@@ -787,7 +796,23 @@ export default function PluginCatalogPage() {
               </div>
             </div>
           ) : filtered.length > 0 && grouped ? (
-            grouped.map(([cat, plugins]) => {
+            <>
+            {featured && tierFilter === "all" && !pickerMode && (
+              <CatalogFeatured
+                author={featured.maintainer}
+                cta="View plugin"
+                description={cardSummary(featured.description || "")}
+                href={pluginPagePath(featured.name)}
+                label="Featured plugin"
+                tags={[
+                  tierOf(featured).label,
+                  categoryOf(featured).label,
+                  featured.version && `v${featured.version}`,
+                ]}
+                title={featured.name}
+              />
+            )}
+            {grouped.map(([cat, plugins]) => {
               const conf = CATEGORY_CONFIG[cat];
               return (
                 <section key={cat} className={styles.categorySection} aria-labelledby={`cat-${cat}`}>
@@ -806,7 +831,8 @@ export default function PluginCatalogPage() {
                   </div>
                 </section>
               );
-            })
+            })}
+            </>
           ) : filtered.length > 0 ? (
             <>
               <div className={styles.resultsBar} role="status">

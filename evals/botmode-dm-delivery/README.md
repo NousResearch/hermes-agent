@@ -4,13 +4,13 @@ Real Electron, production Python backend and tool execution, disposable HOME/HER
 loopback scripted inference (no paid model). Linux seat fixture; run from repository root:
 
 ```sh
-npm ci --no-audit --no-fund
+pnpm install --frozen-lockfile
 cp evals/botmode-dm-delivery/probe-dm-delivery.spec.ts apps/desktop/e2e/
 git apply evals/botmode-dm-delivery/mock-trigger.patch
-(cd apps/desktop && npm run build)
+(cd apps/desktop && pnpm run build)
 (cd apps/desktop && DISPLAY=:0 XAUTHORITY=/run/user/1000/xauth_cnpsqU \
   XDG_RUNTIME_DIR=/run/user/1000 VIRTUAL_ENV="$VIRTUAL_ENV" \
-  HERMES_DESKTOP_CDP_PORT=off npx playwright test e2e/probe-dm-delivery.spec.ts --reporter=list)
+  HERMES_DESKTOP_CDP_PORT=off pnpm exec playwright test e2e/probe-dm-delivery.spec.ts --reporter=list)
 git apply -R evals/botmode-dm-delivery/mock-trigger.patch
 rm apps/desktop/e2e/probe-dm-delivery.spec.ts
 ```
@@ -61,20 +61,12 @@ Prior `/tmp/botmode-dm-recovery*` evidence remains untouched.
 
 ## Per-record delivery exception isolation
 
-Set `BOT_DM_EXCEPTION=1` and select `-g "cron output"` for the controlled native
-exception probe. `exception-tick.py` raises `PermissionError` at the actual
-post-discovery target `Path.is_dir()` boundary, not at the delivery helper.
-The same exception was first reproduced with real directory traversal permission
-loss on Python 3.11/Linux; the retained test uses a portable controlled fault.
-Before the guard, native tick exits 1, leaving the head claimed and sibling queued.
-Afterward, the head is ambiguous, the sibling settles and renders once, and a
-second real tick replays neither. Logs: `/tmp/botmode-dm-exception-{red,green}.log`;
-receipts and screenshot: `/tmp/botmode-dm-exception/{red,green}/`.
-
-The review's repeated-head starvation claim is not reachable: the claim commits
-before delivery and later scans skip every non-queued record. One failed tick is
-real; recurring replay of that same head is not. Indefinite queued/payload retention
-is intentional, with no TTL or automatic ambiguous retry introduced here.
+Retired with the deferred `hermes chat` pending lane (`cron/bot_chat_delivery.py`): cron
+output now reaches Bot Chat through the gateway authority door (`gateway/session_bot.py`),
+which records a per-target receipt on the job and creates the Bot Chat when missing, so a
+per-record file-scan exception has no counterpart. The regression case lives in
+`tests/cron/test_cron_bot_chat_create_if_missing.py` and
+`tests/gateway/test_cron_canonical_receipt_regression.py`.
 
 ## Ordinary custom-root fallback (#104066 / #104055)
 

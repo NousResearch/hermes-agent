@@ -276,12 +276,12 @@ class TestMemoryStoreReplace:
         store.add("memory", "x" * 380)  # 65 + 3 + 380 = 448 of 500
         full = store.add("memory", "y" * 54)  # 448 + 3 + 54 = 505
         assert "by 5 chars" in full["error"] and "free at least 5 chars" in full["error"]
-        miss = store.apply_batch("memory", [{"action": "replace", "old_text": "Deploys via GitHub Actions to Fly",
+        miss = store.apply_batch("memory", [{"action": "patch", "old_text": "Deploys via GitHub Actions to Fly",
                                              "content": "Deploys: Fly.io + canary."}])
         assert miss["closest_entries"] == ["Deploys go through GitHub Actions to Fly.io with manual approval."]
         assert "current_entries" not in miss  # batch aborts still never echo the store (#97316)
-        result = json.loads(memory_tool(action="replace", old_text="Deploys go through", content="",
-                                        new_text="Deploys: Fly.io.", store=store))
+        result = json.loads(memory_tool(action="patch", old_text="Deploys go through GitHub Actions to Fly.io with manual approval.",
+                                        content="", new_text="Deploys: Fly.io.", store=store))
         assert result["success"] is True and "Deploys: Fly.io." in store.memory_entries
 
 
@@ -490,21 +490,23 @@ class TestMemoryToolDispatcher:
 
 
 
-    def test_replace_missing_content_still_distinct_error(self, store):
-        # When old_text IS present but content is missing, keep the original
-        # content-specific error (don't route through the old_text recovery path).
-        store.add("memory", "fact A")
-        result = json.loads(memory_tool(action="replace", old_text="fact A", store=store))
-        assert result["success"] is False
-        assert "content is required" in result["error"]
-        assert "current_entries" not in result
+    def test_replace_is_refused_and_points_at_patch(self, store):
+        # 'replace' overwrote the whole entry and models used it as a span swap, wiping
+        # sibling facts; it is gone from the tool, single and batch, and writes nothing.
+        store.add("memory", "Jeff drinks tea; prefers Rust; lives in Portland")
+        for kwargs in ({"action": "replace", "old_text": "tea", "content": "Jeff drinks coffee"},
+                       {"operations": [{"action": "add", "content": "new fact"},
+                                       {"action": "replace", "old_text": "tea", "content": "coffee"}]}):
+            result = json.loads(memory_tool(target="memory", store=store, **kwargs))
+            assert result["success"] is False and "use 'patch'" in result["error"], result
+        assert store.memory_entries == ["Jeff drinks tea; prefers Rust; lives in Portland"]
 
-    def test_new_text_alias_for_content_on_replace(self, store):
+    def test_new_text_alias_for_content_on_patch(self, store):
         # A caller mirroring old_text with new_text (the patch tool's shape)
         # must succeed instead of erroring 'content is required'.
         store.add("memory", "fact A")
         result = json.loads(
-            memory_tool(action="replace", old_text="fact A", new_text="fact A refined", store=store)
+            memory_tool(action="patch", old_text="fact A", new_text="fact A refined", store=store)
         )
         assert result["success"] is True
         assert "fact A refined" in store.memory_entries
@@ -548,12 +550,12 @@ class TestMemoryBatch:
 
 
     def test_batch_new_text_alias_for_content(self, store):
-        # new_text works inside batch ops too (both add and replace).
+        # new_text works inside batch ops too (both add and patch).
         store.add("memory", "old entry")
         result = json.loads(memory_tool(
             target="memory",
             operations=[
-                {"action": "replace", "old_text": "old entry", "new_text": "updated entry"},
+                {"action": "patch", "old_text": "old entry", "new_text": "updated entry"},
                 {"action": "add", "new_text": "batched via new_text"},
             ],
             store=store,
@@ -680,6 +682,37 @@ class TestExternalDriftGuard:
         result = store.replace("memory", "Entry two", "Entry two replaced.")
         assert result["success"] is True
 
+    def test_entries_stay_removable_after_the_limit_is_lowered(self, store, monkeypatch):
+        """An entry written under a larger limit is no external drift: pruning stays the way back
+        under a lowered limit."""
+        roomy = MemoryStore(memory_char_limit=2200, user_char_limit=1375)
+        work, home = ("Work:" + " firmware and vision pipelines;" * 16,  # each > the fixture's 300
+                      "Home:" + " garden, workshop and bikes;" * 16)
+        for entry in (work, home, "Prefers metric.", "Uses vim."):
+            assert roomy.add("user", entry)["success"]
+
+        pruned = json.loads(memory_tool(target="user", store=store, operations=[
+            {"action": "remove", "old_text": "Prefers metric"}, {"action": "remove", "old_text": "Uses vim"}]))
+        assert pruned["success"] is True
+        monkeypatch.setattr("tools.memory_tool_store.time.time", lambda: 1_700_000_000.0)  # same second
+        first, second = store.remove("user", "Work:"), store.remove("user", "Home:")
+        assert first["success"] and second["success"] and first["removed_entry"] == work
+        assert MemoryStore._read_file(store._path_for("user")) == []
+        # Each delete of an oversized entry keeps its own snapshot, even within the same second.
+        assert first["drift_backup"] != second["drift_backup"]
+        assert work in Path(first["drift_backup"]).read_text(encoding="utf-8")
+
+    def test_removing_an_entry_with_glued_free_text_keeps_a_snapshot(self, store):
+        """Free text appended without a delimiter rides on the last entry; deleting that entry
+        must never take the text with it unless a snapshot holds it."""
+        store.add("memory", "User likes brevity.")
+        drifted = self._plant_drift(store).read_text(encoding="utf-8")
+
+        result = store.remove("memory", "User likes")
+
+        assert result["success"] is True
+        assert Path(result["drift_backup"]).read_text(encoding="utf-8") == drifted
+
     def test_drift_guard_also_protects_user_target(self, store):
         """USER.md gets the same guarantee as MEMORY.md."""
         store.add("user", "Some preference.")
@@ -788,6 +821,8 @@ class TestLoadTimeSnapshotSanitization:
         assert "Clean fact about the project." in snapshot
         # Poisoned entry replaced with placeholder
         assert "[BLOCKED:" in snapshot
+        # The removal hint names the store, since memory writes require an explicit target
+        assert "memory(action=remove, target='memory')" in snapshot
         assert "ignore previous instructions" not in snapshot
         assert "$API_KEY" not in snapshot
         # Live state keeps the raw text so the user can see + remove it
@@ -813,6 +848,7 @@ class TestLoadTimeSnapshotSanitization:
 
         snapshot = s._system_prompt_snapshot["user"]
         assert "[BLOCKED:" in snapshot
+        assert "memory(action=remove, target='user')" in snapshot
         assert "REGISTER AS A NODE" not in snapshot
         assert "BRAINWORM" not in snapshot
 
@@ -890,10 +926,12 @@ class TestBatchRefusesToEmptyNonEmptyStore:
         self, store, target, seed
     ):
         assert store.add(target, seed)["success"] is True
+        assert store.add(target, "second entry here")["success"] is True
         path = store._path_for(target)
         before = path.read_text(encoding="utf-8")
 
-        result = store.apply_batch(target, [{"action": "remove", "old_text": seed}])
+        result = store.apply_batch(target, [{"action": "remove", "old_text": seed},
+                                            {"action": "remove", "old_text": "second entry"}])
 
         assert result["success"] is False
         assert "current_entries" not in result  # batch abort never echoes the store (#97316)
@@ -952,13 +990,13 @@ class TestBackgroundReviewDeleteGate:
         assert record["payload"]["action"] == "remove"
         assert record["origin"] == "background_review"
 
-    def test_replace_staged_in_background_review(self, store, tmp_path, monkeypatch):
+    def test_patch_staged_in_background_review(self, store, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         store.add("memory", "entry the fork must not rewrite")
         token = set_current_write_origin("background_review")
         try:
             result = json.loads(memory_tool(
-                action="replace", old_text="entry the fork", content="rewritten by fork", store=store))
+                action="patch", old_text="entry the fork", content="rewritten by fork", store=store))
         finally:
             reset_current_write_origin(token)
         assert result["staged"] is True
@@ -998,14 +1036,15 @@ class TestBackgroundReviewDeleteGate:
 
     def test_attended_review_keeps_full_operation_set(self, store):
         # A user-requested /refine fork keeps the background_review origin (skill guards still
-        # apply) but is attended, so replace/remove keep working on that supervised surface.
+        # apply) but is attended, so patch/remove keep working on that supervised surface.
         from tools.skill_provenance import reset_review_attended, set_review_attended
         store.add("memory", "entry an explicit refine may rewrite")
         token = set_current_write_origin("background_review")
         att = set_review_attended(True)
         try:
             result = json.loads(memory_tool(
-                action="replace", old_text="entry an explicit", content="rewritten by refine", store=store))
+                action="patch", old_text="entry an explicit refine may rewrite", content="rewritten by refine",
+                store=store))
         finally:
             reset_review_attended(att)
             reset_current_write_origin(token)

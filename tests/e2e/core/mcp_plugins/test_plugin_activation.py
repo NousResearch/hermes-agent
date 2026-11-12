@@ -176,7 +176,7 @@ def test_plugin_enabled_mid_chat_is_usable_in_that_chat_with_an_unchanged_tools_
             assert _canon(after["messages"][0]) == _canon(before["messages"][0]), (
                 "enabling a plugin mid-chat rewrote the open chat's system prompt (prompt-cache prefix)")
             # The open chat is told what just became usable (one-shot turn note), outside the prefix.
-            assert f"[plugin installed: {PLUGIN}]" in _canon(after["messages"][1:]), (
+            assert f"[System note: plugin {PLUGIN} was installed" in _canon(after["messages"][1:]), (
                 f"the open chat was never told the plugin went live; its turn ended with {after['messages'][-1]}")
 
             fresh = host.new_session()

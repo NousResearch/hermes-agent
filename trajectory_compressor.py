@@ -58,7 +58,6 @@ def _effective_temperature_for_model(model: str, requested_temperature: Optional
 
     Returns ``None`` when the model manages temperature server-side (Kimi);
     callers must omit the ``temperature`` kwarg entirely in that case.
-    Shared with ``mini_swe_runner`` (which passes ``requested_temperature=None``).
     """
     try:
         from agent.auxiliary_client import _fixed_temperature_for_model, OMIT_TEMPERATURE

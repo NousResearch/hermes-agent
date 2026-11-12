@@ -28,13 +28,19 @@ describe('recycleOwnedBackend', () => {
       teardownPrimary: async () => {
         events.push('primary')
       },
+      restartLocalGateway: async profile => {
+        events.push(`restart:${profile}`)
+      },
       teardownSsh: async profile => {
         events.push(`ssh:${profile}`)
       }
     })
 
     expect(target).toBe('primary')
-    expect(events).toEqual(['ssh:', 'primary', 'applied'])
+    // The attached gateway owns its own lifetime: dropping descriptors alone re-attached the
+    // same stale process (503 "Restart required" after `hermes update`), so it is restarted
+    // between the SSH teardown and the descriptor drop that forces the re-ensure.
+    expect(events).toEqual(['ssh:', 'restart:default', 'primary', 'applied'])
   })
 
   it('recycles a pooled profile without tearing down the primary', async () => {
@@ -50,13 +56,16 @@ describe('recycleOwnedBackend', () => {
       teardownPrimary: async () => {
         events.push('primary')
       },
+      restartLocalGateway: async profile => {
+        events.push(`restart:${profile}`)
+      },
       teardownSsh: async profile => {
         events.push(`ssh:${profile}`)
       }
     })
 
     expect(target).toBe('pool')
-    expect(events).toEqual(['ssh:paid-ads', 'pool:paid-ads'])
+    expect(events).toEqual(['ssh:paid-ads', 'restart:paid-ads', 'pool:paid-ads'])
   })
 
   it('awaits SSH teardown before the local child even when SSH is slow', async () => {
@@ -70,6 +79,7 @@ describe('recycleOwnedBackend', () => {
     const run = recycleOwnedBackend({
       notifyApplied: () => events.push('applied'),
       primaryProfile: 'default',
+      restartLocalGateway: async () => undefined,
       teardownPool: vi.fn(),
       teardownPrimary: async () => {
         events.push('primary')

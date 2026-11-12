@@ -1,0 +1,19 @@
+name: webtwizz
+title: WebTwizz
+repo: https://github.com/WebTwizz/agent
+sha: e1979283d68e884a9117abd4fd5b30ae60e988c3
+subdir: hermes
+version: "1.0.0"
+description: "Build, change and publish websites and web apps with WebTwizz through its hosted MCP server (https://app.webtwizz.com/mcp, OAuth sign-in in the browser, no keys in config): landing pages, online stores, booking sites, portfolios and web apps with sign-ins and a database, published to a webtwizz.app address or the user's own domain, with version history, site data and GitHub sync. Agent Plugins v1 package (plugin.json + mcp.json), configuration only. Disclosure: every tool call goes to WebTwizz's hosted server (app.webtwizz.com) and acts on the user's WebTwizz account; the tool set is served by that server at runtime and is not covered by the pinned sha. Builds and edits spend WebTwizz credits, and publish-site only returns a link: the site goes live when the user presses Publish in the WebTwizz editor. Sign-in runs the pinned mcp-remote@0.1.49 through npx (Node.js and npm required), which opens a browser and a local callback port on first use and stores OAuth tokens under ~/.mcp-auth. The package marks the server untrusted, so Hermes asks before every tool the server does not mark read-only and refuses them in unattended runs."
+maintainer: WebTwizz
+tier: community
+category: tools
+docs_url: https://github.com/WebTwizz/agent/tree/main/hermes
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

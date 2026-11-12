@@ -1,6 +1,6 @@
 name: vitam
 repo: https://github.com/taylorwtf/vitam
-sha: effa783fd171bd7d5042aea77d207569c8f2a5ba
+sha: e92b5585a9a3cf8a719874c3008de19c2ac56577
 subdir: ""
 description: "Turn a modded PS Vita into a voice-powered Hermes handheld: hold-to-talk mic with faster-whisper STT on your own machine, an agent turn through your Hermes gateway, TTS reply spoken through the Vita speaker, and optional rear-camera vision frames. LAN-only; the bridge makes no outbound calls except to your configured gateway."
 maintainer: taylorwtf
@@ -8,7 +8,7 @@ tier: community
 category: voice
 requires_hermes: ">=0.21.0"
 docs_url: https://github.com/taylorwtf/vitam#readme
-version: "1.0.0"
+version: "1.1.0"
 readme: true
 platforms:
 - linux

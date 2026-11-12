@@ -10,20 +10,25 @@ category: tools
 requires_hermes: ">=0.18.2"
 docs_url: https://github.com/Qhantom-Labs/hermes64#readme
 version: "1.0.0-rc"
-image: ""
-screenshots: []
+image: https://raw.githubusercontent.com/Qhantom-Labs/hermes64-media/054fdba10b448dc4b3f35583b59de8c78e0f06c5/catalog/hermes64-card.jpg
+screenshots:
+  - https://raw.githubusercontent.com/Qhantom-Labs/hermes64-media/054fdba10b448dc4b3f35583b59de8c78e0f06c5/catalog/gameplay-1.jpg
+  - https://raw.githubusercontent.com/Qhantom-Labs/hermes64-media/054fdba10b448dc4b3f35583b59de8c78e0f06c5/catalog/gameplay-2.jpg
+  - https://raw.githubusercontent.com/Qhantom-Labs/hermes64-media/054fdba10b448dc4b3f35583b59de8c78e0f06c5/catalog/gameplay-3.jpg
+  - https://raw.githubusercontent.com/Qhantom-Labs/hermes64-media/054fdba10b448dc4b3f35583b59de8c78e0f06c5/catalog/gameplay-4.jpg
+  - https://raw.githubusercontent.com/Qhantom-Labs/hermes64-media/054fdba10b448dc4b3f35583b59de8c78e0f06c5/catalog/gameplay-5.jpg
 readme: true
 platforms: []
 known_issues:
-  - "Draft platform metadata is unresolved: native Linux authoring is unavailable; platforms: [] does not establish feature parity."
+  - "Native Linux authoring is unavailable; native Windows is not verified for this release."
   - "Requires standard Godot 4.6.2 and matching hash-verified export templates for exports."
-  - "Windows authoring requires Job Object runner opt-in; it has no OS network or write confinement."
-  - "Windows cannot export macOS apps; final-package Mac and PC retests are pending in this draft."
+  - "Windows authoring requires the Job Object runner opt-in; it has no OS network or write confinement."
+  - "Windows cannot export macOS apps."
   - "No general jumping, vehicle dynamics, multiplayer or seamless open world."
-  - "Starter image audits can fail even when bots complete; agent-designed games require iteration."
-  - "Official setup fetch is human-confirmed; optional export templates download is about 1.25 GB."
-  - "macOS apps are ad-hoc signed, not notarized; other-Mac Gatekeeper acceptance is not established."
-  - "Intermediate validation retains a private host-version-probe warning and an in-process isolation note; final dependency-install gate is pending."
+  - "Image audits can fail on some style packs even when bots complete; agent-designed games may need iteration."
+  - "Godot setup is a human-confirmed download from official hosts; the optional export templates are about 1.25 GB."
+  - "macOS apps are ad-hoc signed, not notarized; Gatekeeper acceptance on other Macs is not established."
+  - "Validation (hermes plugins validate --install-deps) passes with one warning, a guarded hermes_cli import used for older-version discovery, and an in-process isolation note for one proof tool."
 capabilities:
   provides_tools:
     - hermes64_scaffold

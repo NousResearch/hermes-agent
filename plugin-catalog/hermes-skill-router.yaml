@@ -1,6 +1,6 @@
 name: hermes-skill-router
 repo: https://github.com/mortang2410/hermes-skill-router
-sha: edffe7bbefb624cd4a755c3d25ddcbbc2b8b8745
+sha: 5345ce9903a0d3e7a61951eda472a41a603e7851
 subdir: ""
 description: Removes the always-on skill catalog from every Chat Completions request and injects a short fused shortlist instead. Ranks partly by the skills you loaded for similar prompts in past sessions.
 maintainer: mortang2410
@@ -8,9 +8,9 @@ tier: community
 category: tools
 requires_hermes: ">=0.22.2"
 version: "0.1.0"
-image: https://raw.githubusercontent.com/mortang2410/hermes-skill-router/edffe7bbefb624cd4a755c3d25ddcbbc2b8b8745/docs/assets/performance.png
+image: https://raw.githubusercontent.com/mortang2410/hermes-skill-router/5345ce9903a0d3e7a61951eda472a41a603e7851/docs/assets/performance.png
 screenshots:
-- https://raw.githubusercontent.com/mortang2410/hermes-skill-router/edffe7bbefb624cd4a755c3d25ddcbbc2b8b8745/docs/assets/performance.png
+- https://raw.githubusercontent.com/mortang2410/hermes-skill-router/5345ce9903a0d3e7a61951eda472a41a603e7851/docs/assets/performance.png
 capabilities:
   provides_tools: [skill_router_search]
   provides_hooks: []

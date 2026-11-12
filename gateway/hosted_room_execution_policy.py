@@ -129,13 +129,11 @@ def current_room_execution_policy() -> RoomExecutionPolicy | None:
 def bind_profile_routed() -> Token:
     """Mark this scope as a subagent routed to another profile.
 
-    The room policy was signed for the room MEMBER's profile. A child the
-    member delegates to a different profile executes as that profile (its
-    own home, secret scope and config), so the member's room policy must
-    not govern the child's approval decisions. The mark is set by the
-    profile route's own scope, never inferred from profile-name
-    comparisons: a shared-namespace room can legitimately target the
-    profile that is already home."""
+    The room policy was signed for the room MEMBER's profile; a child the member delegates to a
+    different profile executes as that profile, so its approval mode is the stricter of the room's
+    and that profile's own (``tools.approval_context._get_approval_mode``). The mark is set by the
+    profile route's own scope, never inferred from profile-name comparisons: a ``-p x`` gateway
+    serves its launch home as ``default``."""
     return _PROFILE_ROUTED.set(True)
 
 

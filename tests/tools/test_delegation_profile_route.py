@@ -381,18 +381,43 @@ def test_profile_child_uses_the_target_profiles_persistent_container(two_profile
         clear_session_vars(tokens)
 
 
-def test_profile_route_scope_marks_the_child_as_profile_routed(two_profiles):
-    """The route's own scope marks the child, so a hosted room's execution
-    policy (signed for the delegating member's profile) does not govern
-    this child's approval decisions; the mark clears on exit."""
-    from gateway.hosted_room_execution_policy import profile_routed
-    from tools.delegate_tool_routes import delegated_profile_scope
+def test_routed_child_in_a_room_turn_is_gated_by_its_own_stricter_approval_mode(two_profiles):
+    """A Group Chat member turn (room policy ``smart``) delegating to ``coder`` (``approvals.mode: manual``):
+    the child's dangerous command is gated at ``manual`` inside its profile scope, while the member's own
+    turn keeps the room's ``smart``."""
+    from gateway.hosted_room_execution_policy import (
+        RoomExecutionPolicy, bind_room_execution_policy, execution_policy_mapping, reset_room_execution_policy)
+    from tools import approval_context
+    from tools.delegate_tool_child_run import _ChildRun
 
-    _, coder = two_profiles
-    assert profile_routed() is False
-    with delegated_profile_scope(coder):
-        assert profile_routed() is True
-    assert profile_routed() is False
+    launch, coder = two_profiles
+    _set_config(launch, approvals={"mode": "smart"})
+    _set_config(coder, approvals={"mode": "manual"})
+    seen = {}
+
+    class _Child:
+        provider, model, _delegate_profile_home = "custom", "coder-model", coder
+
+        def run_conversation(self, user_message, **kw):
+            seen["child"] = approval_context._get_approval_mode()
+            return {"final_response": "ok", "completed": True}
+
+    class _Parent:
+        _current_task_id = None
+
+    policy = RoomExecutionPolicy.from_mapping(execution_policy_mapping(target_profile="default"))
+    assert policy.approval_mode == "smart"
+    token = bind_room_execution_policy(policy)
+    try:
+        run = _ChildRun(_Child(), _Parent(), 0, "rm -rf ~/scratch/old", None, None)
+        with patch("tools.delegate_tool_child_run._create_isolated_worktree", return_value=None):
+            run.seed_workspace()
+            result, failure, _ = run.await_child()
+        assert failure is None and result["final_response"] == "ok"
+        assert seen["child"] == "manual"
+        assert approval_context._get_approval_mode() == "smart"
+    finally:
+        reset_room_execution_policy(token)
 
 
 def test_child_routed_back_to_the_launch_profile_uses_the_launch_profiles_container(two_profiles):

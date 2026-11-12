@@ -110,29 +110,28 @@ def test_room_policy_overrides_broader_live_approval_config(monkeypatch):
         reset_room_execution_policy(token)
 
 
-def test_profile_routed_child_uses_its_own_profiles_approval_mode(monkeypatch):
-    """A subagent routed to another profile is governed by that profile's
-    approvals.mode, not by the room policy signed for the delegating
-    member's profile."""
-    from gateway.hosted_room_execution_policy import (
-        bind_profile_routed,
-        profile_routed,
-        reset_profile_routed,
-    )
+@pytest.mark.parametrize(("room_mode", "routed_mode", "expected"), [
+    ("smart", "manual", "manual"),  # the member's looser mode never loosens the routed profile
+    ("manual", "off", "manual"),  # a remotely dispatched turn never reaches ``off`` through a route
+    ("smart", "smart", "smart"),
+])
+def test_profile_routed_child_takes_the_stricter_of_room_and_own_approval_mode(
+        monkeypatch, room_mode, routed_mode, expected):
+    """A subagent routed to another profile runs as that profile, under a room policy signed for the
+    delegating member: the stricter mode governs, and the member's own turn keeps the room's mode."""
+    from gateway.hosted_room_execution_policy import bind_profile_routed, reset_profile_routed
 
-    policy = RoomExecutionPolicy.from_mapping(_policy(approval_mode="manual"))
-    monkeypatch.setattr(approval_context, "_get_approval_config", lambda: {"mode": "off"})
+    policy = RoomExecutionPolicy.from_mapping(_policy(approval_mode=room_mode))
+    monkeypatch.setattr(approval_context, "_get_approval_config", lambda: {"mode": routed_mode})
     policy_token = bind_room_execution_policy(policy)
     try:
-        assert approval_context._get_approval_mode() == "manual"
+        assert approval_context._get_approval_mode() == room_mode
         routed_token = bind_profile_routed()
         try:
-            assert profile_routed() is True
-            assert approval_context._get_approval_mode() == "off"
+            assert approval_context._get_approval_mode() == expected
         finally:
             reset_profile_routed(routed_token)
-        assert profile_routed() is False
-        assert approval_context._get_approval_mode() == "manual"
+        assert approval_context._get_approval_mode() == room_mode
     finally:
         reset_room_execution_policy(policy_token)
 

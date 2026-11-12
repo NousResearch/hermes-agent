@@ -307,16 +307,21 @@ def _get_approval_config() -> dict:
 def _get_approval_mode() -> str:
     """Return 'manual', 'smart', or 'off' (a hosted-room policy overrides config).
 
-    A subagent routed to another profile is the exception: the room policy
-    was signed for the room member's profile, so under the profile route's
-    own mark the routed profile's own config governs instead."""
+    A subagent routed to another profile runs as that profile, but the room policy was signed for the
+    room MEMBER's profile: under the profile route's own mark the stricter of the two modes governs.
+    The routed profile's own mode is never loosened by the member's, and a turn another installation
+    dispatched never runs at ``off`` (the catalog refuses an ``off`` room policy for that reason)."""
+    mode = None
     try:
         from gateway.hosted_room_execution_policy import current_room_execution_policy, profile_routed
-        if not profile_routed() and (room_policy := current_room_execution_policy()) is not None:
-            return room_policy.approval_mode
+        if (room_policy := current_room_execution_policy()) is not None:
+            if not profile_routed():
+                return room_policy.approval_mode
+            mode = room_policy.approval_mode
     except Exception:
         pass
-    return _normalize_approval_mode(_get_approval_config().get("mode", "manual"))
+    own = _normalize_approval_mode(_get_approval_config().get("mode", "manual"))
+    return own if mode is None else min(mode, own, key=_VALID_MODES.index)
 
 
 def _get_approval_timeout() -> int:

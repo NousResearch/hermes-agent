@@ -3,7 +3,7 @@ repo: https://github.com/SilentKnight87/shadow-army
 sha: 22d59a0bc79ce9b7c7305b6256ba8e4446e16486
 subdir: shadow-army
 title: Shadow Army
-description: A different model family must PASS the exact code before the agent closes a Kanban card; it asks before a push of unreviewed code and flags deleted test assertions.
+description: "A different model family must PASS the exact code before the agent closes a Kanban card; it asks before a push of unreviewed code and flags deleted test assertions. Disclosure — Once armed, verifier subagents run on a second already-configured provider and read the card's repository and run the configured check command through Hermes' terminal; the plugin reads Kanban databases read-only and keeps receipts in its own plugin data."
 maintainer: SilentKnight87
 tier: community
 category: automation

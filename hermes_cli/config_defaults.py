@@ -1890,29 +1890,29 @@ DEFAULT_CONFIG = {
         # Assignee when the orchestrator can't match one to an installed profile; "" = default
         # profile. A task never ends up with assignee=None.
         "default_assignee": "",
-        # Global cap: positive int = the HOST never has more than N tasks 'running' across all
-        # boards and both dispatch lanes. None = ~MemTotal / 512 MiB clamped to [2, 8]; where
-        # MemTotal is unreadable (macOS/Windows) None means no cap.
-        # Global concurrency cap (#33488): when set to a positive int, the HOST never has more than N tasks
-        # in 'running' at once — counted across every active board and across both the ready and review
-        # dispatch lanes (workers are OS processes sharing one machine's memory, so the cap bounds the
-        # machine, not each board; OOF-30). Unset (None) means "derive from system memory" (OOF-30/OOF-77):
-        # the dispatcher caps concurrency at roughly MemTotal / 512 MiB, clamped to [2, 8] — e.g. 2 workers
-        # on a 1 GiB VM. On hosts where total memory can't be read (macOS/Windows), unset falls back to no
-        # cap. Set an explicit value to override the derived default in either direction.
+        # Global cap: positive int = the HOST never has more than N tasks 'running' at once, across
+        # every active board and both dispatch lanes (workers are OS processes sharing one machine's
+        # memory, so the cap bounds the machine, not each board). Unset (None) = derive from memory:
+        # ~MemTotal / 512 MiB clamped to [2, 8], or no cap where MemTotal is unreadable. See #33488.
         "max_in_progress": None,
         # Per-profile cap: positive int = no single profile runs more than N workers even if the
-        # global caps allow; blocked tasks defer to the next tick. None = no per-profile cap. Useful
-        # when fan-out would saturate one profile's model/API quota/browser pool.
-        # Unset (None) means "no per-profile cap" — backward-compatible with existing installs. Useful for
-        # fan-out workflows that would otherwise saturate one profile's local model / API quota / browser
-        # pool while leaving other profiles idle. See #21582.
+        # global caps allow; blocked tasks defer to the next tick. None = no per-profile cap (the
+        # backward-compatible default). Useful when fan-out would otherwise saturate one profile's
+        # local model / API quota / browser pool while leaving other profiles idle. See #21582.
         "max_in_progress_per_profile": None,
+        # Per-endpoint cap: mapping of endpoint key -> positive int = no more than N workers may run
+        # against the same provider endpoint at once. One model server (both GPUs behind
+        # localhost:11434) or one cloud account (openrouter) is one quota lane, so a fan-out across
+        # profiles queues behind it; blocked tasks defer to the next tick. Keys are the normalised
+        # route: host:port from model.base_url (scheme/path stripped, host lowercased, loopback
+        # spellings collapsed to "localhost"), else the provider name when base_url is empty. "*" is
+        # the fallback for unlisted endpoints and for cards whose route cannot be resolved. Ints >= 1;
+        # unset (None) = no per-endpoint cap, i.e. exactly as if the key did not exist.
+        "max_in_progress_per_endpoint": None,
         # Per-home claim allowlist for boards shared across Hermes homes (#110995): profile names
         # this home's dispatcher may claim (list or comma-separated string). None = any existing
-        # profile is claimable. Set = fail-closed (an empty list claims nothing). Every home has a
-        # root profile named "default", so on a shared kanban.db every home can otherwise claim
-        # default-assigned cards.
+        # profile is claimable. Set = fail-closed (an empty list claims nothing); every home has a
+        # "default" profile, so on a shared kanban.db any home could otherwise claim those cards.
         "dispatch_profiles": None,
         # Auto-run the decomposer on Triage tasks every tick. False = manual via `hermes kanban
         # decompose <id>` or the dashboard's Decompose button.

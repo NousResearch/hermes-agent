@@ -7,6 +7,7 @@ import { afterEach, test } from 'vitest'
 
 import {
   collectStalePayloadCopies,
+  createStablePayloadResources,
   type PayloadCopyHost,
   payloadCopyKey,
   payloadCopyPlan,
@@ -17,6 +18,7 @@ import {
 import type { InstallStamp } from './install-stamp'
 
 const posix = test.runIf(process.platform !== 'win32')
+const linux = test.runIf(process.platform === 'linux')
 const roots: string[] = []
 
 afterEach((): void => {
@@ -111,7 +113,7 @@ function copyHost(root: string, resources: string, overrides: Partial<PayloadCop
     binDir: path.join(root, 'home', '.local', 'bin'),
     log: (): void => {},
     freeBytes: async (): Promise<number> => Number.MAX_SAFE_INTEGER,
-    liveExecutables: async (): Promise<string[]> => [],
+    livePaths: async (): Promise<string[]> => [],
     ...overrides
   }
 }
@@ -345,9 +347,7 @@ posix('cleanup keeps the current and previous builds and any build a process run
   const removed: string[] = await collectStalePayloadCopies(
     {
       ...host,
-      liveExecutables: async () => [
-        path.join(fs.realpathSync(builds['old-running']), 'agent-payload', 'tools', 'python3')
-      ]
+      livePaths: async () => [path.join(fs.realpathSync(builds['old-running']), 'agent-payload', 'tools', 'python3')]
     },
     true
   )
@@ -358,4 +358,61 @@ posix('cleanup keeps the current and previous builds and any build a process run
     [host.plan.key, 'previous', 'old-running', path.basename(liveWriter)].sort()
   )
   assert.deepEqual(fs.readdirSync(binDir), ['unrelated'])
+})
+
+linux('cleanup keeps every build an open Desktop selected, even when short of space', async (): Promise<void> => {
+  const root: string = scratch()
+  // No livePaths stub: cleanup reads this process's /proc entries, as another launch would.
+  const { livePaths: _stub, ...host }: PayloadCopyHost = copyHost(root, mountedResources(root))
+  const build = (key: string): string => path.join(host.plan.root, key)
+
+  for (const key of ['reused', 'unused']) {
+    fs.mkdirSync(path.join(build(key), 'agent-payload'), { recursive: true })
+    fs.writeFileSync(path.join(build(key), 'complete.json'), JSON.stringify({ key }))
+  }
+
+  // Two open Desktops of other builds, neither running Python yet: one reused its copy, one made it.
+  assert.equal(await preparePayloadCopy({ ...host, plan: { ...host.plan, key: 'reused' } }), build('reused'))
+  assert.equal(await preparePayloadCopy(host), build(host.plan.key))
+
+  const removed: string[] = await collectStalePayloadCopies({ ...host, plan: { ...host.plan, key: 'cleaner' } }, false)
+
+  assert.deepEqual(removed, [build('unused')])
+  assert.deepEqual(fs.readdirSync(host.plan.root).sort(), [host.plan.key, 'reused'].sort())
+})
+
+posix('a copy removed while the app runs is prepared again, not handed out', async (): Promise<void> => {
+  const root: string = scratch()
+  const resources: string = mountedResources(root)
+  const appimage: string = fakeAppImage(root, resources)
+  const lines: string[] = []
+  const log = (line: string): void => void lines.push(line)
+
+  const stable = createStablePayloadResources(hostLog => ({
+    platform: 'linux',
+    env: { APPIMAGE: appimage, XDG_DATA_HOME: path.join(root, 'data') },
+    home: path.join(root, 'home'),
+    resourcesPath: resources,
+    stamp: stamp(),
+    readMountinfo: async (): Promise<string> => fuseMountinfo(path.join(root, 'mount')),
+    binDir: path.join(root, 'home', '.local', 'bin'),
+    log: hostLog,
+    freeBytes: async (): Promise<number> => Number.MAX_SAFE_INTEGER,
+    livePaths: async (): Promise<string[]> => []
+  }))
+
+  const build: string = await stable(log)
+  assert.equal(build, path.join(root, 'data', 'hermes', 'bundles', payloadCopyKey(stamp())!))
+  assert.equal(await stable(log), build)
+  assert.equal(extractions(root).length, 1)
+
+  fs.rmSync(build, { recursive: true })
+
+  assert.equal(await stable(log), build)
+  assert.deepEqual(
+    await tallyTree(path.join(build, 'agent-payload')),
+    await tallyTree(path.join(resources, 'agent-payload'))
+  )
+  assert.equal(extractions(root).length, 2)
+  assert.match(lines.join('\n'), /is gone; preparing this build's copy again/)
 })

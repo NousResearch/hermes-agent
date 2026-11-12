@@ -1,0 +1,23 @@
+{
+  "pattern_id": "soviet_montage_collision_thesis",
+  "title": "Collision Montage / Meaning From Incompatible Shots",
+  "version": "0.11.1",
+  "domain": "cinematic",
+  "source_tier": "PRIMARY",
+  "source_status": "VALIDATED",
+  "source_refs": [{"author":"Sergei Eisenstein","title":"Film Form; Battleship Potemkin","date":"1925-1949","cultural_context":"Soviet montage theory and cinema"}],
+  "observed_structure": ["two shots preserve distinct material facts", "their adjacency creates a third proposition not stated by either shot", "the edit changes causal or ideological interpretation"],
+  "dramatic_operations": ["produce inference through collision", "expose systemic relation", "convert contrast into action pressure"],
+  "transformation_grammars": ["dialectical collision", "adjacency-to-third-meaning"],
+  "cinematic_affordances": ["graphic or rhythmic conflict at the cut", "human action juxtaposed with institutional machinery", "scale mismatch across adjacent shots", "repeated collision with one changed term"],
+  "applicable_genres": ["drama", "satire", "documentary", "thriller", "political cinema"],
+  "applicable_formats": ["feature", "pilot", "short", "commercial", "vertical video"],
+  "cultural_scope": ["Soviet formal tradition; retain historical provenance and do not flatten into generic fast cutting"],
+  "misuse_risks": ["random juxtaposition", "didactic symbolism", "rhythmic aggression without intelligible proposition"],
+  "mutation_requirements": {"required":true,"variables":["shot order","scale contrast","rhythmic interval","repeated term","resulting proposition"]},
+  "transferable_structure": "adjacent incompatible images generate a third readable proposition that changes dramatic interpretation",
+  "non_transferable_surface": "recreating Odessa Steps imagery, propaganda iconography, or copying historical compositions",
+  "production_cost": {"location_dependency":0.2,"prop_dependency":0.2,"lighting_dependency":0.2,"VFX_dependency":0.0},
+  "lexicon_links": ["correspondence", "separation", "coincidentia_oppositorum"],
+  "confidence": 0.86
+}

@@ -1,0 +1,34 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://kubrick.zero-state.dev/schemas/visual-observation.schema.yaml
+title: Kubrick Visual Observation
+type: object
+additionalProperties: false
+required: [schema_version, observation_id, source_graph_id, frame_id, observed, confidence, provenance]
+properties:
+  schema_version: {const: 1.0.0}
+  observation_id: {type: string, minLength: 1}
+  source_graph_id: {type: string, minLength: 1}
+  frame_id: {type: string, minLength: 1}
+  observed:
+    type: object
+    additionalProperties: false
+    required: [geometry, node_states, motif_ownership, object_states, light_states, material_states, residue, convergence_sites]
+    properties:
+      geometry: {type: array, items: {type: string}}
+      node_states: {type: object, additionalProperties: {type: string}}
+      motif_ownership: {type: object, additionalProperties: {type: [string, 'null']}}
+      object_states: {type: object, additionalProperties: {type: string}}
+      light_states: {type: object, additionalProperties: {type: string}}
+      material_states: {type: object, additionalProperties: {type: string}}
+      residue: {type: array, items: {type: string}}
+      convergence_sites: {type: array, items: {type: string}}
+  confidence: {type: number, minimum: 0, maximum: 1}
+  ambiguities: {type: array, items: {type: string}}
+  provenance:
+    type: object
+    additionalProperties: false
+    required: [observer, method]
+    properties:
+      observer: {type: string}
+      method: {type: string}
+      model: {type: [string, 'null']}

@@ -1,0 +1,23 @@
+{
+  "pattern_id": "dual_light_conflicting_claims",
+  "title": "Dual Light / Conflicting Claims on One Subject",
+  "version": "0.11.4",
+  "domain": "cinematic",
+  "source_tier": "COMPARATIVE",
+  "source_status": "VALIDATED",
+  "source_refs": [{"author":"Comparative cinematography analysis","title":"Motivated light systems and relational exposure","date":"cross-period","cultural_context":"Cinematic lighting practice"}],
+  "observed_structure": ["two motivated light sources make different parts of one subject legible", "each source corresponds to a distinct spatial or causal claim", "the balance changes after a decision or intrusion"],
+  "dramatic_operations": ["externalize divided obligation", "make competing systems visible", "shift allegiance through exposure"],
+  "transformation_grammars": ["dual-claim illumination", "division-to-dominance"],
+  "cinematic_affordances": ["opposed motivated sources", "one source extinguished or occluded after choice", "shadow boundary migrating across face, object, or room", "color temperature changing with spatial ownership"],
+  "applicable_genres": ["drama", "thriller", "science fiction", "romance"],
+  "applicable_formats": ["feature", "pilot", "episode", "short", "single-frame"],
+  "cultural_scope": ["general lighting structure; color meanings must remain project-specific"],
+  "misuse_risks": ["split lighting equals split personality", "unmotivated color contrast", "aesthetic duality without causal change"],
+  "mutation_requirements": {"required":true,"variables":["source ownership","intensity ratio","shadow boundary","color temperature","post-choice dominance"]},
+  "transferable_structure": "two motivated light systems make competing relational claims, and their balance mutates with action",
+  "non_transferable_surface": "generic red-blue lighting, occult polarity labels, or arbitrary half-lit faces",
+  "production_cost": {"location_dependency":0.2,"prop_dependency":0.1,"lighting_dependency":0.9,"VFX_dependency":0.1},
+  "lexicon_links": ["polarity", "sun_moon", "solve_coagula", "syzygy"],
+  "confidence": 0.86
+}

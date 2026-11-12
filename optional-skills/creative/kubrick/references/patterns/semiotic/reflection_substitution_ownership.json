@@ -1,0 +1,23 @@
+{
+  "pattern_id": "reflection_substitution_ownership",
+  "title": "Reflection Substitution / Ownership Moves Across the Image",
+  "version": "0.11.4",
+  "domain": "semiotic",
+  "source_tier": "COMPARATIVE",
+  "source_status": "VALIDATED",
+  "source_refs": [{"author":"Comparative film and visual analysis","title":"Reflection, substitution, and image ownership","date":"cross-period","cultural_context":"Cinema, photography, and visual semiotics"}],
+  "observed_structure": ["a reflective surface establishes a stable relation between subject and image", "the reflected occupant, timing, or behavior changes", "the substitution alters agency or ownership outside the mirror"],
+  "dramatic_operations": ["transfer image ownership", "make replacement visible before explanation", "separate physical presence from social or psychological claim"],
+  "transformation_grammars": ["reflection-to-substitution", "image-ownership-transfer"],
+  "cinematic_affordances": ["reflection occupied after subject exits", "different figure completing an established reflected gesture", "reflection delayed or behaviorally independent through blocking and edit", "reflected object retained after ownership changes"],
+  "applicable_genres": ["drama", "mystery", "horror", "thriller", "romance"],
+  "applicable_formats": ["feature", "pilot", "episode", "short", "single-frame"],
+  "cultural_scope": ["general reflective structure; do not assign universal soul or identity meanings"],
+  "misuse_risks": ["mirror equals fractured identity", "supernatural implication without world rules", "decorative reflection"],
+  "mutation_requirements": {"required":true,"variables":["reflected occupant","gesture timing","surface integrity","object ownership","outside consequence"]},
+  "transferable_structure": "a stable reflected relation changes occupant or behavior, transferring an operative claim between image and world",
+  "non_transferable_surface": "shattered mirrors, doubled faces, or copied mirror scenes used as identity shorthand",
+  "production_cost": {"location_dependency":0.2,"prop_dependency":0.5,"lighting_dependency":0.5,"VFX_dependency":0.2},
+  "lexicon_links": ["mirror", "doppelganger", "astral_double", "substitution"],
+  "confidence": 0.84
+}

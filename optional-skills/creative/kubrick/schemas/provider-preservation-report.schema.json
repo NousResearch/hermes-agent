@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kubrick.local/schemas/provider-preservation-report.schema.json",
+  "title": "Kubrick Provider Semantic Preservation Report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "provider", "identity_preserved", "required_objects_preserved",
+    "ownership_preserved", "geometry_preserved", "state_change_preserved",
+    "residue_preserved", "continuity_preserved", "negative_constraints_preserved",
+    "critical_invariants_preserved", "losses"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "provider": {"enum": ["generic", "grok-imagine", "flux", "sd3", "midjourney"]},
+    "identity_preserved": {"type": "boolean"},
+    "required_objects_preserved": {"type": "boolean"},
+    "ownership_preserved": {"type": "boolean"},
+    "geometry_preserved": {"type": "boolean"},
+    "state_change_preserved": {"type": "boolean"},
+    "residue_preserved": {"type": "boolean"},
+    "continuity_preserved": {"type": "boolean"},
+    "negative_constraints_preserved": {"type": "boolean"},
+    "critical_invariants_preserved": {"type": "boolean"},
+    "losses": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
+  }
+}

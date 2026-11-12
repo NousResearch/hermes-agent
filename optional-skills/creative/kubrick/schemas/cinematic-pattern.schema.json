@@ -1,0 +1,33 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "CinematicPattern",
+  "type": "object",
+  "required": ["pattern_id", "observed_technique", "cinematic_affordances", "transferable_structure"],
+  "properties": {
+    "pattern_id": { "type": "string" },
+    "observed_technique": { "type": "string" },
+    "scene_context": { "type": "string" },
+    "recurring_pattern": { "type": "string" },
+    "inferred_function": { "type": "string" },
+    "alternate_readings": { "type": "array", "items": { "type": "string" } },
+    "filmmaker_statement": { "type": "string" },
+    "critic_interpretation": { "type": "string" },
+    "audience_common_reading": { "type": "string" },
+    "transferable_structure": { "type": "array", "items": { "type": "string" } },
+    "non_transferable_surface": { "type": "array", "items": { "type": "string" } },
+    "cinematic_affordances": { "type": "array", "items": { "type": "string" } },
+    "transformation_grammars": { "type": "array", "items": { "type": "string" } },
+    "production_cost": {
+      "type": "object",
+      "properties": {
+        "location_dependency": { "type": "number" },
+        "prop_dependency": { "type": "number" },
+        "lighting_dependency": { "type": "number" },
+        "VFX_dependency": { "type": "number" },
+        "sound_dependency": { "type": "number" },
+        "performance_dependency": { "type": "number" },
+        "editorial_dependency": { "type": "number" }
+      }
+    }
+  }
+}

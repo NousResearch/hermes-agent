@@ -1,0 +1,23 @@
+{
+  "pattern_id": "negative_space_authority_vacancy",
+  "title": "Negative Space / Authority Vacancy",
+  "version": "0.11.4",
+  "domain": "spatial-geometric",
+  "source_tier": "COMPARATIVE",
+  "source_status": "VALIDATED",
+  "source_refs": [{"author":"Comparative composition and institutional-space analysis","title":"Vacancy, framing, and absent authority","date":"cross-period","cultural_context":"Cinema, architecture, and stage composition"}],
+  "observed_structure": ["a position associated with authority is established through repeated occupancy or orientation", "the position becomes empty while surrounding behavior remains organized around it", "the vacancy changes who acts, waits, or claims the space"],
+  "dramatic_operations": ["make absent authority operative", "show a system persisting without its representative", "create succession pressure through vacancy"],
+  "transformation_grammars": ["occupied-center-to-vacancy", "presence-to-structural-absence"],
+  "cinematic_affordances": ["empty chair, doorway, platform, or center retained in frame", "eyelines and blocking still oriented toward vacancy", "another object or person entering only after pressure accumulates", "ambient sound preserving the absent role"],
+  "applicable_genres": ["drama", "thriller", "satire", "science fiction", "mystery"],
+  "applicable_formats": ["feature", "pilot", "episode", "short", "single-frame"],
+  "cultural_scope": ["general vacancy structure; authority cues must be established within the project"],
+  "misuse_risks": ["empty space treated as automatic profundity", "vacant chair equals death", "centered framing without behavioral orientation"],
+  "mutation_requirements": {"required":true,"variables":["authority position","surrounding orientation","vacancy duration","claimant","system response"]},
+  "transferable_structure": "an established authority position becomes empty while the surrounding system continues to organize behavior around the absence",
+  "non_transferable_surface": "generic thrones, boardroom chairs, altars, or empty centers without established ownership",
+  "production_cost": {"location_dependency":0.2,"prop_dependency":0.3,"lighting_dependency":0.2,"VFX_dependency":0.0},
+  "lexicon_links": ["empty_center", "tzimtzum", "vacancy", "throne"],
+  "confidence": 0.88
+}

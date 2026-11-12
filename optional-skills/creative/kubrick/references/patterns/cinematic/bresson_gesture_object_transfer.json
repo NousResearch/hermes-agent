@@ -1,0 +1,23 @@
+{
+  "pattern_id": "bresson_gesture_object_transfer",
+  "title": "Gesture Transfer / Object Carries Agency",
+  "version": "0.11.2",
+  "domain": "cinematic",
+  "source_tier": "PRIMARY",
+  "source_status": "VALIDATED",
+  "source_refs": [{"author":"Robert Bresson","title":"Pickpocket; A Man Escaped; L'Argent","date":"1956-1983","cultural_context":"French cinema"}],
+  "observed_structure": ["hands or partial bodies perform a precise task", "an object changes ownership or function", "agency becomes legible through gesture before facial explanation"],
+  "dramatic_operations": ["transfer agency through action", "externalize choice in handling", "separate intention from declared emotion"],
+  "transformation_grammars": ["gesture-to-agency", "ownership-transfer"],
+  "cinematic_affordances": ["close framing on hands and object contact", "repeated handling with altered initiator", "sound of material contact carrying emphasis", "face withheld until consequence is established"],
+  "applicable_genres": ["drama", "crime", "thriller", "procedural"],
+  "applicable_formats": ["feature", "pilot", "short", "single-frame"],
+  "cultural_scope": ["film-derived formal pattern; cite Bresson and avoid copying specific scenes"],
+  "misuse_risks": ["fetishized hand close-ups", "minimal acting treated as automatic depth", "object transfer without changed agency"],
+  "mutation_requirements": {"required":true,"variables":["initiating hand","object function","contact sound","ownership","consequence timing"]},
+  "transferable_structure": "precise handling transfers agency, value, or obligation before dialogue explains the change",
+  "non_transferable_surface": "direct recreation of Bresson shot sequences, costumes, props, or ascetic production design",
+  "production_cost": {"location_dependency":0.1,"prop_dependency":0.5,"lighting_dependency":0.2,"VFX_dependency":0.0},
+  "lexicon_links": ["true_name", "talisman", "salt", "consecration"],
+  "confidence": 0.86
+}

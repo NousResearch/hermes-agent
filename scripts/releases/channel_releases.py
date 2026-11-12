@@ -455,7 +455,7 @@ def publish_release(policy: str, env: dict, root: Path) -> dict:
                 previous = published_canary_timestamp(publisher.request(live_build)["releaseTag"])
                 candidate = published_canary_timestamp(payload_tag)
                 if previous is None or candidate is None or candidate <= previous:
-                    raise ChannelError("Stale canary publication cannot overwrite the live retention pointer")
+                    raise ChannelError("Refusing a stale canary publication: it cannot overwrite the live retention pointer")
     head = publisher.store.get(pointer)
     publisher._write(pointer, accepted, head[1] if head else None)
     if publisher.reader.read_bytes(pointer) != canonical_json(accepted):

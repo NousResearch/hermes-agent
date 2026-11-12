@@ -384,3 +384,27 @@ def test_config_failure_is_sanitized_without_exception_context(monkeypatch):
     assert caught.value.code == "embedding_unconfigured"
     assert "synthetic-key" not in str(caught.value)
     assert caught.value.__context__ is None
+
+
+def test_plugin_facade_honors_profile_timeout_when_omitted(monkeypatch, tmp_path, embedding_server):
+    from agent.plugin_llm import PluginLlm
+    import hermes_constants
+
+    base_url, _state = embedding_server
+    home = tmp_path / "hermes-home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    hermes_constants._default_hermes_root_memo = None
+    _write_profile(home, base_url, model="shared-embedding", keys=["synthetic-key"], timeout=23)
+    deadlines = []
+    original = embedding_client._call_client_for_remaining_time
+
+    def record_deadline(client, remaining):
+        deadlines.append(remaining)
+        return original(client, remaining)
+
+    monkeypatch.setattr(embedding_client, "_call_client_for_remaining_time", record_deadline)
+    result = PluginLlm(plugin_id="fixture-plugin").embed(["synthetic public API probe"])
+    assert result.dimensions == 2
+    assert len(deadlines) == 1
+    assert 0 < deadlines[0] <= 23

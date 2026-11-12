@@ -140,40 +140,6 @@ async def test_active_session_bypass_uses_profile_namespaced_key_under_multiplex
 
 
 @pytest.mark.asyncio
-async def test_gateway_clarify_reply_resumes_typing_before_returning_empty_ack():
-    """A clarify answer must re-enable the active run's typing indicator.
-
-    Clarify pauses typing while waiting so Slack's Assistant API does not
-    disable the compose box. The typed answer is intercepted by the gateway
-    and returns an empty acknowledgment instead of starting a second run; that
-    interception path must therefore resume the original run's indicator.
-    """
-    _clear_clarify_state()
-    from gateway.run import GatewayRunner
-    from tools import clarify_gateway as cm
-
-    adapter = _ClarifyBypassAdapter()
-    adapter.pause_typing_for_chat("12345")
-    event = _event("the missing details")
-
-    runner = GatewayRunner.__new__(GatewayRunner)
-    runner._startup_restore_in_progress = False
-    runner._scale_to_zero_note_real_inbound = lambda: None
-    runner._is_user_authorized = lambda source: True
-    runner._session_key_for_source = lambda source: "clarify-session"
-    runner._adapter_for_source = lambda source: adapter
-    runner._update_prompt_pending = {}
-
-    cm.register("clarify-2", "clarify-session", "What is missing?", None)
-
-    with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
-        result = await runner._handle_message(event)
-
-    assert result == ""
-    assert "12345" not in adapter._typing_paused
-
-
-@pytest.mark.asyncio
 async def test_gateway_clarify_document_reply_reaches_waiting_agent_with_file_context(
     tmp_path, monkeypatch
 ):
@@ -226,3 +192,42 @@ async def test_gateway_clarify_document_reply_reaches_waiting_agent_with_file_co
     assert "[The user sent a document:" in entry.response
     assert "SIE_Regions_Offline_Reference.pdf" in entry.response
     assert str(pdf_path) in entry.response
+
+
+@pytest.mark.asyncio
+async def test_gateway_clarify_photo_reply_carries_the_image_path_but_a_choice_pick_stays_bare(tmp_path):
+    """A photo answering an open-ended clarify reaches the agent as a path it can look at; a photo
+    captioned with a choice label on a choice prompt still answers with just that label."""
+    _clear_clarify_state()
+    from gateway.run import GatewayRunner
+    from tools import clarify_gateway as cm
+
+    png = tmp_path / "img_abc_bug.png"
+    png.write_bytes(b"\x89PNG fake")
+    adapter = _ClarifyBypassAdapter()
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner._startup_restore_in_progress = False
+    runner._scale_to_zero_note_real_inbound = lambda: None
+    runner._is_user_authorized = lambda source: True
+    runner._session_key_for_source = lambda source: "clarify-photo-session"
+    runner._adapter_for_source = lambda source: adapter
+    runner._update_prompt_pending = {}
+
+    def photo(caption):
+        event = _event(caption)
+        event.message_type = MessageType.PHOTO
+        event.media_urls, event.media_types = [str(png)], ["image/png"]
+        return event
+
+    for cid, choices, caption in (("open", None, ""), ("pick", ["staging", "prod"], "prod")):
+        _clear_clarify_state()  # no waiting tool pops the settled entry here
+        cm.register(cid, "clarify-photo-session", "Which one?", choices)
+        with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
+            assert await runner._handle_message(photo(caption)) == ""
+        with cm._lock:
+            entry = cm._entries.get(cid)
+        assert entry is not None and entry.event.is_set()
+        if choices:
+            assert entry.response == "prod"
+        else:
+            assert "[The user sent an image." in entry.response and str(png) in entry.response

@@ -155,4 +155,36 @@ def test_telegram_standalone_sender_reports_every_chunk_id(monkeypatch):
     _install_telegram_mock(monkeypatch, MagicMock(return_value=bot))
     result = asyncio.run(_send_telegram("tok", "123", "line of text\n" * 700))
     assert result["success"] is True, result
-    assert result["raw_response"]["message_ids"] == ["500", "501", "502"]
+    assert result["delivered_message_ids"] == ["500", "501", "502"]
+
+
+def test_a_partial_standalone_split_send_frames_replies_to_its_landed_chunks(monkeypatch):
+    """The REAL scheduler and Telegram standalone sender: chunks 1-2 land (501, 502), chunk 3 fails.
+    A reply to 502 quotes a continuation chunk without the header, so it is framed as a past report
+    only if the failed send's landed ids were tagged."""
+    from tests.tools.test_telegram_send_message_chunk_mdv2 import _install_telegram_mock, _no_proxy
+    from plugins.platforms.telegram.standalone import _send_telegram
+    from gateway.inbound_reply_context import reply_pointer
+
+    _no_proxy(monkeypatch)
+    bot = MagicMock()
+    bot.send_message = AsyncMock(side_effect=[SimpleNamespace(message_id=501), SimpleNamespace(message_id=502),
+                                              RuntimeError("transport refused final chunk")])
+    _install_telegram_mock(monkeypatch, MagicMock(return_value=bot))
+    cfg = MagicMock()
+    cfg.platforms = {Platform.TELEGRAM: PlatformConfig(enabled=True)}
+    cfg.get_home_channel = lambda p: None
+    job = {"id": "j", "name": "nightly", "deliver": "telegram:-100123",
+           "origin": {"platform": "telegram", "chat_id": "-100123"}}
+
+    async def send(platform, pconfig, chat_id, text, **kwargs):
+        return await _send_telegram("tok", chat_id, text)
+
+    with patch("gateway.config.load_gateway_config", return_value=cfg), \
+         patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": True}}), \
+         patch("tools.send_message_tool._send_to_platform", send), \
+         patch("cron.jobs.update_job"):
+        assert _deliver_result(job, "status line ok\n" * 700)
+    assert bot.send_message.await_count == 3
+    pointer = reply_pointer("status line ok", replied_to=("telegram", "-100123", "502"))
+    assert pointer.startswith("[Replying to an earlier scheduled cron delivery"), pointer

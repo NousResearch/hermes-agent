@@ -57,6 +57,9 @@ def test_primary_openai_and_gemini_created_transport_policy(configure, provider,
     client = agent._create_openai_client(kwargs, reason="test", shared=True)
     try:
         transport = client._http if provider == "gemini" else client._client
+        if provider == "gemini":
+            from plugins.model_providers.gemini.client import GeminiClient
+            assert type(client) is GeminiClient
         assert transport.follow_redirects is bool(policy)
         assert kwargs == agent._client_kwargs
         assert "http_client" not in kwargs
@@ -365,12 +368,16 @@ def test_request_cache_uses_one_policy_snapshot(configure, provider, base_url, f
         agent.client.close()
 
 
-@pytest.mark.parametrize("kind", ["client", "transport"])
-def test_provider_injection_precedes_redirect_policy(configure, monkeypatch, kind):
+@pytest.mark.parametrize("kind,native_gemini", [
+    ("client", False), ("transport", False), ("client", True), ("transport", True),
+])
+def test_provider_injection_precedes_redirect_policy(configure, monkeypatch, kind, native_gemini):
     import providers
     from providers.base import ProviderProfile
-    configure({"redirect-provider": {"follow_redirects": True}})
-    agent = _agent()
+    agent = (_agent("gemini", "https://generativelanguage.googleapis.com/v1beta")
+             if native_gemini else _agent())
+    configure({agent.provider: {"follow_redirects": True}})
+    native_profile = providers.get_provider_profile("gemini") if native_gemini else None
     with httpx.Client(follow_redirects=False) as owned:
         class Profile(ProviderProfile):
             def build_client_kwargs_extras(self, **context):
@@ -379,7 +386,9 @@ def test_provider_injection_precedes_redirect_policy(configure, monkeypatch, kin
             def create_client(self, **kwargs):
                 assert "follow_redirects" not in kwargs
                 assert "_follow_redirects" not in kwargs
-                return owned if kind == "client" else None
+                if kind == "client":
+                    return owned
+                return native_profile.create_client(**kwargs) if native_profile is not None else None
 
         providers._discover_providers()
         monkeypatch.setitem(providers._REGISTRY, agent.provider, Profile(name=agent.provider))
@@ -387,7 +396,8 @@ def test_provider_injection_precedes_redirect_policy(configure, monkeypatch, kin
             client = agent._create_openai_client(agent._client_kwargs, reason="test", shared=True,
                                                   _follow_redirects=True)
         try:
-            assert (client if kind == "client" else client._client) is owned
+            transport = client if kind == "client" else (client._http if native_gemini else client._client)
+            assert transport is owned
             assert owned.follow_redirects is False
         finally:
             client.close()

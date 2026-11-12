@@ -239,9 +239,33 @@ def test_legacy_provider_translation_preserves_redirect_policy(value):
     assert result["follow_redirects"] == value
 
 
-def test_unreadable_config_does_not_reuse_last_known_good_opt_in(configure, tmp_path):
-    configure({"providers": {"redirect-provider": {"follow_redirects": True}}})
-    assert get_provider_follow_redirects("redirect-provider") is True
+@pytest.mark.parametrize("policy", [True, False])
+def test_unreadable_config_preserves_last_known_good_policy(configure, tmp_path, policy):
+    from hermes_cli.config_read_errors import FailedConfigRead
+
+    configure({"providers": {"redirect-provider": {
+        "follow_redirects": policy, "models": {"override": {"follow_redirects": not policy}},
+    }}})
+    assert get_provider_follow_redirects("redirect-provider") is policy
     # Simulate a broken user edit, not a config-writer operation.
     (tmp_path / "config.yaml").write_text("providers: [\n", encoding="utf-8")
-    assert get_provider_follow_redirects("redirect-provider") is None
+    assert isinstance(load_config_readonly(), FailedConfigRead)
+    assert get_provider_follow_redirects("redirect-provider") is policy
+    assert get_provider_follow_redirects("redirect-provider", "override") is not policy
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize("identity", ["custom:unknown", "custom:shared-proxy", ""])
+def test_duplicate_display_routes_remain_ambiguous(configure, legacy, identity):
+    url = "https://proxy.example/v1"
+    first = {"name": "Shared Proxy", "base_url": url, "follow_redirects": True}
+    second = {"name": "Shared Proxy", "base_url": url, "follow_redirects": False}
+    config = ({"custom_providers": [first], "providers": {"second": second}} if legacy else
+              {"providers": {"first": first, "second": second}})
+    configure(config)
+    assert get_provider_follow_redirects(
+        "custom", base_url=url, requested_provider=identity,
+    ) is None
+    assert get_provider_follow_redirects(
+        "custom", base_url=url, requested_provider="custom:second",
+    ) is False

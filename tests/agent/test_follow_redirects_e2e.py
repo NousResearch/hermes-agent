@@ -31,6 +31,12 @@ def _payload(protocol):
             "stop_reason": "end_turn", "stop_sequence": None,
             "usage": {"input_tokens": 3, "output_tokens": 2},
         }
+    if protocol == "interactions":
+        return {
+            "id": "interaction_redirect", "status": "completed",
+            "steps": [{"type": "model_output", "content": [{"type": "text", "text": "redirect works"}]}],
+            "usage": {"total_input_tokens": 3, "total_output_tokens": 2},
+        }
     if protocol == "gemini":
         return {
             "candidates": [{"content": {"role": "model", "parts": [{"text": "redirect works"}]},
@@ -133,16 +139,16 @@ def origins():
 
 
 @contextmanager
-def _agent(server, protocol="openai", *, provider=None, requested_provider=None, key=KEY):
+def _agent(server, protocol="openai", *, provider=None, requested_provider=None, key=KEY, model=MODEL):
     from hermes_cli.config import load_config_readonly
     config = load_config_readonly()
-    config["model"] = {"default": MODEL, "provider": provider or protocol,
+    config["model"] = {"default": model, "provider": provider or protocol,
                        "base_url": server.url + "/v1", "context_length": 128000}
     server_home = Path(os.environ["HERMES_HOME"])
     (server_home / "config.yaml").write_text(json.dumps(config), encoding="utf-8")
     agent = AIAgent(
         api_key=key, base_url=server.url + "/v1", provider=provider or protocol,
-        requested_provider=requested_provider, model=MODEL,
+        requested_provider=requested_provider, model=model,
         api_mode="anthropic_messages" if protocol == "anthropic" else "chat_completions",
         quiet_mode=True, skip_context_files=True, skip_memory=True,
         enabled_toolsets=[], disabled_toolsets=["all"],
@@ -169,7 +175,7 @@ def _send(agent, protocol):
     else:
         agent.client.max_retries = 0
         agent.client.timeout = 2.0
-        result = agent.client.chat.completions.create(model=MODEL, messages=MESSAGES, max_tokens=16, timeout=2.0)
+        result = agent.client.chat.completions.create(model=agent.model, messages=MESSAGES, max_tokens=16, timeout=2.0)
         assert result.choices[0].message.content == "redirect works"
         assert result.usage.completion_tokens == 2
 
@@ -183,11 +189,14 @@ def _assert_replay(records, protocol, *, bearer=False):
     body = json.loads(first["body"])
     if protocol == "gemini":
         assert body["contents"][0]["parts"][0]["text"] == "hello redirect"
+    elif protocol == "interactions":
+        assert body["model"] == "gemini-2.5-flash"
+        assert body["input"] == [{"type": "user_input", "content": [{"type": "text", "text": "hello redirect"}]}]
     else:
         assert body["model"] == MODEL
         assert body["messages"] == MESSAGES
     headers = [{k.lower(): v for k, v in record["headers"].items()} for record in records]
-    credential = "x-goog-api-key" if protocol == "gemini" else (
+    credential = "x-goog-api-key" if protocol in ("gemini", "interactions") else (
         "x-api-key" if protocol == "anthropic" and not bearer else "authorization")
     expected = KEY if credential != "authorization" else f"Bearer {KEY}"
     assert headers[0][credential] == headers[1][credential] == expected
@@ -299,31 +308,43 @@ def test_anthropic_bearer_hook_and_rebuild_preserve_policy(isolated_home, origin
 
 @pytest.mark.parametrize("status", [307, 308])
 @pytest.mark.parametrize("policy", [None, False, True])
-@pytest.mark.parametrize("destination", ["same", "host", "port"])
-def test_native_gemini_real_creation_and_request(isolated_home, monkeypatch, status, policy, destination):
-    from agent.gemini_native_adapter import GeminiAPIError, GeminiNativeClient
+@pytest.mark.parametrize("destination", ["same", "host", "port", "scheme"])
+@pytest.mark.parametrize("gemini_api", ["generate_content", "interactions"])
+def test_native_gemini_real_creation_and_request(isolated_home, monkeypatch, status, policy, destination, gemini_api):
+    from agent.gemini_native_adapter import GeminiAPIError
+    import providers
+
+    providers.get_provider_profile("gemini")
+    from plugins.model_providers.gemini.client import GeminiClient
+
+    model = "gemini-3.8-flash" if gemini_api == "generate_content" else "gemini-2.5-flash"
+    protocol = "gemini" if gemini_api == "generate_content" else "interactions"
 
     records = []
     google = "https://generativelanguage.googleapis.com"
     target = {"same": google, "host": "https://other.googleapis.com",
-              "port": google + ":444"}[destination]
+              "port": google + ":444", "scheme": google.replace("https:", "http:")}[destination]
 
     def wire(transport, request):
         records.append({"method": request.method, "path": request.url.path,
                         "body": request.read(), "headers": dict(request.headers)})
         assert str(request.url).startswith(google + "/"), "Cross-origin request reached Gemini transport"
         if request.url.path == "/canonical":
-            return httpx.Response(200, json=_payload("gemini"), request=request)
+            return httpx.Response(200, json=_payload(protocol), request=request)
         return httpx.Response(status, headers={"Location": target + "/canonical"},
                               json={"error": {"message": "redirect"}}, request=request)
 
     # Replace only I/O on the actual keepalive transport: config resolution,
     # native detection, httpx redirect logic, payload conversion and parsing run.
     monkeypatch.setattr(httpx.HTTPTransport, "handle_request", wire)
-    _config(isolated_home, {"gemini": {} if policy is None else {"follow_redirects": policy}})
+    settings = {"gemini_api": "interactions" if gemini_api == "generate_content" else "generate_content",
+                "models": {model: {"gemini_api": gemini_api}}}
+    if policy is not None:
+        settings["follow_redirects"] = policy
+    _config(isolated_home, {"gemini": settings})
     endpoint = type("Endpoint", (), {"url": google})()
-    with _agent(endpoint, provider="gemini") as agent:
-        assert isinstance(agent.client, GeminiNativeClient)
+    with _agent(endpoint, provider="gemini", model=model) as agent:
+        assert type(agent.client) is GeminiClient
         if policy is True and destination == "same":
             _send(agent, "gemini")
         elif policy is True:
@@ -334,7 +355,8 @@ def test_native_gemini_real_creation_and_request(isolated_home, monkeypatch, sta
                 _send(agent, "gemini")
             assert error.value.status_code == status
     if policy is True and destination == "same":
-        _assert_replay(records, "gemini")
+        _assert_replay(records, protocol)
     else:
         assert len(records) == 1
-    assert records[0]["path"].endswith(f"/models/{MODEL}:generateContent")
+    expected = f"/models/{model}:generateContent" if gemini_api == "generate_content" else "/interactions"
+    assert records[0]["path"].endswith(expected)

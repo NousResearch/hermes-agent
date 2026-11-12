@@ -129,3 +129,20 @@ class TestPasswordLoginNextTainted:
         )
         assert resp.status_code == 200
         assert resp.json() == {"ok": True, "next": "/"}
+
+    def test_malformed_forwarded_prefix_cannot_override_safe_post_login_next(
+        self, authed_client: TestClient
+    ):
+        """Reject a proxy mount with a backslash before composing the browser landing URL."""
+        response = authed_client.post(
+            "/auth/password-login",
+            headers={"x-forwarded-prefix": "/\\evil.example"},
+            json={
+                "provider": "testpw",
+                "username": "admin",
+                "password": "hunter2",
+                "next": "/sessions",
+            },
+        )
+        assert response.status_code == 200
+        assert response.json() == {"ok": True, "next": "/sessions"}

@@ -1,6 +1,6 @@
 name: hermes-hyperframes
 repo: https://github.com/wesleymatosdev/hermes-hyperframes-plugin
-sha: d49838bc34d347e30b8e205fc8259f67a38a8fca
+sha: 481176aee06d5a4f84441567f753783c484eb47c
 title: "Hyperframes"
 description: >-
   Drive Hyperframes (Apache-2.0 HTML video compositions) from Hermes: six
@@ -10,14 +10,26 @@ description: >-
   Studio preview embedded, an agent chat bound to a real Hermes gateway session (async turns with polled status) — the same conversation a terminal sees via `hermes chat --resume`.
   Wraps a pinned local Hyperframes CLI (no npx) and talks only to loopback
   services: the local CLI and the gateway's own api_server.
+  Disclosure — heavy local actions: starts/kills the Studio preview process
+  and runs the pinned CLI on the host, but only for projects under the
+  user-configured projects_roots allowlist (a project's own
+  node_modules/.bin/hyperframes binary is executed, so everything outside the
+  roots is refused); the CLI subprocess gets a minimal environment
+  (PATH/HOME/locale/TMPDIR — never the Hermes process env, so no provider
+  keys reach it; extra names opt-in via env_passthrough); render output is
+  confined to the project dir and never overwrites a non-video file; the
+  chat credential (API_SERVER_KEY) is read through Hermes's secret API
+  (agent.secret_scope.get_secret), never parsed from .env; the chat lane
+  creates sessions in the local gateway and every message costs a real model
+  call. No third-party network calls, no telemetry.
 maintainer: wesleymatosdev
 tier: community
 category: automation
-version: "0.3.1"
+version: "0.3.2"
 screenshots:
-  - https://raw.githubusercontent.com/wesleymatosdev/hermes-hyperframes-plugin/d49838bc34d347e30b8e205fc8259f67a38a8fca/docs/screenshots/before-nebula.png
-  - https://raw.githubusercontent.com/wesleymatosdev/hermes-hyperframes-plugin/d49838bc34d347e30b8e205fc8259f67a38a8fca/docs/screenshots/after-minimal.png
-  - https://raw.githubusercontent.com/wesleymatosdev/hermes-hyperframes-plugin/d49838bc34d347e30b8e205fc8259f67a38a8fca/docs/screenshots/after-chat-native.png
+  - https://raw.githubusercontent.com/wesleymatosdev/hermes-hyperframes-plugin/481176aee06d5a4f84441567f753783c484eb47c/docs/screenshots/before-nebula.png
+  - https://raw.githubusercontent.com/wesleymatosdev/hermes-hyperframes-plugin/481176aee06d5a4f84441567f753783c484eb47c/docs/screenshots/after-minimal.png
+  - https://raw.githubusercontent.com/wesleymatosdev/hermes-hyperframes-plugin/481176aee06d5a4f84441567f753783c484eb47c/docs/screenshots/after-chat-native.png
 platforms: []
 capabilities:
   provides_tools:

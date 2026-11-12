@@ -524,7 +524,14 @@ def activate_dependencies(project_root: Path) -> None:
         directories.append(venv_bin_dir(environment))
     prefix = [str(path) for path in directories if path.is_dir()]
     if prefix:
-        os.environ["PATH"] = os.pathsep.join([*prefix, os.environ.get("PATH", "")])
+        # Activation runs on every backend start, hot reload and PM composition in a
+        # long-lived process: move the managed directories to the front instead of
+        # prepending another copy, or PATH grows past MAX_ARG_STRLEN and every execve
+        # fails with E2BIG (#153514).
+        managed = {os.path.normcase(entry) for entry in prefix}
+        rest = [entry for entry in os.environ.get("PATH", "").split(os.pathsep)
+                if os.path.normcase(entry) not in managed]
+        os.environ["PATH"] = os.pathsep.join([*prefix, *rest])
 
 
 def activation_environment(project_root: Path) -> dict[str, str]:

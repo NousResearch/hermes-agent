@@ -101,6 +101,49 @@ def test_boot_puts_the_checkout_launcher_ahead_of_the_venvs_own_console_script(t
     assert entries.index(str(checkout_bin)) < entries.index(str(venv_bin))
 
 
+def test_repeated_activation_does_not_grow_path(tmp_path, monkeypatch):
+    """#153514: a long-lived process activates on every backend start, hot reload and
+    PM composition. Re-prepending the managed directories each time grows PATH until
+    it passes MAX_ARG_STRLEN and every execve fails with E2BIG."""
+    import os
+    import subprocess
+    import sys
+    from pm import environments as runtime_paths
+
+    root = tmp_path / "repo"
+    home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    state = runtime_paths.install_state_dir(root)
+    selected = state / "environments" / "new" / "venv"
+    def site_of(venv):
+        return venv / ("Lib/site-packages" if os.name == "nt" else f"lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages")
+    site_of(selected).mkdir(parents=True)
+    (selected / "pyvenv.cfg").write_text("home = test")
+    venv_bin = runtime_paths.venv_bin_dir(selected)
+    venv_bin.mkdir(parents=True)
+    checkout_bin = root / ".hermes" / "bin"
+    checkout_bin.mkdir(parents=True)
+    state.mkdir(parents=True, exist_ok=True)
+    (state / "facts.json").write_text(json.dumps({"schema": 1, "packages": {
+        "venv": {"environment": str(selected)}
+    }}))
+    # The managed directories already sit later on the inherited PATH, as they do for a
+    # child that inherited an activated environment.
+    inherited = os.pathsep.join(["/usr/bin", str(venv_bin), "/bin"])
+    code = (
+        "import os, sys; from pathlib import Path; from pm.environments import activate_dependencies; "
+        "[activate_dependencies(Path(sys.argv[1])) or print(os.environ['PATH']) for _ in range(3)]"
+    )
+    process = subprocess.run([sys.executable, "-c", code, str(root)],
+                             env={**os.environ, "PATH": inherited}, text=True,
+                             capture_output=True, timeout=30, check=False)
+    assert process.returncode == 0, process.stderr
+    first, second, third = process.stdout.splitlines()
+    assert first == second == third
+    entries = first.split(os.pathsep)
+    assert entries == [str(checkout_bin), str(venv_bin), "/usr/bin", "/bin"]
+
+
 @pytest.mark.parametrize("command,allowed", [(["pm", "install", "--help"], True), (["pm", "doctor"], True),
     (["-p", "default", "pm", "repair"], True), (["chat"], False), (["chat", "pm", "install"], False)])
 def test_broken_environment_keeps_explicit_repair_entry_reachable(tmp_path, monkeypatch, command, allowed):

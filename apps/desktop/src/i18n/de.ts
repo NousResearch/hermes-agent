@@ -583,7 +583,7 @@ export const deOverrides = {
       'nav.capabilities': 'Skills öffnen',
       'nav.messaging': 'Messaging öffnen',
       'nav.artifacts': 'Artefakte öffnen',
-      'nav.cron': 'Zeitpläne öffnen',
+      'nav.cron': 'Routinen öffnen',
       'nav.agents': 'Agenten öffnen',
       'nav.back': 'Zurück',
       'nav.forward': 'Vorwärts',
@@ -1470,7 +1470,7 @@ export const deOverrides = {
         full: {
           title: 'Alles deinstallieren',
           description:
-            'Entfernt die App, den Agenten und alle Benutzerdaten – Konfiguration, Chats, Zeitpläne, Geheimnisse, Logs.',
+            'Entfernt die App, den Agenten und alle Benutzerdaten – Konfiguration, Chats, Routinen, Geheimnisse, Logs.',
           consequence:
             'ALLES – die Chat-Oberfläche, den Hermes-Agent sowie Ihre gesamte Konfiguration, Chats, Geheimnisse und Logs'
         }
@@ -1638,7 +1638,7 @@ export const deOverrides = {
       intro:
         'Verwalten Sie dieses Gerät und jeden Rechner mit Hermes, den es über Remote-, SSH- oder Cloud-Verbindungen erreichen kann.',
       stagedNote:
-        'Jeder Rechner bleibt verbunden. Agenten, Chats, Nachrichten und Zeitpläne bleiben auf ihrem Rechner, und Sessions kann alle gleichzeitig anzeigen.',
+        'Jeder Rechner bleibt verbunden. Agenten, Chats, Nachrichten und Routinen bleiben auf ihrem Rechner, und Sessions kann alle gleichzeitig anzeigen.',
       launchModeTitle: 'Beim Start zu Sessions auf dem zuletzt verwendeten Rechner zurückkehren',
       launchModeDesc: 'Wenn deaktiviert, öffnet Sessions auf dem primären Rechner.',
       searchPlaceholder: 'Rechner durchsuchen…',
@@ -3116,7 +3116,7 @@ export const deOverrides = {
       },
       DISCORD_HOME_CHANNEL: {
         label: 'Home-Kanal-ID',
-        help: 'Kanal, in den der Bot proaktive Nachrichten sendet (Ergebnisse von Zeitplänen, Erinnerungen).'
+        help: 'Kanal, in den der Bot proaktive Nachrichten sendet (Ergebnisse von Routinen, Erinnerungen).'
       },
       DISCORD_HOME_CHANNEL_NAME: {
         label: 'Name des Home-Kanals',
@@ -3137,7 +3137,7 @@ export const deOverrides = {
       },
       QQBOT_HOME_CHANNEL: {
         label: 'QQ-Home-Kanal',
-        help: 'Standard-Kanal oder -Gruppe für Ergebnisse von Zeitplänen.'
+        help: 'Standard-Kanal oder -Gruppe für Ergebnisse von Routinen.'
       },
       QQBOT_HOME_CHANNEL_NAME: {
         label: 'Name des QQ-Home-Kanals'
@@ -3442,11 +3442,11 @@ export const deOverrides = {
   },
   cron: {
     control: deCronControl,
-    close: 'Zeitpläne schließen',
-    title: desktopTerms.de.schedules,
-    count: count => `${count} ${count === 1 ? 'Zeitplan' : 'Zeitpläne'}`,
-    search: 'Zeitpläne durchsuchen...',
-    loading: 'Zeitpläne werden geladen...',
+    close: 'Routinen schließen',
+    title: desktopTerms.de.routines,
+    count: count => `${count} ${count === 1 ? 'Routine' : 'Routinen'}`,
+    search: 'Routinen durchsuchen...',
+    loading: 'Routinen werden geladen...',
     states: {
       enabled: 'aktiviert',
       scheduled: 'geplant',
@@ -3457,7 +3457,7 @@ export const deOverrides = {
       completed: 'abgeschlossen'
     },
     lastRunFailed: 'Letzter Lauf fehlgeschlagen:',
-    editJob: 'Zeitplan bearbeiten',
+    editJob: 'Routine bearbeiten',
     runAgain: 'Erneut ausführen',
     deliveryLabels: {
       local: 'Dieser Desktop',
@@ -3501,10 +3501,10 @@ export const deOverrides = {
     monthlyOnDayAt: (dayOfMonth, time) => `Monatlich am ${dayOfMonth}. um ${time}`,
     topOfHour: 'Zu jeder vollen Stunde',
     everyHourAt: minute => `Jede Stunde um :${minute}`,
-    newCron: 'Neuer Zeitplan',
-    emptyDescNew: 'Zeitpläne führen Aufgaben automatisch aus und senden die Ergebnisse an das von Ihnen gewählte Ziel.',
+    newCron: 'Neue Routine',
+    emptyDescNew: 'Routinen führen Aufgaben automatisch aus und senden die Ergebnisse an das von Ihnen gewählte Ziel.',
     emptyDescSearch: 'Versuchen Sie eine breitere Suchanfrage.',
-    emptyTitleNew: 'Noch keine Zeitpläne',
+    emptyTitleNew: 'Noch keine Routinen',
     emptyTitleSearch: 'Keine Treffer',
     last: 'Zuletzt:',
     next: 'Als Nächstes:',
@@ -3515,30 +3515,30 @@ export const deOverrides = {
     showRuns: 'Ausführungen anzeigen',
     hideRuns: 'Ausführungen ausblenden',
     runHistory: 'Ausführungsverlauf',
-    actionsTitle: 'Zeitplan-Aktionen',
-    resume: 'Zeitplan fortsetzen',
-    pause: 'Zeitplan pausieren',
+    actionsTitle: 'Routine-Aktionen',
+    resume: 'Routine fortsetzen',
+    pause: 'Routine pausieren',
     resumeTitle: 'Fortsetzen',
     pauseTitle: 'Pausieren',
     triggerNow: 'Jetzt auslösen',
-    edit: 'Zeitplan bearbeiten',
-    deleteTitle: 'Zeitplan löschen?',
+    edit: 'Routine bearbeiten',
+    deleteTitle: 'Routine löschen?',
     deleteDescPrefix: 'Das entfernt ',
     deleteDescSuffix: ' dauerhaft. Es werden keine weiteren Ausführungen gestartet.',
     deleting: 'Wird gelöscht...',
-    resumed: 'Zeitplan fortgesetzt',
-    paused: 'Zeitplan pausiert',
-    triggered: 'Zeitplan gestartet',
-    deleted: 'Zeitplan gelöscht',
-    created: 'Zeitplan erstellt',
-    updated: 'Zeitplan aktualisiert',
-    failedLoad: 'Zeitpläne konnten nicht geladen werden',
-    failedUpdate: 'Zeitplan konnte nicht aktualisiert werden',
-    failedTrigger: 'Zeitplan konnte nicht gestartet werden',
-    failedDelete: 'Zeitplan konnte nicht gelöscht werden',
-    failedSave: 'Zeitplan konnte nicht gespeichert werden',
-    editTitle: 'Zeitplan bearbeiten',
-    createTitle: 'Neuer Zeitplan',
+    resumed: 'Routine fortgesetzt',
+    paused: 'Routine pausiert',
+    triggered: 'Routine gestartet',
+    deleted: 'Routine gelöscht',
+    created: 'Routine erstellt',
+    updated: 'Routine aktualisiert',
+    failedLoad: 'Routinen konnten nicht geladen werden',
+    failedUpdate: 'Routine konnte nicht aktualisiert werden',
+    failedTrigger: 'Routine konnte nicht gestartet werden',
+    failedDelete: 'Routine konnte nicht gelöscht werden',
+    failedSave: 'Routine konnte nicht gespeichert werden',
+    editTitle: 'Routine bearbeiten',
+    createTitle: 'Neue Routine',
     editDesc: 'Aktualisieren Sie den Zeitplan, den Prompt oder das Zustellziel. Änderungen gelten beim nächsten Lauf.',
     createDesc:
       'Legen Sie fest, wann die Aufgabe automatisch ausgeführt wird. Nutzen Sie die Cron-Syntax oder einen Ausdruck wie „every 15 minutes“.',
@@ -3560,24 +3560,24 @@ export const deOverrides = {
     promptRequired: 'Prompt ist erforderlich.',
     promptScheduleRequired: 'Prompt und Zeitplan sind erforderlich.',
     scheduleRequired: 'Zeitplan ist erforderlich.',
-    scriptOnlyEditHint: 'Zeitplan für ein Skript (ohne KI-Prompt). ID:',
+    scriptOnlyEditHint: 'Routine für ein Skript (ohne KI-Prompt). Routine-ID:',
     saveChanges: 'Änderungen speichern',
-    createAction: 'Zeitplan erstellen',
+    createAction: 'Routine erstellen',
     tabs: {
-      jobs: desktopTerms.de.schedules,
+      jobs: desktopTerms.de.routines,
       blueprints: 'Blueprints'
     },
     blueprints: {
       tab: 'Blueprints',
       startFrom: 'Starten von',
       custom: 'Benutzerdefiniert',
-      subtitle: 'Vorlagen für Zeitpläne',
-      dialogDesc: 'Füllen Sie die Details aus und erstellen Sie den Zeitplan.',
-      scheduled: 'Zeitplan aus Vorlage erstellt',
+      subtitle: 'Vorlagen für Routinen',
+      dialogDesc: 'Füllen Sie die Details aus und erstellen Sie die Routine.',
+      scheduled: 'Routine aus Vorlage erstellt',
       loading: 'Blueprints werden geladen...',
       failedLoad: 'Blueprints konnten nicht geladen werden',
       emptyTitle: 'Keine Blueprints verfügbar',
-      emptyDesc: 'Auf diesem Backend sind keine Vorlagen für Zeitpläne verfügbar.'
+      emptyDesc: 'Auf diesem Backend sind keine Vorlagen für Routinen verfügbar.'
     }
   },
   artifacts: {
@@ -3685,7 +3685,7 @@ export const deOverrides = {
       capabilities: 'Fähigkeiten',
       messaging: 'Messaging',
       artifacts: 'Artefakte',
-      cron: desktopTerms.de.schedules
+      cron: desktopTerms.de.routines
     },
     searchAria: 'Sessions durchsuchen',
     searchPlaceholder: 'Sessions durchsuchen…',
@@ -3698,7 +3698,7 @@ export const deOverrides = {
     files: 'Dateien',
     review: 'Review',
     logs: 'Logs',
-    cronJobs: desktopTerms.de.schedules,
+    cronJobs: desktopTerms.de.routines,
     groupAriaGrouped: 'Sessions als einzelne Liste anzeigen',
     groupAriaUngrouped: 'Sessions nach Workspace gruppieren',
     showProjects: 'Projekte anzeigen',
@@ -3916,8 +3916,8 @@ export const deOverrides = {
       '/learn':
         'Einen wiederverwendbaren Skill aus allem lernen, was Sie beschreiben (Ordner, URLs, dieser Chat, Notizen)',
       '/init': 'AGENTS.md-Projektanweisungen aus einem Repo-Scan erzeugen oder aktualisieren',
-      '/suggestions': 'Vorgeschlagene Zeitpläne prüfen (annehmen/verwerfen)',
-      '/blueprint': 'Einen Zeitplan aus einer Blueprint-Vorlage einrichten',
+      '/suggestions': 'Vorgeschlagene Routinen prüfen (annehmen/verwerfen)',
+      '/blueprint': 'Eine Routine aus einer Blueprint-Vorlage einrichten',
       '/browser': 'Browser des Agenten verwalten [connect|disconnect|status]',
       '/palette': 'Die unscharfe Befehlspalette öffnen (auch Strg+P)',
       '/usage': 'Token-Nutzung und Ratenlimits anzeigen; `reset` löst ein angespartes Codex-Limit-Reset ein',
@@ -4665,8 +4665,8 @@ export const deOverrides = {
       subagents: count => `${count} Subagent${count === 1 ? '' : 'en'}`,
       failed: count => `${count} fehlgeschlagen`,
       running: count => `${count} laufen`,
-      cron: desktopTerms.de.schedules,
-      openCron: 'Zeitpläne öffnen',
+      cron: desktopTerms.de.routines,
+      openCron: 'Routinen öffnen',
       webhooks: 'Webhooks',
       openWebhooks: 'Webhooks öffnen',
       starmap: 'Memory-Graph',
@@ -5350,9 +5350,9 @@ export const deOverrides = {
           pendingAction: 'Stellt'
         },
         cronjob: {
-          done: 'Zeitplan',
-          pending: 'Erstellt Zeitplan',
-          pendingAction: 'Plant'
+          done: 'Routine',
+          pending: 'Erstellt Routine',
+          pendingAction: 'Richtet ein'
         },
         edit_file: {
           done: 'Datei bearbeitet',
@@ -5590,7 +5590,7 @@ export const deOverrides = {
         text: 'Bilder, Dateien und Links aus jeder Session, an einem Ort indexiert.'
       },
       cron: {
-        title: 'Zeitpläne laufen automatisch',
+        title: 'Routinen laufen automatisch',
         text: 'Lassen Sie Aufgaben stündlich, nächtlich oder nach einem Cron-Ausdruck ausführen.'
       },
       'command-palette': {

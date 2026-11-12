@@ -15,6 +15,14 @@
   /* Pages lay their nav and body straight over the canvas (856:2643): a faint wing behind both,
      about as strong as it reads through the light sidebar. */
   --portal-page-wing-opacity: 0.04;
+  /* The art belongs to the panel: in a page's body it fades out from the panel's edge, so nothing
+     is left behind the content. It starts at the layer's edge, or past a docked panel
+     (--portal-wing-fade-start), and runs --portal-wing-fade-length (tokens/space.css). */
+  --portal-wing-fade-to: to right;
+}
+
+:root[data-shell='portal'][dir='rtl'] {
+  --portal-wing-fade-to: to left;
 }
 
 :root.dark[data-shell='portal'] {
@@ -36,15 +44,25 @@
 
 /* A page (an overlay card, or a workspace page's panel layer) repaints the page canvas with the
    art on its own non-scrolling layer, attached to the viewport to stay registered with the
-   window's art. */
+   window's art. Its veil thickens along the inline axis until the art is gone. */
 :root[data-shell='portal'] [data-overlay-surface][data-page-surface] [data-glass-raised],
 :root[data-shell='portal'] [data-tree-group][data-window-top][data-zone-page] > [data-panel-header]::before {
   background:
     linear-gradient(
+      var(--portal-wing-fade-to),
       color-mix(in srgb, var(--portal-page-background) calc((1 - var(--portal-page-wing-opacity)) * 100%), transparent)
+        var(--portal-wing-fade-start, 0%),
+      var(--portal-page-background) calc(var(--portal-wing-fade-start, 0%) + var(--portal-wing-fade-length))
     ),
     url('../../assets/portal-wing.svg') var(--portal-wing-position) / var(--portal-wing-size) no-repeat fixed,
     var(--portal-page-background);
+}
+
+/* Wide (breakpoints.ts): a docked panel covers the layer's leading edge, so the fade starts past it. */
+@media (min-width: 1024px) {
+  :root[data-shell='portal'] [data-overlay-surface][data-page-surface] [data-glass-raised]:has([data-page-panel]) {
+    --portal-wing-fade-start: var(--page-nav-width);
+  }
 }
 
 /* A page's sidebar panel (Settings 856:2740, Agents 895:8991) lies over the FULL-strength wing, not

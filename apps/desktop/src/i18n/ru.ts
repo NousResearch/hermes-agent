@@ -238,7 +238,7 @@ export const ruOverrides = {
       'nav.capabilities': 'Открыть навыки',
       'nav.messaging': 'Открыть мессенджеры',
       'nav.artifacts': 'Открыть артефакты',
-      'nav.cron': 'Открыть расписания',
+      'nav.cron': 'Открыть регулярные задачи',
       'nav.agents': 'Открыть агентов',
       'nav.back': 'Назад',
       'nav.forward': 'Вперёд',
@@ -1026,7 +1026,7 @@ export const ruOverrides = {
       intro:
         'Управляйте этим устройством и всеми компьютерами с Hermes, доступными через удалённые, SSH или Cloud-соединения.',
       stagedNote:
-        'Все компьютеры остаются подключёнными. Агенты, чаты, мессенджеры и расписания остаются на своих компьютерах, а «Сеансы» могут показывать их все сразу.',
+        'Все компьютеры остаются подключёнными. Агенты, чаты, мессенджеры и регулярные задачи остаются на своих компьютерах, а «Сеансы» могут показывать их все сразу.',
       launchModeTitle: 'При запуске возвращаться к «Сеансам» на последнем компьютере',
       launchModeDesc: 'Если выключено, «Сеансы» открываются на основном компьютере.',
       searchPlaceholder: 'Поиск компьютеров…',
@@ -2003,7 +2003,7 @@ export const ruOverrides = {
       },
       DISCORD_HOME_CHANNEL: {
         label: 'ID домашнего канала',
-        help: 'Канал, куда бот шлёт проактивные сообщения (результаты запусков по расписанию, напоминания).'
+        help: 'Канал, куда бот шлёт проактивные сообщения (результаты регулярных задач, напоминания).'
       },
       DISCORD_HOME_CHANNEL_NAME: {
         label: 'Название домашнего канала',
@@ -2018,7 +2018,7 @@ export const ruOverrides = {
       QQ_ALLOW_ALL_USERS: { label: 'Разрешить всех пользователей QQ' },
       QQBOT_HOME_CHANNEL: {
         label: 'Домашний канал QQ',
-        help: 'Канал или группа по умолчанию для доставки результатов запусков по расписанию.'
+        help: 'Канал или группа по умолчанию для доставки результатов регулярных задач.'
       },
       QQBOT_HOME_CHANNEL_NAME: { label: 'Название домашнего канала QQ' },
       SLACK_BOT_TOKEN: {
@@ -2251,11 +2251,11 @@ export const ruOverrides = {
 
   cron: {
     control: ruCronControl,
-    close: 'Закрыть расписания',
-    title: desktopTerms.ru.schedules,
-    count: count => `${count} ${RU_PLURAL(count, 'расписание', 'расписания', 'расписаний')}`,
-    search: 'Поиск расписаний...',
-    loading: 'Загрузка расписаний...',
+    close: 'Закрыть регулярные задачи',
+    title: desktopTerms.ru.routines,
+    count: count => `${count} ${RU_PLURAL(count, 'регулярная задача', 'регулярные задачи', 'регулярных задач')}`,
+    search: 'Поиск регулярных задач...',
+    loading: 'Загрузка регулярных задач...',
     states: {
       enabled: 'включено',
       scheduled: 'запланировано',
@@ -2307,11 +2307,11 @@ export const ruOverrides = {
     monthlyOnDayAt: (dayOfMonth, time) => `Ежемесячно ${dayOfMonth}-го числа в ${time}`,
     topOfHour: 'В начале каждого часа',
     everyHourAt: minute => `Каждый час на :${minute}`,
-    newCron: 'Новое расписание',
+    newCron: 'Новая регулярная задача',
     emptyDescNew:
-      'Создайте расписание: агент автоматически выполнит ваши инструкции и доставит результаты в выбранное место.',
+      'Создайте регулярную задачу: агент автоматически выполнит ваши инструкции и доставит результаты в выбранное место.',
     emptyDescSearch: 'Попробуйте более широкий запрос.',
-    emptyTitleNew: 'Расписаний пока нет',
+    emptyTitleNew: 'Регулярных задач пока нет',
     emptyTitleSearch: 'Нет совпадений',
     last: 'Последний:',
     next: 'Следующий:',
@@ -2321,30 +2321,30 @@ export const ruOverrides = {
     showRuns: 'Показать запуски',
     hideRuns: 'Скрыть запуски',
     runHistory: 'История запусков',
-    actionsTitle: 'Действия с расписанием',
-    resume: 'Возобновить расписание',
-    pause: 'Приостановить расписание',
+    actionsTitle: 'Действия с регулярной задачей',
+    resume: 'Возобновить регулярную задачу',
+    pause: 'Приостановить регулярную задачу',
     resumeTitle: 'Продолжить',
     pauseTitle: 'Приостановить',
     triggerNow: 'Запустить сейчас',
-    edit: 'Изменить расписание',
-    deleteTitle: 'Удалить расписание?',
+    edit: 'Изменить регулярную задачу',
+    deleteTitle: 'Удалить регулярную задачу?',
     deleteDescPrefix: 'Это навсегда удалит ',
     deleteDescSuffix: '. Автоматические запуски сразу прекратятся.',
     deleting: 'Удаление...',
-    resumed: 'Расписание возобновлено',
-    paused: 'Расписание приостановлено',
-    triggered: 'Запуск по расписанию начат',
-    deleted: 'Расписание удалено',
-    created: 'Расписание создано',
-    updated: 'Расписание обновлено',
-    failedLoad: 'Не удалось загрузить расписания',
-    failedUpdate: 'Не удалось обновить расписание',
-    failedTrigger: 'Не удалось запустить по расписанию',
-    failedDelete: 'Не удалось удалить расписание',
-    failedSave: 'Не удалось сохранить расписание',
-    editTitle: 'Изменить расписание',
-    createTitle: 'Новое расписание',
+    resumed: 'Регулярная задача возобновлена',
+    paused: 'Регулярная задача приостановлена',
+    triggered: 'Регулярная задача запущена',
+    deleted: 'Регулярная задача удалена',
+    created: 'Регулярная задача создана',
+    updated: 'Регулярная задача обновлена',
+    failedLoad: 'Не удалось загрузить регулярные задачи',
+    failedUpdate: 'Не удалось обновить регулярную задачу',
+    failedTrigger: 'Не удалось запустить регулярную задачу',
+    failedDelete: 'Не удалось удалить регулярную задачу',
+    failedSave: 'Не удалось сохранить регулярную задачу',
+    editTitle: 'Изменить регулярную задачу',
+    createTitle: 'Новая регулярная задача',
     editDesc: 'Обновите расписание, промпт или место доставки. Изменения вступят в силу при следующем запуске.',
     createDesc:
       'Агент выполнит ваши инструкции автоматически по расписанию. Используйте синтаксис cron или фразу вроде «каждые 15 минут».',
@@ -2366,24 +2366,24 @@ export const ruOverrides = {
     promptRequired: 'Промпт обязателен.',
     promptScheduleRequired: 'Промпт и расписание обязательны.',
     scheduleRequired: 'Расписание обязательно.',
-    scriptOnlyEditHint: 'Расписание запускает только скрипт (без AI-промпта). ID расписания:',
+    scriptOnlyEditHint: 'Регулярная задача запускает только скрипт (без AI-промпта). ID задачи:',
     saveChanges: 'Сохранить изменения',
-    createAction: 'Создать расписание',
+    createAction: 'Создать регулярную задачу',
     tabs: {
-      jobs: desktopTerms.ru.schedules,
+      jobs: desktopTerms.ru.routines,
       blueprints: 'Шаблоны'
     },
     blueprints: {
       tab: 'Шаблоны',
       startFrom: 'Начать с',
       custom: 'Свой',
-      subtitle: 'Готовые расписания',
-      dialogDesc: 'Заполните детали и запланируйте.',
-      scheduled: 'Расписание создано из шаблона',
+      subtitle: 'Готовые регулярные задачи',
+      dialogDesc: 'Заполните детали и укажите, когда запускать.',
+      scheduled: 'Регулярная задача создана из шаблона',
       loading: 'Загрузка шаблонов...',
       failedLoad: 'Не удалось загрузить шаблоны',
       emptyTitle: 'Шаблоны недоступны',
-      emptyDesc: 'На этом бэкенде нет шаблонов расписаний.'
+      emptyDesc: 'На этом бэкенде нет шаблонов регулярных задач.'
     }
   },
   artifacts: {
@@ -2489,7 +2489,7 @@ export const ruOverrides = {
       capabilities: 'Возможности',
       messaging: 'Сообщения',
       artifacts: 'Артефакты',
-      cron: desktopTerms.ru.schedules
+      cron: desktopTerms.ru.routines
     },
     searchAria: 'Поиск сеансов',
     searchPlaceholder: 'Поиск сеансов…',
@@ -2502,7 +2502,7 @@ export const ruOverrides = {
     files: 'Файлы',
     review: 'Проверка',
     logs: 'Журналы',
-    cronJobs: desktopTerms.ru.schedules,
+    cronJobs: desktopTerms.ru.routines,
     groupAriaGrouped: 'Показать сеансы одним списком',
     groupAriaUngrouped: 'Сгруппировать сеансы по рабочим пространствам',
     showProjects: 'Показать проекты',
@@ -3334,8 +3334,8 @@ export const ruOverrides = {
       subagents: count => `${count} ${RU_PLURAL(count, 'субагент', 'субагента', 'субагентов')}`,
       failed: count => `${count} ${RU_NOUN(count, 'сбой', 'сбоя', 'сбоев')}`,
       running: count => `${count} ${RU_NOUN(count, 'выполняется', 'выполняются', 'выполняется')}`,
-      cron: desktopTerms.ru.schedules,
-      openCron: 'Открыть расписания',
+      cron: desktopTerms.ru.routines,
+      openCron: 'Открыть регулярные задачи',
       webhooks: 'Вебхуки',
       openWebhooks: 'Открыть вебхуки',
       starmap: 'Граф памяти',
@@ -3795,7 +3795,7 @@ export const ruOverrides = {
         },
         browser_type: { done: 'Введено на странице', pending: 'Ввожу на странице', pendingAction: 'Ввожу' },
         clarify: { done: 'Задан вопрос', pending: 'Задаю вопрос', pendingAction: 'Задаю' },
-        cronjob: { done: 'Расписание', pending: 'Настраиваю расписание', pendingAction: 'Планирую' },
+        cronjob: { done: 'Регулярная задача', pending: 'Настраиваю регулярную задачу', pendingAction: 'Настраиваю' },
         edit_file: { done: 'Файл изменён', pending: 'Изменяю файл', pendingAction: 'Изменяю' },
         execute_code: { done: 'Код выполнен', pending: 'Скриптинг', pendingAction: 'Скриптинг' },
         image_generate: {

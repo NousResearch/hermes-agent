@@ -526,7 +526,7 @@ export const zhHantChat = {
         text: '所有工作階段的圖片、檔案與連結，都彙整在這裡。'
       },
       cron: {
-        title: '排程自動執行',
+        title: '例行任務自動執行',
         text: '讓提示詞按小時、每晚，或依 cron 運算式自動執行。'
       },
       'command-palette': {

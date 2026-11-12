@@ -335,12 +335,12 @@ async function exerciseHistoryPreview(page: Page) {
   await page.setViewportSize({ width: 1280, height: 860 })
 }
 
-// Exercise the same Agent/Schedule concepts from navigation through both editors.
+// Exercise the same Agent/Routine concepts from navigation through both editors.
 async function exerciseManagementEntries(page: Page, redesigned: boolean) {
   const rail = page.locator('[data-slot="global-nav"]')
 
   if (redesigned) {
-    await rail.getByRole('button', { name: 'Schedules', exact: true }).click()
+    await rail.getByRole('button', { name: 'Routines', exact: true }).click()
   } else {
     await page.evaluate(() => {
       location.hash = '/cron'
@@ -348,12 +348,12 @@ async function exerciseManagementEntries(page: Page, redesigned: boolean) {
   }
 
   await expect(page).toHaveURL(/#\/cron/)
-  await page.getByRole('heading', { name: 'Schedules', exact: true }).first().waitFor({ state: 'visible' })
+  await page.getByRole('heading', { name: 'Routines', exact: true }).first().waitFor({ state: 'visible' })
   // The empty-state button is replaced when the async blueprint catalog arrives.
   // Use the schedule-list action so this assertion tracks the same opener.
-  const newSchedule = page.locator('button[aria-label="New schedule"]')
+  const newSchedule = page.locator('button[aria-label="New routine"]')
   await newSchedule.click()
-  const schedule = page.getByRole('dialog', { name: 'New schedule', exact: true })
+  const schedule = page.getByRole('dialog', { name: 'New routine', exact: true })
   await schedule.getByRole('textbox', { name: /^Name\b/ }).fill('Weekly briefing')
   await schedule.getByRole('textbox', { name: 'Prompt', exact: true }).fill('Summarize the week.')
   await schedule.getByRole('button', { name: 'Cancel', exact: true }).click()

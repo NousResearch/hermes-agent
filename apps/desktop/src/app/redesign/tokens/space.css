@@ -38,14 +38,14 @@
   --portal-safe-bottom: env(safe-area-inset-bottom, 0px);
   --portal-safe-start: env(safe-area-inset-left, 0px);
   --portal-safe-end: env(safe-area-inset-right, 0px);
-  /* ONE sidebar column for every rail destination: page panels (Agents, Schedules, Settings) take the
+  /* ONE sidebar column for every rail destination: page panels (Agents, Routines, Settings) take the
      chat sidebar's width — the user's sash width once they size it (published by the pane tree as
      --portal-sidebar-width), else its default — so switching destinations never moves the panel edge,
      its divider or the stage's content edge. */
   --portal-panel-width: var(--portal-sidebar-width, var(--sessions-pane-width));
   /* The page-frame contract: where a page's content column starts, from the stage edge it shares with
      the page's sidebar panel (the freshest frames, 1036:7189 / 895:*: 20px after the divider, one value
-     for Agents, Settings and Schedules alike), and from the stage's own edge on a page with no panel
+     for Agents, Settings and Routines alike), and from the stage's own edge on a page with no panel
      (919:9281: x 90 in the stage). Left insets, never centring, at every window width, so switching
      pages never moves the column sideways. */
   --portal-frame-inset: 1.25rem;
@@ -84,6 +84,8 @@
   --portal-row-panel: 2.5rem;
 
   /* Names in use before the role names; Phase B moves their readers to the role and deletes them. */
+  /* How far into a page's body the wing art takes to fade out, from the panel's edge. */
+  --portal-wing-fade-length: 20rem;
   --page-nav-width: var(--portal-panel-width);
   --page-panel-inset: var(--portal-frame-inset);
   --page-stage-inset: var(--portal-stage-inset);

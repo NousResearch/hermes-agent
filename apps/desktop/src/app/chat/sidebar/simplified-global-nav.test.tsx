@@ -60,19 +60,11 @@ it.each([
   expect(screen.getByRole('button', { current: 'page' }).getAttribute('aria-label')).toBe(label)
 })
 
-it('opens Account & Plan without inventing a global profile or changing the active agent', () => {
+it('opens Settings on its first section, with no menu in between', () => {
   const navigate = mount()
-  fireEvent.keyDown(screen.getByRole('button', { name: 'Settings' }), { key: 'Enter' })
-  fireEvent.click(screen.getByRole('menuitem', { name: 'Account & Plan' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
   expect(navigate).toHaveBeenCalledWith(expect.objectContaining({ route: '/settings?tab=billing' }))
-})
-
-it('keeps existing settings sections reachable from footer submenus', async () => {
-  const navigate = mount()
-  fireEvent.keyDown(screen.getByRole('button', { name: 'Settings' }), { key: 'Enter' })
-  fireEvent.keyDown(screen.getByRole('menuitem', { name: 'Appearance' }), { key: 'ArrowRight' })
-  fireEvent.click(await screen.findByRole('menuitem', { name: 'Notifications' }))
-  expect(navigate).toHaveBeenCalledWith(expect.objectContaining({ route: '/settings?tab=notifications' }))
+  expect(screen.queryByRole('menu')).toBeNull()
 })
 
 it('follows the focused chat tile instead of the workspace page underneath it', () => {

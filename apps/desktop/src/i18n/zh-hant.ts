@@ -123,7 +123,7 @@ export const zhHantOverrides = {
     collectedActivity: '工作階段：長度、結果、錯誤類型、每日活躍時間',
     collectedModels: '模型：使用哪些模型、token 總量',
     collectedNames: '功能：使用或關閉的內建工具、指令、應用程式區域和設定',
-    collectedMilestones: '設定：完成了哪些步驟、提供方連線、技能、外掛和排程的數量',
+    collectedMilestones: '設定：完成了哪些步驟、提供方連線、技能、外掛和例行任務的數量',
     collectedReliability: '應用程式健康狀態：當機、啟動與回覆速度、更新、訊息平台連線',
     collectedUsage: '智慧體品質：未成功的編輯、損壞的工具呼叫、卡住的迴圈、每個任務的成本',
     collectedMachine: '機器：作業系統、記憶體範圍、GPU 類型、Hermes 版本、本機模型使用情況',

@@ -583,7 +583,7 @@ export const frOverrides = {
       'nav.capabilities': 'Ouvrir les skills',
       'nav.messaging': 'Ouvrir la messagerie',
       'nav.artifacts': 'Ouvrir les artefacts',
-      'nav.cron': 'Ouvrir les planifications',
+      'nav.cron': 'Ouvrir les routines',
       'nav.agents': 'Ouvrir les agents',
       'nav.back': 'Retour',
       'nav.forward': 'Suivant',
@@ -1478,7 +1478,7 @@ export const frOverrides = {
         full: {
           title: 'Tout désinstaller',
           description:
-            'Supprime l’application, l’agent et toutes les données utilisateur : configuration, conversations, planifications, secrets, journaux.',
+            'Supprime l’application, l’agent et toutes les données utilisateur : configuration, conversations, routines, secrets, journaux.',
           consequence:
             'TOUT — l’interface de chat, l’agent Hermes et l’ensemble de votre configuration, de vos conversations, secrets et journaux'
         }
@@ -1643,7 +1643,7 @@ export const frOverrides = {
       intro:
         'Enregistrez tous les emplacements où vivent vos agents : cet appareil, les ordinateurs distants de votre réseau et les instances Hermes Cloud. Ils sont tous conservés ici.',
       stagedNote:
-        'Chaque ordinateur reste connecté. Les agents, conversations, messageries et planifications restent sur leur ordinateur, et Sessions peut tous les afficher à la fois.',
+        'Chaque ordinateur reste connecté. Les agents, conversations, messageries et routines restent sur leur ordinateur, et Sessions peut tous les afficher à la fois.',
       launchModeTitle: 'Au démarrage, revenir aux sessions du dernier ordinateur utilisé',
       launchModeDesc: "Si cette option est désactivée, les sessions s'ouvrent sur l’ordinateur principal.",
       searchPlaceholder: 'Rechercher des ordinateurs…',
@@ -3123,7 +3123,7 @@ export const frOverrides = {
       },
       DISCORD_HOME_CHANNEL: {
         label: "ID du canal d'accueil",
-        help: 'Canal où le bot envoie des messages proactifs (résultats des planifications, rappels).'
+        help: 'Canal où le bot envoie des messages proactifs (résultats des routines, rappels).'
       },
       DISCORD_HOME_CHANNEL_NAME: {
         label: "Nom du canal d'accueil",
@@ -3144,7 +3144,7 @@ export const frOverrides = {
       },
       QQBOT_HOME_CHANNEL: {
         label: "Canal d'accueil QQ",
-        help: 'Canal ou groupe par défaut pour les résultats des planifications.'
+        help: 'Canal ou groupe par défaut pour les résultats des routines.'
       },
       QQBOT_HOME_CHANNEL_NAME: {
         label: "Nom du canal d'accueil QQ"
@@ -3447,11 +3447,11 @@ export const frOverrides = {
   },
   cron: {
     control: frCronControl,
-    close: 'Fermer les planifications',
-    title: desktopTerms.fr.schedules,
-    count: count => `${count} ${count === 1 ? 'planification' : 'planifications'}`,
-    search: 'Rechercher des planifications...',
-    loading: 'Chargement des planifications...',
+    close: 'Fermer les routines',
+    title: desktopTerms.fr.routines,
+    count: count => `${count} ${count === 1 ? 'routine' : 'routines'}`,
+    search: 'Rechercher des routines...',
+    loading: 'Chargement des routines...',
     states: {
       enabled: 'activée',
       scheduled: 'planifiée',
@@ -3462,7 +3462,7 @@ export const frOverrides = {
       completed: 'terminée'
     },
     lastRunFailed: 'Échec de la dernière exécution :',
-    editJob: 'Modifier la planification',
+    editJob: 'Modifier la routine',
     runAgain: 'Relancer',
     deliveryLabels: {
       local: 'Ce bureau',
@@ -3506,11 +3506,11 @@ export const frOverrides = {
     monthlyOnDayAt: (dayOfMonth, time) => `Mensuellement le jour ${dayOfMonth} à ${time}`,
     topOfHour: "En début d'heure",
     everyHourAt: minute => `Toutes les heures à :${minute}`,
-    newCron: 'Nouvelle planification',
+    newCron: 'Nouvelle routine',
     emptyDescNew:
-      'Les planifications exécutent automatiquement vos instructions et envoient les résultats à la destination de votre choix.',
+      'Les routines exécutent automatiquement vos instructions et envoient les résultats à la destination de votre choix.',
     emptyDescSearch: 'Essayez une requête de recherche plus large.',
-    emptyTitleNew: 'Aucune planification pour le moment',
+    emptyTitleNew: 'Aucune routine pour le moment',
     emptyTitleSearch: 'Aucune correspondance',
     last: 'Dernière :',
     next: 'Prochaine :',
@@ -3521,30 +3521,30 @@ export const frOverrides = {
     showRuns: 'Afficher les exécutions',
     hideRuns: 'Masquer les exécutions',
     runHistory: 'Historique des exécutions',
-    actionsTitle: 'Actions de la planification',
-    resume: 'Reprendre la planification',
-    pause: 'Mettre en pause la planification',
+    actionsTitle: 'Actions de la routine',
+    resume: 'Reprendre la routine',
+    pause: 'Mettre en pause la routine',
     resumeTitle: 'Reprendre',
     pauseTitle: 'Mettre en pause',
     triggerNow: 'Déclencher maintenant',
-    edit: 'Modifier la planification',
-    deleteTitle: 'Supprimer la planification ?',
+    edit: 'Modifier la routine',
+    deleteTitle: 'Supprimer la routine ?',
     deleteDescPrefix: 'Cela supprimera ',
     deleteDescSuffix: ' définitivement. Elle cessera de se déclencher immédiatement.',
     deleting: 'Suppression...',
-    resumed: 'Planification reprise',
-    paused: 'Planification en pause',
-    triggered: 'Planification déclenchée',
-    deleted: 'Planification supprimée',
-    created: 'Planification créée',
-    updated: 'Planification mise à jour',
-    failedLoad: 'Échec du chargement des planifications',
-    failedUpdate: 'Échec de la mise à jour de la planification',
-    failedTrigger: 'Échec du déclenchement de la planification',
-    failedDelete: 'Échec de la suppression de la planification',
-    failedSave: 'Échec de l’enregistrement de la planification',
-    editTitle: 'Modifier la planification',
-    createTitle: 'Nouvelle planification',
+    resumed: 'Routine reprise',
+    paused: 'Routine en pause',
+    triggered: 'Routine déclenchée',
+    deleted: 'Routine supprimée',
+    created: 'Routine créée',
+    updated: 'Routine mise à jour',
+    failedLoad: 'Échec du chargement des routines',
+    failedUpdate: 'Échec de la mise à jour de la routine',
+    failedTrigger: 'Échec du déclenchement de la routine',
+    failedDelete: 'Échec de la suppression de la routine',
+    failedSave: 'Échec de l’enregistrement de la routine',
+    editTitle: 'Modifier la routine',
+    createTitle: 'Nouvelle routine',
     editDesc:
       'Modifiez la fréquence, les instructions ou la destination des résultats. Les modifications s’appliquent à la prochaine exécution.',
     createDesc:
@@ -3567,11 +3567,11 @@ export const frOverrides = {
     promptRequired: "L'invite est requise.",
     promptScheduleRequired: 'L’invite et la fréquence sont requises.',
     scheduleRequired: 'La fréquence est requise.',
-    scriptOnlyEditHint: 'Planification exécutant un script uniquement (pas d’invite IA). ID de planification :',
+    scriptOnlyEditHint: 'Routine exécutant un script uniquement (pas d’invite IA). ID de la routine :',
     saveChanges: 'Enregistrer les modifications',
-    createAction: 'Créer la planification',
+    createAction: 'Créer la routine',
     tabs: {
-      jobs: desktopTerms.fr.schedules,
+      jobs: desktopTerms.fr.routines,
       blueprints: 'Plans'
     },
     blueprints: {
@@ -3579,8 +3579,8 @@ export const frOverrides = {
       startFrom: 'Commencer à partir de',
       custom: 'Personnalisé',
       subtitle: "Automatismes prêts à l'emploi",
-      dialogDesc: 'Remplissez les détails et planifiez-les.',
-      scheduled: 'Planification créée',
+      dialogDesc: 'Remplissez les détails et choisissez quand elle s’exécute.',
+      scheduled: 'Routine créée à partir du modèle',
       loading: 'Chargement des plans...',
       failedLoad: 'Échec du chargement des plans',
       emptyTitle: 'Aucun plan disponible',
@@ -3693,7 +3693,7 @@ export const frOverrides = {
       capabilities: 'Capacités',
       messaging: 'Messagerie',
       artifacts: 'Artefacts',
-      cron: desktopTerms.fr.schedules
+      cron: desktopTerms.fr.routines
     },
     searchAria: 'Rechercher des sessions',
     searchPlaceholder: 'Rechercher des sessions…',
@@ -3706,7 +3706,7 @@ export const frOverrides = {
     files: 'Fichiers',
     review: 'Revue',
     logs: 'Journaux',
-    cronJobs: desktopTerms.fr.schedules,
+    cronJobs: desktopTerms.fr.routines,
     groupAriaGrouped: 'Afficher les sessions en une seule liste',
     groupAriaUngrouped: 'Grouper les sessions par espace de travail',
     showProjects: 'Afficher les projets',
@@ -4673,8 +4673,8 @@ export const frOverrides = {
       subagents: count => `${count} sous-agent${count === 1 ? '' : 's'}`,
       failed: count => `${count} en échec`,
       running: count => `${count} en cours`,
-      cron: desktopTerms.fr.schedules,
-      openCron: 'Ouvrir les planifications',
+      cron: desktopTerms.fr.routines,
+      openCron: 'Ouvrir les routines',
       webhooks: 'Webhooks',
       openWebhooks: 'Ouvrir les webhooks',
       starmap: 'Graphique de mémoire',
@@ -5357,9 +5357,9 @@ export const frOverrides = {
           pendingAction: 'Question'
         },
         cronjob: {
-          done: 'Planification',
-          pending: 'Création de la planification en cours',
-          pendingAction: 'Planification en cours'
+          done: 'Routine',
+          pending: 'Création de la routine en cours',
+          pendingAction: 'Configuration en cours'
         },
         edit_file: {
           done: 'Fichier modifié',
@@ -5598,7 +5598,7 @@ export const frOverrides = {
       },
       cron: {
         title: "Du travail qui s'exécute tout seul",
-        text: 'Planifiez une invite toutes les heures, chaque nuit ou avec une expression cron.'
+        text: 'Les routines exécutent une invite toutes les heures, chaque nuit ou selon une expression cron.'
       },
       'command-palette': {
         title: 'Une seule zone pour tout faire',

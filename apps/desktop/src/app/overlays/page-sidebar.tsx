@@ -109,7 +109,7 @@ export function PageSidebarPanel({ action, children, title }: PageSidebarPanelPr
   }
 
   return (
-    <aside aria-label={title} className="page-sidebar-panel">
+    <aside aria-label={title} className="page-sidebar-panel" data-page-panel="">
       <PageSidebarHead title={title} />
       {action}
       <div className="page-sidebar-scroll">{children}</div>

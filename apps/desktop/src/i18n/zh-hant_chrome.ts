@@ -88,7 +88,7 @@ export const zhHantChrome = {
       capabilities: '技能與工具',
       messaging: '訊息平台',
       artifacts: '成品',
-      cron: desktopTerms['zh-hant'].schedules
+      cron: desktopTerms['zh-hant'].routines
     },
     searchAria: '搜尋工作階段',
     searchPlaceholder: '搜尋工作階段…',
@@ -101,7 +101,7 @@ export const zhHantChrome = {
     files: '檔案',
     review: '審查',
     logs: '記錄',
-    cronJobs: desktopTerms['zh-hant'].schedules,
+    cronJobs: desktopTerms['zh-hant'].routines,
     groupAriaGrouped: '以單一清單顯示工作階段',
     groupAriaUngrouped: '依工作區分組工作階段',
     showProjects: '顯示專案',
@@ -384,8 +384,8 @@ export const zhHantChrome = {
       subagents: count => `${count} 個子智慧體`,
       failed: count => `${count} 個失敗`,
       running: count => `${count} 個執行中`,
-      cron: desktopTerms['zh-hant'].schedules,
-      openCron: '開啟排程',
+      cron: desktopTerms['zh-hant'].routines,
+      openCron: '開啟例行任務',
       starmap: '記憶圖譜',
       openStarmap: '開啟記憶圖譜',
       turnRunning: '執行中',

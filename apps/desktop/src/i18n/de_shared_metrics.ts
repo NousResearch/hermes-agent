@@ -9,7 +9,7 @@ export const deSharedMetrics = {
   collectedNames:
     'Funktionen: integrierte Tools, Befehle, App-Bereiche und Einstellungen, die genutzt oder abgeschaltet werden',
   collectedMilestones:
-    'Einrichtung: welche Schritte abgeschlossen sind, Anbieterverbindungen, wie viele Skills, Plugins und Zeitpläne',
+    'Einrichtung: welche Schritte abgeschlossen sind, Anbieterverbindungen, wie viele Skills, Plugins und Routinen',
   collectedReliability: 'App-Zustand: Abstürze, Start- und Antwortgeschwindigkeit, Updates, Messaging-Verbindungen',
   collectedUsage:
     'Agentenqualität: verfehlte Bearbeitungen, fehlerhafte Tool-Aufrufe, festgefahrene Schleifen, Kosten pro Aufgabe',

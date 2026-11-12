@@ -23,9 +23,9 @@ import {
   sessionRoute,
   SETTINGS_ROUTE
 } from '../../routes'
+import { REDESIGN_SETTINGS_SECTIONS } from '../../settings/redesign-navigation'
 import type { SidebarNavItem } from '../../types'
 
-import { SimplifiedSettingsMenu } from './simplified-settings-menu'
 import { useIaNavigationMetrics } from './use-ia-navigation-metrics'
 import { useSimplifiedPluginPages } from './use-simplified-plugin-pages'
 
@@ -159,7 +159,29 @@ export function SimplifiedGlobalNav({ onNavigate, footer }: SimplifiedGlobalNavP
       </div>
       <div className="portal-rail-group">
         {footer}
-        <SimplifiedSettingsMenu active={view === 'settings'} onNavigate={onNavigate} />
+        {/* Settings opens its page directly: the page's own column is the menu. */}
+        <Tip label={t.commandCenter.settings} placement="left-rail">
+          <Button
+            aria-current={view === 'settings' ? 'page' : undefined}
+            aria-label={t.commandCenter.settings}
+            className="portal-chrome-button"
+            onClick={() => {
+              recordIaAction('ia.drawer.settings')
+              onNavigate({
+                id: SETTINGS_ROUTE,
+                label: t.commandCenter.settings,
+                route: `${SETTINGS_ROUTE}?tab=${REDESIGN_SETTINGS_SECTIONS[0]}`,
+                icon: props => <Codicon name="settings-gear" {...props} />
+              })
+            }}
+            onFocus={() => preloadRailPage('settings')}
+            onPointerEnter={() => preloadRailPage('settings')}
+            size="icon"
+            variant="ghost"
+          >
+            <Codicon name="settings-gear" />
+          </Button>
+        </Tip>
       </div>
     </nav>
   )

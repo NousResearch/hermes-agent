@@ -316,7 +316,7 @@ export const jaOverrides = {
         full: {
           title: 'すべてアンインストール',
           description:
-            'アプリ、エージェント、すべてのユーザーデータ（設定、チャット、スケジュール、シークレット、ログ）を削除します。',
+            'アプリ、エージェント、すべてのユーザーデータ（設定、チャット、ルーティン、シークレット、ログ）を削除します。',
           consequence: 'すべて——Chat GUI、Hermes エージェント、およびすべての設定・チャット・シークレット・ログ'
         }
       }
@@ -1774,7 +1774,7 @@ export const jaOverrides = {
       },
       DISCORD_HOME_CHANNEL: {
         label: 'ホームチャンネル ID',
-        help: 'ボットがプロアクティブなメッセージを送信するチャンネル（スケジュールの実行結果、リマインダー）。'
+        help: 'ボットがプロアクティブなメッセージを送信するチャンネル（ルーティンの実行結果、リマインダー）。'
       },
       DISCORD_HOME_CHANNEL_NAME: {
         label: 'ホームチャンネル名',
@@ -1789,7 +1789,7 @@ export const jaOverrides = {
       QQ_ALLOW_ALL_USERS: { label: 'すべての QQ ユーザーを許可' },
       QQBOT_HOME_CHANNEL: {
         label: 'QQ ホームチャンネル',
-        help: 'スケジュールの実行結果を配信するデフォルトのチャンネルまたはグループ。'
+        help: 'ルーティンの実行結果を配信するデフォルトのチャンネルまたはグループ。'
       },
       QQBOT_HOME_CHANNEL_NAME: { label: 'QQ ホームチャンネル名' },
       SLACK_BOT_TOKEN: {
@@ -1993,11 +1993,11 @@ export const jaOverrides = {
 
   cron: {
     control: jaCronControl,
-    close: 'スケジュールを閉じる',
-    title: desktopTerms.ja.schedules,
-    count: count => `スケジュール ${count} 件`,
-    search: 'スケジュールを検索...',
-    loading: 'スケジュールを読み込み中...',
+    close: 'ルーティンを閉じる',
+    title: desktopTerms.ja.routines,
+    count: count => `ルーティン ${count} 件`,
+    search: 'ルーティンを検索...',
+    loading: 'ルーティンを読み込み中...',
     states: {
       enabled: '有効',
       scheduled: 'スケジュール済み',
@@ -2049,10 +2049,10 @@ export const jaOverrides = {
     monthlyOnDayAt: (dayOfMonth, time) => `毎月 ${dayOfMonth} 日 ${time} に`,
     topOfHour: '毎時 0 分',
     everyHourAt: minute => `毎時 :${minute} に`,
-    newCron: '新しいスケジュール',
-    emptyDescNew: 'スケジュールを設定すると、エージェントがプロンプトを自動実行し、選択した宛先に結果を送信します。',
+    newCron: '新しいルーティン',
+    emptyDescNew: 'ルーティンを作成すると、エージェントがプロンプトを自動実行し、選択した宛先に結果を送信します。',
     emptyDescSearch: '検索キーワードを広げてください。',
-    emptyTitleNew: 'スケジュールがまだありません',
+    emptyTitleNew: 'ルーティンがまだありません',
     emptyTitleSearch: '一致なし',
     last: '前回',
     next: '次回',
@@ -2063,33 +2063,33 @@ export const jaOverrides = {
     hideRuns: '実行履歴を隠す',
     runHistory: '実行履歴',
 
-    actionsTitle: 'スケジュールの操作',
+    actionsTitle: 'ルーティンの操作',
     resume: '再開',
     pause: '一時停止',
     resumeTitle: '再開',
     pauseTitle: '一時停止',
     triggerNow: '今すぐ実行',
-    edit: 'スケジュールを編集',
-    deleteTitle: 'スケジュールを削除しますか？',
+    edit: 'ルーティンを編集',
+    deleteTitle: 'ルーティンを削除しますか？',
     deleteDescPrefix: 'これにより ',
     deleteDescSuffix: ' が完全に削除され、即座に実行が停止されます。',
     deleting: '削除中...',
-    resumed: 'スケジュールを再開しました',
-    paused: 'スケジュールを一時停止しました',
-    triggered: 'スケジュールを実行しました',
-    deleted: 'スケジュールを削除しました',
-    created: 'スケジュールを作成しました',
-    updated: 'スケジュールを更新しました',
-    failedLoad: 'スケジュールの読み込みに失敗しました',
-    failedUpdate: 'スケジュールの更新に失敗しました',
-    failedTrigger: 'スケジュールの実行に失敗しました',
-    failedDelete: 'スケジュールの削除に失敗しました',
-    failedSave: 'スケジュールの保存に失敗しました',
-    editTitle: 'スケジュールを編集',
-    createTitle: '新しいスケジュール',
+    resumed: 'ルーティンを再開しました',
+    paused: 'ルーティンを一時停止しました',
+    triggered: 'ルーティンを実行しました',
+    deleted: 'ルーティンを削除しました',
+    created: 'ルーティンを作成しました',
+    updated: 'ルーティンを更新しました',
+    failedLoad: 'ルーティンの読み込みに失敗しました',
+    failedUpdate: 'ルーティンの更新に失敗しました',
+    failedTrigger: 'ルーティンの実行に失敗しました',
+    failedDelete: 'ルーティンの削除に失敗しました',
+    failedSave: 'ルーティンの保存に失敗しました',
+    editTitle: 'ルーティンを編集',
+    createTitle: '新しいルーティン',
     editDesc: 'スケジュール、プロンプト、または配信先を更新します。変更は次回の実行時に適用されます。',
     createDesc:
-      'プロンプトを自動実行するスケジュールを設定します。Cron 構文または「15 分ごと」などのフレーズを使用します。',
+      'プロンプトを自動実行するルーティンを作成します。Cron 構文または「15 分ごと」などのフレーズを使用します。',
     nameLabel: '名前',
     namePlaceholder: '例: 日次サマリー',
     promptLabel: 'プロンプト',
@@ -2108,24 +2108,24 @@ export const jaOverrides = {
     promptRequired: 'プロンプトは必須です。',
     promptScheduleRequired: 'プロンプトとスケジュールは必須です。',
     scheduleRequired: 'スケジュールは必須です。',
-    scriptOnlyEditHint: 'スクリプトのみを実行するスケジュール（AI プロンプトなし）。スケジュール ID:',
+    scriptOnlyEditHint: 'スクリプトのみを実行するルーティン（AI プロンプトなし）。ルーティン ID:',
     saveChanges: '変更を保存',
-    createAction: 'スケジュールを作成',
+    createAction: 'ルーティンを作成',
     tabs: {
-      jobs: desktopTerms.ja.schedules,
+      jobs: desktopTerms.ja.routines,
       blueprints: 'ブレーンプリント'
     },
     blueprints: {
       tab: 'ブレーンプリント',
       startFrom: '開始点',
       custom: 'カスタム',
-      subtitle: 'すぐに使えるスケジュール',
-      dialogDesc: '詳細を入力してスケジュールします。',
-      scheduled: 'ブレーンプリントをスケジュールしました',
+      subtitle: 'すぐに使えるルーティン',
+      dialogDesc: '詳細を入力して実行タイミングを設定します。',
+      scheduled: 'ブループリントからルーティンを作成しました',
       loading: 'ブレーンプリントを読み込み中...',
       failedLoad: 'ブレーンプリントの読み込みに失敗しました',
       emptyTitle: '利用できるブレーンプリントはありません',
-      emptyDesc: 'このバックエンドで利用できるスケジュールのブレーンプリントはありません。'
+      emptyDesc: 'このバックエンドで利用できるルーティンのブループリントはありません。'
     }
   },
 
@@ -2234,7 +2234,7 @@ export const jaOverrides = {
       capabilities: 'スキルとツール',
       messaging: 'メッセージング',
       artifacts: 'アーティファクト',
-      cron: desktopTerms.ja.schedules
+      cron: desktopTerms.ja.routines
     },
     searchAria: 'セッションを検索',
     searchPlaceholder: 'セッションを検索…',
@@ -2247,7 +2247,7 @@ export const jaOverrides = {
     files: 'ファイル',
     review: 'レビュー',
     logs: 'ログ',
-    cronJobs: desktopTerms.ja.schedules,
+    cronJobs: desktopTerms.ja.routines,
     groupAriaGrouped: 'セッションを単一リストとして表示',
     groupAriaUngrouped: 'ワークスペースごとにセッションをグループ化',
     showProjects: 'プロジェクトを表示',
@@ -2441,8 +2441,8 @@ export const jaOverrides = {
       '/hatch': '新しいペットを生成',
       '/learn': 'ディレクトリ、URL、会話、メモから再利用可能なスキルを学ぶ',
       '/init': 'リポジトリを調べて AGENTS.md の指示を作成または更新',
-      '/suggestions': '提案されたスケジュールを確認し、採用または却下',
-      '/blueprint': 'ブループリントからスケジュールを設定',
+      '/suggestions': '提案されたルーティンを確認し、採用または却下',
+      '/blueprint': 'ブループリントからルーティンを設定',
       '/browser': 'エージェントのブラウザーを管理 [connect|disconnect|status]',
       '/palette': 'コマンドパレットを開く',
       '/usage': 'このセッションのトークン使用量を表示',
@@ -3068,8 +3068,8 @@ export const jaOverrides = {
       subagents: count => `${count} サブエージェント`,
       failed: count => `${count} 失敗`,
       running: count => `${count} 実行中`,
-      cron: desktopTerms.ja.schedules,
-      openCron: 'スケジュールを開く',
+      cron: desktopTerms.ja.routines,
+      openCron: 'ルーティンを開く',
       starmap: 'メモリグラフ',
       openStarmap: 'メモリグラフを開く',
       turnRunning: '実行中',
@@ -3603,7 +3603,7 @@ export const jaOverrides = {
         },
         browser_type: { done: 'ページに入力しました', pending: 'ページに入力中', pendingAction: '入力中' },
         clarify: { done: '質問しました', pending: '質問中', pendingAction: '質問中' },
-        cronjob: { done: desktopTerms.ja.schedules, pending: 'スケジュールを設定中', pendingAction: '設定中' },
+        cronjob: { done: desktopTerms.ja.routines, pending: 'ルーティンを設定中', pendingAction: '設定中' },
         edit_file: { done: 'ファイルを編集しました', pending: 'ファイルを編集中', pendingAction: '編集中' },
         execute_code: { done: 'コードを実行しました', pending: 'スクリプト作成中', pendingAction: 'スクリプト作成中' },
         image_generate: { done: '画像を生成しました', pending: '画像を生成中', pendingAction: '生成中' },
@@ -3806,7 +3806,7 @@ export const jaOverrides = {
         text: '全セッションの画像・ファイル・リンクを一箇所にまとめています。'
       },
       cron: {
-        title: 'スケジュールで自動実行',
+        title: 'ルーティンで自動実行',
         text: 'プロンプトを毎時・毎晩などに自動実行できます。Cron 式で実行日時を指定することもできます。'
       },
       'command-palette': {

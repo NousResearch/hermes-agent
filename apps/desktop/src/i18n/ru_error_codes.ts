@@ -5,7 +5,7 @@ type ThreadCopy = Translations['assistant']['thread']
 // The error card's per-code title and body (lib/error-surface-copy.ts), keyed by error_surface.code.
 export const ruErrorCodes: Partial<ThreadCopy['errorCodes']> = {
   cron_session_read_only: {
-    title: 'Этот чат относится к запуску по расписанию',
+    title: 'Этот чат относится к регулярной задаче',
     body: 'Он предназначен только для автоматического запуска, поэтому ваше сообщение не было выполнено. Начните новый чат, чтобы отправить его.'
   },
   session_read_only: {

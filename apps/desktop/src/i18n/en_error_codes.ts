@@ -106,8 +106,8 @@ export const enErrorCodes: ThreadCopy['errorCodes'] = {
     body: 'Another turn is running here and your message could not join its queue. Nothing was sent. Retry once that turn ends.'
   },
   cron_session_read_only: {
-    title: 'This chat belongs to a schedule',
-    body: 'This chat only runs its schedule. Your message was not run. Start a new chat to send it.'
+    title: 'This chat belongs to a routine',
+    body: 'This chat only runs its routine. Your message was not run. Start a new chat to send it.'
   },
   session_read_only: {
     title: 'This chat is read-only',

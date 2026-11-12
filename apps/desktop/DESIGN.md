@@ -158,7 +158,8 @@ Global desktop settings remain available outside the agent editor. New agent
 opens creation directly on the captured machine rather than another management page.
 
 User-facing identities are **Machine / Machines** and **Agent / Agents**;
-scheduled automation is **Schedule / Schedules** in both layouts. Navigation,
+scheduled automation is **Routine / Routines** in both layouts (a routine *has* a
+schedule: "schedule" stays the word for its timing). Navigation,
 page headings, and plugin surfaces reuse `settings.connections.title`,
 `profiles.title`, and `cron.title`; their nouns come from
 `src/i18n/desktop-terms.ts` for all nine bundled locales. Service operations say
@@ -170,7 +171,7 @@ their meanings. Protocol fields, `/profiles` and `/cron` routes, CLI commands,
 cron expressions, plugin IDs, and the exact stored `Bot Chat` title are technical
 contracts, not copy to rename.
 
-Drift coverage exercises navigation into Agent and Schedule editors, cancellation,
+Drift coverage exercises navigation into Agent and Routine editors, cancellation,
 and return to the current view with the redesign enabled and disabled. Component
 tests use canonical translated controls while checking ownership, routing, and
 mutations; avoid source scans or snapshots that freeze incidental sentences.
@@ -252,8 +253,8 @@ workspace page paints over a chat that stays mounted, skipped by style, layout a
 (`content-visibility: hidden`), inert and aria-hidden, so returning to Chats is a flip with its
 scroll, draft and focus intact. Toasts of every kind stack at the stage's end corner, resting on a
 docked composer, clear of page headers. Page content columns start at Figma's left insets
-(`--portal-frame-inset` past a sidebar panel, `--portal-stage-inset` without one), and Schedules lists its
-schedules in the shared page sidebar panel like Agents.
+(`--portal-frame-inset` past a sidebar panel, `--portal-stage-inset` without one), and Routines lists its
+routines in the shared page sidebar panel like Agents.
 Workspace pages (Capabilities, Library, …) share the overlay pages' square,
 full-bleed frame. Without an explicit skin pick, the redesign paints the
 Hermes Portal skin and classic paints Nous (`defaultSkinName`); flipping the
@@ -331,7 +332,7 @@ About & Updates, Advanced (device-level and remaining global pages), and an Agen
 settings card. Provider accounts and keys live under Agent › Providers & Keys.
 Every routed page keeps one page frame (`tokens/space.css`): beside a sidebar
 panel the content column starts `--portal-frame-inset` (20px, the freshest frames 1036:7189 /
-895:*) after the panel's divider, on Agents, Settings and Schedules alike; without a panel it
+895:*) after the panel's divider, on Agents, Settings and Routines alike; without a panel it
 starts `--portal-stage-inset` (Figma 919: x 150 at 1280) into the stage. Columns are
 left-anchored at every window width, never centred, with one max width per page kind:
 `--portal-column-form` (840) for forms and details, `--portal-column-catalog` (980) for
@@ -654,8 +655,8 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--portal-safe-bottom` | `env(safe-area-inset-bottom, 0px)` | ″ |  |
 | `--portal-safe-start` | `env(safe-area-inset-left, 0px)` | ″ |  |
 | `--portal-safe-end` | `env(safe-area-inset-right, 0px)` | ″ |  |
-| `--portal-panel-width` | `var(--portal-sidebar-width, var(--sessions-pane-width))` | ″ | ONE sidebar column for every rail destination: page panels (Agents, Schedules, Settings) take the chat sidebar's width — the user's sash width once they size it (published by the pane tree as --portal-sidebar-width), else its default — so switching destinations never moves the panel edge, its divider or the stage's content edge. |
-| `--portal-frame-inset` | `1rem` | ″ | The page-frame contract: where a page's content column starts, from the stage edge it shares with the page's sidebar panel (the freshest frames, 1036:7189 / 895:*: 20px after the divider, one value for Agents, Settings and Schedules alike), and from the stage's own edge on a page with no panel (919:9281: x 90 in the stage). Left insets, never centring, at every window width, so switching pages never moves the column sideways. |
+| `--portal-panel-width` | `var(--portal-sidebar-width, var(--sessions-pane-width))` | ″ | ONE sidebar column for every rail destination: page panels (Agents, Routines, Settings) take the chat sidebar's width — the user's sash width once they size it (published by the pane tree as --portal-sidebar-width), else its default — so switching destinations never moves the panel edge, its divider or the stage's content edge. |
+| `--portal-frame-inset` | `1rem` | ″ | The page-frame contract: where a page's content column starts, from the stage edge it shares with the page's sidebar panel (the freshest frames, 1036:7189 / 895:*: 20px after the divider, one value for Agents, Settings and Routines alike), and from the stage's own edge on a page with no panel (919:9281: x 90 in the stage). Left insets, never centring, at every window width, so switching pages never moves the column sideways. |
 | `--portal-stage-inset` | `1rem` | ″ |  |
 | `--portal-column-form` | `52.5rem` | ″ | The column's one max width per page kind: forms and details (1036:7189 General: 840), catalogs and tables (919:9281: 980), and the conversation shared by the transcript and the docked composer. |
 | `--portal-column-catalog` | `61.25rem` | ″ |  |
@@ -674,7 +675,8 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--portal-dialog-action-height` | `2.75rem` | ″ | The actions of a dialog or drawer footer (1038:7792): taller than the page's 36px buttons. |
 | `--portal-row-chrome` | `1.875rem` | ″ | Row heights: 30 chrome buttons (906:19469), 40 panel list rows (1038:7408). |
 | `--portal-row-panel` | `2.5rem` | ″ |  |
-| `--page-nav-width` | `var(--portal-panel-width)` | ″ | Names in use before the role names; Phase B moves their readers to the role and deletes them. |
+| `--portal-wing-fade-length` | `20rem` | ″ | How far into a page's body the wing art takes to fade out, from the panel's edge. |
+| `--page-nav-width` | `var(--portal-panel-width)` | ″ |  |
 | `--page-panel-inset` | `var(--portal-frame-inset)` | ″ |  |
 | `--page-stage-inset` | `var(--portal-stage-inset)` | ″ |  |
 | `--page-form-max-width` | `var(--portal-column-form)` | ″ |  |
@@ -803,7 +805,7 @@ The tables below are generated from the CSS; do not edit them by hand.
 ### Page header (`app/redesign/page-header.tsx`)
 
 Every routed page with a title or tabs renders `PageHeader` (Agents and an agent's Overview /
-History / Settings, Capabilities, Library, Messaging, Schedules, Spawn tree, Webhooks, every global
+History / Settings, Capabilities, Library, Messaging, Routines, Spawn tree, Webhooks, every global
 Settings page), so the H1, its description, the actions and the tab bar sit at one place on all of
 them. The geometry is `--portal-page-*` in `tokens/space.css`: the column top 18 (16 on compact), an
 H1 row (H1, actions at its end), the description 6 under it spanning the column, an optional leading

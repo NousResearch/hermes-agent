@@ -321,7 +321,7 @@ export const arCommandCenter = {
       },
       DISCORD_HOME_CHANNEL: {
         label: 'معرّف القناة الرئيسية',
-        help: 'القناة التي يرسل فيها البوت الرسائل الاستباقية (نتائج الجداول، التذكيرات).'
+        help: 'القناة التي يرسل فيها البوت الرسائل الاستباقية (نتائج المهام الروتينية، التذكيرات).'
       },
       DISCORD_HOME_CHANNEL_NAME: {
         label: 'اسم القناة الرئيسية',
@@ -342,7 +342,7 @@ export const arCommandCenter = {
       },
       QQBOT_HOME_CHANNEL: {
         label: 'قناة QQ الرئيسية',
-        help: 'القناة أو المجموعة الافتراضية لتسليم نتائج الجداول.'
+        help: 'القناة أو المجموعة الافتراضية لتسليم نتائج المهام الروتينية.'
       },
       QQBOT_HOME_CHANNEL_NAME: {
         label: 'اسم قناة QQ الرئيسية'
@@ -554,15 +554,15 @@ export const arCommandCenter = {
   },
   cron: {
     control: arCronControl,
-    title: desktopTerms.ar.schedules,
-    count: count => `عدد الجداول: ${count}`,
-    tabs: { jobs: desktopTerms.ar.schedules },
-    editJob: 'تحرير الجدول',
+    title: desktopTerms.ar.routines,
+    count: count => `عدد المهام الروتينية: ${count}`,
+    tabs: { jobs: desktopTerms.ar.routines },
+    editJob: 'تحرير المهمة الروتينية',
     scheduleRequired: 'وقت التشغيل مطلوب.',
-    scriptOnlyEditHint: 'يشغّل هذا الجدول برنامجًا نصيًا، وليس رسالة للذكاء الاصطناعي. معرّف الجدول:',
+    scriptOnlyEditHint: 'تشغّل هذه المهمة الروتينية برنامجًا نصيًا، وليس رسالة للذكاء الاصطناعي. معرّف المهمة:',
     close: 'إغلاق',
-    search: 'البحث في الجداول…',
-    loading: 'جار تحميل الجداول…',
+    search: 'البحث في المهام الروتينية…',
+    loading: 'جار تحميل المهام الروتينية…',
     states: {
       enabled: 'مُفعّل',
       scheduled: 'مجدول',
@@ -614,10 +614,10 @@ export const arCommandCenter = {
     monthlyOnDayAt: (dayOfMonth, time) => `شهريا في اليوم ${dayOfMonth} في ${time}`,
     topOfHour: 'في بداية كل ساعة',
     everyHourAt: minute => `كل ساعة عند :${minute}`,
-    newCron: 'جدول جديد',
-    emptyDescNew: 'أنشئ جدولاً لتشغيل الوكيل تلقائيًا.',
-    emptyDescSearch: 'لا توجد جداول تطابق البحث.',
-    emptyTitleNew: 'لا توجد جداول',
+    newCron: 'مهمة روتينية جديدة',
+    emptyDescNew: 'أنشئ مهمة روتينية لتشغيل الوكيل تلقائيًا.',
+    emptyDescSearch: 'لا توجد مهام روتينية تطابق البحث.',
+    emptyTitleNew: 'لا توجد مهام روتينية',
     emptyTitleSearch: 'لا توجد نتائج',
     last: 'آخر تشغيل',
     next: 'التالي',
@@ -631,11 +631,11 @@ export const arCommandCenter = {
     actionsTitle: 'الإجراءات',
     resume: 'استئناف',
     pause: 'إيقاف مؤقت',
-    resumeTitle: 'استئناف الجدول',
-    pauseTitle: 'إيقاف الجدول مؤقتًا',
+    resumeTitle: 'استئناف المهمة الروتينية',
+    pauseTitle: 'إيقاف المهمة الروتينية مؤقتًا',
     triggerNow: 'تشغيل الآن',
     edit: 'تحرير',
-    deleteTitle: 'حذف الجدول',
+    deleteTitle: 'حذف المهمة الروتينية',
     deleteDescPrefix: 'سيؤدي هذا إلى إزالة ',
     deleteDescSuffix: ' نهائيا. سيتوقف عن العمل فورا.',
     deleting: 'جار الحذف...',
@@ -645,13 +645,13 @@ export const arCommandCenter = {
     deleted: 'تم الحذف',
     created: 'تم الإنشاء',
     updated: 'تم التحديث',
-    failedLoad: 'فشل تحميل الجداول',
+    failedLoad: 'فشل تحميل المهام الروتينية',
     failedUpdate: 'فشل التحديث',
     failedTrigger: 'فشل التشغيل',
     failedDelete: 'فشل الحذف',
     failedSave: 'فشل الحفظ',
-    editTitle: 'تحرير الجدول',
-    createTitle: 'إنشاء جدول',
+    editTitle: 'تحرير المهمة الروتينية',
+    createTitle: 'إنشاء مهمة روتينية',
     editDesc: 'عدّل وقت التشغيل والرسالة.',
     createDesc: 'حدد ما يفعله الوكيل ومتى يعمل تلقائيًا.',
     nameLabel: 'الاسم',

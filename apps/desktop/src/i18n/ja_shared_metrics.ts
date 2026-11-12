@@ -7,7 +7,7 @@ export const jaSharedMetrics = {
   collectedActivity: 'セッション：長さ、結果、エラーの種類、1 日あたりのアクティブ時間',
   collectedModels: 'モデル：使用したモデル、トークン合計',
   collectedNames: '機能：使用またはオフにした組み込みツール、コマンド、アプリの領域、設定',
-  collectedMilestones: 'セットアップ：完了したステップ、プロバイダーの接続、スキル・プラグイン・スケジュールの数',
+  collectedMilestones: 'セットアップ：完了したステップ、プロバイダーの接続、スキル・プラグイン・ルーティンの数',
   collectedReliability: 'アプリの状態：クラッシュ、起動と応答の速さ、アップデート、メッセージングの接続',
   collectedUsage: 'エージェントの品質：失敗した編集、壊れたツール呼び出し、抜け出せないループ、タスクごとのコスト',
   collectedMachine: 'マシン：OS、RAM の範囲、GPU の種類、Hermes のバージョン、ローカルモデルの使用',

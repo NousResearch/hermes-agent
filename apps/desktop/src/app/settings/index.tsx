@@ -4,10 +4,13 @@ import { useStore } from '@nanostores/react'
 import { type ComponentType, useCallback, useEffect, useMemo, useRef } from 'react'
 import { Navigate, useLocation, useNavigate } from 'react-router'
 
+import { Button } from '@/components/ui/button'
 import { codiconIcon } from '@/components/ui/codicon'
 import { KbdCombo } from '@/components/ui/kbd'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
+import { DOCS_URL } from '@/lib/docs'
+import { openExternalLink } from '@/lib/external-link'
 import { triggerHaptic } from '@/lib/haptics'
 import {
   Archive,
@@ -15,6 +18,7 @@ import {
   Bell,
   Cpu,
   Download,
+  ExternalLink,
   Gateway,
   Globe,
   Info,
@@ -532,7 +536,12 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
   )
 
   // The redesign draws these as labelled rows on Advanced (config-transfer.tsx); classic keeps its icons.
-  const navFooter = simplified ? undefined : (
+  const navFooter = simplified ? (
+    <Button onClick={() => openExternalLink(DOCS_URL)} size="sm" type="button" variant="ghost">
+      <ExternalLink />
+      {t.catalog.documentation}
+    </Button>
+  ) : (
     <>
       <Tip label={t.settings.exportConfig}>
         <OverlayIconButton onClick={() => void exportConfig()}>

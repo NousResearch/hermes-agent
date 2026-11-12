@@ -9,7 +9,7 @@ export const enSharedMetrics: Translations['sharedMetrics'] = {
   collectedActivity: 'Sessions: length, outcome, error type, active time per day',
   collectedModels: 'Models: which ones, token totals',
   collectedNames: 'Features: built-in tools, commands, app areas and settings used or turned off',
-  collectedMilestones: 'Setup: which steps finished, provider connections, how many skills, plugins and schedules',
+  collectedMilestones: 'Setup: which steps finished, provider connections, how many skills, plugins and routines',
   collectedReliability: 'App health: crashes, startup and reply speed, updates, messaging connections',
   collectedUsage: 'Agent quality: missed edits, broken tool calls, stuck loops, cost per task',
   collectedMachine: 'Machine: OS, RAM range, GPU type, Hermes version, local model use',

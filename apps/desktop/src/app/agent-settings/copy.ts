@@ -36,7 +36,7 @@ const copy = {
     configured: 'Configured',
     connected: 'Connected',
     disconnected: 'Disconnected',
-    scriptRoutine: 'This schedule runs a script; its script is preserved.',
+    scriptRoutine: 'This routine runs a script; its script is preserved.',
     localDelivery: 'Results are saved locally.'
   },
   fr: {
@@ -73,7 +73,7 @@ const copy = {
     configured: 'Configuré',
     connected: 'Connecté',
     disconnected: 'Déconnecté',
-    scriptRoutine: 'Cette planification exécute un script ; son script est conservé.',
+    scriptRoutine: 'Cette routine exécute un script ; son script est conservé.',
     localDelivery: 'Les résultats sont enregistrés localement.'
   },
   de: {
@@ -110,7 +110,7 @@ const copy = {
     configured: 'Konfiguriert',
     connected: 'Verbunden',
     disconnected: 'Getrennt',
-    scriptRoutine: 'Dieser Zeitplan führt ein Skript aus; das Skript bleibt erhalten.',
+    scriptRoutine: 'Diese Routine führt ein Skript aus; das Skript bleibt erhalten.',
     localDelivery: 'Ergebnisse werden lokal gespeichert.'
   },
   es: {
@@ -147,7 +147,7 @@ const copy = {
     configured: 'Configurado',
     connected: 'Conectado',
     disconnected: 'Desconectado',
-    scriptRoutine: 'Esta programación ejecuta un script; el script se conserva.',
+    scriptRoutine: 'Esta rutina ejecuta un script; el script se conserva.',
     localDelivery: 'Los resultados se guardan localmente.'
   },
   ja: {
@@ -184,7 +184,7 @@ const copy = {
     configured: '設定済み',
     connected: '接続済み',
     disconnected: '未接続',
-    scriptRoutine: 'このスケジュールはスクリプトを実行します。スクリプトは保持されます。',
+    scriptRoutine: 'このルーティンはスクリプトを実行します。スクリプトは保持されます。',
     localDelivery: '結果はローカルに保存されます。'
   },
   zh: {
@@ -221,7 +221,7 @@ const copy = {
     configured: '已配置',
     connected: '已连接',
     disconnected: '未连接',
-    scriptRoutine: '此计划运行脚本，脚本将被保留。',
+    scriptRoutine: '此例行任务运行脚本，脚本将被保留。',
     localDelivery: '结果保存在本地。'
   },
   'zh-hant': {
@@ -258,7 +258,7 @@ const copy = {
     configured: '已設定',
     connected: '已連線',
     disconnected: '未連線',
-    scriptRoutine: '此排程執行指令碼，指令碼將保留。',
+    scriptRoutine: '此例行任務執行指令碼，指令碼將保留。',
     localDelivery: '結果儲存在本機。'
   },
   ru: {
@@ -295,7 +295,7 @@ const copy = {
     configured: 'Настроено',
     connected: 'Подключено',
     disconnected: 'Отключено',
-    scriptRoutine: 'Это расписание запускает скрипт; скрипт будет сохранён.',
+    scriptRoutine: 'Эта регулярная задача запускает скрипт; скрипт будет сохранён.',
     localDelivery: 'Результаты сохраняются локально.'
   },
   ar: {
@@ -332,7 +332,7 @@ const copy = {
     configured: 'تم الإعداد',
     connected: 'متصل',
     disconnected: 'غير متصل',
-    scriptRoutine: 'يشغّل هذا الجدول برنامجًا نصيًا؛ سيُحفظ البرنامج النصي.',
+    scriptRoutine: 'تشغّل هذه المهمة الروتينية برنامجًا نصيًا؛ سيُحفظ البرنامج النصي.',
     localDelivery: 'تُحفظ النتائج محليًا.'
   }
 } satisfies Record<BundledLocale, Record<string, string>>

@@ -586,7 +586,7 @@ export const esOverrides = {
       'nav.capabilities': 'Abrir skills',
       'nav.messaging': 'Abrir mensajería',
       'nav.artifacts': 'Abrir artefactos',
-      'nav.cron': 'Abrir programaciones',
+      'nav.cron': 'Abrir rutinas',
       'nav.agents': 'Abrir agentes',
       'nav.back': 'Atrás',
       'nav.forward': 'Adelante',
@@ -1474,7 +1474,7 @@ export const esOverrides = {
         full: {
           title: 'Desinstalar todo',
           description:
-            'Quita la app, el agente y todos los datos de usuario: configuración, chats, programaciones, secretos y registros.',
+            'Quita la app, el agente y todos los datos de usuario: configuración, chats, rutinas, secretos y registros.',
           consequence:
             'TODO: la interfaz de chat, el agente de Hermes y toda tu configuración, chats, secretos y registros'
         }
@@ -1638,7 +1638,7 @@ export const esOverrides = {
       intro:
         'Gestiona este dispositivo y cada máquina con Hermes a la que puede llegar mediante conexiones remotas, SSH o Cloud.',
       stagedNote:
-        'Todas las máquinas permanecen conectadas. Los agentes, chats, mensajería y programaciones se quedan en su máquina, y Sesiones puede mostrarlos todos a la vez.',
+        'Todas las máquinas permanecen conectadas. Los agentes, chats, mensajería y rutinas se quedan en su máquina, y Sesiones puede mostrarlos todos a la vez.',
       launchModeTitle: 'Al iniciar, volver a Sesiones en la última máquina usada',
       launchModeDesc: 'Si está desactivado, Sesiones se abre en la máquina principal.',
       searchPlaceholder: 'Buscar máquinas…',
@@ -3105,7 +3105,7 @@ export const esOverrides = {
       },
       DISCORD_HOME_CHANNEL: {
         label: 'ID del canal principal',
-        help: 'Canal donde el bot envía mensajes proactivos (resultados de programaciones, recordatorios).'
+        help: 'Canal donde el bot envía mensajes proactivos (resultados de rutinas, recordatorios).'
       },
       DISCORD_HOME_CHANNEL_NAME: {
         label: 'Nombre del canal principal',
@@ -3126,7 +3126,7 @@ export const esOverrides = {
       },
       QQBOT_HOME_CHANNEL: {
         label: 'Canal principal de QQ',
-        help: 'Canal o grupo predeterminado para entregar resultados de programaciones.'
+        help: 'Canal o grupo predeterminado para entregar resultados de rutinas.'
       },
       QQBOT_HOME_CHANNEL_NAME: {
         label: 'Nombre del canal principal de QQ'
@@ -3428,11 +3428,11 @@ export const esOverrides = {
   },
   cron: {
     control: esCronControl,
-    close: 'Cerrar programaciones',
-    title: desktopTerms.es.schedules,
-    count: count => `${count} ${count === 1 ? 'programación' : 'programaciones'}`,
-    search: 'Buscar programaciones...',
-    loading: 'Cargando programaciones...',
+    close: 'Cerrar rutinas',
+    title: desktopTerms.es.routines,
+    count: count => `${count} ${count === 1 ? 'rutina' : 'rutinas'}`,
+    search: 'Buscar rutinas...',
+    loading: 'Cargando rutinas...',
     states: {
       enabled: 'activada',
       scheduled: 'programada',
@@ -3443,7 +3443,7 @@ export const esOverrides = {
       completed: 'completada'
     },
     lastRunFailed: 'Falló la última ejecución:',
-    editJob: 'Editar programación',
+    editJob: 'Editar rutina',
     runAgain: 'Ejecutar de nuevo',
     deliveryLabels: {
       local: 'Este escritorio',
@@ -3487,11 +3487,11 @@ export const esOverrides = {
     monthlyOnDayAt: (dayOfMonth, time) => `Mensual el día ${dayOfMonth} a las ${time}`,
     topOfHour: 'Al inicio de cada hora',
     everyHourAt: minute => `Cada hora en :${minute}`,
-    newCron: 'Nueva programación',
+    newCron: 'Nueva rutina',
     emptyDescNew:
-      'Las programaciones ejecutan tus instrucciones automáticamente y envían los resultados al destino que elijas.',
+      'Las rutinas ejecutan tus instrucciones automáticamente y envían los resultados al destino que elijas.',
     emptyDescSearch: 'Prueba una búsqueda más amplia.',
-    emptyTitleNew: 'Aún no hay programaciones',
+    emptyTitleNew: 'Aún no hay rutinas',
     emptyTitleSearch: 'Sin coincidencias',
     last: 'Última:',
     next: 'Siguiente:',
@@ -3502,30 +3502,30 @@ export const esOverrides = {
     showRuns: 'Mostrar ejecuciones',
     hideRuns: 'Ocultar ejecuciones',
     runHistory: 'Historial de ejecuciones',
-    actionsTitle: 'Acciones de la programación',
-    resume: 'Reanudar programación',
-    pause: 'Pausar programación',
+    actionsTitle: 'Acciones de la rutina',
+    resume: 'Reanudar rutina',
+    pause: 'Pausar rutina',
     resumeTitle: 'Reanudar',
     pauseTitle: 'Pausar',
     triggerNow: 'Ejecutar ahora',
-    edit: 'Editar programación',
-    deleteTitle: '¿Eliminar programación?',
+    edit: 'Editar rutina',
+    deleteTitle: '¿Eliminar rutina?',
     deleteDescPrefix: 'Esto eliminará ',
     deleteDescSuffix: ' permanentemente. Dejará de ejecutarse de inmediato.',
     deleting: 'Eliminando...',
-    resumed: 'Programación reanudada',
-    paused: 'Programación pausada',
-    triggered: 'Programación ejecutada',
-    deleted: 'Programación eliminada',
-    created: 'Programación creada',
-    updated: 'Programación actualizada',
-    failedLoad: 'No se pudieron cargar las programaciones',
-    failedUpdate: 'No se pudo actualizar la programación',
-    failedTrigger: 'No se pudo ejecutar la programación',
-    failedDelete: 'No se pudo eliminar la programación',
-    failedSave: 'No se pudo guardar la programación',
-    editTitle: 'Editar programación',
-    createTitle: 'Nueva programación',
+    resumed: 'Rutina reanudada',
+    paused: 'Rutina pausada',
+    triggered: 'Rutina ejecutada',
+    deleted: 'Rutina eliminada',
+    created: 'Rutina creada',
+    updated: 'Rutina actualizada',
+    failedLoad: 'No se pudieron cargar las rutinas',
+    failedUpdate: 'No se pudo actualizar la rutina',
+    failedTrigger: 'No se pudo ejecutar la rutina',
+    failedDelete: 'No se pudo eliminar la rutina',
+    failedSave: 'No se pudo guardar la rutina',
+    editTitle: 'Editar rutina',
+    createTitle: 'Nueva rutina',
     editDesc:
       'Actualiza la frecuencia, las instrucciones o el destino. Los cambios se aplican en la próxima ejecución.',
     createDesc:
@@ -3548,24 +3548,24 @@ export const esOverrides = {
     promptRequired: 'El prompt es obligatorio.',
     promptScheduleRequired: 'El prompt y la programación son obligatorios.',
     scheduleRequired: 'La programación es obligatoria.',
-    scriptOnlyEditHint: 'Programación solo con script (sin prompt de IA). ID de la programación:',
+    scriptOnlyEditHint: 'Rutina solo con script (sin prompt de IA). ID de la rutina:',
     saveChanges: 'Guardar cambios',
-    createAction: 'Crear programación',
+    createAction: 'Crear rutina',
     tabs: {
-      jobs: desktopTerms.es.schedules,
+      jobs: desktopTerms.es.routines,
       blueprints: 'Plantillas'
     },
     blueprints: {
       tab: 'Plantillas',
       startFrom: 'Empezar con',
       custom: 'Personalizada',
-      subtitle: 'Programaciones listas para usar',
+      subtitle: 'Rutinas listas para usar',
       dialogDesc: 'Completa los detalles y prográmala.',
-      scheduled: 'Plantilla programada',
+      scheduled: 'Rutina creada desde la plantilla',
       loading: 'Cargando plantillas…',
       failedLoad: 'No se pudieron cargar las plantillas',
       emptyTitle: 'No hay plantillas disponibles',
-      emptyDesc: 'Este backend no ofrece plantillas de programaciones.'
+      emptyDesc: 'Este backend no ofrece plantillas de rutinas.'
     }
   },
   artifacts: {
@@ -3674,7 +3674,7 @@ export const esOverrides = {
       capabilities: 'Capacidades',
       messaging: 'Mensajería',
       artifacts: 'Artefactos',
-      cron: desktopTerms.es.schedules
+      cron: desktopTerms.es.routines
     },
     searchAria: 'Buscar sesiones',
     searchPlaceholder: 'Buscar sesiones…',
@@ -3687,7 +3687,7 @@ export const esOverrides = {
     files: 'Archivos',
     review: 'Revisión',
     logs: 'Registros',
-    cronJobs: desktopTerms.es.schedules,
+    cronJobs: desktopTerms.es.routines,
     groupAriaGrouped: 'Mostrar sesiones como una sola lista',
     groupAriaUngrouped: 'Agrupar sesiones por espacio de trabajo',
     showProjects: 'Mostrar proyectos',
@@ -3905,8 +3905,8 @@ export const esOverrides = {
       '/hatch': 'Generar una mascota nueva (abre el generador)',
       '/learn': 'Aprender una skill reutilizable a partir de lo que describas (carpetas, URL, este chat, notas)',
       '/init': 'Generar o actualizar las instrucciones de proyecto AGENTS.md a partir de un análisis del repositorio',
-      '/suggestions': 'Revisar las programaciones sugeridas (aceptar/descartar)',
-      '/blueprint': 'Configurar una programación a partir de una plantilla',
+      '/suggestions': 'Revisar las rutinas sugeridas (aceptar/descartar)',
+      '/blueprint': 'Configurar una rutina a partir de una plantilla',
       '/browser': 'Gestionar el navegador del agente [connect|disconnect|status]',
       '/palette': 'Abrir la paleta de comandos aproximada (también Ctrl+P)',
       '/usage':
@@ -4647,8 +4647,8 @@ export const esOverrides = {
       subagents: count => `${count} ${count === 1 ? 'subagente' : 'subagentes'}`,
       failed: count => `${count} fallidos`,
       running: count => `${count} en ejecución`,
-      cron: desktopTerms.es.schedules,
-      openCron: 'Abrir programaciones',
+      cron: desktopTerms.es.routines,
+      openCron: 'Abrir rutinas',
       webhooks: 'Webhooks',
       openWebhooks: 'Abrir webhooks',
       starmap: 'Grafo de memoria',
@@ -5332,9 +5332,9 @@ export const esOverrides = {
           pendingAction: 'Preguntando'
         },
         cronjob: {
-          done: 'Programación completada',
-          pending: 'Crear una programación',
-          pendingAction: 'Programando'
+          done: 'Rutina configurada',
+          pending: 'Configurando rutina',
+          pendingAction: 'Configurando'
         },
         edit_file: {
           done: 'Archivo editado',
@@ -5571,7 +5571,7 @@ export const esOverrides = {
         text: 'Imágenes, archivos y enlaces de cada sesión, indexados en un solo lugar.'
       },
       cron: {
-        title: 'Programaciones automáticas',
+        title: 'Rutinas automáticas',
         text: 'Ejecuta instrucciones automáticamente cada hora, cada noche o cuando elijas.'
       },
       'command-palette': {

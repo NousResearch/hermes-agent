@@ -750,7 +750,7 @@ export const zhHantSettings = {
         },
         full: {
           title: '解除安裝全部',
-          description: '移除應用程式、智慧體和所有使用者資料——設定、聊天記錄、排程、機密和日誌。',
+          description: '移除應用程式、智慧體和所有使用者資料——設定、聊天記錄、例行任務、機密和日誌。',
           consequence: '全部內容——聊天 GUI、Hermes 智慧體，以及你的所有設定、聊天記錄、機密和日誌'
         }
       }

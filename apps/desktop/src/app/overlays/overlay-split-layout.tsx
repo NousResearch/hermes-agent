@@ -25,6 +25,8 @@ interface OverlaySplitLayoutProps {
 interface OverlaySidebarProps {
   children: ReactNode
   className?: string
+  /** A redesigned page's docked panel: the page art's fade starts past it (portal-artwork.css). */
+  docked?: boolean
 }
 
 interface OverlayMainProps {
@@ -68,7 +70,7 @@ export function OverlaySplitLayout({ children, className }: OverlaySplitLayoutPr
   )
 }
 
-export function OverlaySidebar({ children, className }: OverlaySidebarProps) {
+export function OverlaySidebar({ children, className, docked }: OverlaySidebarProps) {
   return (
     <aside
       className={cn(
@@ -83,6 +85,7 @@ export function OverlaySidebar({ children, className }: OverlaySidebarProps) {
       // Every overlay's left nav (settings, cron, profiles, agents) answers to
       // one name, so a tour can point at "the nav" without knowing which
       // overlay is open. See lib/tour.
+      data-page-panel={docked ? '' : undefined}
       data-tour="overlay-nav"
     >
       {children}
@@ -230,7 +233,7 @@ export function OverlayNav({ footer, groups, related, title }: OverlayNavProps) 
 
   return (
     <>
-      <OverlaySidebar className={cn(RAIL_HIDDEN, title && !panelOpen && 'hidden')}>
+      <OverlaySidebar className={cn(RAIL_HIDDEN, title && !panelOpen && 'hidden')} docked={Boolean(title) && panelOpen}>
         {title && <PageSidebarHead title={title} />}
         {groups.map(group => {
           const hasChildren = Boolean(group.children?.length)

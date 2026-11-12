@@ -47,7 +47,10 @@
 .portal-page-header-title > h1 {
   grid-area: title;
   min-width: 0;
-  overflow: hidden;
+  /* Clip the inline axis only: the display face's descenders reach below its 1.1 line box, and
+     `hidden` would cut them. */
+  overflow-x: clip;
+  overflow-y: visible;
   color: var(--ui-text-primary);
   text-overflow: ellipsis;
   white-space: nowrap;

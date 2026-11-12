@@ -3,10 +3,10 @@ import asyncio
 from unittest.mock import AsyncMock
 
 import pytest
+from acp import RequestError
 from acp.schema import TextContentBlock
 
 from acp_adapter.gateway_server import GatewayACPAgent
-from hermes_cli.gateway_client import GatewayClientError
 
 
 def agent_with_admission():
@@ -18,10 +18,10 @@ def agent_with_admission():
     return agent
 
 
-async def complete(agent, admission_id, outcome, text):
+async def complete(agent, admission_id, outcome, text, **payload):
     await agent._project({'session_id': 's', 'type': 'message.complete',
                           'admission_id': admission_id,
-                          'payload': {'outcome': outcome, 'text': text}})
+                          'payload': {'outcome': outcome, 'text': text, **payload}})
 
 
 @pytest.mark.asyncio
@@ -63,11 +63,36 @@ async def test_refused_reattach_after_a_replay_gap_still_fails_the_pump():
 async def test_failed_admission_raises_without_poisoning_the_next_success():
     agent = agent_with_admission()
     await complete(agent, 'current', 'failed', 'The admitted turn failed.')
-    with pytest.raises(GatewayClientError, match='admitted_turn_failed'):
+    with pytest.raises(RequestError) as failed:
         await agent.prompt([TextContentBlock(type='text', text='hello')], 's')
+    assert failed.value.to_error_obj()['data']['details'] == 'admitted_turn_failed'
     assert 'current' not in agent._terminals
     await complete(agent, 'current', 'completed', 'Operation interrupted: quoted model text')
     response = await agent.prompt([TextContentBlock(type='text', text='retry')], 's')
     assert response.stop_reason == 'end_turn'
     assert agent._conn.session_update.await_args.kwargs['update'].content.text == (
         'Operation interrupted: quoted model text')
+
+
+@pytest.mark.asyncio
+async def test_failed_admission_error_carries_the_completion_cause():
+    """The editor learns why the turn failed; code, message and data.details stay what they were."""
+    agent = agent_with_admission()
+    await complete(agent, 'current', 'failed', 'Provider said: HTTP 429: slow down\n',
+                   failure_reason='rate_limit')
+    with pytest.raises(RequestError) as failed:
+        await agent.prompt([TextContentBlock(type='text', text='hello')], 's')
+    assert failed.value.to_error_obj() == {'code': -32603, 'message': 'Internal error', 'data': {
+        'details': 'admitted_turn_failed', 'failure_reason': 'rate_limit',
+        'message': 'Provider said: HTTP 429: slow down'}}
+
+
+@pytest.mark.asyncio
+async def test_failed_terminal_receipt_error_has_only_the_details():
+    """A retry's terminal receipt carries no completion text: the error is the bare one."""
+    agent = agent_with_admission()
+    agent._gateway.rpc.return_value = {'admission_id': 'current', 'status': 'terminal', 'outcome': 'failed'}
+    with pytest.raises(RequestError) as failed:
+        await agent.prompt([TextContentBlock(type='text', text='hello')], 's')
+    assert failed.value.to_error_obj() == {
+        'code': -32603, 'message': 'Internal error', 'data': {'details': 'admitted_turn_failed'}}

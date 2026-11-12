@@ -36,9 +36,14 @@ async function builderPreloads(out) {
   const electron = path.join(out, 'electron.zip')
   fs.writeFileSync(electron, 'fixture archive')
   const toolsets = { sevenZip: path.join(out, 'sevenZip'), icons: path.join(out, 'icons') }
-  for (const dir of Object.values(toolsets)) fs.mkdirSync(dir)
+  // Windows admission also requires the signing kit and a .NET root, even for --dir.
+  const windows = process.platform === 'win32'
+    ? { makeappx: 'makeappx.exe', signtool: 'signtool.exe', dlib: null, dotnetRoot: path.join(out, 'dotnet') }
+    : null
+  if (windows) toolsets.winCodeSign = path.join(out, 'winCodeSign')
+  for (const dir of [...Object.values(toolsets), windows?.dotnetRoot].filter(Boolean)) fs.mkdirSync(dir)
   const target = `${process.platform}-${process.arch}`
-  const manifest = await publishPackagingInputs({ source, out, target, formats: ['dir'], electron, toolsets })
+  const manifest = await publishPackagingInputs({ source, out, target, formats: ['dir'], electron, toolsets, windows })
   const nativeDeps = path.join(out, 'native')
   write(path.join(nativeDeps, 'node-pty/package.json'), '{}')
   recordNativeInputs({ source, out: nativeDeps, platform: process.platform, arch: process.arch })

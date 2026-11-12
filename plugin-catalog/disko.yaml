@@ -1,7 +1,7 @@
 name: disko
 title: disko
 repo: https://github.com/emirkaan5/hermes-disko
-sha: 92941008c78981e935af6744e09ce2d441056e48
+sha: 61ca000468eb69482ce4db67b657bd8fb54d1e93
 description: >-
   Run and steer a disko AI DJ set on your Mac from any Hermes chat. disko's model picks each
   next track and beat-matches the mix; this plugin launches it on a music folder or a Spotify
@@ -13,7 +13,8 @@ description: >-
   (disko's folder and Python path, written by disko; not a credential) to find disko, and reads
   no token or credential file. No third-party network calls (an optional control_url, set by
   the user, is contacted over plain HTTP with a token from Hermes's secret store). disko_launch
-  starts disko as a background process with a fixed command (no shell) that keeps running
+  starts disko as a background process with a fixed command (no shell) and a minimal environment
+  (none of Hermes's API keys) that keeps running
   after Hermes exits and logs to the plugin's data folder (a Spotify playlist is passed only as
   `liked` or a playlist id; disko, not the plugin, then uses the user's own Spotify sign-in, and
   only if the user turned Spotify audio on in disko themselves); disko_start plays music out
@@ -23,12 +24,12 @@ maintainer: emirkaan5
 tier: community
 category: tools
 requires_hermes: ">=0.21.5"
-docs_url: https://github.com/emirkaan5/hermes-disko/blob/92941008c78981e935af6744e09ce2d441056e48/README.md
-version: "0.4.1"
+docs_url: https://github.com/emirkaan5/hermes-disko/blob/61ca000468eb69482ce4db67b657bd8fb54d1e93/README.md
+version: "0.4.2"
 readme: true
-image: https://raw.githubusercontent.com/emirkaan5/hermes-disko/92941008c78981e935af6744e09ce2d441056e48/docs/banner.jpg
+image: https://raw.githubusercontent.com/emirkaan5/hermes-disko/61ca000468eb69482ce4db67b657bd8fb54d1e93/docs/banner.jpg
 screenshots:
-  - https://raw.githubusercontent.com/emirkaan5/hermes-disko/92941008c78981e935af6744e09ce2d441056e48/docs/screenshot.jpg
+  - https://raw.githubusercontent.com/emirkaan5/hermes-disko/61ca000468eb69482ce4db67b657bd8fb54d1e93/docs/screenshot.jpg
 platforms: [macos]
 capabilities:
   provides_tools:

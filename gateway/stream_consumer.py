@@ -35,7 +35,7 @@ from gateway.response_filters import (
     strip_trailing_silence_marker as _strip_trailing_silence_marker)
 from gateway.stream_consumer_directives import has_pending_media_directive, strip_image_tags_for_display
 from gateway.stream_consumer_fences import ensure_closed_code_fences
-from gateway.stream_consumer_redact import redact_settled
+from gateway.stream_consumer_redact import redact_settled, redact_to_fixpoint
 from gateway.stream_consumer_transport import StreamTransportMixin
 from gateway.stream_consumer_fallback import StreamFallbackMixin
 from gateway.stream_consumer_think import StreamThinkFilterMixin
@@ -1145,7 +1145,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         through here, so this is where streamed text gets the same forced secret redaction the
         non-streamed final send applies in ``_sanitize_gateway_final_response`` (#56039).
         """
-        return _redact_for_egress(GatewayStreamConsumer._display_text(text))
+        return redact_to_fixpoint(GatewayStreamConsumer._display_text(text))
 
     @staticmethod
     def _display_text(text: str) -> str:

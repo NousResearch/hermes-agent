@@ -96,3 +96,24 @@ async def test_secret_still_arriving_at_the_split_is_redacted_once_complete():
     texts = _delivered(adapter)
     assert len(adapter.send.call_args_list) >= 2  # really sealed + continued
     assert not _leaked_fragments(texts)
+
+
+_PW = "Hunter2" + "xQ9vLm4RtZ8k"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reply", [
+    'Here it is:\n{"pass' + 'word": "' + _PW + '", "user": "bob"}\nDone.',
+    "Run: mysql --pass" + "word " + _PW + " -h db\nDone.",
+], ids=["json-field", "cli-flag"])
+async def test_streamed_final_still_reconciles_when_a_second_redaction_pass_changes_it(reply):
+    # redact_for_egress is not idempotent here (``Hunter...tZ8k`` -> ``***``). The gateway
+    # reconciles the raw final_response against what was streamed; a mismatch makes it edit the
+    # message with that raw text (run_turn.py stale-finalize path) or send the reply twice.
+    adapter = _adapter()
+    consumer = GatewayStreamConsumer(adapter, "chat", StreamConsumerConfig(cursor=""))
+    consumer.on_delta(reply)
+    consumer.finish(reply)
+    await consumer.run()
+    assert consumer.delivered_final_matches(reply) is True
+    assert all(_PW[6:-4] not in t for t in _delivered(adapter))

@@ -245,3 +245,30 @@ async def test_bearer_token_holding_a_keyword_is_never_shown_raw(token, split, d
     shown = [*frames, *(content for _op, _id, content in adapter.ops)]
     assert not _raw_runs(shown, token)
     assert all(later.startswith(earlier) for earlier, later in pairwise(frames)), frames
+
+
+_FIRST, _SECOND = "Hx9" + "qLm4RtZ8kVb2", "Wp7" + "yNc3JsD6fGh1"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("deltas", [
+    list('Run: mysql --pass' + 'word "' + _FIRST + "\n" + _SECOND + '" -h db\nDone.'),
+    ['Run: mysql --pass' + 'word "' + _FIRST + "\n", "ab\\", "c" + _SECOND + '" -h db\nDone.'],
+    list('docker login -p "' + _FIRST + "\n" + _SECOND + '" registry.io\nDone.'),
+], ids=["flag", "delta-ends-in-backslash", "docker-login-p"])
+async def test_a_quoted_flag_value_spanning_lines_is_held_to_its_closing_quote(deltas):
+    # The CLI redactor masks a quoted flag value across a newline; the open-value hold must too.
+    adapter = _adapter()
+    await _stream(adapter, *deltas)
+    shown = [content for _op, _id, content in adapter.ops]
+    assert not _raw_runs(shown, _FIRST) and not _raw_runs(shown, _SECOND)
+
+
+@pytest.mark.asyncio
+async def test_a_zhipu_key_id_is_not_shown_while_the_key_arrives():
+    # ``<32 hex>.<secret>``: no continuation probe completes the hex id, so it needs its own hold.
+    key = "43c5fa52f8b2b19b8f89a0f8a8e9b2d1" + "." + "Q7mZ2xW9rT4kL8vB"
+    adapter = _adapter()
+    await _stream(adapter, "Your zhipu key is ", *key, " - keep it safe.")
+    shown = [content for _op, _id, content in adapter.ops]
+    assert not _raw_runs(shown, key[:32])

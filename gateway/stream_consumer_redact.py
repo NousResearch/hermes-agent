@@ -34,14 +34,18 @@ _CONTINUATIONS = (_PROBE, "." + _PROBE, ":" + _PROBE, "-" + _PROBE, "_" + _PROBE
 _LITERALS = tuple(lit for lit in (*_PREFIX_SUBSTRINGS, "eyJ", "LS0tLS1CRUdJTi", "AGE-SECRET-KEY-1") if lit)
 _LITERAL_MAX = max(map(len, _LITERALS))
 _NON_KEY_CHAR_RE = re.compile(r"[^A-Za-z0-9_\-]")
+# A Zhipu key's 32-hex id still arriving: no probe completes it until its ``.secret`` part does.
+_HEX_ID_TAIL_RE = re.compile(r"(?<![A-Za-z0-9_.-])[0-9a-f]{8,32}\Z")
 
 _KW = r"(?:key|token|secret|passw(?:or)?d|pass(?:phrase)?|pwd|pw|credentials?|auth\w*|cookie|sig\w*|bearer)"
 _OPEN_VALUE = r"(?:\\?[\"'][^\"'\n]*|\S*)"  # an open quoted value or a still-arriving token
+# A CLI flag's quoted value may span lines (agent.redact._QUOTED_FLAG_VALUE): hold to its closing quote.
+_OPEN_FLAG_VALUE = r"(?:\\?\"(?:\\[\s\S]|[^\"\\]){0,512}\\?|\\?'(?:'\\''|[^']){0,512}|\S*)"
 _OPEN_TAIL_RE = re.compile(
     rf"\b(?:proxy-)?authorization\s*(?::\s*(?:\S+[ \t]+)?\S*)?\Z"            # header, scheme, credential
     rf"|\bbearer\s*\S*\Z"
-    rf"|(?<![\w-])-{{1,2}}[\w-]*{_KW}[\w-]*(?:\s*=\s*|\s+){_OPEN_VALUE}\Z"     # CLI flag + value
-    rf"|(?<![\w-])-p\s+\S*\Z"                                                # docker login -p
+    rf"|(?<![\w-])-{{1,2}}[\w-]*{_KW}[\w-]*(?:\s*=\s*|\s+){_OPEN_FLAG_VALUE}\Z"  # CLI flag + value
+    rf"|(?<![\w-])-p\s+{_OPEN_FLAG_VALUE}\Z"                                     # docker login -p
     rf"|(?<![\w.-])\\?[\"']?[\w.-]*{_KW}[\w.-]*\\?[\"']?\s*(?:[:=]\s*{_OPEN_VALUE})?\Z"  # NAME[:=] value
     rf"|\b(?:password|pwd)[ \t]*=[^\n]*\Z"     # connection string: a later host=/user= masks it
     rf"|\b(?:set-)?cookie:[ \t]*(?:[^\s;]+;[ \t]*)*\S*\Z",
@@ -69,7 +73,7 @@ def _token_may_be_secret(context: str, token: str) -> bool:
     """True when the trailing, still-arriving ``token`` is, or could grow into, a secret: it
     holds a secret's literal start or ends in the beginning of one, is masked already, or is
     masked once a continuation is appended."""
-    if any(lit in token for lit in _LITERALS):
+    if any(lit in token for lit in _LITERALS) or _HEX_ID_TAIL_RE.search(token):
         return True
     for i in range(max(0, len(token) - _LITERAL_MAX), len(token)):
         if (not i or not token[i - 1].isalnum()) and any(lit.startswith(token[i:]) for lit in _LITERALS):
@@ -210,7 +214,7 @@ def _lookback_start(text: str, upto: int) -> int:
     return max(text.rfind(" ", 0, lo), text.rfind("\t", 0, lo)) + 1
 
 
-def _redact_to_fixpoint(text: str) -> str:
+def redact_to_fixpoint(text: str) -> str:
     """Redact until stable. The redactor re-masks its own output (``Bearer abcd...wxyz`` ->
     ``Bearer ***`` -> ``***``), and the settled text is redacted again with later text and at
     segment end: emitting only a fixpoint keeps those passes from rewriting what was shown. Each
@@ -239,7 +243,7 @@ def redact_settled(text: str, redacted_prefix: str, *, done: bool) -> tuple[str,
         start = min(start, text.rfind("\n", 0, upto) + 1)
     if settled <= start:
         return text, settled
-    redacted = _redact_to_fixpoint(text[start:settled])
+    redacted = redact_to_fixpoint(text[start:settled])
     if not done and not redacted.startswith(text[start:upto]):
         # The new text changes how emitted text redacts. Emitted text cannot be rewritten and
         # nothing may be appended after it, since the redaction of the new text is only correct

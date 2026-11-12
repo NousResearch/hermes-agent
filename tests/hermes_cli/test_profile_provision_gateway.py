@@ -149,6 +149,8 @@ def test_typed_refusals_and_fallbacks(root, monkeypatch):
     for code in (-32601, 4000):
         _gateway(monkeypatch, GatewayRPCError("old", code))
         assert create_through_gateway(request) is None
+    _gateway(monkeypatch, GatewayRPCError("unknown_method"))  # legacy owners omit the code
+    assert create_through_gateway(request) is None
     _gateway(monkeypatch, None, reachable=False)
     assert create_through_gateway(request) is None
     draining = GatewayRPCError("runtime_draining", 4001, {"reason": "runtime_draining"})
@@ -426,7 +428,7 @@ def test_a_config_outage_mid_create_is_an_unknown_outcome(root, monkeypatch, whe
         create_through_gateway(ProfileCreateRequest(name="w2", alias=False))
 
 
-@pytest.mark.parametrize("reason", ["profile_mismatch", "profile_unavailable", "runtime_draining"])
+@pytest.mark.parametrize("reason", ["profile_mismatch", "profile_unavailable", "runtime_draining", "unknown_method"])
 def test_a_handler_failure_named_like_a_routing_refusal_is_an_unknown_outcome(root, monkeypatch, reason):
     """Routing refusals are matched by code AND ``data.reason``: a handler failure (5062) whose text or
     reason reads like one, after the profile was made, is never "nothing was created", "retry" or a

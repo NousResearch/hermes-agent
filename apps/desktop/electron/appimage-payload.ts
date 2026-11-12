@@ -264,6 +264,15 @@ async function gatewayUnits(dirs: string[]): Promise<string[]> {
   return units.flat()
 }
 
+/** A path as hermes_cli/gateway.py _systemd_command quotes it into a unit's argv. */
+function systemdQuoted(value: string): string {
+  return value
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/%/g, '%%')
+    .replace(/\$/g, () => '$$')
+}
+
 async function markedComplete(build: string, key: string): Promise<boolean> {
   try {
     return JSON.parse(await fs.promises.readFile(path.join(build, MARKER), 'utf8'))?.key === key
@@ -353,7 +362,9 @@ export async function collectStalePayloadCopies(
       continue
     }
 
-    if (units.some(unit => unit.includes(`${dir}${path.sep}`) || unit.includes(`${real}${path.sep}`))) {
+    const spellings: string[] = [dir, real].flatMap(at => [`${at}${path.sep}`, systemdQuoted(`${at}${path.sep}`)])
+
+    if (units.some(unit => spellings.some(spelling => unit.includes(spelling)))) {
       host.log(`[payload] keeping ${dir}: a gateway service unit runs from it`)
 
       continue

@@ -1,7 +1,7 @@
 name: hermes-local-voice
 title: Local Voice Notes
 repo: https://github.com/soilgrowerx/hermes-local-voice
-sha: 58c3debe0a678f04584ce67f989194b358ab1dbc
+sha: b84c82c
 description: "Voice memos become text on the machine that recorded them: no API key, no account, and no audio leaving the host. Capture from PipeWire or ffmpeg, run faster-whisper locally, and the transcript arrives as a note. Four tools (transcribe_audio, voice_record_start, voice_record_stop, transcribe_last) plus a speech-to-text provider registered through ctx.register_transcription_provider, so core transcribes only admitted messages when stt.provider is set to hermes_local_voice. pre_llm_call attaches the pending transcript to the turn; the legacy pre_gateway_dispatch path is opt-in and off by default because it runs before sender authorization. Ships model management (list supported Whisper sizes with disk cost and cache status, download explicitly) and a live capture path with a silence gate so ambient room tone is never transcribed. Disclosure: all processing is local. Network access happens only when the user explicitly runs the model download command, which fetches weights from Hugging Face into the Hermes model directory; no telemetry, no automatic updates, no reads outside the Hermes home and the recording paths the plugin creates."
 maintainer: soilgrowerx
 tier: community

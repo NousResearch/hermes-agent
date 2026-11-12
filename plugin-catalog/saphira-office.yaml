@@ -1,0 +1,20 @@
+name: saphira-office
+repo: https://github.com/caiquenzt-lang/saphira-office
+sha: 8b1179cecd2669b6990cd894e0f5464d48beee97
+version: "1.0.0"
+description: Animated virtual pixel art office for Hermes Desktop agents and profiles.
+maintainer: caiquenzt-lang
+tier: community
+category: desktop
+docs_url: https://github.com/caiquenzt-lang/saphira-office#readme
+image: https://raw.githubusercontent.com/caiquenzt-lang/saphira-office/8b1179cecd2669b6990cd894e0f5464d48beee97/screenshots/saphira_office_stage3_main.png
+screenshots:
+  - https://raw.githubusercontent.com/caiquenzt-lang/saphira-office/8b1179cecd2669b6990cd894e0f5464d48beee97/screenshots/saphira_office_stage4_command_bar.png
+  - https://raw.githubusercontent.com/caiquenzt-lang/saphira-office/8b1179cecd2669b6990cd894e0f5464d48beee97/screenshots/saphira_office_stage4_modal_response.png
+  - https://raw.githubusercontent.com/caiquenzt-lang/saphira-office/8b1179cecd2669b6990cd894e0f5464d48beee97/screenshots/saphira_office_stage3_marketplace.png
+  - https://raw.githubusercontent.com/caiquenzt-lang/saphira-office/8b1179cecd2669b6990cd894e0f5464d48beee97/screenshots/saphira_office_stage3_customizer.png
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

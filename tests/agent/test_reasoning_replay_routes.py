@@ -194,11 +194,11 @@ def test_single_reasoning_field_error_learns_only_the_replayed_alias():
 
     assert _recover(gw, body, sent) is True
     assert rejected_reasoning_carriers(gw) == frozenset({"reasoning"})
+    assert _recover(gw, body, sent) is False  # the identical rejection cannot re-trigger recovery
     route = reasoning_replay_route("chat_completions", gw.provider, gw.model, gw.base_url,
                                    rejected=rejected_reasoning_carriers(gw))
     reapply_reasoning_echo(sent, route.pad, route.carriers)
     assert sent[0]["reasoning_content"] == "thought" and "reasoning" not in sent[0]
-    assert _recover(gw, body, sent) is False  # same failure cannot re-trigger recovery
 
     # A single-carrier message cannot cause the alias collision; don't learn from it.
     solo = _agent("flint")
@@ -216,9 +216,15 @@ _SERDE = "Failed to deserialize the JSON body into the target type: "
     (_SERDE + "duplicate field `reasoning_content` at line 1 column 259", [_PAIR], {"reasoning"}),
     (_SERDE + "duplicate field `reasoning` at line 1 column 259", [_PAIR], {"reasoning"}),
     (_SERDE + "messages[2]: duplicate field 'reasoning' at line 1 column 845", [_PAIR], {"reasoning"}),
-    # an OpenRouter-format route sends all three: both aliases go, the field the schema reads stays
+    # reasoning_details is its own serde field, not the alias: a named collision keeps it
     (_SERDE + "messages[2]: duplicate field `reasoning_content`",
-     [{**_PAIR, "reasoning_details": _DETAILS}], {"reasoning", "reasoning_details"}),
+     [{**_PAIR, "reasoning_details": _DETAILS}], {"reasoning"}),
+    # ...and with no `reasoning` next to reasoning_content there is no named collision to undo
+    (_SERDE + "duplicate field `reasoning`",
+     [{"role": "assistant", "reasoning_content": "t", "reasoning_details": _DETAILS}], set()),
+    # rec rejects ANY second carrier, so the keyless wording drops details too
+    ('{"error": "Use one reasoning field per message"}',
+     [{"role": "assistant", "reasoning_content": "t", "reasoning_details": _DETAILS}], {"reasoning_details"}),
     # only aliases that rode next to reasoning_content in ONE message collide
     ('{"error": "Use one reasoning field per message"}',
      [{"role": "assistant", "reasoning_content": "t"}, {"role": "assistant", "reasoning": "t"}], set()),

@@ -135,10 +135,14 @@ async def _hand_over_turn_marker(authority, admission_id, event):
     is owed). A kill between the terminal commit and that ledger write then leaves a marked turn
     whose persisted reply the next unclean boot ledgers and sends once, without new inference,
     instead of a settled answer nobody owes. The waiting adapter lifecycle adopts it; a recovered
-    no-waiter reply keeps it until ``deliver_settled``; any other turn releases it here."""
+    no-waiter reply keeps it until ``deliver_settled``; any other turn releases it here.
+
+    The adopter also takes the turn's run generation: it runs this turn's post-delivery callbacks
+    after its send, and the executed ``event`` is a restored copy, never the adopter itself."""
     adopter = _marker_adopters(authority).get(admission_id)
     if adopter is not None:
         _move_marker(event, adopter)
+        adopter._hermes_run_generation = getattr(event, '_hermes_run_generation', None)
         return
     if admission_id in authority.pending_deliveries:
         # Released by ``deliver_settled``, also when settlement failed and dropped the delivery.
@@ -518,6 +522,20 @@ async def deliver_response(adapter, event, session_key, response):
     return any(getattr(result, 'success', False) for result in results if result is not None)
 
 
+async def _run_own_post_delivery(adapter, session_key, event):
+    """A busy follow-up's observer is its turn's native waiter (``admit_message``), so the drain leaves
+    the turn's post-delivery slot (temp-bubble cleanup, background-review release, a deferred /goal
+    notice) on the adapter for it (``_take_post_delivery``): run it after the send, as
+    ``_process_message_background`` does. Only by the turn's own generation: this task holds no
+    session guard, and an unowned pop could run the callbacks of a turn another task still delivers."""
+    from gateway.platforms.base import _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS
+    from gateway.platforms.base_post_delivery import run_post_delivery_callback, turn_run_generation
+    generation, pop = turn_run_generation(event), getattr(adapter, 'pop_post_delivery_callback', None)
+    if generation is not None and callable(pop):
+        await run_post_delivery_callback(
+            pop(session_key, generation=generation), _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS)
+
+
 async def dispatch_shared_busy(adapter, event, session_key, *, durable=False):
     """Serial receive loops (IRC, Signal) await this before reading their next frame, so return
     once the follow-up is committed to the FIFO, or queued behind an earlier input of its chat still
@@ -559,6 +577,7 @@ async def dispatch_shared_busy(adapter, event, session_key, *, durable=False):
             # which listens on the adopter (``event``).
             await adapter._release_turn_marker(delivery_event)
             await adapter._release_turn_marker(event)
+            await _run_own_post_delivery(adapter, session_key, event)
 
     token, commit_token = busy_acceptance.set(accepted), busy_commit.set(committed)
     try:

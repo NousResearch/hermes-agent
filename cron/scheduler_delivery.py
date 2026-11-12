@@ -427,18 +427,40 @@ def _get_config_home_channel(platform_name: str):
         return None
 
 
+class _NoUnscopedSecret(Exception):
+    """Stand-in exception class when ``agent.secret_scope`` is absent (nothing to catch)."""
+
+
 def _home_env_lookup(env_var: str, suffix: str = "", *, strip: bool = False) -> str:
     """Value of ``<env_var><suffix>``, falling back to the legacy name (same suffix) when unset.
     Reads via ``get_secret``, not ``os.getenv``: in a multiplex gateway the tick runs with the
     job-owning profile's secret scope (run_one_job sets it), so this resolves the OWNING profile's
-    value, not the host environ. ``os.getenv`` only if the scope module is missing."""
+    value, not the host environ. ``os.getenv`` only if the scope module is missing. When no scope
+    is installed on a multiplex gateway (receipt recovery / ``reconcile_pending``), a missing
+    scope answers unset instead of raising — #146428."""
     try:
-        from agent.secret_scope import get_secret
+        from agent.secret_scope import get_secret, UnscopedSecretError
     except Exception:
         get_secret = None  # type: ignore
+        UnscopedSecretError = _NoUnscopedSecret  # scope module absent: nothing to catch
 
     def read(name: str) -> str:
-        value = (get_secret(name, "") or "") if get_secret is not None else os.getenv(name, "")
+        if get_secret is not None:
+            try:
+                value = get_secret(name, "") or ""
+            except UnscopedSecretError:
+                # #146428: the receipt-recovery path (reconcile_pending ->
+                # _save_compose_deliver) resolves home targets with NO profile
+                # secret scope installed, where get_secret fails closed even
+                # though a "" default was passed. A home-target lookup is a
+                # yes/no question ("is this platform's cron home configured?"),
+                # so a missing scope answers "unset" — the raise used to wedge
+                # run finalization forever. Deliberately NOT os.getenv: on a
+                # multiplexed gateway the host environ can hold a SIBLING
+                # profile's value (#83182).
+                value = ""
+        else:
+            value = os.getenv(name, "")
         return value.strip() if strip else value
 
     value = read(env_var + suffix)

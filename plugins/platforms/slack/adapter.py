@@ -1494,7 +1494,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
                     ) as resp:
                         if resp.status != 200:
                             body = await _read_error_text_limited(resp)
-                            logger.warning(
+                            logger.warning(  # health: allow HX017 -- Slack's error body, not a message
                                 "[Slack] response_url POST returned %s: %s", resp.status, body[:200]
                             )
                             return SendResult(
@@ -5180,7 +5180,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         user_id = body.get("user", {}).get("id", "")
 
         if not self._is_interactive_user_authorized(user_id, channel_id=channel_id, user_name=user_name, team_id=team_id):
-            logger.warning("[Slack] Unauthorized model picker click by %s (%s) - ignoring", user_name, user_id)
+            logger.warning("[Slack] Unauthorized model picker click by %s - ignoring", user_id)
             return
 
         # Look up the picker state. The send path may have stored it under a
@@ -5472,7 +5472,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
             auth_kwargs["team_id"] = team_id
         if not self._is_interactive_user_authorized(user_id, **auth_kwargs):
             logger.warning(
-                "[Slack] Unauthorized %s click by %s (%s) - ignoring", kind, user_name, user_id)
+                "[Slack] Unauthorized %s click by %s - ignoring", kind, user_id)
             return None
         return team_id, action_id, value, message, msg_ts, channel_id, user_name, user_id
 
@@ -5545,7 +5545,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
                     **post_kwargs)
             logger.info(
                 "Slack button resolved slash-confirm for session %s (choice=%s, user=%s)",
-                session_key, choice, user_name)
+                session_key, choice, user_id)
         except Exception as exc:
             logger.error(
                 "Failed to resolve slash-confirm from Slack button: %s", exc, exc_info=True)
@@ -5592,7 +5592,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
                                                   extra=self.config.extra)
             logger.info(
                 "Slack button resolved %d approval(s) for session %s (choice=%s, user=%s)", count,
-                session_key, choice, user_name)
+                session_key, choice, user_id)
         except Exception as exc:
             logger.error("Failed to resolve gateway approval from Slack button: %s", exc)
             count = 0
@@ -5683,7 +5683,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
             # Privacy: choice text may carry user context — INFO gets metadata only.
             logger.info(
                 "Slack button resolved clarify (id=%s, choice_index=%d, user=%s)", clarify_id, idx,
-                user_name)
+                user_id)
             logger.debug("Slack clarify choice text (id=%s): %.100r", clarify_id, resolved_text)
         else:
             # Entry evicted/gateway restarted — show expiry, not a misleading ✓.

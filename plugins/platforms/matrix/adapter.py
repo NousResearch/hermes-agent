@@ -77,7 +77,7 @@ from gateway.platforms.base import (
     SendResult, resolve_proxy_url, proxy_kwargs_for_aiohttp, safe_proxy_url_for_log, ssrf_redirect_guard, describe_proxy_error,
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
-from gateway.platforms.helpers import ThreadParticipationTracker
+from gateway.platforms.helpers import ThreadParticipationTracker, hash_for_log
 from plugins.platforms.matrix.adapter_html import _latex_to_tokens, _pre_sanitize_matrix_markdown, _sanitize_matrix_html
 from plugins.platforms.matrix.session_proxy import matrix_redaction_proxy
 from plugins.platforms.matrix.voice_mention import ParkedVoices, VoiceGate, has_voice_marker, is_voice_event
@@ -2374,7 +2374,7 @@ class MatrixAdapter(BasePlatformAdapter):
         elif hasattr(relates_to, "event_id"):
             reacts_to = str(getattr(relates_to, "event_id", ""))
             key = str(getattr(relates_to, "key", ""))
-        logger.info("Matrix: reaction %s from %s on %s in %s", key, sender, reacts_to, room_id)
+        logger.info("Matrix: reaction %s from %s on %s in %s", key, sender, reacts_to, hash_for_log(room_id))
         for handler in (self._handle_approval_reaction, self._handle_model_picker_reaction,
                         self._handle_choice_picker_reaction):
             if await handler(room_id, reacts_to, key, sender):

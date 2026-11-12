@@ -5,6 +5,7 @@ compilation, and fence-aware markdown chunking."""
 import asyncio
 import contextlib
 import contextvars
+import hashlib
 import itertools
 import json
 import logging
@@ -420,6 +421,14 @@ async def send_chunks(chunks: list, send_one) -> Any:
                 result.raw_response = raw
             break
     return result
+
+
+def hash_for_log(value: object) -> str:
+    """A short stable digest of an identifier (chat id, address) for INFO logs: lines about the
+    same chat still correlate, but the log never carries the identifier itself."""
+    if value is None or value == "":
+        return "<none>"
+    return "h:" + hashlib.sha256(str(value).encode("utf-8", "surrogatepass")).hexdigest()[:10]
 
 
 def redact_phone(phone: str) -> str:

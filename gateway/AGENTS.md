@@ -55,6 +55,12 @@ truth: `chat.*Stream` speaks STANDARD markdown, not mrkdwn; `stopStream.markdown
 `startStream`/`stopStream` are Tier 2 (~20/min). Check `draft_stream_is_message is True` —
 MagicMock adapters in older tests auto-create truthy attributes.
 
+## No user content in INFO+ logs
+
+Logs reach `hermes debug share` uploads: never log bodies, subjects, display names, addresses or
+phones at INFO+. Log `len(text)`, an id, `hash_for_log(chat_id)` or `redact_phone(...)`; the raw
+value goes to DEBUG (HX017).
+
 ## Background process notifications
 
 `terminal(background=true, notify_on_complete=true)` arms a watcher on the gateway loop

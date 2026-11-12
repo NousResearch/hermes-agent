@@ -745,8 +745,8 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
 
         attachments_raw = d.get("attachments")
         logger.info(
-            "[%s] C2C message: id=%s content=%r attachments=%s",
-            self._log_tag, msg_id, content[:50] if content else "",
+            "[%s] C2C message: id=%s content_len=%d attachments=%s",
+            self._log_tag, msg_id, len(content or ""),
             f"{len(attachments_raw) if isinstance(attachments_raw, list) else 0} items" if attachments_raw else "None",
         )
         if attachments_raw and isinstance(attachments_raw, list):

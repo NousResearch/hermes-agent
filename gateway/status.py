@@ -585,7 +585,15 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
     # (e.g. the Discord bot-token lock). See #22418.
     if any(b == "desktop-gateway.py" for b in basenames):
         return "run"
-    if any(b in ("hermes-gateway", "hermes-gateway.exe") for b in basenames):
+    dedicated_gateway = ("hermes-gateway", "hermes-gateway.exe")
+    if basenames[0] in dedicated_gateway:
+        return "run"
+    # An interpreter or ``env`` wrapper may carry the dedicated entrypoint as its script/command.
+    # Do not inspect later arguments: user-controlled values such as a tmux session name must not
+    # make an unrelated process eligible for gateway draining during an update (#140089).
+    if len(basenames) > 1 and (
+        basenames[0] == "env" or basenames[0].startswith(("python", "pypy"))
+    ) and basenames[1] in dedicated_gateway:
         return "run"
     joined = " ".join(tokens)
     if "hermes_cli.main" not in joined and "hermes_cli/main.py" not in joined and not any(

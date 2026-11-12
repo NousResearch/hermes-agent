@@ -172,3 +172,19 @@ class TestSlackPeerAgentSmoke:
         )
         smoke_adapter._fetch_thread_context.assert_awaited_once()
 
+
+
+    @pytest.mark.asyncio
+    async def test_peer_bot_known_only_via_users_info_arrives_flagged_as_bot(self, smoke_adapter):
+        """A peer agent posting as a bot *user* (no bot_id/subtype) passes the drop gates under
+        allow_bots=mentions via users.info; it must reach the gateway as a bot, or the bot loop
+        guard and SLACK_ALLOW_BOTS never see it (#143370)."""
+        smoke_adapter._get_client = lambda *_a, **_kw: smoke_adapter._app.client
+        smoke_adapter._app.client.users_info = AsyncMock(
+            return_value={"ok": True, "user": {"is_bot": True, "profile": {}}})
+
+        await smoke_adapter._handle_slack_message(_make_event(
+            text=f"<@{BOT_USER_ID}> your turn", user=PEER_USER_ID, ts=REPLY_TS))
+
+        smoke_adapter.handle_message.assert_awaited_once()
+        assert smoke_adapter.handle_message.await_args.args[0].source.is_bot is True

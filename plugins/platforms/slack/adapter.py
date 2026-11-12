@@ -4660,8 +4660,11 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
             scope_id=str(team_id) if team_id else None,
             message_id=ts,
             # Workflow/app posts have user=None; flag them so the SLACK_ALLOW_BOTS bypass can
-            # authorize them. Same predicate as the drop gate (api_human_users stay human).
-            is_bot=self._event_declares_bot_sender(event))
+            # authorize them. Same predicates as the drop gates (api_human_users stay human): a peer
+            # bot known only via users.info (no bot_id/subtype) is a bot here too, or it would reach
+            # the gateway as a person and escape the bot loop guard. Cached by _peer_bot_drop.
+            is_bot=self._event_declares_bot_sender(event) or await self._resolve_user_is_bot(
+                user_id, chat_id=channel_id, team_id=team_id))
         source.shared_session = event.get("channel_type") == "mpim"  # a group DM keys "dm" but is shared
         from gateway.platforms.base import resolve_channel_skills
         # Remaining ``<@UID>`` are OTHER participants (own mention stripped

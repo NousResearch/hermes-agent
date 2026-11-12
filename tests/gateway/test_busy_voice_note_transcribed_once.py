@@ -82,7 +82,8 @@ async def test_busy_voice_note_is_transcribed_and_echoed_once(tmp_path, monkeypa
             media_urls=[str(clip)], media_types=['audio/ogg'])))
         await async_wait_until(lambda: _rows(authority), timeout=10, what='the voice note admitted')
         task.cancel()
-        assert agent.interrupts == [('"stop and check the logs"',)]  # the busy path paid STT once
+        # The busy path paid STT once; the note also names the clip (#153054's audio marker).
+        assert [i[0].splitlines()[0] for i in agent.interrupts] == ['"stop and check the logs"']
 
         # The FIFO turn: what the drain restores from the committed row, through main's preprocessing.
         restored = restore_native(_rows(authority)[0]['payload'], runner)
@@ -177,7 +178,7 @@ async def test_a_forwarded_copy_never_takes_the_busy_messages_transcript(tmp_pat
         text = await runner._prepare_inbound_message_text(event=restored, source=restored.source, history=[])
     finally:
         authority.db.close()
-    assert agent.interrupts == [('"paid words"',)]
+    assert [i[0].splitlines()[0] for i in agent.interrupts] == ['"paid words"']
     assert '"paid words"' in text and 'different words' not in text
     assert len(calls) == 2  # the busy pass and the forwarded copy; the restored turn pays nothing
     assert [m for m in sent if m.startswith('🎙️')] == ['🎙️ "paid words"', '🎙️ "different words"']

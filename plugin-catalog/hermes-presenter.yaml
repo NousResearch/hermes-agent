@@ -4,7 +4,7 @@ sha: 5cd40f7bc02dac990a38df0f0bbee4db7d403c92
 subdir: plugin
 version: "0.1.2"
 title: Hermes Presenter
-description: Present a selected JSON slide deck with the calling local Hermes conversation as co-presenter.
+description: "Present a selected JSON slide deck with the calling local Hermes conversation as co-presenter. Disclosure — Requires a separately installed companion engine (Node, `npm ci` of `engine/` from this same repo commit) whose code runs outside the catalog-installed `plugin/` folder; uses undocumented Hermes gateway client modules (`hermes_cli.gateway_client`, `hermes_cli.gateway_runtime`) to submit presentation prompts (deck text, speaker notes and, when `microphone: true`, transcribed speech from anyone near the mic) into your live conversation, which keeps its tools; serves the deck on 127.0.0.1 with no auth beyond same-origin cookies; sends reply text (and optional microphone audio) to ElevenLabs, billed to your key."
 maintainer: violetSoftware
 tier: community
 category: voice
@@ -19,3 +19,4 @@ capabilities:
   provides_hooks: []
   provides_middleware: []
   requires_env: [ELEVENLABS_API_KEY]
+requires_hermes: ">=0.23.0"

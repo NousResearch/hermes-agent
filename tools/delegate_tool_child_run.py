@@ -1233,8 +1233,9 @@ class _ChildRun:
         def finish():
             self.close_resources()
             with _quiet("Durable subagent stop record failed: %s"):
-                from tools.delegate_tool_resumable import record_stop
+                from tools.delegate_tool_resumable import record_stop, release_unstarted
                 record_stop(self, self.final_entry)
+                release_unstarted(child)  # a continue that failed before record_start: its claim goes back
             if self.subagent_id:
                 _mark_subagent_resumable(self.subagent_id, retained)
 

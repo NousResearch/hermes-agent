@@ -1,10 +1,9 @@
-import { act, cleanup, renderHook } from '@testing-library/react'
+import { QueryClient } from '@tanstack/react-query'
+import { cleanup, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { createClientSessionState } from '@/lib/chat-runtime'
-import { $activeGatewayProfile } from '@/store/profile'
 import {
-  $currentModel,
+  $activeSessionId,
   $currentProvider,
   clearComposerSelectionOwner,
   markComposerSelectionManual,
@@ -12,155 +11,124 @@ import {
   setConnection,
   setCurrentModel,
   setCurrentModelSource,
-  setCurrentModelTransient,
   setCurrentProvider,
-  setCurrentProviderTransient,
-  setSessions
+  setCurrentProviderTransient
 } from '@/store/session'
-import { $sessionTiles, clearAllSessionStates } from '@/store/session-states'
+
+import { deferred } from '../../../../test/deferred'
+import { handleDeferredPickEvent } from '../use-message-stream/gateway-event/deferred-pick'
+import type { GatewayEventContext } from '../use-message-stream/gateway-event/types'
+import { useModelControls } from '../use-model-controls'
 
 import { desktopSessionCreateParams } from './session-create-request'
 import { applyRuntimeInfo, applyStoredSessionPreviewRuntimeInfo } from './utils'
 
-import { useSessionActions } from './index'
+const confirm = vi.hoisted(() => vi.fn())
 
+vi.mock('@/lib/guarded-model-switch', () => ({ surfaceModelSwitchConfirm: confirm }))
+vi.mock('@/store/notifications', () => ({ dismissNotification: vi.fn(), notify: vi.fn(), notifyError: vi.fn() }))
 vi.mock('@/store/profile', async original => ({
   ...(await original<Record<string, unknown>>()),
-  ensureGatewayAgent: vi.fn(async () => undefined),
   ensureGatewayProfile: vi.fn(async () => undefined)
 }))
 
+const picked = { model: 'grok-4.7', provider: 'xai-oauth' }
+const launched = async () => (await desktopSessionCreateParams('')).model
+
+const pick = (reply: unknown, model = 'queued', sessionId = 'busy') =>
+  renderHook(() => useModelControls({ queryClient: new QueryClient(), requestGateway: vi.fn(async () => reply) as never }))
+    .result.current.selectModel({ model, provider: 'p', sessionId })
+
+// The owner's verdict on a pick queued for the next turn.
+function verdict(payload: Record<string, unknown>, session = 'busy', viewing = 'busy') {
+  const full = { operation: 'model', session_id: session, target_model: 'queued', ...payload }
+  handleDeferredPickEvent({
+    deps: {
+      activeGatewayProfile: 'default',
+      activeSessionIdRef: { current: viewing },
+      queryClient: { invalidateQueries: vi.fn(async () => undefined) },
+      updateSessionState: vi.fn()
+    },
+    event: { payload: full, session_id: session, type: 'session.updated' },
+    fromActiveSource: () => true,
+    payload: full,
+    sessionId: session
+  } as unknown as GatewayEventContext)
+}
+
+const refuse = (session?: string, viewing?: string) => verdict({ ...picked, status: 'refused' }, session, viewing)
+
 beforeEach(() => {
-  window.localStorage.clear()
-  $activeGatewayProfile.set('default')
-  setConnection({
-    baseUrl: 'http://localhost:7070',
-    isFullscreen: false,
-    logs: [],
-    mode: 'local',
-    nativeOverlayWidth: 0,
-    token: '',
-    windowButtonPosition: null,
-    wsUrl: 'ws://localhost:7070'
-  })
-  setCurrentModel('chosen-model')
-  setCurrentProvider('custom:chosen-endpoint')
+  setConnection({ mode: 'local', baseUrl: '' } as never)
+  $activeSessionId.set('busy')
+  setCurrentModel(picked.model)
+  setCurrentProvider(picked.provider)
   markComposerSelectionManual()
 })
 
 afterEach(() => {
   cleanup()
-  $sessionTiles.set([])
-  clearAllSessionStates()
-  setSessions([])
-  $activeGatewayProfile.set('default')
-  setCurrentModel('')
-  setCurrentProvider('')
+  clearComposerSelectionOwner()
+  $activeSessionId.set(null)
   setCurrentModelSource('')
   setConnection(null)
   window.localStorage.clear()
 })
 
-describe('new-chat model route after runtime metadata', () => {
-  it('paints a resolved runtime without replacing the persisted user route used by the next chat', async () => {
-    applyRuntimeInfo({ model: 'runtime-fallback', provider: 'custom' })
-
-    expect($currentModel.get()).toBe('runtime-fallback')
-    expect($currentProvider.get()).toBe('custom')
-    expect(window.localStorage.getItem('hermes.desktop.composer.model')).toBe('chosen-model')
-    expect(window.localStorage.getItem('hermes.desktop.composer.provider')).toBe('custom:chosen-endpoint')
-    await expect(desktopSessionCreateParams('')).resolves.toMatchObject({
-      model: 'chosen-model',
-      provider: 'custom:chosen-endpoint'
-    })
-
-    const state = createClientSessionState()
-    const ref = <T>(current: T) => ({ current })
-
-    const requestGateway = vi.fn(async () => ({
-      info: { model: 'tile-runtime-model', provider: 'custom' },
-      session_id: 'created-runtime',
-      stored_session_id: 'created-stored'
-    }))
-
-    const { result } = renderHook(() =>
-      useSessionActions({
-        activeSessionId: 'runtime-main',
-        activeSessionIdRef: ref<string | null>('runtime-main'),
-        busyRef: ref(false),
-        creatingSessionRef: ref(false),
-        ensureSessionState: () => state,
-        getRouteToken: () => 'route',
-        getRoutedStoredSessionId: () => null,
-        navigate: vi.fn(),
-        requestGateway: requestGateway as never,
-        resetViewSync: vi.fn(),
-        routedSessionId: null,
-        runtimeIdByStoredSessionIdRef: ref(new Map()),
-        selectedStoredSessionId: null,
-        selectedStoredSessionIdRef: ref<string | null>(null),
-        sessionStateByRuntimeIdRef: ref(new Map()),
-        syncSessionStateToView: vi.fn(),
-        updateSessionState: () => state
-      })
-    )
-
-    await act(() => result.current.openNewSessionTile('right', { route: null }))
-    expect(requestGateway).toHaveBeenCalledWith(
-      'session.create',
-      expect.objectContaining({ model: 'chosen-model', provider: 'custom:chosen-endpoint' })
-    )
-    expect($currentModel.get()).toBe('runtime-fallback')
-
-    act(() => result.current.startFreshSessionDraft())
-    expect($currentModel.get()).toBe('chosen-model')
-    expect($currentProvider.get()).toBe('custom:chosen-endpoint')
+describe('new chats launch on the picked route', () => {
+  // #143323: a fallback to another provider serving the same model id fails nothing and bills the wrong
+  // account; a named provider's runtime reports the bare `custom` class, which cannot resolve on create.
+  it.each(['opencode-go', 'custom'])('not the runtime the pill shows (%s)', async provider => {
+    applyRuntimeInfo({ model: 'runtime-model', provider })
+    await expect(desktopSessionCreateParams('')).resolves.toMatchObject(picked)
+    setCurrentProviderTransient(provider)
+    applyStoredSessionPreviewRuntimeInfo({ model: 'runtime-model' }, 'abandoned-resume')
+    await expect(desktopSessionCreateParams('')).resolves.toMatchObject(picked)
   })
 
-  it('creates from the sticky route, not heartbeat, fallback or abandoned-resume display values', async () => {
-    // Exercise named entries sharing a model, a native provider and a real
-    // direct-custom choice. A runtime class cannot tell which one was picked.
-    for (const provider of ['custom:first-endpoint', 'second-endpoint', 'anthropic', 'custom']) {
-      setCurrentModel('chosen-model')
-      setCurrentProvider(provider)
+  it('after a refused switch, which restores the pick and the runtime display separately', async () => {
+    setCurrentProviderTransient('opencode-go')
+    await expect(pick(Promise.reject(new Error('refused')))).resolves.toBe(false)
+    await expect(desktopSessionCreateParams('')).resolves.toMatchObject(picked)
+    expect($currentProvider.get()).toBe('opencode-go')
+  })
+})
+
+describe('a pick queued for the next turn', () => {
+  it.each([
+    { when: 'is refused', then: () => refuse(), launches: undefined },
+    { when: 'is refused after switching chats', then: () => refuse('busy', 'elsewhere'), launches: undefined },
+    { when: 'is overtaken by a newer pick', then: () => (setCurrentModel('newer'), refuse()), launches: 'newer' },
+    { when: 'has a same-model tile pick refused', then: async () => (await pick({ deferred: true }, 'queued', 'tile'), refuse('tile')), launches: 'queued' },
+    {
+      when: 'is followed by a tile pick on its session that is refused',
+      then: async () => ($activeSessionId.set('elsewhere'), await pick({ deferred: true }), refuse('busy', 'elsewhere')),
+      launches: 'queued'
+    }
+  ])('$when', async ({ then, launches }) => {
+    await pick({ deferred: true })
+    await then()
+    expect(await launched()).toBe(launches)
+  })
+
+  it.each([
+    { switched: false, launches: undefined },
+    { switched: true, launches: 'queued' }
+  ])('with its cost prompt declined (owner switched: $switched)', async ({ switched, launches }) => {
+    const answer = deferred<boolean>()
+    confirm.mockReturnValueOnce(answer.promise)
+    await pick({ deferred: true })
+    verdict({ committed_model: picked.model, confirm: 'token', payload: { model: 'queued' }, status: 'confirmation_required' })
+
+    if (switched) {
+      setComposerSelectionOwner('other-backend', 'other')
+      setCurrentModel('queued')
       markComposerSelectionManual()
-
-      // Same transient paint used by useSessionStateCache on session.info.
-      setCurrentModelTransient('fallback-model')
-      setCurrentProviderTransient('custom')
-      expect($currentModel.get()).toBe('fallback-model')
-      await expect(desktopSessionCreateParams('')).resolves.toMatchObject({ model: 'chosen-model', provider })
-
-      // A cold resume can paint a model with no provider and then be abandoned.
-      applyStoredSessionPreviewRuntimeInfo({ model: 'preview-model' }, 'preview-stored')
-      await expect(desktopSessionCreateParams('')).resolves.toMatchObject({ model: 'chosen-model', provider })
     }
 
-    // Gateway activation publishes the exact owner before profile hydration.
-    setComposerSelectionOwner('test-backend', 'other')
-    $activeGatewayProfile.set('other')
-    expect(await desktopSessionCreateParams('')).not.toHaveProperty('model')
-    setCurrentModel('other-model')
-    setCurrentProvider('custom:other-endpoint')
-    markComposerSelectionManual()
-    setCurrentProviderTransient('custom')
-    await expect(desktopSessionCreateParams('')).resolves.toMatchObject({
-      model: 'other-model',
-      provider: 'custom:other-endpoint'
-    })
-    $activeGatewayProfile.set('default')
-    setConnection(current => current)
-    await expect(desktopSessionCreateParams('')).resolves.toMatchObject({ model: 'chosen-model', provider: 'custom' })
-
-    clearComposerSelectionOwner()
-    setCurrentModelTransient('unresolved-model')
-    expect(await desktopSessionCreateParams('')).not.toHaveProperty('model')
-    setConnection(current => current)
-
-    // Settings-sourced values remain a display cache, not a launch override.
-    setCurrentModelSource('default')
-    const inherited = await desktopSessionCreateParams('')
-    expect(inherited).not.toHaveProperty('model')
-    expect(inherited).not.toHaveProperty('provider')
+    answer.resolve(false)
+    await answer.promise
+    await Promise.resolve()
+    expect(await launched()).toBe(launches)
   })
 })

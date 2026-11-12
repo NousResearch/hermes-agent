@@ -1005,6 +1005,8 @@ export interface Translations extends NoticeTranslations {
       attachmentSizeLabel: string
       voiceShortcutHintTitle: string
       voiceShortcutHintDesc: string
+      largePasteAttachTitle: string
+      largePasteAttachDesc: string
       showOptions: string
     }
     hudModifier: {

@@ -33,6 +33,7 @@ import { POPOUT_WIDTH_REM } from '@/store/composer-popout'
 import { parkQueuedPrompts } from '@/store/composer-queue'
 import { $hudMode } from '@/store/hud'
 import { $showsAdvancedChrome } from '@/store/interface-mode'
+import { $largePasteAttachEnabled } from '@/store/large-paste-attach'
 import { $chatOnboardingSolo } from '@/store/onboarding-intro'
 import { sessionBlockingPrompt } from '@/store/prompts'
 import { toggleReview } from '@/store/review'
@@ -633,8 +634,13 @@ export function ChatBar({
     // The instruction the user types stays in the input; the pasted source
     // material rides along as a file. Falls back to inline insertion if the
     // attachment can't be created (missing bridge, write failure) so the
-    // paste is never lost.
-    if (onAttachPastedText && shouldConvertPasteToAttachment(pastedText)) {
+    // paste is never lost. Users who paste the prompt itself (specs, agent
+    // tasks) can turn the conversion off entirely.
+    if (
+      onAttachPastedText &&
+      $largePasteAttachEnabled.get() &&
+      shouldConvertPasteToAttachment(pastedText)
+    ) {
       const editor = event.currentTarget
 
       void Promise.resolve(onAttachPastedText(pastedText)).then(attached => {

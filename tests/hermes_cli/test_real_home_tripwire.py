@@ -206,12 +206,22 @@ def test_checkout_inside_a_guarded_root_is_not_hermes_state():
     """The default install checks the repo out INSIDE the home (install.sh:
     INSTALL_DIR=$HERMES_HOME/hermes-agent): the checkout, its .venv and test
     data are exempt even when the guarded root contains them; siblings under
-    that root are still refused."""
+    that root are still refused.
+
+    The install-layout markers beside the checkout are the one exception: PM
+    probes ``<parent>/manifest.json`` to detect a sealed payload and
+    ``<parent>/install-stamp.json`` to find the store for the tree it serves.
+    Those reads ask about the installation, not user state, so they are exempt
+    too — writing them is not."""
     from tests.home_io_guard import HomeIOGuard
 
     guard = HomeIOGuard(lambda: [PROJECT_ROOT.parent])
     guard.check(PROJECT_ROOT / "tests" / "home_io_guard.py")
     guard.check(PROJECT_ROOT / ".venv" / "bin" / "python", metadata=True)
+    guard.check(PROJECT_ROOT.parent / "manifest.json", metadata=True)  # payload detection
+    guard.check(PROJECT_ROOT.parent / "install-stamp.json")  # install-stamp walk-up
+    with pytest.raises(AssertionError, match="REAL hermes home"):
+        guard.check(PROJECT_ROOT.parent / "manifest.json", destructive=True)
     with pytest.raises(AssertionError, match="REAL hermes home"):
         guard.check(PROJECT_ROOT.parent / "config.yaml")
 
@@ -229,6 +239,29 @@ def test_pm_generation_dir_around_the_running_venv_is_the_interpreter(tmp_path, 
     assert _pm_generation_dirs([venv]) == {generation.resolve()}
     # Only a generation venv: a checkout's .venv or a venv elsewhere adds nothing new.
     assert _pm_generation_dirs([tmp_path / "checkout" / ".venv", tmp_path / "other" / "venv"]) == set()
+
+
+def test_linked_worktree_git_dir_is_the_checkout_not_hermes_state(tmp_path):
+    """A worktree of a default install keeps its git dir in ``<main>/.git/worktrees/<name>``:
+    under the home, outside the worktree root, and update custody reads
+    ``<git dir>/hermes-update-pull`` there at import. Only that worktree's own git dir is
+    exempt (not the shared repo, not a sibling worktree's); an ordinary clone's ``.git`` is
+    inside its root and adds nothing."""
+    from tests.home_io_guard import _checkout_git_dir
+
+    common = tmp_path / ".hermes" / "hermes-agent" / ".git"
+    git_dir = common / "worktrees" / "feature"
+    git_dir.mkdir(parents=True)
+    (common / "worktrees" / "other").mkdir()
+    worktree = tmp_path / "worktrees" / "feature"
+    worktree.mkdir(parents=True)
+    (worktree / ".git").write_text(f"gitdir: {git_dir}\n", encoding="utf-8")
+    assert _checkout_git_dir(worktree) == {git_dir.resolve()}
+
+    clone = tmp_path / "clone"
+    (clone / ".git").mkdir(parents=True)
+    assert _checkout_git_dir(clone) == set()
+    assert _checkout_git_dir(tmp_path / "not-a-checkout") == set()
 
 
 def test_hermes_exported_scratch_tmp_is_not_the_test_temp_root(tmp_path):

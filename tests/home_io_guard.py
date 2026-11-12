@@ -23,6 +23,23 @@ def _pm_generation_dirs(prefixes) -> set[Path]:
     return found
 
 
+def _checkout_git_dir(root: Path) -> set[Path]:
+    """A linked worktree's private git dir, which lives OUTSIDE *root*.
+
+    Its ``.git`` is a file naming ``<main checkout>/.git/worktrees/<name>``; with the main checkout
+    inside the home that sits under the guarded root, yet it is this checkout's metadata (update
+    custody reads ``<git dir>/hermes-update-pull`` at import). An ordinary clone's ``.git``
+    directory is inside *root* and already exempt with it.
+    """
+    try:
+        text = (root / ".git").read_text(encoding="utf-8-sig").strip()
+    except OSError:  # absent, or a directory (an ordinary clone)
+        return set()
+    if not text.startswith("gitdir:"):
+        return set()
+    return {(root / text[len("gitdir:"):].strip()).resolve()}
+
+
 _INTERPRETER_PREFIXES = tuple({
     Path(p).resolve() for p in (sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix)
 } | {
@@ -42,12 +59,33 @@ _INTERPRETER_PREFIXES = tuple({
     # checkout's own .venv is not Hermes state; without this every run from a default install
     # trips on its first traceback.
     Path(__file__).resolve().parent.parent,
+    # ...and, for a linked worktree of such a checkout, its private git dir outside the root.
+    *_checkout_git_dir(Path(__file__).resolve().parent.parent),
 })
 # The same prefixes as plain strings for the check() fast path. PurePath comparison folds case on
 # Windows; ``os.path.normcase`` (identity on POSIX) reproduces that for string compares. Prefixes
 # resolve once at import, as before: they are fixed for the process lifetime.
 _normcase = os.path.normcase
 _INTERPRETER_PREFIX_STRS = tuple(_normcase(os.fspath(p)) for p in _INTERPRETER_PREFIXES)
+
+# Install-layout markers beside a tree: a sealed payload ships ``manifest.json`` (repo/venv/store)
+# in the directory ABOVE the tree (scripts/build/agent.py), an install records ``install-stamp.json``
+# beside it, and PM's payload_venv()/store_root() probe both to find the environment and store for
+# the tree they serve. The default install checks the repo out INSIDE the home, so those probes land
+# in a guarded root even though they ask about the installation, not user state. Reads are allowed
+# there — the manifest only counts when it names this checkout as its repo — and writes stay refused.
+_LAYOUT_MARKERS = frozenset({"manifest.json", "install-stamp.json"})
+_LAYOUT_DIRS = frozenset(
+    _normcase(os.fspath(directory))
+    for directory in (Path(__file__).resolve().parent.parent, *Path(__file__).resolve().parent.parent.parents)
+)
+
+
+def _within_interpreter(path: str, *, metadata: bool) -> bool:
+    """*path* is in the interpreter's own installation (a PM-managed python under ~/.hermes/tools):
+    stdlib source reads (linecache, traceback) are not Hermes state, nor is realpath() walking up
+    through its ancestors (*metadata*)."""
+    return any(_within(path, prefix) or (metadata and _contains(path, prefix)) for prefix in _INTERPRETER_PREFIX_STRS)
 
 
 def _within(path: str, prefix: str) -> bool:
@@ -104,6 +142,9 @@ class HomeIOGuard:
             # probe) reads no state; only its contents are guarded.
             if metadata and absolute in roots:
                 return
+            if not destructive and os.path.dirname(absolute) in _LAYOUT_DIRS \
+                    and os.path.basename(absolute) in _LAYOUT_MARKERS:
+                return
             # ``shutil.which`` stats/accesses ``<PATH entry>/<name>``, and command resolution
             # realpath()s the entry itself (is it a Hermes-managed bin dir?), which lstats each of
             # its ancestors. A developer shell puts PM's tool store (~/.hermes/tools/...) on PATH;
@@ -114,12 +155,8 @@ class HomeIOGuard:
                 entries = self._path_entries(path, cwd)
                 if os.path.dirname(absolute) in entries or any(_contains(absolute, entry) for entry in entries):
                     return
-            # The interpreter's own installation (a PM-managed python under ~/.hermes/tools):
-            # stdlib source reads (linecache, traceback) are not Hermes state either, nor is
-            # realpath() walking up through its ancestors.
-            for prefix in _INTERPRETER_PREFIX_STRS:
-                if _within(absolute, prefix) or (metadata and _contains(absolute, prefix)):
-                    return
+            if _within_interpreter(absolute, metadata=metadata):
+                return
             # Check the lexical path first: resolving must not probe a protected
             # tree merely to decide that the original path was forbidden.
             for root in roots:
@@ -130,9 +167,8 @@ class HomeIOGuard:
             if metadata and resolved in roots:
                 return
             # A fixture symlink to the running interpreter resolves into its installation.
-            for prefix in _INTERPRETER_PREFIX_STRS:
-                if _within(resolved, prefix):
-                    return
+            if _within_interpreter(resolved, metadata=False):
+                return
             for root in roots:
                 if _within(resolved, root):
                     self.refuse(value)
@@ -196,12 +232,12 @@ class HomeIOGuard:
 
         for module in (builtins, io):
             wrap(module, "open", (("file", None),), destructive=open_writes)
-        for name in ("mkdir", "unlink", "remove", "rmdir", "chmod", "utime"):
-            wrap(os, name, (("path", "dir_fd"),), destructive=name != "mkdir")
+        for name in ("mkdir", "makedirs", "unlink", "remove", "rmdir", "chmod", "utime"):
+            wrap(os, name, (("path" if name == "mkdir" else "name", "dir_fd"),), destructive=True)
         for name in ("stat", "lstat", "readlink", "access"):
             wrap(os, name, (("path", "dir_fd"),), metadata=True)
-        for name in ("makedirs", "listdir", "scandir"):
-            wrap(os, name, (("name" if name == "makedirs" else "path", None),))
+        for name in ("listdir", "scandir"):
+            wrap(os, name, (("path", None),))
         for name in ("rename", "replace"):
             wrap(os, name, (("src", "src_dir_fd"), ("dst", "dst_dir_fd")), destructive=True)
         wrap(shutil, "rmtree", (("path", "dir_fd"),), destructive=True)

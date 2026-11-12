@@ -25,10 +25,11 @@ from agent.errors import EmptyStreamError
 
 logger = logging.getLogger(__name__)
 
-# Keyed by (region, read_timeout): boto3 freezes its Config into the client, so two models with
-# different ``timeout_seconds`` overrides in one region need two clients (None = botocore default).
-_bedrock_runtime_client_cache: dict[tuple[str, Optional[float]], Any] = {}
-_bedrock_control_client_cache: dict[tuple[str, Optional[float]], Any] = {}
+# Keyed by (region, read_timeout[, bedrock.profile]): boto3 freezes its Config and credentials into
+# the client, so two models with different ``timeout_seconds`` overrides in one region need two
+# clients (None = botocore default), and so do two named profiles.
+_bedrock_runtime_client_cache: dict[tuple[Any, ...], Any] = {}
+_bedrock_control_client_cache: dict[tuple[Any, ...], Any] = {}
 # Routed multiplex profiles: one client per (profile home, service, region, read_timeout). boto3 freezes
 # the credential chain into the client too, so a region-only slot would sign profile B's calls with A's keys.
 _bedrock_clients_by_home: dict[tuple[str, str, str, Optional[float]], Any] = {}
@@ -43,10 +44,22 @@ _AWS_SCOPED_CREDENTIAL_VARS: tuple[tuple[str, str], ...] = (
 )
 
 
-def scoped_aws_session_kwargs() -> dict[str, str]:
-    """``boto3.session.Session`` kwargs from the routed profile's secret scope, ``{}`` when unscoped.
+def resolve_bedrock_profile(config: Optional[dict[str, Any]] = None) -> str:
+    """``bedrock.profile`` from config.yaml (SSO / cross-account named profile), or ``""`` for the default
+    chain. *config* skips disk."""
+    if config is None:
+        with suppress(Exception):
+            from hermes_cli.config import load_config_readonly
+            config = load_config_readonly()
+    profile = ((config or {}).get("bedrock") or {}).get("profile", "")
+    return profile.strip() if isinstance(profile, str) else ""
 
-    Under a HERMES_HOME override the process env holds the LAUNCH profile's ``AWS_*`` (or nothing), so
+
+def scoped_aws_session_kwargs() -> dict[str, str]:
+    """``boto3.session.Session`` kwargs for Bedrock clients, ``{}`` when there is nothing to pin.
+
+    Unscoped, the only explicit source is ``bedrock.profile`` in config.yaml; boto3 otherwise uses the
+    default chain. Under a HERMES_HOME override the process env holds the LAUNCH profile's ``AWS_*`` (or nothing), so
     every Bedrock client for a served profile must be built from that profile's own ``.env`` values.
     Under multiplexing a profile that sets none of its own must NOT get ``{}`` — ``boto3.Session()``
     would then resolve the ambient default chain (process env, ~/.aws, instance metadata), i.e. the
@@ -55,7 +68,8 @@ def scoped_aws_session_kwargs() -> dict[str, str]:
     ``AZURE_CLIENT_ID``-only managed-identity opt-in)."""
     from hermes_constants import get_hermes_home_override
     if get_hermes_home_override() is None:
-        return {}
+        profile = resolve_bedrock_profile()
+        return {"profile_name": profile} if profile else {}
     from agent.secret_scope import current_secret_scope, is_multiplex_active
     scope = current_secret_scope() or {}
     kwargs = {kw: scope[var].strip() for kw, var in _AWS_SCOPED_CREDENTIAL_VARS
@@ -141,16 +155,21 @@ def _new_client(factory: Any, service: str, region: str, read_timeout: Optional[
     return factory.client(service, region_name=region, config=config)
 
 
-def _cached_client(cache: dict[tuple[str, Optional[float]], Any], service: str, region: str, *,
+def _cached_client(cache: dict[tuple[Any, ...], Any], service: str, region: str, *,
                    read_timeout: Optional[float] = None):
-    """Get or create a boto3 client per (region, read timeout). Unscoped: the default credential
-    chain. Routed profile: one client per (home, service, region, read timeout), built from that
-    profile's scoped ``AWS_*`` (falling back to the default chain only for what the profile does not set)."""
+    """Get or create a boto3 client per (region, read timeout). Unscoped: ``bedrock.profile`` when set,
+    else the default credential chain. Routed profile: one client per (home, service, region, read
+    timeout), built from that profile's scoped ``AWS_*`` (falling back to the default chain only for
+    what the profile does not set)."""
     from hermes_constants import get_hermes_home_override, hermes_home_key
     if get_hermes_home_override() is None:
-        key = (region, read_timeout)
+        # bedrock.profile joins the key so a profile change never reuses another profile's client;
+        # unset keeps the (region, read timeout) key.
+        kwargs = scoped_aws_session_kwargs()
+        key = (region, read_timeout, kwargs["profile_name"]) if kwargs else (region, read_timeout)
         if key not in cache:
-            cache[key] = _new_client(_require_boto3(), service, region, read_timeout)
+            boto3 = _require_boto3()
+            cache[key] = _new_client(boto3.Session(**kwargs) if kwargs else boto3, service, region, read_timeout)
         return cache[key]
     home_key = (hermes_home_key(), service, region, read_timeout)
     client = _bedrock_clients_by_home.get(home_key)
@@ -415,15 +434,21 @@ def has_aws_credentials(env: Optional[dict[str, str]] = None, *, instance_metada
     return resolve_aws_auth_env_var(env, instance_metadata=instance_metadata) is not None
 
 
-def resolve_bedrock_region(env: Optional[dict[str, str]] = None) -> str:
-    """AWS_REGION → AWS_DEFAULT_REGION → botocore configured region (~/.aws/config profiles) → us-east-1."""
+def resolve_bedrock_region(env: Optional[dict[str, str]] = None, profile: Optional[str] = None) -> str:
+    """AWS_REGION → AWS_DEFAULT_REGION → region of the ``bedrock.profile`` named profile (~/.aws/config) →
+    botocore default region → us-east-1. Env wins over the profile, as in the AWS CLI/SDK chain. *profile*
+    defaults to config.yaml ``bedrock.profile``."""
     env = env if env is not None else os.environ
     explicit = env.get("AWS_REGION", "").strip() or env.get("AWS_DEFAULT_REGION", "").strip()
     if explicit:
         return explicit
+    profile = resolve_bedrock_profile() if profile is None else profile
     with suppress(Exception):
         import botocore.session
-        return botocore.session.get_session().get_config_variable("region") or "us-east-1"
+        session = botocore.session.get_session()
+        if profile:
+            session.set_config_variable("profile", profile)
+        return session.get_config_variable("region") or "us-east-1"
     return "us-east-1"
 
 
@@ -1449,6 +1474,8 @@ def discover_bedrock_models(region: str, provider_filter: Optional[list[str]] = 
     cache_key = f"{region}:{','.join(sorted(provider_filter or []))}"
     if get_hermes_home_override() is not None:
         cache_key = f"{hermes_home_key()}|{cache_key}"
+    elif profile := resolve_bedrock_profile():
+        cache_key = f"{profile}|{cache_key}"
     cached = _discovery_cache.get(cache_key)
     if cached and (time.time() - cached["timestamp"]) < _DISCOVERY_CACHE_TTL_SECONDS:
         return cached["models"]

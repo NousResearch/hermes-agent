@@ -338,8 +338,8 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   'tts.mistral.model': ['voxtral-mini-tts-2603'],
   'tts.kittentts.model': [
     'KittenML/kitten-tts-nano-0.8-int8',
-    'KittenML/kitten-tts-micro-0.8-int8',
-    'KittenML/kitten-tts-mini-0.8-int8'
+    'KittenML/kitten-tts-micro-0.8',
+    'KittenML/kitten-tts-mini-0.8'
   ],
   'tts.kittentts.voice': ['Jasper'],
   'tts.piper.voice': ['en_US-lessac-medium', 'en_US-amy-medium', 'en_US-ryan-high', 'en_GB-alan-medium'],

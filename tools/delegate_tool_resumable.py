@@ -191,6 +191,12 @@ def _pin_paths(record: dict[str, Any]) -> list[str]:
     return sorted({os.path.realpath(p) for p in paths})
 
 
+def _live_pins(record: dict[str, Any]) -> list[str]:
+    """Pins of a ``running``/``claimed`` record: where the child is NOW, plus where its previous run stopped (a
+    continue's stored ``pin_paths``); a cached set never hides the live location."""
+    return sorted({*(record.get("pin_paths") or ()), *_pin_paths(record)})
+
+
 def _note_repo(baselines: dict[str, list[str]], start_main: Optional[str], cwd: Optional[str]) -> None:
     """Record the baseline of the repository *cwd* is in when the child first enters it (the start repository's
     is ``worktrees_at_start``)."""
@@ -401,7 +407,7 @@ def plan_recovery(path: Optional[Path], alive) -> dict[str, tuple[Any, Any, list
     plan = {}
     for sid, pid, started, raw in rows:
         if not alive(pid, started):
-            plan[sid] = (pid, started, _pin_paths(json.loads(raw or "{}")))
+            plan[sid] = (pid, started, _live_pins(json.loads(raw or "{}")))
     return plan
 
 
@@ -446,7 +452,7 @@ def _reclaim_dead_owner(path: Optional[Path], sid: str, record: dict[str, Any]) 
     pid, started = record.get("owner_pid"), record.get("owner_started_at")
     if alive is None or alive(pid, started):
         return None
-    pins = _pin_paths(record)
+    pins = _live_pins(record)
 
     def _do(conn):
         _begin_immediate(conn)
@@ -558,7 +564,7 @@ def _read_pins(db: Path, now: float) -> Iterable[tuple[str, dict[str, Any]]]:
     for sid, raw, exp, state in rows:
         record = {**json.loads(raw or "{}"), "expires_at": exp}
         if state != "resumable":
-            record["pin_paths"] = record.get("pin_paths") or _pin_paths(record)
+            record["pin_paths"] = _live_pins(record)
         out.append((sid, record))
     return out
 

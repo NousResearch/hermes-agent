@@ -58,6 +58,31 @@ def _backdate(*paths):
         os.utime(p, (old, old))
 
 
+def test_a_running_continuation_pins_the_tree_it_moved_to_not_only_where_it_last_stopped(tmp_path):
+    from hermes_cli.worktree_sweep import run_sweep, sweep_settings
+    from tools import delegate_tool_resumable as r
+    parent = _parent()
+    repo = _repo(tmp_path / "repo")
+    a, b = repo / ".worktrees" / "subagent-old", repo / ".worktrees" / "subagent-new"
+    _git("worktree", "add", "-qb", "old", str(a), cwd=repo)
+    _git("worktree", "add", "-qb", "new", str(b), cwd=repo)
+    with sqlite3.connect(parent._session_db.db_path) as conn:  # health: allow HX015 -- temp-home store
+        r._upsert(conn, "sa-pins", {"owners": [parent.session_id], "session_id": "child", "cwd": str(a),
+                                    "pin_paths": [str(a)], "worktrees_at_start": [str(repo), str(a), str(b)]},
+                  state="resumable", pinned=True, expires_at=time.time() + 3600)
+    run = _run(parent, "sa-pins")
+    with patch.object(r, "_child_cwd", return_value=str(a)):
+        r.record_start(run)  # the continue resumes in A ...
+    with patch.object(r, "_child_cwd", return_value=str(b)):
+        r.checkpoint(run)  # ... and its terminal moves to B while it runs
+    meta = repo / ".git" / "worktrees" / "subagent-new"
+    _backdate(b, meta / "HEAD", meta / "logs" / "HEAD")
+
+    run_sweep(str(repo), 24, sweep_settings())
+
+    assert b.is_dir() and a.is_dir()
+
+
 def test_a_tree_the_child_made_stays_pinned_after_it_leaves_that_repository(tmp_path):
     from tools import delegate_tool_resumable as r
     parent = _parent()

@@ -102,6 +102,9 @@ _VALUE_LONG_OPTIONS = frozenset({
     "--other-user", "--command-timeout", "--host", "--login-class",
 })
 _REDIRECTION_RE = re.compile(r"^[0-9]*(?:[<>]|&>)")
+# A redirection operator written apart from its target (``> out``, ``2>``, ``<<``): the next
+# word is that target, not sudo's command.
+_BARE_REDIRECTION_RE = re.compile(r"^[0-9]*(?:<<<|<<-?|<>|>>|>\||<|>)$")
 
 
 def _option_words_carry_own_input(words: list[str]) -> bool:
@@ -112,6 +115,7 @@ def _option_words_carry_own_input(words: list[str]) -> bool:
             skip_value = False
             continue
         if _REDIRECTION_RE.match(raw):
+            skip_value = bool(_BARE_REDIRECTION_RE.match(raw))
             continue
         if "$" in raw or "`" in raw:
             return True  # an expansion could produce the option: keep the stdin form
@@ -157,6 +161,10 @@ def has_own_stdin_or_askpass(command: str | None) -> bool:
     for chunk in marked.split(SUDO_ASKPASS_PREFIX)[1:]:
         words: list[str] = []
         for kind, start, end, _ in _scan_shell(chunk):
+            if kind == "op" and chunk[start:end] == "&" and (
+                chunk[start - 1:start] in ("<", ">") or chunk[end:end + 1] == ">"
+            ):
+                continue  # ``2>&1`` / ``&> out``: part of a redirection, not the end of the command
             if kind in ("op", "comment") or (kind == "ws" and chunk[start] == "\n"):
                 break
             if kind == "word":

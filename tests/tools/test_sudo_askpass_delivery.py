@@ -280,6 +280,19 @@ def test_empty_configured_password_gets_one_empty_line_in_askpass_form(monkeypat
     ("sudo id -S", False),
     ("sudo -- -S", False),
     ("sudo 2>/dev/null -S id", True),
+    ("sudo > out -S true", True),
+    ("sudo 2> out -S true", True),
+    ("sudo >> out -A true", True),
+    ("sudo < in -S true", True),
+    ("sudo 2>&1 -S true", True),
+    ("sudo >&2 -S true", True),
+    ("sudo &> out -S true", True),
+    ("sudo &>out -S true", True),
+    ("sudo > out id -S", False),
+    ("sudo 2>&1 id", False),
+    ("sudo id 2>&1 && sudo -S id", True),
+    ("sudo id 2>&1 | tail -S", False),
+    ("sudo id > -S", False),
     ("printf x | sudo '-S' id", True),
     ("sudo $FLAGS id", True),
     ("echo sudo -S", False),
@@ -340,6 +353,11 @@ case "$1" in
   -A) mode=askpass; shift ;;
   -S) mode=stdin; shift; if [ "$1" = "-p" ]; then shift 2; fi ;;
 esac
+# Like sudo: a repeated -S is accepted, -S together with -A is refused.
+while [ "$1" = "-S" ]; do
+  if [ "$mode" = askpass ]; then echo "sudo: the -A and -S options may not be used together" >&2; exit 90; fi
+  shift
+done
 if [ "$1" = "-V" ]; then echo "fake sudo"; exit 0; fi
 if [ ! -e "$ticket" ]; then
   case $mode in
@@ -416,6 +434,19 @@ def test_live_earlier_stdin_reader_gets_caller_stdin_not_password(live_env):
     assert rc == 0, output
     assert "got:line1" in output
     assert PW not in output
+
+
+@pytest.mark.parametrize("form", [
+    "{sudo} > {out} -S true",
+    "{sudo} 2>&1 -S true",
+    "{sudo} &> {out} -S true",
+    "{sudo} -S true",
+])
+def test_live_own_stdin_option_after_a_redirection_keeps_the_stdin_form(live_env, form):
+    env, sudo, temp_dir = live_env
+    rc, output = _run(env, form.format(sudo=sudo, out=temp_dir / "out"))
+    assert rc == 0, output
+    assert "may not be used together" not in output
 
 
 def test_live_leftover_password_line_reaches_later_reader_only_in_stdin_form(live_env):

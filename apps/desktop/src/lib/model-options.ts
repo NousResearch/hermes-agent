@@ -28,6 +28,29 @@ export function findCatalogProvider<T extends CatalogProviderIdentity>(
   return providers.find(row => catalogProviderMatches(row, currentProvider))
 }
 
+/** True when the live route IS this catalog row, preferring the gateway's own
+ *  verdict (`is_current`, computed from the route's base URL) over a string
+ *  match on the provider name.
+ *
+ *  Every user-defined endpoint resolves to the bare `custom` provider class, and
+ *  relays routinely serve the same model id, so a name-only match cannot tell
+ *  two such rows apart — both would satisfy `model === currentModel`. The
+ *  gateway already marks the live row (`inventory.build_models_payload` sets
+ *  `is_current` from `endpoint_is_current(..., url_norm)`), so use that when it
+ *  is present and only fall back to name matching for payloads without it. */
+export function catalogProviderIsCurrent(
+  provider: CatalogProviderIdentity & { is_current?: boolean | null },
+  currentProvider: string
+): boolean {
+  if (provider.is_current === true) {
+    return true
+  }
+  if (provider.is_current === false) {
+    return false
+  }
+  return catalogProviderMatches(provider, currentProvider)
+}
+
 /** The catalog's option support for the current pick, or undefined while the
  *  catalog is loading / doesn't say. Callers treat undefined as "assume
  *  reasoning" so controls never flicker away during the fetch. */

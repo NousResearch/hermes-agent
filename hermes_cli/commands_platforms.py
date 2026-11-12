@@ -198,14 +198,15 @@ def _iter_gateway_skills(platform: str):
     from agent.skill_commands import get_skill_commands
     from agent.skill_utils import (
         get_disabled_skill_names, get_external_skills_dirs, get_project_skills_dirs)
-    from tools.skills_tool import SKILLS_DIR
+    from tools.skills_tool import _skills_dir
 
     try:
         disabled = get_disabled_skill_names(platform=platform)
     except Exception:
         disabled = set()
-    hub_dir = (SKILLS_DIR / ".hub").resolve()
-    roots = [SKILLS_DIR.resolve()]
+    skills_dir = _skills_dir()
+    hub_dir = (skills_dir / ".hub").resolve()
+    roots = [skills_dir.resolve()]
     for getter in (get_external_skills_dirs, get_project_skills_dirs):
         try:
             for d in getter():

@@ -25,7 +25,13 @@ test('traffic lights and toolbar share a center without touching sidebar tabs', 
 
   for (const zoom of [1, 0.5, 0.8, 1.25]) {
     // Use the same IPC as Settings → Scale.
-    await page.evaluate(zoom => window.hermesDesktop!.zoom!.setPercent(zoom * 100), zoom)
+    await page.evaluate(
+      zoom =>
+        (window as unknown as { hermesDesktop: { zoom: { setPercent(percent: number): void } } }).hermesDesktop.zoom.setPercent(
+          zoom * 100
+        ),
+      zoom
+    )
 
     await expect.poll(async () => {
       const native = await app.evaluate(({ BrowserWindow }) => {

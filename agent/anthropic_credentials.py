@@ -258,6 +258,23 @@ def _decode_keychain_attr(match: Optional[re.Match[str]]) -> str:
     return match.group("text") or ""
 
 
+def _claude_keychain_find_argv(flag: str) -> list[str]:
+    """``security find-generic-password`` argv for the Claude Code item, pinned to the login user's account when
+    that item exists. A Mac can hold two ``Claude Code-credentials`` items (an old ``acct=unknown`` one with empty
+    tokens next to the live one under the login user); without ``-a`` ``security`` returns whichever it finds first,
+    so the stale item made the live subscription login read as "logged out"."""
+    base = ["security", "find-generic-password", "-s", _CLAUDE_CODE_KEYCHAIN_SERVICE]
+    user = os.environ.get("USER") or os.environ.get("LOGNAME") or ""
+    if user:
+        try:
+            probe = subprocess.run(base + ["-a", user], capture_output=True, timeout=5, stdin=subprocess.DEVNULL, check=False)
+            if probe.returncode == 0:
+                return base + ["-a", user, flag]
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    return base + [flag]
+
+
 def _find_claude_code_keychain_item() -> Optional[tuple[str, dict[str, Any]]]:
     """``(account, payload)`` of the ``Claude Code-credentials`` login Keychain item, or None.
 
@@ -269,7 +286,7 @@ def _find_claude_code_keychain_item() -> Optional[tuple[str, dict[str, Any]]]:
         return None
     try:
         result = subprocess.run(
-            ["security", "find-generic-password", "-s", _CLAUDE_CODE_KEYCHAIN_SERVICE, "-g"],
+            _claude_keychain_find_argv("-g"),
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5, stdin=subprocess.DEVNULL,
             check=False,
         )
@@ -299,7 +316,7 @@ def _read_claude_code_keychain_payload() -> Optional[dict[str, Any]]:
         return None
     try:
         result = subprocess.run(
-            ["security", "find-generic-password", "-s", _CLAUDE_CODE_KEYCHAIN_SERVICE, "-w"],
+            _claude_keychain_find_argv("-w"),
             capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5, stdin=subprocess.DEVNULL,
             check=False,
         )

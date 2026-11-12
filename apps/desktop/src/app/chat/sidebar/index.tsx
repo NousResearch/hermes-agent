@@ -418,7 +418,7 @@ export function ChatSidebar({
   // below the built-ins with the same chrome; active = at their route.
   const navContributions = useContributions(SIDEBAR_NAV_AREA)
 
-  const contributedNav = useMemo<SidebarNavItem[]>(
+  const contributedNav: SidebarNavItem[] = useMemo(
     () =>
       navContributions.flatMap(c => {
         const data = c.data as Partial<SidebarNavContribution> | undefined

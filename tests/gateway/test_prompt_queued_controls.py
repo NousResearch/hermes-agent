@@ -47,10 +47,12 @@ class Turn:
         monkeypatch.setattr(session_finite, 'execute_finite_admission', execute)
 
 
-def interactive(db, sid='s', source='gui'):
+def interactive(db, sid='s', source='gui', created_source=None):
     """The session was launched from an interactive local surface (Desktop by default): a local
-    session's row records its frozen launch policy's source."""
-    db._execute_write(lambda conn: conn.execute('UPDATE sessions SET source=? WHERE id=?', (source, sid)))
+    session's row records its frozen launch policy's source and, for a chat stored as ``local``, the
+    surface that created it."""
+    db._execute_write(lambda conn: conn.execute('UPDATE sessions SET source=?, created_source=? WHERE id=?',
+                                                (source, created_source, sid)))
 
 
 def _connection(authority):
@@ -282,3 +284,24 @@ async def test_a_row_submitted_with_clarify_batch_keeps_steer_and_edit(tmp_path,
         reply = await _call(conn, 'prompt.replace_queued', admission_id=batch['admission_id'],
                             submission_id='batch-edited', text='edited')
         assert 'error' not in reply, reply
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(('source', 'created_source', 'offered'), [
+    ('local', 'desktop', True),   # a Desktop chat created locally is stored as ``local``
+    ('local', 'acp', True),
+    ('local', 'cron', False),     # ``local`` alone is not a surface: a cron row qualifies for nothing
+    ('local', None, False),
+])
+async def test_a_locally_stored_chat_is_interactive_by_its_creating_surface(tmp_path, monkeypatch, source, created_source,
+                                                                           offered):
+    db, authority = _authority(tmp_path, monkeypatch)
+    interactive(db, source=source, created_source=created_source)
+    monkeypatch.setattr(authority, '_schedule', lambda ref: None)
+    with db:
+        await _submit(authority, 'head')
+        await _submit(authority, 'follower')
+        claim_session_input(db, epoch=authority.epoch, session_id='s')
+        pending = {row['input_id']: row for row in (asdict(authority._pending_receipt(r))
+                                                     for r in authority._pending_rows(REF))}
+    assert bool(pending['follower'].get('controls')) is offered

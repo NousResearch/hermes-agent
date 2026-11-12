@@ -29,7 +29,9 @@ _TEXT_ONLY = frozenset({'text', 'surface_v1', 'display_v1', 'local_operator_v1'}
 _CLARIFY_BATCH_ONLY = {'clarify_batch': True}
 # Sessions launched from an interactive local surface (classic CLI, TUI, Desktop, ACP editor): their
 # plain-text rows are prompt.submit input, whose observers settle a ``steered``/``cancelled`` row.
-# ``desktop`` is the label a Desktop chat migrated from main keeps (hermes_state_local_migration).
+# ``desktop`` is the label a Desktop chat migrated from main keeps (hermes_state_local_migration); a chat
+# created locally is stored as ``source='local'`` with its surface in ``created_source``
+# (``session_policy.STORED_AS_LOCAL``), so either column may name the surface.
 # cron, kanban, a2a and hosted-room (bot_room) producers read a saved result for every outcome they
 # do not name, so a transfer or replacement would strand them: never offered, refused by name.
 _INTERACTIVE_SOURCES = frozenset({'cli', 'tui', 'gui', 'desktop', 'acp'})
@@ -41,16 +43,17 @@ def handlers(connection):
 
 
 def _interactive(authority, session_id):
-    """The session's frozen launch source (a local session's row records it) names a local surface.
+    """The session's frozen launch source or creating surface (a local session's row records them) names
+    a local surface.
     Callers hold the stream lock: one plain read per session, cached (``get_session`` flushes token
     counts, a write). Under WAL it takes the lock-free reader pool, as ``_pending_rows`` does there."""
     sources = authority.launch_sources
     if session_id not in sources:
         with authority.db._read_ctx() as conn:
-            found = conn.execute('SELECT source FROM sessions WHERE id=?', (session_id,)).fetchone()
+            found = conn.execute('SELECT source, created_source FROM sessions WHERE id=?', (session_id,)).fetchone()
         if found is None:
             return False
-        sources[session_id] = found[0]
+        sources[session_id] = found[0] if found[0] in _INTERACTIVE_SOURCES else found[1]
     return sources[session_id] in _INTERACTIVE_SOURCES
 
 

@@ -1,0 +1,18 @@
+name: brickfact
+title: Brickfact LEGO Shopping
+repo: https://github.com/brickfact-com/agent-skills
+sha: c9474b7e647faee0b9f16b4bf5691d4f41d26df2
+description: "Find LEGO sets, compare regional retailer offers and inspect recorded retail price history with Brickfact. Supports nine delivery markets. Portable Agent Plugin with a public Streamable HTTP MCP server and shopping workflow skill. Disclosure — tool calls send shopping inputs (search text, market, set IDs, budgets) to mcp.brickfact.com; an optional Python standard-library helper makes the same calls when run explicitly; the hosted service records aggregate operational counts (see its privacy policy); results link to Brickfact comparison pages containing disclosed affiliate links. No account access, purchases, background processes or locally stored credentials."
+maintainer: brickfact-com
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+version: "1.0.0"
+docs_url: https://github.com/brickfact-com/agent-skills
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

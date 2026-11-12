@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto'
 
+import { CANONICAL_REASONING_EFFORTS, TUI_SESSION_MODEL_FLAG } from '@hermes/shared/slash-input'
+
 import { introMsg, toTranscriptMessages } from '../../domain/messages.js'
-import { CANONICAL_REASONING_EFFORTS, TUI_SESSION_MODEL_FLAG } from '../../domain/slash.js'
 import { t } from '../../i18n/runtime.js'
 import { asRpcResult, rpcErrorMessage } from '../../lib/rpc.js'
 import { patchOverlayState } from '../overlayStore.js'
@@ -243,7 +244,7 @@ function isSupersededControl(
   )
 }
 
-async function applyBranchResult(result: CanonicalControlResult, arg: string, ctx: SlashRunCtx) {
+export async function applyBranchResult(result: CanonicalControlResult, arg: string, ctx: SlashRunCtx) {
   if (!result.branched_session_id) {
     throw new Error(t('session.common.invalidResponse', 'branch'))
   }
@@ -289,7 +290,8 @@ function applyModelResult(result: CanonicalControlResult, sys: (text: string) =>
       tools: state.info?.tools ?? {}
     }
   }))
-  sys(t('session.main.modelSwitched', result.model))
+  // `/model reset` on a session already on the configured default: the owner's note, nothing changed.
+  sys(typeof result.note === 'string' ? result.note : t('session.main.modelSwitched', result.model))
 
   if (typeof result.effort === 'string') {
     // The level committed in the same selection (a deferred result carries none yet).

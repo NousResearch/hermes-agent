@@ -17,9 +17,10 @@ _RUNTIME_KEYS = ("model", "provider", "api_key", "base_url", "api_mode")
 
 def _snapshot_agent_model_runtime(agent) -> dict:
     """Capture the current agent model runtime for a one-turn restore."""
+    from agent.route_verdicts import primary_runtime_for_restore
     return {**{k: getattr(agent, k, "") for k in _RUNTIME_KEYS},
             "reasoning_config": copy.deepcopy(getattr(agent, "reasoning_config", None)),
-            "primary_runtime": copy.deepcopy(getattr(agent, "_primary_runtime", None))}
+            "primary_runtime": primary_runtime_for_restore(agent)}
 
 
 def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
@@ -47,6 +48,11 @@ def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
         agent.switch_model(
             new_model=model, new_provider=provider, api_key=api_key, base_url=base_url,
             api_mode=api_mode, capabilities=snapshot.get("capabilities"))
+        # Endpoint-stamped, so this applies only when the switch landed on the primary's URL; the model
+        # check keeps a fallback that shares that URL from inheriting the primary's verdicts.
+        if isinstance(primary, dict) and primary.get("model") == model:
+            from agent.route_verdicts import restore_primary_route_verdicts
+            restore_primary_route_verdicts(agent, copy.deepcopy(primary))
         if "reasoning_config" in snapshot:
             agent.reasoning_config = snapshot["reasoning_config"]
 
@@ -314,9 +320,15 @@ def _apply_model_switch(
     persist_override: bool | None = None, count_switch: bool = True) -> dict:
     """``count_switch=False``: an internal swap (config adoption, MoA one-shot and its restore), not a
     user's /model pick, so it stays out of the shared-metrics switch count."""
-    from hermes_cli.model_switch import switch_model
+    from hermes_cli.model_switch import parse_model_switch_args, switch_model
+    if parsed_flags is None:
+        parsed_flags = parse_model_switch_args(raw_input)
+    if getattr(parsed_flags, "is_reset", False):
+        return _reset_session_model_override(sid, session)
     model_input, explicit_provider, one_turn, persist_global, reasoning_effort = _switch_request(
         raw_input, parsed_flags, persist_override)
+    if persist_global:  # refused before switch_model() touches the live session
+        _refuse_managed_model_pick(reasoning_effort)
     agent = session.get("agent")
     if one_turn and not agent:
         raise ValueError("/model --once requires a live session")
@@ -337,6 +349,8 @@ def _apply_model_switch(
         custom_providers=custom_provs)
     if not result.success:
         raise ValueError(result.error_message or "model switch failed")
+    if persist_global:  # the exact plan, incl. conditional clears: still before any confirm or commit
+        _refuse_managed_model_pick(reasoning_effort, result)
     restore_snapshot = _snapshot_agent_model_runtime(agent) if (one_turn and agent) else None
     if agent:
         _merge_preflight_warning(result, agent, session, cfg, custom_provs)
@@ -393,6 +407,34 @@ def _apply_model_switch(
         "value": result.new_model, "warning": result.warning_message or "",
         "confirm_required": False,
         "scope": "once" if one_turn else ("global" if persist_global else "session")}
+
+
+def _reset_session_model_override(sid: str, session: dict) -> dict:
+    """``/model reset`` (typed, ``config.set model``, Desktop's slash mirror, or a pick queued
+    mid-turn): drop this session's pin and any armed ``--once`` restore, adopt config.yaml's model
+    through the config-sync switch (no new pin, never written back), and persist the row so
+    ``session.resume`` cannot restore the old pin. History is kept."""
+    from agent.i18n import t
+    had_override = bool(session.get("model_override"))
+    session.pop("model_override", None)
+    session.pop("one_turn_model_restore", None)
+    session.pop("config_model_seen", None)  # the pinned sync recorded the target without adopting it
+    if "composer_override_profile" in session:
+        session["composer_override_profile"] = None  # persisted as a removal
+    model, provider = _config_model_target()
+    agent = session.get("agent")
+    if model and agent is not None and (
+            model != getattr(agent, "model", "") or (provider and provider != getattr(agent, "provider", ""))):
+        _apply_model_switch(
+            sid, session, f"{model} --provider {provider}" if provider else model,
+            confirm_expensive_model=True, pin_session_override=False, persist_override=False,
+            count_switch=False)
+    _persist_live_session_runtime(session)
+    _emit_session_info(sid, session)
+    shown = model or getattr(agent, "model", "") or t("gateway.shared.unknown_value")
+    return {"value": shown, "warning": t("gateway.model.reset_done" if had_override else "gateway.model.reset_none",
+                                         model=shown),
+            "confirm_required": False, "scope": "session"}
 
 
 def _apply_switch_reasoning(sid: str, session, agent, effort: str, *, persist_global: bool, one_turn: bool) -> None:

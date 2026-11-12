@@ -225,6 +225,41 @@ class TestCapabilityProbe:
         assert report.ok, report.failures
 
 
+    def test_probe_context_offers_the_real_service_properties(self, tmp_path):
+        """``ctx.llm`` / ``ctx.state`` are real PluginContext properties plugins capture in register();
+        the probe must hand back an object, not raise, or every such plugin fails admission."""
+        d = _make_plugin(
+            tmp_path,
+            manifest={**BASE_MANIFEST, "provides_tools": ["t"]},
+            init_py=(
+                "def register(ctx):\n"
+                "    llm, state = ctx.llm, ctx.state\n"
+                "    assert llm is not None and state is not None\n"
+                "    ctx.register_tool('t', schema={}, handler=lambda **kw: llm.complete('x'))\n"),
+        )
+        report = validate_plugin_dir(d)
+        assert report.ok, report.failures
+
+
+    def test_probe_state_matches_plugin_state_shape(self, tmp_path):
+        """``ctx.state`` in register() behaves like PluginState: real Path values and get() defaults,
+        as the authoring guide shows (``ctx.state.get("cursor", default={...})``)."""
+        d = _make_plugin(
+            tmp_path,
+            manifest={**BASE_MANIFEST, "provides_tools": ["t"]},
+            init_py=(
+                "from pathlib import Path\n"
+                "def register(ctx):\n"
+                "    (Path(ctx.state.data_dir) / 'a').mkdir(parents=True, exist_ok=True)\n"
+                "    (ctx.state.data_dir / 'b').mkdir(parents=True, exist_ok=True)\n"
+                "    Path(ctx.state.path).write_text('{}')\n"
+                "    assert ctx.state.get('cursor', default={'page': 0})['page'] == 0\n"
+                "    ctx.register_tool('t', schema={}, handler=lambda **kw: None)\n"),
+        )
+        report = validate_plugin_dir(d)
+        assert report.ok, report.failures
+
+
 class TestModelProviderKind:
     def test_import_time_register_provider_is_the_entry_point(self, tmp_path):
         """``kind: model-provider`` plugins register at import via providers.register_provider and

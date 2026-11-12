@@ -19,7 +19,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone, UTC
 from pathlib import Path
-from typing import Any, Callable, NamedTuple, Optional
+from typing import Any, Callable, Iterable, NamedTuple, Optional
 from hermes_dir_acl import make_user_dir
 
 from gateway.status_inline_source import (
@@ -1093,7 +1093,7 @@ def _prepare_runtime_status_update(
     parked_profiles: Any = _UNSET, multiplex_standalone_reason: Any = _UNSET,
     platform_metrics: Any = _UNSET,
     ingress_url: Any = _UNSET, listener_base: Any = _UNSET, clear_profile_platforms: bool = False,
-    drop_profile_platforms: Optional[str] = None,
+    drop_profile_platforms: Optional[str] = None, keep_platforms: Iterable[str] = (),
     load_existing: bool = True, reload_existing: bool = False,
 ) -> tuple[Path, dict[str, Any], dict[str, Any]]:
     """Merge one update into the process-wide canonical status snapshot."""
@@ -1117,7 +1117,7 @@ def _prepare_runtime_status_update(
             payload["platforms"] = {
                 k: v for k, v in payload["platforms"].items()
                 if not isinstance(k, str) or ":" not in k
-                or (drop_prefix is not None and not k.startswith(drop_prefix))
+                or (drop_prefix is not None and not k.startswith(drop_prefix)) or k in keep_platforms
             }
         payload.update({key: current_record[key] for key in ("kind", "pid", "argv", "start_time")})
         payload["updated_at"] = _utc_now_iso()
@@ -1330,29 +1330,9 @@ def multiplexer_liveness_for_profile(profile_dir: Path) -> Optional[tuple[int, d
 
 
 def shared_listener_mirror_platforms(runtime: Optional[dict[str, Any]], profile: str) -> dict[str, Any]:
-    """Entries for the api_server/webhook mirrors a served ``profile`` gets from the DEFAULT's
-    listener. The multiplexer never builds those adapters for a secondary (``gateway.run_adapters``
-    skips them: ``SHARED_LISTENER_MIRROR_PLATFORMS``), so the record has no ``<profile>:api_server``
-    entry and every reader fell through to ``pending_restart`` — "Restart needed" forever while
-    ``/p/<profile>/v1/...`` answered. Only a live default entry is mirrored; its state is the profile's
-    state, plus the ``/p/<profile>`` URL the client must actually call.
-    """
-    from gateway.config import SHARED_LISTENER_MIRROR_PATHS, SHARED_LISTENER_MIRROR_PLATFORMS
-    plats = (runtime or {}).get("platforms")
-    if not profile or profile == "default" or not isinstance(plats, dict):
-        return {}
-    mirrored: dict[str, Any] = {}
-    for name in sorted(SHARED_LISTENER_MIRROR_PLATFORMS):
-        entry = plats.get(name)
-        if not isinstance(entry, dict) or entry.get("state") not in {"connected", "connecting", "retrying"}:
-            continue
-        # api_server and webhook bind separate ports; each mirror hangs off its own listener. A record
-        # from an older gateway carries no ``listener_base``: connected, URL unknown.
-        base = entry.get("listener_base")
-        url = f"{base}/p/{profile}{SHARED_LISTENER_MIRROR_PATHS.get(name, '')}" if isinstance(base, str) and base else None
-        mirrored[name] = {k: v for k, v in entry.items() if k != "listener_base"}
-        mirrored[name].update(ingress_url=url, mirrored_from="default")
-    return mirrored
+    """Entries a served ``profile`` mirrors from the default; see ``gateway.status_served``."""
+    from gateway.status_served import served_profile_mirror_platforms
+    return served_profile_mirror_platforms(runtime, profile)
 
 
 def profile_platforms_from_multiplexer(runtime: Optional[dict[str, Any]], profile: str) -> dict[str, Any]:

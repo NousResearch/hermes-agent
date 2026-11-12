@@ -8,8 +8,11 @@ from datetime import timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
-PROJECT_ROOT = Path(__file__).parent.parent.resolve()
-sys.path.insert(0, str(PROJECT_ROOT))
+from hermes_cli._startup_fast import project_root_str
+
+PROJECT_ROOT = Path(project_root_str())
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from hermes_cli.colors import Colors, color
 
@@ -779,7 +782,7 @@ _JOB_ARG_FIELDS = (("name", "name"), ("deliver", "deliver"), ("failure_deliver",
                    ("monitor_script", "monitor_script"), ("monitor_url", "monitor_url"),
                    ("continuity", "continuity"), ("reasoning_effort", "reasoning_effort"),
                    ("interpreter", "interpreter"), ("timezone", "timezone"),
-                   ("grace_minutes", "grace_minutes"))
+                   ("grace_minutes", "grace_minutes"), ("catch_up", "catch_up"))
 
 
 def _job_api_kwargs(args) -> dict[str, Any]:
@@ -902,6 +905,7 @@ def _job_action(action: str, job_id: str, success_verb: str) -> int:
     if action == "run":
         print(f"  {_run_outcome(result.get('job', {}))}")
         if (job.get('executed') and job.get('execution_success') is False
+                and job.get('last_status') != 'cancelled'
                 and not job.get('delegation_id') and job.get('execution_mode') != 'background'):
             return 1
     return 0
@@ -918,6 +922,8 @@ def _run_outcome(job: dict[str, Any]) -> str:
     if job.get("execution_mode") == "background":
         return "Running in background."
     if job.get("executed"):
+        if not job.get("execution_success") and job.get("last_status") == "cancelled":
+            return "Ran now: cancelled."
         return f"Ran now: {'succeeded' if job.get('execution_success') else 'failed'}."
     return job.get("execution_skipped") or "It will run on the next scheduler tick."
 
@@ -991,6 +997,24 @@ def cron_notepad(args) -> int:
         return 1
 
 
+def cron_cancel(args) -> int:
+    """Stop a job's live run. The schedule is untouched — the next fire still happens."""
+    result = _cron_api(action="cancel", job_id=args.job_id,
+                       reason=getattr(args, "reason", None))
+    if not result.get("success"):
+        print(color(f"Failed to cancel run: {result.get('error', 'unknown error')}", Colors.RED))
+        return 1
+    job = result.get("job") or {}
+    label = f"{job.get('name', args.job_id)} ({args.job_id})"
+    if not result.get("cancelled"):
+        print(color(f"Nothing to cancel for {label}", Colors.YELLOW))
+        return 0
+    print(color(f"Cancel requested for {label}", Colors.GREEN))
+    print(f"  Execution: {result['execution_id']} (pid {result.get('pid')})")
+    print(f"  {result.get('detail', '')}")
+    return 0
+
+
 # Late-bound lambdas keep module-level monkeypatching working; list/status/runs return None -> 0.
 _CRON_SUBCOMMANDS = {
     "list": lambda a: cron_list(getattr(a, "all", False)) or 0,
@@ -1005,6 +1029,7 @@ _CRON_SUBCOMMANDS = {
     "pause": lambda a: _job_action("pause", a.job_id, "Paused"),
     "resume": lambda a: cron_resume(a),
     "run": lambda a: _job_action("run", a.job_id, "Triggered"),
+    "cancel": lambda a: cron_cancel(a),
     "remove": lambda a: _job_action("remove", a.job_id, "Removed"),
 }
 _CRON_SUBCOMMANDS["history"] = _CRON_SUBCOMMANDS["runs"]
@@ -1019,5 +1044,5 @@ def cron_command(args):
     if handler is not None:
         return handler(args)
     print(f"Unknown cron command: {subcmd}\n"
-          "Usage: hermes cron [list|create|edit|pause|resume|run|remove|status|runs|doctor|tick]")
+          "Usage: hermes cron [list|create|edit|pause|resume|run|cancel|remove|status|runs|doctor|tick]")
     sys.exit(1)

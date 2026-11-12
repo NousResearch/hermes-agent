@@ -295,6 +295,7 @@ def _validate_model_config(config_path, issues: list) -> None:
                    "(vendor-prefixed slugs belong to aggregators like openrouter)")
         issues.append(f"model.default '{default_model}' is vendor-prefixed but model.provider is '{provider_raw}'. "
                       "Either set model.provider to 'openrouter', or drop the vendor prefix.")
+    _warn_builtin_name_owned_by_entry(provider_raw, cfg.get("providers"), issues)
     if runtime_provider and runtime_provider not in ("auto", "custom"):
         from hermes_cli.doctor import _DHH
         with warn_on_error(""):
@@ -303,6 +304,24 @@ def _validate_model_config(config_path, issues: list) -> None:
                                 f"(add it to {_DHH}/.env or run 'hermes setup')",
                                 f"No credentials found for provider '{runtime_provider}'. Run 'hermes setup' or set the provider's "
                                 f"API key in {_DHH}/.env, or switch providers with 'hermes config set model.provider <name>'", issues)
+
+
+def _warn_builtin_name_owned_by_entry(provider_raw: str, providers, issues: list) -> None:
+    """``model.provider`` names a built-in, but a ``providers:`` entry under that key (any case)
+    declares its own base_url: the turn runs on the user's endpoint, not the built-in (#151775)."""
+    with warn_on_error(""):
+        from hermes_cli.providers import custom_provider_slug
+        from hermes_cli.runtime_provider_custom import builtin_name_user_entry
+        owner = builtin_name_user_entry(provider_raw, providers)
+        if owner is None:
+            return
+        slug = custom_provider_slug(owner, owner)
+        url = str(providers[owner].get("base_url") or providers[owner].get("api") or providers[owner].get("url") or "").strip()
+        check_warn(f"model.provider '{provider_raw}' runs on your providers.{owner} endpoint, not the built-in",
+                   f"({url})")
+        issues.append(f"model.provider '{provider_raw}' names a built-in, but providers.{owner} declares its own base_url, "
+                      f"so requests go to {url} (with that entry's credential when it declares one). Run 'hermes config set model.provider "
+                      f"{slug}' to say so explicitly, or remove providers.{owner}.base_url to use the built-in provider.")
 
 
 def _validate_auxiliary_config(config_path, issues: list) -> None:
@@ -337,7 +356,7 @@ def _validate_auxiliary_config(config_path, issues: list) -> None:
 
 @doctor_check()
 def _check_config_file(should_fix: bool, f: Finding) -> None:
-    """config.yaml presence (project cli-config.yaml as fallback); model/provider validation."""
+    """config.yaml presence; model/provider validation."""
     from hermes_cli.config_backend import config_exists, get_config_backend
     from hermes_cli.doctor import HERMES_HOME, PROJECT_ROOT, _DHH
     config_path = HERMES_HOME / 'config.yaml'
@@ -351,8 +370,6 @@ def _check_config_file(should_fix: bool, f: Finding) -> None:
             _validate_model_config(config_path, f.issues)
         with warn_on_error("Could not validate auxiliary task routing"):
             _validate_auxiliary_config(config_path, f.issues)
-    elif (PROJECT_ROOT / 'cli-config.yaml').exists():
-        check_ok("cli-config.yaml exists (in project directory)")
     elif should_fix:
         from hermes_cli.config import seed_config_file
         from_template = seed_config_file(config_path, PROJECT_ROOT / 'cli-config.yaml.example')

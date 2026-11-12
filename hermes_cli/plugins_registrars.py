@@ -2,7 +2,9 @@
 
 Every ``register_<category>_provider`` shares one body (:meth:`PluginContext._register_scoped_provider`):
 type-check, register in the scope-keyed process-global registry, lease the slot so unload restores
-the displaced entry. ``hermes_cli.plugins`` generates one ctx method per row. Rows: (method, kind,
+the displaced entry. Each row backs one explicit ``PluginContext`` method of the same name, decorated
+with :func:`scoped_provider_registrar` (which gives it the row's docstring) and calling
+:func:`register_scoped_provider`. Rows: (method, kind,
 registry module, base-class module:attr, label, docstring, options). ``normalize``: ``strip``
 (default), ``lower`` (strip+lowercase) or ``None`` (raw name). ``admit``: ``module:function`` taking
 the plugin's manifest and returning why it may not register this kind ("" = it may), judged under the
@@ -100,32 +102,57 @@ def _resolve(ref: str) -> Any:
     return getattr(importlib.import_module(module), attr)
 
 
-def make_scoped_provider_registrar(method_name, kind, registry_mod, base_ref, label, doc, options):
-    """Build one ``register_<category>_provider`` method from a ``_SCOPED_PROVIDER_REGISTRARS`` row."""
-    normalize_fn = _NAME_NORMALIZERS[options.get("normalize", "strip")]
+_ROWS_BY_METHOD = {row[0]: row for row in _SCOPED_PROVIDER_REGISTRARS}
+
+
+def _register_with_row(ctx, provider, kind, registry_mod, base_ref, label, options, normalize_fn):
+    """The body every ``register_<category>_provider`` runs for its row (admit, identity, shared body)."""
     register_name = options.get("register")
     admit, identity = options.get("admit"), options.get("identity")
+    if admit:
+        with _plugin_home_scope(ctx._manager.home_path):
+            refusal = _resolve(admit)(ctx.manifest)
+        if refusal:
+            logger.warning(options["reject_message"], ctx.manifest.name, refusal)
+            return None
+    registry = importlib.import_module(registry_mod)
+    if identity:
+        try:
+            getattr(registry, identity)(provider)
+        except ValueError as exc:
+            logger.warning(options["reject_message"], ctx.manifest.name, exc)
+            return None
+    return ctx._register_scoped_provider(
+        provider, kind=kind, base_class=_resolve(base_ref),
+        registry=registry, label=label, article=options.get("article", "a"), normalize=normalize_fn,
+        register=getattr(registry, register_name) if register_name else None,
+        reject_message=options.get("reject_message"),
+    )
+
+
+def register_scoped_provider(ctx, method_name: str, provider: Any):
+    """Run ``ctx.<method_name>(provider)`` from its ``_SCOPED_PROVIDER_REGISTRARS`` row."""
+    _name, kind, registry_mod, base_ref, label, _doc, options = _ROWS_BY_METHOD[method_name]
+    normalize_fn = _NAME_NORMALIZERS[options.get("normalize", "strip")]
+    return _register_with_row(ctx, provider, kind, registry_mod, base_ref, label, options, normalize_fn)
+
+
+def scoped_provider_registrar(method):
+    """Decorate the explicit ``PluginContext.<row method>``: the row's docstring + one replacement transaction."""
+    method.__doc__ = _ROWS_BY_METHOD[method.__name__][5]
+    return _serialized_replacement(method)
+
+
+def make_scoped_provider_registrar(method_name, kind, registry_mod, base_ref, label, doc, options):
+    """Build one ``register_<category>_provider`` method from a ``_SCOPED_PROVIDER_REGISTRARS`` row.
+
+    ``PluginContext`` now spells its registrars out; this stays importable (and from
+    ``hermes_cli.plugins``) for callers that build one from a row, as on main.
+    """
+    normalize_fn = _NAME_NORMALIZERS[options.get("normalize", "strip")]
 
     def register(self, provider):
-        if admit:
-            with _plugin_home_scope(self._manager.home_path):
-                refusal = _resolve(admit)(self.manifest)
-            if refusal:
-                logger.warning(options["reject_message"], self.manifest.name, refusal)
-                return None
-        registry = importlib.import_module(registry_mod)
-        if identity:
-            try:
-                getattr(registry, identity)(provider)
-            except ValueError as exc:
-                logger.warning(options["reject_message"], self.manifest.name, exc)
-                return None
-        return self._register_scoped_provider(
-            provider, kind=kind, base_class=_resolve(base_ref),
-            registry=registry, label=label, article=options.get("article", "a"), normalize=normalize_fn,
-            register=getattr(registry, register_name) if register_name else None,
-            reject_message=options.get("reject_message"),
-        )
+        return _register_with_row(self, provider, kind, registry_mod, base_ref, label, options, normalize_fn)
 
     def register_source(self, source):  # secret sources: ``source``
         return register(self, source)

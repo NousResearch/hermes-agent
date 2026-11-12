@@ -1,0 +1,19 @@
+name: followthrough
+repo: https://github.com/AbdullahBalfaqih/hermes-followthrough
+sha: a31ec76c21335bf7ecb4481717df1418e4266910
+subdir: followthrough
+description: Capture and track user-selected commitments with owners, due dates, and source references.
+maintainer: AbdullahBalfaqih
+tier: community
+category: automation
+version: "0.1.0"
+readme: true
+capabilities:
+  provides_tools:
+    - followthrough_capture
+    - followthrough_list
+    - followthrough_complete
+    - followthrough_snooze
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

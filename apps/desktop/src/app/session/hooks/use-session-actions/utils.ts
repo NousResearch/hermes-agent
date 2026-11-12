@@ -1,4 +1,3 @@
-import { mergeUsage } from '@hermes/shared'
 
 import { resolveSessionRpcOwner } from '@/app/contrib/wiring-routing'
 import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-kinds'
@@ -78,11 +77,18 @@ import {
 } from './committed-reply'
 import { chatMessageArraysEquivalent, chatMessagesEquivalent } from './message-equivalence'
 import {
+  isLiveTailRow,
+  liveOptimisticUserRun,
+  optimisticUserAlreadyRepresented,
+  refusedPromptCounterparts
+} from './optimistic-user-dedup'
+import {
   acknowledgedTranscriptBoundary,
   conflictingTranscriptIdentity,
   transcriptRowIds
 } from './pending-turn-identity'
 import { reconcileOwnerApprovalMode } from './runtime-owner'
+import { publishSessionUsage } from './session-usage'
 
 export {
   chatMessageArraysEquivalent,
@@ -111,15 +117,6 @@ function withAppendedText(message: ChatMessage, suffix: string): ChatMessage {
 /** Reasoning / tool-call parts that the gateway inflight dump cannot express. */
 function hasStructuralParts(message: ChatMessage): boolean {
   return message.parts.some(part => part.type === 'reasoning' || part.type === 'tool-call')
-}
-
-/**
- * A live-turn row — the gateway's text-only `inflight` projection, a
- * still-streaming local bubble, or an interim row sealed inside the running
- * turn — as opposed to a committed transcript row.
- */
-function isLiveTailRow(message: ChatMessage): boolean {
-  return message.pending === true || isLiveTailReplyId(message.id) || message.interim === true
 }
 
 /**
@@ -648,39 +645,7 @@ export function preserveLocalPendingTurnMessages(
   const nextIds = new Set(nextMessages.map(message => message.id))
   const previousRoleCounts = new Map<ChatMessage['role'], number>()
 
-  const newestOptimisticUser = [...previousMessages]
-    .reverse()
-    .find(message => message.role === 'user' && message.id.startsWith('user-'))
-
-  // A mid-turn redirect inserts its correction as a second optimistic user row
-  // directly before the live reply, so one turn can own a contiguous RUN of
-  // them. Preserving only the newest keeps the correction and drops the prompt
-  // that started the turn. Widen to the run — but only the contiguous one: any
-  // `user-*` row separated by an assistant reply is stale post-compression
-  // history, which is what the newest-only rule exists to discard.
-  const liveOptimisticUsers = new Set<ChatMessage>()
-
-  if (newestOptimisticUser) {
-    for (let index = previousMessages.indexOf(newestOptimisticUser); index > acknowledged.localIndex; index -= 1) {
-      const candidate = previousMessages[index]
-
-      if (candidate.role === 'user' && candidate.id.startsWith('user-')) {
-        liveOptimisticUsers.add(candidate)
-
-        continue
-      }
-
-      // Arrival-ordered mid-turn corrections sit BELOW the sealed live output
-      // (#73793): a live-tail assistant row between the prompt and its
-      // correction is still the same turn's run. Only a committed reply ends
-      // it — that is the post-compression staleness the rule exists to catch.
-      if (candidate.role === 'assistant' && isLiveTailRow(candidate)) {
-        continue
-      }
-
-      break
-    }
-  }
+  const liveOptimisticUsers = liveOptimisticUserRun(previousMessages, acknowledged.localIndex)
 
   // #121088: the acknowledged prompt's committed twin can sit anywhere in the
   // newly committed window — a compaction handoff or preserved-task notice
@@ -701,6 +666,8 @@ export function preserveLocalPendingTurnMessages(
       !isGatewaySystemMarker(message) &&
       (message.rowId !== undefined || message === newestAuthoritativeUser)
   )
+
+  const contentRefusedCounterparts = refusedPromptCounterparts(nextMessages)
 
   const preserved: ChatMessage[] = []
   // Authoritative id → richer local pending row. Replacing (not appending)
@@ -775,7 +742,7 @@ export function preserveLocalPendingTurnMessages(
       continue
     }
 
-    if (isOptimisticUser && !liveOptimisticUsers.has(message)) {
+    if (isOptimisticUser && optimisticUserAlreadyRepresented(message, liveOptimisticUsers, contentRefusedCounterparts)) {
       continue
     }
 
@@ -2326,8 +2293,8 @@ export function applyRuntimeInfo(
     publishRuntimeToComposer(sessionState)
 
     if (info.usage) {
-      // session.info/resume is an authoritative snapshot: an omitted compression count or plan gauge clears.
-      setCurrentUsage(current => ({ ...mergeUsage(current, info.usage), compressions: info.usage?.compressions }))
+      // session.info/resume is an authoritative snapshot of THIS session: an omitted readout clears.
+      publishSessionUsage(sessionState.usage)
     }
   }
 
@@ -2336,12 +2303,12 @@ export function applyRuntimeInfo(
 
 export function applyStoredSessionPreviewRuntimeInfo(
   stored: { cwd?: null | string; model?: null | string } | undefined,
-  storedSessionId: null | string
+  storedSessionId: null | string,
+  options: { sameSession?: boolean } = {}
 ) {
-  // Compression count is live runtime state, not part of a durable session row.
-  // Drop the previous session's value immediately while the selected runtime
-  // resumes; the authoritative usage snapshot will repopulate it when present.
-  setCurrentUsage(current => ({ ...current, compressions: undefined }))
+  // Compressions, cache-hit rate, t/s: live runtime state — a switch drops them (#146430), a re-resume keeps them.
+  const staleRates = options.sameSession ? {} : { avg_tps: undefined, cache_hit_pct: undefined }
+  setCurrentUsage(current => ({ ...current, ...staleRates, compressions: undefined }))
   // Transient: this is a PREVIEW painted while `session.resume` is still in
   // flight. If the resume is abandoned (user starts a new chat before it
   // returns, or the row is switched away), nothing repairs the selection

@@ -15,6 +15,7 @@ command afterward.
 from __future__ import annotations
 
 from hermes_cli import update_cmd
+from hermes_cli import update_cmd_commit
 from hermes_cli import main
 import pytest
 import subprocess
@@ -22,26 +23,65 @@ import sys
 from pathlib import Path
 
 
-# ---------------------------------------------------------------------------
-# _validate_critical_files_syntax
-# ---------------------------------------------------------------------------
+def _declared_tree(root, startup_files):
+    listed = ", ".join(f'"{rel}"' for rel in startup_files)
+    (root / "pyproject.toml").write_text(
+        f'[project]\nname = "x"\n\n[tool.hermes]\nupdate-startup-files = [{listed}]\n', encoding="utf-8")
+    for rel in startup_files:
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text("ok = 1\n", encoding="utf-8")
 
-def test_validate_critical_files_syntax_tolerates_missing_files(tmp_path):
-    """A refactor may legitimately remove one of the critical files — the
-    guard should skip missing files, not falsely flag the install as broken."""
-    # Populate everything except hermes_constants.py
-    for relpath in update_cmd._UPDATE_CRITICAL_FILES:
-        if relpath == "hermes_constants.py":
-            continue
-        path = tmp_path / relpath
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("# stub\n", encoding="utf-8")
 
-    ok, failing_path, error = update_cmd._validate_critical_files_syntax(tmp_path)
+def test_a_tree_without_a_declared_file_it_lists_is_refused_before_and_after_the_move(tmp_path, monkeypatch):
+    """A startup file the target lists but lacks used to be skipped, so a move that dropped one passed
+    both guards and the next launch failed to import it. Judged by the target's own list, it refuses."""
+    commit = update_cmd_commit
 
-    assert ok is True
-    assert failing_path is None
-    assert error is None
+    def git(*args):
+        return subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True, text=True, encoding="utf-8").stdout.strip()
+
+    git("init", "-b", "main")
+    git("config", "user.email", "test@example.invalid")
+    git("config", "user.name", "Test")
+    _declared_tree(tmp_path, ["hermes_constants.py", "src/hermes_agent/cli.py"])
+    git("add", ".")
+    git("commit", "-m", "complete")
+    pre = git("rev-parse", "HEAD")
+    git("rm", "-q", "src/hermes_agent/cli.py")
+    git("commit", "-m", "a declared startup file is gone")
+    broken = git("rev-parse", "HEAD")
+    running_list = ["hermes_constants.py", "cli.py"]
+
+    assert commit.target_syntax_error(["git"], tmp_path, pre, running_list) is None
+    assert commit.target_syntax_error(["git"], tmp_path, broken, running_list) == (
+        "src/hermes_agent/cli.py", commit.MISSING_STARTUP_FILE)
+    monkeypatch.setattr(main, "PROJECT_ROOT", tmp_path)
+    with pytest.raises(SystemExit):
+        update_cmd._rollback_if_pulled_syntax_error(["git"], pre)
+    assert git("rev-parse", "HEAD") == pre
+    # A declared list that is not a list of paths refuses too; it never falls back to the running list.
+    for pyproject in ('[project]\nname = "x"\n\n[tool.hermes]\nupdate-startup-files = ["hermes_constants.py", 42]\n',
+                      '[project\n'):
+        (tmp_path / "pyproject.toml").write_text(pyproject, encoding="utf-8")
+        assert commit.tree_syntax_error(tmp_path, running_list) == ("pyproject.toml", commit.INVALID_STARTUP_FILES)
+    # A pyproject whose tables have other types is read as declaring nothing, never a crash past the rollback.
+    (tmp_path / "pyproject.toml").write_text('project = 42\ntool = 42\n', encoding="utf-8")
+    assert commit.startup_files((tmp_path / "pyproject.toml").read_bytes(), running_list) == (tuple(running_list), False)
+    (tmp_path / "hermes_constants.py").write_text("def broken(:\n", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "broken source with non-table metadata")
+    refused = commit.target_syntax_error(["git"], tmp_path, "HEAD", running_list)
+    assert refused is not None and refused[0] == "hermes_constants.py"
+    with pytest.raises(SystemExit):
+        update_cmd._rollback_if_pulled_syntax_error(["git"], pre)
+    assert git("rev-parse", "HEAD") == pre
+
+
+def test_this_tree_declares_its_startup_files_and_has_every_one():
+    root = Path(update_cmd.__file__).resolve().parents[1]
+    declared, required = update_cmd_commit.startup_files((root / "pyproject.toml").read_bytes(), ())
+    assert required and declared
+    assert update_cmd_commit.tree_syntax_error(root, ()) is None
 
 
 def test_pull_rolls_back_broken_critical_file_and_accepts_corrected_retry(tmp_path, monkeypatch, capsys):
@@ -58,8 +98,8 @@ def test_pull_rolls_back_broken_critical_file_and_accepts_corrected_retry(tmp_pa
     previous = git("rev-parse", "HEAD")
     monkeypatch.setattr(main, "PROJECT_ROOT", tmp_path)
     assert update_cmd._capture_head_sha(["git"], tmp_path) == previous
-    # Missing critical files are legitimate after refactors, not syntax failures.
-    assert update_cmd._validate_critical_files_syntax(tmp_path) == (True, None, None)
+    # A tree that declares no startup files is judged by the running list, absent files skipped.
+    assert update_cmd_commit.tree_syntax_error(tmp_path, update_cmd._UPDATE_CRITICAL_FILES) is None
 
     source.write_text("<<<<<<< HEAD\n", encoding="utf-8")
     git("commit", "-am", "broken upstream")
@@ -184,7 +224,8 @@ def test_the_critical_inventory_covers_every_module_the_entry_paths_import_first
     entry = files(launcher) | files((root / "hermes_bootstrap.py").read_text(encoding="utf-8"))
     entry |= {"hermes_bootstrap.py", *RECOVERY_CLOSURE}
     assert "hermes_bootstrap.py" in entry and "hermes_cli/main.py" in entry
-    assert entry <= set(update_cmd._UPDATE_CRITICAL_FILES), sorted(entry - set(update_cmd._UPDATE_CRITICAL_FILES))
+    declared, _ = update_cmd_commit.startup_files((root / "pyproject.toml").read_bytes(), ())
+    assert entry <= set(declared), sorted(entry - set(declared))
 
 
 def test_a_malformed_bootstrap_is_refused_before_the_move(tmp_path):

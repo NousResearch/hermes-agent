@@ -121,7 +121,9 @@ CASES = {
     "ts package → frontend": (["apps/desktop/src/app.tsx"], _lanes(frontend=True)),
     "ui-tui → frontend": (["ui-tui/src/entry.ts"], _lanes(frontend=True)),
     # Lockfile bump shifts every TS package's tree, but not the Python suite.
-    "root lockfile → frontend, not python": (["package-lock.json"], _lanes(frontend=True, npm_lock=True, docker=True, nix=True)),
+    "root lockfile → frontend, not python": (["pnpm-lock.yaml"], _lanes(frontend=True, npm_lock=True, docker=True, nix=True)),
+    # The workspace config (overrides, release-age policy) shifts the same trees.
+    "workspace config → frontend, not python": (["pnpm-workspace.yaml"], _lanes(frontend=True, docker=True, nix=True)),
     "nested lockfile → npm_lock": (["website/package-lock.json"], _lanes(site=True, npm_lock=True)),
     # A website file the Python suite cannot read stays site-only.
     "website config → site": (["website/docusaurus.config.ts"], _lanes(site=True)),
@@ -141,6 +143,10 @@ CASES = {
     ),
     "gateway OpenRPC document → python + frontend": (
         ["apps/shared/src/gateway-contract.openrpc.json"],
+        _lanes(python=True, frontend=True, e2e_desktop_core=True),
+    ),
+    "control-socket vectors → python + frontend": (
+        ["apps/shared/src/node/control-socket.vectors.json"],
         _lanes(python=True, frontend=True, e2e_desktop_core=True),
     ),
     "desktop slash-registry JSON → python + frontend": (
@@ -172,6 +178,10 @@ CASES = {
     # skill edit must still run Python.
     "skill md → python + site": (["skills/github/SKILL.md"], _lanes(python=True, site=True)),
     "dockerfile → docker meta": (["Dockerfile"], _lanes(docker_meta=True)),
+    # The hadolint step runs it, so editing it alone must still run that step.
+    "docker lint script → docker meta, no image build": (
+        ["scripts/ci/lint_docker.sh"], _lanes(python=True, docker_meta=True, docker=False),
+    ),
     # Only the flake reads these, so they run nix alone. No Python test opens
     # them, unlike pyproject.toml and uv.lock below.
     "nix module → nix only": (["nix/homeManagerModules.nix"], _lanes(nix=True)),
@@ -208,6 +218,10 @@ CASES = {
     "updater ui.html → frontend + desktop_updater": (
         ["scripts/desktop-update/ui.html"],
         _lanes(python=True, frontend=True, desktop_updater=True, e2e_upgrade=True, e2e_desktop_update=True),
+    ),
+    # tests-js/desktop-build-cache-inputs.test.mjs checks the key owner against the Node graph.
+    "desktop cache key owner → python + frontend": (
+        ["scripts/ci/desktop_build_cache.py"], _lanes(python=True, frontend=True, scan=True),
     ),
     "desktop-update test → desktop_updater": (
         ["tests/scripts/desktop_update/test_desktop_update_windows_progress.py"],
@@ -269,6 +283,14 @@ CASES = {
     # .py/.pth payloads are what it scans for).
     "test runner script → python_prod stays on": (
         ["scripts/run_tests_parallel.py"],
+        _lanes(python=True, scan=True, e2e=True, e2e_upgrade=True),
+    ),
+    "runner launch module → same lanes as the runner": (
+        ["scripts/run_tests_launch.py"],
+        _lanes(python=True, scan=True, e2e=True, e2e_upgrade=True),
+    ),
+    "fork-server child → same lanes as the runner": (
+        ["scripts/run_tests_fork_child.py"],
         _lanes(python=True, scan=True, e2e=True, e2e_upgrade=True),
     ),
     # Supply-chain lanes
@@ -433,6 +455,8 @@ CASES = {
     ),
     # The rules README is mirrored by a docs-page test, so it keeps the suite.
     "catalog README → python": (["plugin-catalog/README.md"], _lanes(python=True)),
+    # Its code examples are held to the plugin API by a Python test.
+    "plugins AGENTS.md → python": (["plugins/AGENTS.md"], _lanes(python=True)),
     # Any code next to the entry brings the full suite back.
     "catalog entry + code → python and catalog": (
         ["plugin-catalog/foo.yaml", "agent/display.py"],
@@ -441,6 +465,9 @@ CASES = {
     # Fail open: CI-config / empty / blank diffs run everything.
     ".github change → all": ([".github/workflows/tests.yml"], DEFAULT),
     "action change → all": ([".github/actions/detect-changes/action.yml"], DEFAULT),
+    # Workflows call just recipes, so the recipes are CI config too.
+    "justfile change → all": (["justfile"], DEFAULT),
+    "recipe python wrapper → all": (["scripts/hermes-python"], DEFAULT),
     "empty diff → all": ([], DEFAULT),
     "blank lines → all": (["", "  "], DEFAULT),
 }
@@ -782,3 +809,24 @@ def test_catalog_lane_runs_every_test_that_reads_the_shipped_catalog():
     assert not any(f.startswith("tests/e2e/") for f in files)
     text = (_REPO / ".github/workflows/catalog-tests.yml").read_text(encoding="utf-8-sig")
     assert "scripts/ci/catalog_test_files.py" in text and "scripts/run_tests.sh" in text
+
+
+def test_a_rename_counts_under_its_old_path_too(monkeypatch, capsys):
+    """Moving a file out of a slow lane's tree must still start that lane."""
+    monkeypatch.setattr(_mod, "pull_request_labels", list)
+    monkeypatch.setattr(sys, "stdin", io.StringIO("docs/moved.md\tDockerfile\n"))
+    monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
+
+    assert main() == 0
+    assert classify(["Dockerfile"])["docker"] and "docker=true" in capsys.readouterr().out
+
+
+def test_a_list_at_the_compare_cap_runs_every_lane(monkeypatch, capsys):
+    """The compare API stops at 300 files without saying so; a docs-only first page must not skip lanes."""
+    monkeypatch.setattr(_mod, "pull_request_labels", list)
+    monkeypatch.setattr(sys, "stdin", io.StringIO("".join(f"docs/page{i}.md\n" for i in range(300))))
+    monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
+
+    assert main() == 0
+    out = capsys.readouterr().out
+    assert "python=true" in out and all(f"{lane}=true" in out for lane in SLOW_LANES)

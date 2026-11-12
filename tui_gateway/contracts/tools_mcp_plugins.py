@@ -425,6 +425,8 @@ class McpServerRuntimeRow(Result):
     status: McpRuntimeStatus
     source: McpServerSource
     plugin: str | None = None
+    # Parked on a rejected OAuth credential (older backends omit it).
+    needs_auth: bool = False
 
 
 class McpServersStatusResult(Result):
@@ -624,20 +626,23 @@ class PluginsAction(WireEnum):
     settings = "settings"
     onboarding = "onboarding"
     presence = "presence"
+    update_all = "update_all"
+    auto_update = "auto_update"
 
 
 class PluginsManageParams(ProfileParams):
     """``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name``
     (+ ``force``, ``enable``, ``ref``, ``inspected_sha`` = the commit ``inspect`` read: a custom source with no
     ``ref`` whose branch moved since is refused); ``inspect``: ``identifier``/``repo`` or ``catalog_name``;
-    ``install_desktop``: ``identifier``/``repo`` (https only) or ``catalog_name`` + ``ref`` (the commit
-    ``inspect`` read and the dialog showed; another commit is refused) (+ ``force``) — the desktop half onto
+    ``install_desktop``: ``identifier``/``repo`` (any source ``install`` takes) or ``catalog_name``, always
+    with ``ref`` (the commit ``inspect`` read and the dialog showed; another commit is refused) (+ ``force``) — the desktop half onto
     the host that serves this client; ``remove_desktop``: ``name``
     (+ ``force`` for a package's own half); ``update``: ``name`` (+ ``accept_capabilities`` to apply a re-pin
     that widened the plugin after the user confirmed the ``delta``, + ``force`` to apply an update whose
     security scan returned caution after the user saw the findings); ``remove``: ``name`` (user installs only);
     ``settings``: ``key`` + ``values`` (``{setting_key: value}``, non-secret schema keys only);
-    ``presence``: ``names`` (catalog names, answered in that order)."""
+    ``presence``: ``names`` (catalog names, answered in that order); ``update_all``: no fields;
+    ``auto_update``: ``enable`` to set ``plugins.auto_apply`` (omit to read it)."""
 
     action: PluginsAction = PluginsAction.list
     key: str | None = None
@@ -811,6 +816,27 @@ class PluginScanFinding(Result):
     description: str
 
 
+class PluginUpdateAllStatus(WireEnum):
+    updated = "updated"
+    current = "current"
+    failed = "failed"
+    needs_review = "needs_review"
+
+
+class PluginUpdateAllRow(Result):
+    """One plugin ``update_all`` tried. ``needs_review``: nothing changed because the update widens the
+    plugin or its scan returned caution; the plugin's own ``update`` walks that review."""
+
+    name: str
+    status: PluginUpdateAllStatus
+    detail: str = ""
+
+
+class PluginUpdateAllSkip(Result):
+    name: str
+    reason: str
+
+
 class PluginsManageResult(Result):
     """``list`` → ``plugins`` + counts; ``toggle`` → ``ok``/``unchanged``/``restart_required``/``name``
     (the canonical key written)/``plugin``; ``install`` → ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s
@@ -874,6 +900,14 @@ class PluginsManageResult(Result):
     path: str | None = None
     paired_with_agent: bool | None = None
     unpaired_from: str | None = None
+    # ``update_all`` → one row per plugin it tried, the ones it could not move (with why) and how many
+    # were already current.
+    results: list[PluginUpdateAllRow] | None = None
+    skipped: list[PluginUpdateAllSkip] | None = None
+    current: int | None = None
+    # ``auto_update`` → the profile's ``plugins.auto_apply`` and ``plugins.auto_update_check_hours``.
+    auto_apply: bool | None = None
+    check_hours: float | None = None
 
 
 method("plugins.manage", params=PluginsManageParams, result=PluginsManageResult,

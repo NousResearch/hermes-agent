@@ -1,0 +1,29 @@
+name: mflow
+title: mFlow
+repo: https://github.com/vladyslavpatrick/mflow-hermes
+sha: 9e6428e78413a0fd7b3afdbb29d5001378acad24
+description: >-
+  Manage mFlow (m-flow.io) from Hermes: boards and tasks, Knowledge Base/ADRs, and
+  coding-agent delegation. Portable Agent Plugins v1 package (mcp.json + skills/) with
+  no Python and nothing runs locally — it points Hermes at the hosted mFlow MCP server
+  (Streamable HTTP at https://mcp.m-flow.io/mcp) and ships a skill that teaches Hermes
+  how to use it (list_standalone_projects/tasks, create/update, create_comments,
+  knowledge docs incl. ADRs, assign_to_coding_agent). Disclosure — network calls go to
+  mcp.m-flow.io (mFlow's hosted MCP server); the plugin sends whatever board/task/KB
+  data the user asks the agent to read or write, and coding-agent requests send the
+  user's task text and, optionally, a public repo URL to mFlow's sandboxes. One auth
+  path is OAuth (Google sign-in, access tokens last 90 days, re-auth every 90 days);
+  the other is a future mFlow PAT via MFLOW_TOKEN (not yet shipped server-side — OAuth
+  is the working path today). No telemetry, no shell commands, nothing stored or run on
+  the host.
+maintainer: vladyslavpatrick
+tier: community
+category: tools
+docs_url: https://github.com/vladyslavpatrick/mflow-hermes#readme
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

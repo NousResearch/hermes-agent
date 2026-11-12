@@ -6,7 +6,7 @@
  * resolution fails with a controlled error message. The app should show the
  * BootFailureOverlay with retry/repair actions.
  *
- * Prerequisite: `npm run build` must have been run so dist/ exists.
+ * Prerequisite: `pnpm run build` must have been run so dist/ exists.
  */
 
 import { allowErrorBanners, test } from './test'

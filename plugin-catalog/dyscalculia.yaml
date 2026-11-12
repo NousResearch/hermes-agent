@@ -1,0 +1,18 @@
+name: dyscalculia
+title: Dyscalculia.io
+repo: https://github.com/Dyscalculia-io/dyscalculia-agent-plugin
+sha: a8083b1ba3667998025ed1bab15500ed8096ac35
+version: "1.0.0"
+description: "Cited dyscalculia statistics from dyscalculia.io through its hosted MCP server (Streamable HTTP at https://mcp.dyscalculia.io/mcp, no sign-in, no keys): prevalence figures by study and age, 93 references with DOI and PMID, chart datasets on persistence, math anxiety, interventions and comorbidity, and a description of the site's five-game screening test. Bundles one skill. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure: hosted-only connector with no local code; every tool call, with its arguments, goes to mcp.dyscalculia.io; no account or personal data is needed. All six tools are read-only and none scores a person. The tool set is served by the remote server at runtime and is not covered by the pinned sha."
+maintainer: Dyscalculia.io
+tier: community
+category: tools
+docs_url: https://github.com/Dyscalculia-io/dyscalculia-agent-plugin#readme
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

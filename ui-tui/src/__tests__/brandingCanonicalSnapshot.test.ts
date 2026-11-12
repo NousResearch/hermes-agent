@@ -1,13 +1,13 @@
 import { PassThrough } from 'stream'
 
 import { renderSync } from '@hermes/ink'
+import { canonicalResult } from '@hermes/shared/gateway-canonical'
+import type { SessionInfo } from '@hermes/shared/gateway-types'
 import React from 'react'
 import { describe, expect, it } from 'vitest'
 
-import { canonicalResult } from '../canonicalGateway.js'
 import { SessionPanel } from '../components/branding.js'
 import { DEFAULT_THEME } from '../theme.js'
-import type { SessionInfo } from '../types.js'
 
 // A canonical gateway's create/resume snapshot carries main's banner inventory
 // (gateway/session_local_inventory.py). The TUI renders main's banner from it

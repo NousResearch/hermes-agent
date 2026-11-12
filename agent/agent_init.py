@@ -38,7 +38,7 @@ from agent.agent_init_compression_notice import _emit_compression_summary
 from agent.primary_runtime_snapshot import _snapshot_primary_runtime
 from agent.process_bootstrap import _install_safe_stdio
 from agent.subdirectory_hints import SubdirectoryHintTracker
-from agent.agent_init_memory_provider import resolve_memory_provider
+from agent.agent_init_memory_provider import _memory_provider_init_kwargs, resolve_memory_provider
 from agent.think_scrubber import StreamingThinkScrubber
 from agent.tool_guardrails import (
     ToolCallGuardrailConfig, ToolCallGuardrailController
@@ -237,23 +237,6 @@ def _normalize_run_budget_seconds(value) -> Optional[float]:
         return None
     return seconds if seconds > 0 else None  # NaN compares False → None
 
-
-
-def _refuse_checkpoint_required_on_codex_app_server(
-    checkpoint_required: bool, api_mode: Optional[str]
-) -> None:
-    """Fail closed at init: the codex app-server compacts its own thread without a truthful
-    pre-compaction boundary (default "native" mode), so a required checkpoint can't be
-    guaranteed — the compress_context() guard alone cannot cover native turns."""
-    if checkpoint_required and api_mode == "codex_app_server":
-        raise RuntimeError(
-            "BLOCKED_MISSING_PREREQUISITE: compression.checkpoint_required "
-            "is incompatible with the codex_app_server API mode: the codex "
-            "agent compacts its own thread without a truthful pre-compaction "
-            "transcript boundary, so a required pre-compress checkpoint "
-            "cannot be guaranteed. Disable compression.checkpoint_required "
-            "or use a non-app-server API mode."
-        )
 
 
 def _parse_config_int(raw: Any, default: int) -> int:
@@ -507,7 +490,7 @@ _SESSION_STATE: dict[str, Any] = {
     "_session_messages": list,
     # Responses encrypted-reasoning replay. The first ``invalid_encrypted_content`` rejection only
     # strips the stale blobs (a rotated sealing key); a second one means the route cannot round-trip
-    # its own fresh blobs, so replay is disabled for the session (stateless continuity).
+    # its own fresh blobs, so replay is disabled until the route changes (stateless continuity).
     "_codex_reasoning_replay_enabled": True,
     "_codex_reasoning_replay_rejected": False,
     "_memory_write_origin": "assistant_tool",
@@ -560,7 +543,7 @@ _STREAM_STATE: dict[str, Any] = {
     "_stream_writer_token": 0,
     "_stream_writer_tls": threading.local,
     "_stream_writer_dropped": 0,
-    # Set once a strict endpoint 400/422s on ``stream_options``; later streams omit it (#9705).
+    # Set once a strict endpoint 400/422s on ``stream_options``; later streams on that route omit it (#9705).
     "_stream_options_unsupported": False,
     # API-facing user message override when it differs from the persisted transcript (voice).
     "_persist_user_message_idx": None,
@@ -1028,13 +1011,13 @@ def _load_tools(agent, enabled_toolsets, disabled_toolsets):
     agent._tool_snapshot_generation, agent._delegation_backend = _snapshot_registry._generation, saved_backend()
     import model_tools
     from agent.oneshot_footprint import agent_is_oneshot
-    from toolsets import agent_tool_surface, session_disabled_toolsets
+    from toolsets import agent_tool_surface, session_disabled_toolsets, tool_selection_key
     agent._configured_disabled_toolsets, disabled_toolsets = disabled_toolsets, session_disabled_toolsets(
         disabled_toolsets, getattr(agent, "platform", None), oneshot=agent_is_oneshot(agent))  # pin restore reads both
     agent.disabled_toolsets = disabled_toolsets  # so the tool_search bridge and delegate children drop them too
+    agent._tool_snapshot_selection = tool_selection_key(enabled_toolsets, disabled_toolsets)  # tools[] freeze gate
     agent.tools = agent_tool_surface(agent, model_tools.get_tool_definitions(
         enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets, quiet_mode=agent.quiet_mode) or [])
-
     agent.valid_tool_names = {tool["function"]["name"] for tool in agent.tools} if agent.tools else set()
     # Kanban guidance is session-static for the dispatcher-owned worker only. Profiles may
     # expose kanban_show interactively, and children/cron runs inherit the env var, without
@@ -1148,10 +1131,10 @@ def _apply_display_config(agent, _agent_cfg, platform):
             _model_section.get("lmstudio_load_mode"),
         )
 
-    # model.streaming=false seeds _disable_streaming (the loop's runtime fallback) for
-    # backends with broken streaming tool calls. Session-scoped; orthogonal to display.streaming.
+    # model.streaming=false seeds _disable_streaming (the loop's runtime fallback) for backends with broken
+    # streaming tool calls; a route change resets to this seed (route_verdicts). Orthogonal to display.streaming.
     _streaming = str(_model_section.get("streaming", "true")).strip().lower()
-    agent._disable_streaming = _streaming in {"false", "0", "no", "off"}
+    agent._disable_streaming = agent._disable_streaming_seed = _streaming in {"false", "0", "no", "off"}
     if not agent._disable_streaming and _streaming not in {"true", "1", "yes", "on"}:
         logger.warning(
             "Invalid model.streaming=%r; expected a boolean. Using streaming (default).",
@@ -1167,44 +1150,6 @@ def _apply_display_config(agent, _agent_cfg, platform):
         )
     except Exception as _tlg_err:
         _ra().logger.warning("Tool loop guardrail config ignored: %s", _tlg_err)
-
-
-def _memory_provider_init_kwargs(agent, platform) -> dict[str, Any]:
-    """Scoping kwargs for ``MemoryManager.initialize_all`` (status_callback is CLI-only:
-    gateway status travels a different path and the indicator no-ops without it)."""
-    kwargs = {
-        "session_id": agent.session_id,
-        "platform": platform or "cli",
-        "hermes_home": str(get_hermes_home()),
-        # platform="cron" (scheduler) / "subagent" (delegate_task) → providers skip writes (MemoryProvider.initialize).
-        "agent_context": platform if platform in ("cron", "subagent") else "primary",
-    }
-    if kwargs["platform"] == "cli":
-        kwargs["warning_callback"] = agent._emit_warning
-        kwargs["status_callback"] = agent._emit_status
-    # Session title (e.g. honcho derives chat-scoped session keys from it).
-    if agent._session_db:
-        with suppress(Exception):
-            _st = agent._session_db.get_session_title(agent.session_id)
-            if _st:
-                kwargs["session_title"] = _st
-                _source = agent._session_db.get_session_title_source(agent.session_id)
-                if _source:
-                    kwargs["session_title_source"] = _source
-    # Gateway user/chat identity for per-user scoping (gateway_session_key: stable per-chat
-    # Honcho session isolation).
-    for _ident in _GATEWAY_IDENTITY_PARAMS:
-        _val = getattr(agent, f"_{_ident}")
-        if _val:
-            kwargs[_ident] = _val
-    if agent.session_cwd:
-        kwargs["cwd"] = agent.session_cwd
-    # Profile identity for per-profile provider scoping
-    with suppress(Exception):
-        from hermes_cli.profiles import get_active_profile_name
-        kwargs["agent_identity"] = get_active_profile_name()
-        kwargs["agent_workspace"] = "hermes"
-    return kwargs
 
 
 def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
@@ -1241,6 +1186,11 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
             agent._memory_enabled, agent._user_profile_enabled = get_builtin_memory_store_flags(
                 _agent_cfg
             )
+            # A fork that holds the provider only for the checkpoint gate (memory_agent_context="subagent",
+            # skip_memory=False) keeps MEMORY.md/USER.md out of its prompt, as skip_memory=True did; a
+            # requested memory toolset still gets the store, exactly as with the gate off.
+            if getattr(agent, "memory_agent_context", None) == "subagent" and not _memory_toolset_requested:
+                agent._memory_enabled = agent._user_profile_enabled = False
             agent._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
             if agent._memory_enabled or agent._user_profile_enabled:
                 agent._memory_store = MemoryStore(
@@ -1440,9 +1390,8 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
     # legitimate "system prompt + summary + tail".
     protect_first = max(0, int(cfg.get("protect_first_n", 3)))
     checkpoint_required = is_truthy_value(cfg.get("checkpoint_required"), default=False)
-    _refuse_checkpoint_required_on_codex_app_server(
-        checkpoint_required, getattr(agent, "api_mode", None)
-    )
+    from agent.conversation_compression_checkpoint import _refuse_checkpoint_required_on_codex_app_server
+    _refuse_checkpoint_required_on_codex_app_server(checkpoint_required, getattr(agent, "api_mode", None))
     app_server_auto, responses_native, compact_threshold = _compression_codex_settings(cfg)
     # Opt-in idle compaction: compact up front when a session resumes after this many
     # seconds idle (0 = disabled). Consumed by build_turn_context().
@@ -2141,7 +2090,7 @@ def init_agent(
     checkpoint_max_snapshots: int = 20, checkpoint_max_total_size_mb: int = 500,
     checkpoint_max_file_size_mb: int = 10, pass_session_id: bool = False,
     requested_provider: str | None = None, capabilities: Optional[dict[str, bool]] = None, cwd: Optional[str] = None,
-    side_agent: bool = False, memory_manager=None,
+    side_agent: bool = False, memory_manager=None, memory_agent_context: str | None = None,
     tool_result_metadata_callback: Optional[Callable[..., dict]] = None,
 ):
     from agent.safe_worker_policy import safe_worker_enabled

@@ -16,7 +16,7 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 
 | Skill | Description | Path |
 |-------|-------------|------|
-| [`apple-notes`](../user-guide/skills/bundled/apple/apple-apple-notes.md) | Manage Apple Notes via memo CLI: create, search, edit. | `apple/apple-notes` |
+| [`apple-notes`](../user-guide/skills/bundled/apple/apple-apple-notes.md) | Read, search and write Apple Notes via memo + osascript. | `apple/apple-notes` |
 | [`apple-reminders`](../user-guide/skills/bundled/apple/apple-apple-reminders.md) | Apple Reminders via remindctl: add, list, complete. | `apple/apple-reminders` |
 | [`findmy`](../user-guide/skills/bundled/apple/apple-findmy.md) | Track Apple devices/AirTags via FindMy.app on macOS. | `apple/findmy` |
 | [`imessage`](../user-guide/skills/bundled/apple/apple-imessage.md) | Send and receive iMessages/SMS via the imsg CLI on macOS. | `apple/imessage` |

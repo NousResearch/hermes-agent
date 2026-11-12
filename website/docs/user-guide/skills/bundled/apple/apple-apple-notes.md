@@ -1,14 +1,14 @@
 ---
-title: "Apple Notes — Manage Apple Notes via memo CLI: create, search, edit"
+title: "Apple Notes — Read, search and write Apple Notes via memo + osascript"
 sidebar_label: "Apple Notes"
-description: "Manage Apple Notes via memo CLI: create, search, edit"
+description: "Read, search and write Apple Notes via memo + osascript"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Apple Notes
 
-Manage Apple Notes via memo CLI: create, search, edit.
+Read, search and write Apple Notes via memo + osascript.
 
 ## Skill metadata
 
@@ -16,7 +16,7 @@ Manage Apple Notes via memo CLI: create, search, edit.
 |---|---|
 | Source | Bundled (installed by default) |
 | Path | `skills/apple/apple-notes` |
-| Version | `1.0.1` |
+| Version | `1.1.0` |
 | Author | Hermes Agent |
 | License | MIT |
 | Platforms | macos |
@@ -31,20 +31,18 @@ The following is the complete skill definition that Hermes loads when this skill
 
 # Apple Notes
 
-Use `memo` to manage Apple Notes directly from the terminal. Notes sync across all Apple devices via iCloud.
+Read Apple Notes with `memo`, write them with `osascript`. Notes sync across all Apple devices via iCloud. Everything here runs non-interactively, so it works with no human at the keyboard.
 
 ## Prerequisites
 
 - **macOS** with Notes.app
 - Install: `brew tap antoniorodr/memo && brew install antoniorodr/memo/memo`
-- Grant Automation access to Notes.app when prompted (System Settings → Privacy → Automation)
+- The calling app needs macOS Automation permission for Notes (System Settings → Privacy & Security → Automation). `osascript` error `-1743` means it was denied.
 
 ## When to Use
 
-- User asks to create, view, or search Apple Notes
+- User asks to create, view, search, or update Apple Notes
 - Saving information to Notes.app for cross-device access
-- Organizing notes into folders
-- Exporting notes to Markdown/HTML
 
 ## When NOT to Use
 
@@ -52,59 +50,67 @@ Use `memo` to manage Apple Notes directly from the terminal. Notes sync across a
 - Bear Notes → separate app (not supported here)
 - Quick agent-only notes → use the `memory` tool instead
 
-## Quick Reference
-
-### View Notes
+## Reading (memo, non-interactive)
 
 ```bash
-memo notes                        # List all notes
-memo notes -f "Folder Name"       # Filter by folder
-memo notes -s "query"             # Search notes (fuzzy)
+memo notes                        # List: lines look like "N. Folder - Title"
+memo notes -fl                    # List folders
+memo notes -f "Folder Name"       # Filter by folder (N is the same global number)
+memo notes -v N                   # Print note N as Markdown
+memo notes -nc                    # List bypassing memo's cache (use after writes)
 ```
 
-### Create Notes
+To search, filter the list in `terminal` (`memo notes -nc | grep -i "query"`), or use `osascript` for body text.
+
+`memo notes -v N` garbles double quotes (Notes stores `&quot` without the semicolon and memo's converter mangles it). For an exact read use `plaintext` (below).
+
+## Writing and exact reads (osascript)
+
+Pass data to `osascript` as `argv`, never interpolated into the script, so quotes, links, `&` and hostile text are stored literally and nothing is executed. `folder (item 1 of argv)` picks the first match if two accounts (iCloud, On My Mac) have a folder with that name; when ambiguous, name the account in the script: `folder "X" of account "iCloud"`. Identify notes by id (an `x-coredata://...` string), not list number: numbers shift after writes.
 
 ```bash
-memo notes -a                     # Add a note (opens your $EDITOR)
-memo notes -a -f "Folder Name"    # Add a note into a specific folder
+# Get id by folder + title
+osascript -e 'on run argv
+tell application "Notes" to return id of first note of folder (item 1 of argv) whose name is (item 2 of argv)
+end run' "$FOLDER" "$TITLE"
+
+# Create; prints the new id
+osascript -e 'on run argv
+tell application "Notes" to return id of (make new note at folder (item 1 of argv) with properties {body:(item 2 of argv)})
+end run' "$FOLDER" "$HTML"
+
+# Exact read
+osascript -e 'on run argv
+tell application "Notes" to return plaintext of (first note whose id is (item 1 of argv))
+end run' "$ID"
+
+# Replace body
+osascript -e 'on run argv
+tell application "Notes" to set body of (first note whose id is (item 1 of argv)) to (item 2 of argv)
+end run' "$ID" "$HTML"
+
+# Delete (goes to Recently Deleted)
+osascript -e 'on run argv
+tell application "Notes" to delete (first note whose id is (item 1 of argv))
+end run' "$ID"
 ```
 
-`-a`/`--add` is a bare flag — it opens your `$EDITOR` to compose the note; it does
-not take a title argument. Use `-f/--folder` to target a folder. Set `$EDITOR`
-first (e.g. `export EDITOR=vim`).
-
-### Edit Notes
+The body is HTML and the note title is its first line (an `<h1>` works). Write simple HTML directly, or convert Markdown with the `mistune` already in memo's venv:
 
 ```bash
-memo notes -e                     # Interactive selection to edit
+HTML=$("$(brew --prefix memo)/libexec/bin/python" -c 'import sys,mistune;print(mistune.markdown(open(sys.argv[1]).read()))' note.md)
 ```
 
-### Delete Notes
+Setting `body` replaces the whole note, and attachments/images are lost. To edit, read the note first, then write the full new body.
 
-```bash
-memo notes -d                     # Interactive selection to delete
-```
+## Do not use
 
-### Move Notes
-
-```bash
-memo notes -m                     # Move note to folder (interactive)
-```
-
-### Export Notes
-
-```bash
-memo notes -ex                    # Export to HTML/Markdown
-```
-
-## Limitations
-
-- Cannot edit notes containing images or attachments
-- Interactive prompts require terminal access (use pty=true if needed)
-- macOS only — requires Apple Notes.app
+- `memo notes -s` launches fzf (interactive).
+- `memo notes -a`, `-e`, `-d`, `-m`, `-r`, `-ex`: they open `$EDITOR` or prompt on stdin for the note number. `-a`/`-e` also paste the Markdown→HTML into an AppleScript string with no escaping, so any `"` (e.g. a link's href) fails with `syntax error ... (-2741)`, and crafted text can inject AppleScript, including `do shell script`.
 
 ## Rules
 
-1. Prefer Apple Notes when user wants cross-device sync (iPhone/iPad/Mac)
-2. Use the `memory` tool for agent-internal notes that don't need to sync
-3. Use the `obsidian` skill for Markdown-native knowledge management
+1. Confirm with the user before deleting a note or overwriting a note's body.
+2. Don't open or read notes in folders whose names suggest secrets (API Keys, Backup Codes, Passwords, ...) unless the user asks for that note specifically.
+3. After any write, re-list with `memo notes -nc` or re-read by id to verify.
+4. Prefer Apple Notes when the user wants cross-device sync; use the `memory` tool for agent-internal notes and the `obsidian` skill for Markdown-native knowledge management.

@@ -1,24 +1,25 @@
 name: sharelet
 title: Sharelet
 repo: https://github.com/TANGBUDU/sharelet
-sha: 06e58ce218f3a684e4fa6cfdfbbc654142e55a8e
-version: "0.5.1"
+sha: d9e62e06dc08e3b8e4351c2625b6daaf96fe2764
+version: "0.5.2"
 requires_hermes: ">=0.23.0"
-description: "Share a Hermes tool as a link anyone can use in a browser. Pick a tool on the local creator page, create the link and send it: the guest needs no Hermes, account or API key, and the tool keeps running on your computer. Each link has a run limit and an expiry and can be closed at any time; guests can change only the inputs you leave open, and a tool that is not marked read-only needs a separate confirmation for every share. Links stay the same across restarts and tunnel reconnects. Works with native Hermes plugin tools and MCP servers you allow. Disclosure — while enabled it serves the creator page and guest pages on 127.0.0.1; for public links it downloads cloudflared from Cloudflare's official GitHub release (SHA-256 checked) and runs it as a background process that exposes the guest port only; it reports a random host ID, a secret and the current tunnel address to a link relay (relay_url, default run by the author, never receives link tokens; set it to an empty string to turn it off); it runs each shared tool through Hermes with guest inputs; it writes links, run records, results and its signing keys to its own data folder. The optional built-in image recipes are off until set up and then call api.openai.com with a key entered in Sharelet (stored in its data folder) or the host's OPENAI_API_KEY. No telemetry, no self-update."
+description: "Share a Hermes tool as a link anyone can use in a browser. Pick a tool on the local creator page, create the link and send it: guests need no Hermes, account or API key, and the tool runs on your computer. Links have a run limit, expiry and off switch; guests can change only the inputs you leave open. Tools without a read-only hint need a separate confirmation for each share. Works with explicitly allowed native Hermes plugin tools and MCP servers. Default links use a temporary tunnel address; stable links require your own relay or fixed public_origin. Disclosure — while enabled it serves creator and guest pages on 127.0.0.1. For public links it downloads cloudflared 2026.10.7 from exact official release URLs, verifies hard-coded target SHA-256 pins (and managed cached binaries), then runs it in the background for the guest port only. Relay routing is off by default, with no author endpoint configured. Only an explicitly set relay_url receives a random host ID, relay secret and current tunnel address; that relay serves trusted landing-page JavaScript, so operate it yourself. Shared tools run through Hermes with guest inputs. Links, run records, results and signing keys stay in the plugin's data folder. Optional image recipes are off until enabled and call api.openai.com using a workspace key or an explicitly enabled Hermes-profile OPENAI_API_KEY via agent.secret_scope.get_secret. No telemetry or self-update."
 maintainer: TANGBUDU
 tier: community
 category: tools
-docs_url: https://github.com/TANGBUDU/sharelet/tree/06e58ce218f3a684e4fa6cfdfbbc654142e55a8e#readme
+docs_url: https://github.com/TANGBUDU/sharelet/tree/d9e62e06dc08e3b8e4351c2625b6daaf96fe2764#readme
 screenshots:
-  - https://raw.githubusercontent.com/TANGBUDU/sharelet/06e58ce218f3a684e4fa6cfdfbbc654142e55a8e/docs/creator.png
-  - https://raw.githubusercontent.com/TANGBUDU/sharelet/06e58ce218f3a684e4fa6cfdfbbc654142e55a8e/docs/guest-weather.png
+  - https://raw.githubusercontent.com/TANGBUDU/sharelet/d9e62e06dc08e3b8e4351c2625b6daaf96fe2764/docs/creator.png
+  - https://raw.githubusercontent.com/TANGBUDU/sharelet/d9e62e06dc08e3b8e4351c2625b6daaf96fe2764/docs/guest-weather.png
 readme: true
 platforms: [windows, linux]
 known_issues:
-  - "Public links depend on a Cloudflare quick tunnel and, for stable addresses, on the link relay; while your computer is off, guests see an offline page."
+  - "Your computer must stay online. Raw tunnel addresses change after reconnects; stable addresses require an explicitly configured self-hosted relay or fixed public_origin."
   - "Shared tools run with your Hermes setup. Review each tool's output and costs before sharing; anyone holding a link can use its runs."
+  - "Windows ARM64 selects the official Windows AMD64 cloudflared asset using Windows 11 x64 emulation; upstream provides no native ARM64 Windows binary for this pin. This path is not ARM64 hardware-tested."
 capabilities:
   provides_tools: [sharelet_status]
   provides_hooks: []
   provides_middleware: []
-  requires_env: []
+  requires_env: [OPENAI_API_KEY]

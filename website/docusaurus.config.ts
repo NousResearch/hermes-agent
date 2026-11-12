@@ -42,8 +42,6 @@ const config: Config = {
   ],
 
   plugins: [
-    // Static /plugins/<name> and /plugins/by/<author> pages generated from the catalog JSON.
-    './plugins/plugin-catalog-pages',
     [
       '@docusaurus/plugin-client-redirects',
       {
@@ -137,13 +135,8 @@ const config: Config = {
           label: 'Docs',
         },
         {
-          to: '/skills',
-          label: 'Skills',
-          position: 'left',
-        },
-        {
-          to: '/plugins',
-          label: 'Plugins',
+          href: 'https://hermes-agent.nousresearch.com/marketplace',
+          label: 'Marketplace',
           position: 'left',
         },
         {

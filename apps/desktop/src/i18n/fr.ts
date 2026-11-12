@@ -2619,11 +2619,6 @@ export const frOverrides = {
       openLog: 'Ouvrir le journal',
       actionLog: "Journal d'action",
       alreadyInstalled: name => `« ${name} » est déjà installé`,
-      pickerTitle: 'Hub de skills',
-      pickerBrowse: 'Parcourir tout le hub',
-      pickerHide: 'Masquer le navigateur du hub',
-      pickerHint:
-        'Cliquez sur « + Ajouter à cet agent » pour installer un skill : il apparaîtra ensuite dans la liste ci-dessus.',
       loadFailed: 'Échec du chargement du hub de skills',
       previewFailed: "Échec de l'aperçu du skill",
       scanFailed: 'Échec du scan de sécurité',

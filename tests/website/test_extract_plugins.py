@@ -1,6 +1,6 @@
 """Tests for website/scripts/extract-plugins.py.
 
-Behavioral contracts for the /docs/plugins catalog extractor:
+Behavioral contracts for the plugin catalog feed extractor:
 
 1. Reads ``plugin-catalog/*.yaml`` entries (skipping ``removed.yaml``) and
    emits ``plugins.json`` rows carrying name/repo/sha/tier/capabilities plus
@@ -147,7 +147,7 @@ def test_version_and_image_are_emitted_and_offhost_image_is_dropped_not_fatal(mo
 def test_page_fields_screenshots_readme_url_and_maintainer_slug(mod, tmp_path):
     """Detail-page inputs: screenshots follow the image host rule (off-host dropped, never fatal), readme
     resolves to the raw README at the PINNED sha (GitHub and GitLab, subdir-aware) BY DEFAULT, is off for
-    other forges or `readme: false`, and the maintainer slug is what /docs/plugins/by/<slug> is generated from."""
+    other forges or `readme: false`, and the maintainer slug is what /marketplace/by/<slug> is built from."""
     catalog = tmp_path / "plugin-catalog"
     catalog.mkdir()
     shot = "https://raw.githubusercontent.com/owner/repo/38fe0fb53eff98d477f807432e965429e665ca33/docs/1.png"

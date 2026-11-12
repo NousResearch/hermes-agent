@@ -17,13 +17,13 @@ See also:
 - [Bundled Skills Catalog](../../reference/skills-catalog.md)
 - [Official Optional Skills Catalog](../../reference/optional-skills-catalog.md)
 
-## Install from the website
+## Desktop install links {#install-from-the-website}
 
-Each installable card on the public [Skills Hub](/skills) has an **Install in Hermes**
-button. It opens Hermes Desktop with a URL-encoded, source-qualified skill target:
-`official/...` for optional skills, `clawhub/...` for ClawHub, and an explicit
-repository path for bundled skills rather than an ambiguous bare name. The card's
-CLI command uses the same target:
+Skill cards on the [Hermes Marketplace](https://hermes-agent.nousresearch.com/marketplace) have an **Install in Hermes**
+button that opens one of these links. Hermes Desktop accepts install links with a URL-encoded, source-qualified skill
+target: `official/...` for optional skills, `clawhub/...` for ClawHub, and an
+explicit repository path for bundled skills rather than an ambiguous bare name.
+Use the same target with `hermes skills install <identifier>`:
 
 ```text
 hermes://skill/install?identifier=official%2Fsecurity%2F1password
@@ -38,7 +38,8 @@ confirmation is open, reopen the link for the new destination; a link cannot byp
 scanning or pick a different profile. Open conversations are told about the new skill on their next message.
 
 The `skill/install` route needs an updated Desktop build. If the app is missing or
-does not recognize the link, expand the card and copy its CLI install command.
+does not recognize the link, run `hermes skills install <identifier>` with the
+same source-qualified target.
 
 ## Starting with a blank slate
 
@@ -823,7 +824,7 @@ hermes skills tap add myorg/skills-repo
 [skills.sh schema](https://skills.sh/schemas/skills.sh.schema.json). Its
 `groupings` (each with a `title` and a list of skill names) are read at index
 time and become the category labels shown in the
-[Skills Hub](https://hermes-agent.nousresearch.com/docs) page — instead of a
+[Hermes Marketplace](https://hermes-agent.nousresearch.com/marketplace) — instead of a
 tag-derived guess. This is generic: any tap that ships the file gets real
 categorization, no Hermes-side changes required.
 

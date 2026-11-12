@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Extract plugin-catalog entries into website/static/api/plugins.json.
 
-Feeds the Plugin Catalog page at /docs/plugins (website/src/pages/plugins/).
+Feeds /docs/api/plugins.json, which the Hermes Marketplace, Desktop and the CLI read.
 
 Data source: ``plugin-catalog/*.yaml`` at the repo root — one YAML file per
 catalog entry (see plugin-catalog/README.md for the entry schema), plus
@@ -78,7 +78,7 @@ def _cosmetic(value, accept, file_name: str, entry: str, key: str) -> str:
 
 
 def maintainer_slug(maintainer: str) -> str:
-    """URL segment for the author page (/docs/plugins/by/<slug>); shared by every entry of one maintainer."""
+    """URL segment for the Marketplace author page (/marketplace/by/<slug>); shared by every entry of one maintainer."""
     return _SLUG_RE.sub("-", maintainer.strip().lower()).strip("-") or "unknown"
 
 

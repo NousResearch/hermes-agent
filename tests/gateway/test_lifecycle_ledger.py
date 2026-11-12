@@ -10,10 +10,14 @@ and enriches the report with the last heartbeat's memory sample.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
+import time
+from datetime import UTC, datetime
 from pathlib import Path
 
+import psutil
 import pytest
 
 from gateway.lifecycle_ledger import (
@@ -118,6 +122,63 @@ def test_running_sentinel_from_dead_pid_is_unclean(tmp_path: Path) -> None:
     assert evidence is not None
     assert evidence["prior_pid"] == _DEAD_PID
     assert evidence["prior_started_at"] == "2026-07-11T04:30:00+00:00"
+
+
+def _heartbeat_at(home: Path, epoch: float) -> None:
+    from gateway.shutdown_watchdog import get_loop_heartbeat_path
+
+    hb_path = get_loop_heartbeat_path(home)
+    hb_path.parent.mkdir(parents=True, exist_ok=True)
+    hb_path.write_text(json.dumps({
+        "pid": _DEAD_PID, "updated_at": datetime.fromtimestamp(epoch, UTC).isoformat(),
+    }), encoding="utf-8")
+
+
+def test_death_by_host_reboot_is_reported_as_a_reboot(tmp_path: Path, caplog) -> None:
+    """No exit path runs when the OS restarts (a Windows gateway ignores console controls on
+    purpose), so a last heartbeat older than this boot means the host went down, not that the
+    process was SIGKILLed or taskkilled by the agent."""
+    before_boot = psutil.boot_time() - 300
+    _write_sentinel(tmp_path, {
+        "phase": "running", "pid": _DEAD_PID, "start_time": before_boot - 3600,
+        "started_at": datetime.fromtimestamp(before_boot - 3600, UTC).isoformat(),
+    })
+    _heartbeat_at(tmp_path, before_boot)
+
+    with caplog.at_level(logging.WARNING, logger="gateway.lifecycle_ledger"):
+        evidence = record_startup(home=tmp_path)
+
+    assert evidence is not None and evidence.get("host_rebooted") is True
+    assert _exit_diag_records(tmp_path)[0]["host_rebooted"] is True
+    assert "host rebooted" in caplog.text
+    assert "SIGKILL" not in caplog.text
+
+
+def test_reboot_before_first_heartbeat_uses_sentinel_claim(tmp_path: Path) -> None:
+    """Without a heartbeat, the sentinel claim is the last proof of life."""
+    claimed_at = psutil.boot_time() - 30
+    _write_sentinel(tmp_path, {
+        "phase": "running", "pid": _DEAD_PID, "start_time": claimed_at,
+        "started_at": datetime.fromtimestamp(claimed_at, UTC).isoformat(),
+    })
+
+    evidence = detect_unclean_exit(home=tmp_path)
+    assert evidence is not None
+    assert "last_heartbeat_at" not in evidence
+    assert evidence.get("host_rebooted") is True
+
+
+def test_life_killed_in_this_boot_before_its_first_heartbeat_is_not_a_reboot(tmp_path: Path) -> None:
+    """The heartbeat file outlives its writer: a life claimed in this boot and killed before its
+    first beat still finds the previous boot's heartbeat, which must not read as a reboot."""
+    _write_sentinel(tmp_path, {
+        "phase": "running", "pid": _DEAD_PID, "start_time": time.time(), "started_at": "x",
+    })
+    _heartbeat_at(tmp_path, psutil.boot_time() - 300)
+
+    evidence = detect_unclean_exit(home=tmp_path)
+    assert evidence is not None
+    assert "host_rebooted" not in evidence
 
 
 def test_record_startup_persists_unclean_report_and_reclaims(tmp_path: Path) -> None:

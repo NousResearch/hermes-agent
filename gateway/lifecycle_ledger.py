@@ -153,6 +153,10 @@ def _suspected_oom(mem: dict[str, Any]) -> bool:
     )
 
 
+# Wall-clock jitter allowed between the last proof of life and ``psutil.boot_time()``.
+_REBOOT_SLACK_S = 5.0
+
+
 def detect_unclean_exit(home: Optional[Path] = None) -> Optional[dict[str, Any]]:
     """Evidence dict when the previous life died uncleanly, else ``None``. Read-only."""
     sentinel = _read_json(get_lifecycle_sentinel_path(home))
@@ -185,7 +189,35 @@ def detect_unclean_exit(home: Optional[Path] = None) -> Optional[dict[str, Any]]
         evidence["last_heartbeat_mem"] = mem
         if _suspected_oom(mem):
             evidence["suspected_oom"] = True
+    if _died_before_this_boot(hb.get("updated_at"), sentinel.get("start_time")):
+        evidence["host_rebooted"] = True
     return evidence
+
+
+def _died_before_this_boot(last_heartbeat_at: Any, claimed_at: Any) -> bool:
+    """True when the previous life's last proof of life predates this host boot: the OS went
+    down under it (restart, shutdown, power loss), where no exit path runs. A Windows gateway
+    ignores console controls on purpose, so every OS restart lands here. The later of heartbeat
+    and claim counts: the heartbeat file outlives its writer, so a life killed before its first
+    beat must not read an earlier life's heartbeat as its own."""
+    proofs: list[float] = []
+    if isinstance(last_heartbeat_at, str):
+        try:
+            proofs.append(datetime.fromisoformat(last_heartbeat_at).timestamp())
+        except (ValueError, OverflowError, OSError):
+            pass
+    if type(claimed_at) in (int, float):
+        proofs.append(float(claimed_at))
+    if not proofs:
+        return False
+    try:
+        import psutil
+
+        boot = float(psutil.boot_time())
+    except Exception:
+        logger.debug("Boot time unreadable; host-reboot check skipped", exc_info=True)
+        return False
+    return boot > max(proofs) + _REBOOT_SLACK_S
 
 
 # Startup-watchdog lease held while the unclean-exit integrity check runs (#115542):
@@ -309,6 +341,15 @@ def _report_unclean_exit(evidence: dict[str, Any], home: Optional[Path], *, defe
                 verdict,
             )
     _append_exit_diag({"ts": _now_iso(), "tag": "gateway.previous_unclean_exit", "pid": os.getpid(), **evidence}, home)
+    if evidence.get("host_rebooted"):
+        logger.warning(
+            "Previous gateway life (pid=%s, started_at=%s) was last alive before this host boot: the host "
+            "rebooted after its last heartbeat (OS restart, shutdown or power loss run no exit path), unless "
+            "it had already died. last_heartbeat_at=%s last_mem=%s suspected_oom=%s",
+            evidence.get("prior_pid"), evidence.get("prior_started_at"), evidence.get("last_heartbeat_at"),
+            evidence.get("last_heartbeat_mem"), evidence.get("suspected_oom", False),
+        )
+        return
     logger.warning(
         "Previous gateway life (pid=%s, started_at=%s) exited UNCLEANLY (no exit path ran — SIGKILL / OOM / "
         "VM death, or a process kill issued by the agent or one of its descendants, e.g. a pkill/taskkill of "

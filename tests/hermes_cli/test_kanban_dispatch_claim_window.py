@@ -14,6 +14,7 @@ import pytest
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_db_default_assignee as kbda
 from hermes_cli import kanban_db_dispatch as kbd
 
 
@@ -73,7 +74,7 @@ def test_reassign_before_default_fill_does_not_log_phantom_assignment(
     spawned_as: list[str] = []
     with kbc.connect() as conn:
         tid = kb.create_task(conn, title="unassigned", assignee=None)
-        real_apply = kbd._apply_default_assignee
+        real_apply = kbda.apply_default_assignee
 
         def assign_before_default(c, task_id, assignee, *, dry_run):
             # The operator assigns the card after the tick read it as unassigned.
@@ -81,7 +82,7 @@ def test_reassign_before_default_fill_does_not_log_phantom_assignment(
                 kb.assign_task(other, task_id, "worker-b")
             return real_apply(c, task_id, assignee, dry_run=dry_run)
 
-        monkeypatch.setattr(kbd, "_apply_default_assignee", assign_before_default)
+        monkeypatch.setattr(kbda, "apply_default_assignee", assign_before_default)
         res = kbd.dispatch_once(
             conn, default_assignee="worker-a",
             spawn_fn=lambda task, _ws: spawned_as.append(task.assignee) or 4242,

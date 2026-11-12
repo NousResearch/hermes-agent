@@ -2176,40 +2176,6 @@ def _dispatch_lane_task(
         return False
 
 
-def _apply_default_assignee(
-    conn: sqlite3.Connection, task_id: str, assignee: str, *, dry_run: bool,
-) -> bool:
-    """Persist ``kanban.default_assignee`` on an unassigned ready row.
-
-    Mutating the row keeps board state honest: the task is legitimately owned
-    by the default, not "unassigned but secretly routed". ``dry_run`` reports
-    without writing. Returns False when the write failed.
-    """
-    if dry_run:
-        return True
-    try:
-        with _kb.write_txn(conn):
-            updated = conn.execute(
-                "UPDATE tasks SET assignee = ? WHERE id = ? "
-                "AND (assignee IS NULL OR assignee = '')",
-                (assignee, task_id),
-            )
-            if updated.rowcount != 1:
-                # The card was assigned after the tick's read; do not log a phantom assignment.
-                return False
-            _kb._append_event(
-                conn, task_id, "assigned",
-                {"assignee": assignee, "source": "kanban.default_assignee"},
-            )
-    except Exception:
-        _kb._log.debug(
-            "kanban dispatch: failed to apply default_assignee=%r to task %s",
-            assignee, task_id, exc_info=True,
-        )
-        return False
-    return True
-
-
 def _run_reclaim_phase(
     conn: sqlite3.Connection,
     result: DispatchResult,
@@ -2432,23 +2398,9 @@ def _dispatch_once_locked(
             break
         row_assignee = row["assignee"]
         if not row_assignee:
-            # Honour kanban.default_assignee so an unassigned task doesn't
-            # park in 'ready' forever.
-            if not default_assignee:
-                result.skipped_unassigned.append(row["id"])
+            row_assignee = _kbda.fill_default_assignee(conn, row["id"], default_assignee, result, dry_run=dry_run)
+            if not row_assignee:
                 continue
-            if not _apply_default_assignee(
-                conn, row["id"], default_assignee, dry_run=dry_run,
-            ):
-                # A concurrent assign may have won: defer its gates to the next tick.
-                current = conn.execute(
-                    "SELECT assignee FROM tasks WHERE id = ?", (row["id"],),
-                ).fetchone()
-                if current is None or not current["assignee"]:
-                    result.skipped_unassigned.append(row["id"])
-                continue
-            row_assignee = default_assignee
-            result.auto_assigned_default.append(row["id"])
         if _dispatch_lane_task(conn, row, row_assignee, result, lane="ready", **lane_kwargs):
             spawned += 1
 
@@ -2952,4 +2904,5 @@ def run_daemon(
 # module is fully populated before ``kanban_db`` imports from it.
 from hermes_cli import kanban_db as _kb
 from hermes_cli import kanban_db_connect as _kbc
+from hermes_cli import kanban_db_default_assignee as _kbda
 from hermes_cli import kanban_db_workspace as _kbw

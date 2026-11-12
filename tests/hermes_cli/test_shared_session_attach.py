@@ -29,7 +29,8 @@ def test_discovery_uses_exact_profile_and_owner_handshake(tmp_path):
             params = parse_qs(urlsplit(self.path).query)
             proof = hmac_mod.new(
                 lease.lease_id.encode(),
-                f"hermes-session-attach:{params['session_id'][0]}:{params['nonce'][0]}".encode(),
+                (f"hermes-session-attach:{params['session_id'][0]}:{params['nonce'][0]}:"
+                 f"{reply['profile_home']}:{reply['websocket_url']}").encode(),
                 hashlib.sha256,
             ).hexdigest()
             payload = json.dumps(
@@ -213,7 +214,8 @@ def test_the_request_never_discloses_the_lease_id(tmp_path):
             params = parse_qs(urlsplit(self.path).query)
             proof = hmac_mod.new(
                 lease.lease_id.encode(),
-                f"hermes-session-attach:{params['session_id'][0]}:{params['nonce'][0]}".encode(),
+                (f"hermes-session-attach:{params['session_id'][0]}:{params['nonce'][0]}:"
+                 f"{reply['profile_home']}:{reply['websocket_url']}").encode(),
                 hashlib.sha256,
             ).hexdigest()
             body = json.dumps({
@@ -325,9 +327,9 @@ def test_e2e_launch_tui_exits_cleanly_against_a_rogue_listener(tmp_path, monkeyp
         thread.join()
 
 
-def test_registry_entries_are_written_owner_only(tmp_path):
+def test_registry_entries_are_never_readable_by_other_users(tmp_path):
     """The registry carries the lease ids that key the attach MACs, so every
-    write must leave the file and its directory unreadable to other users."""
+    write must leave the file and its directory closed to other users."""
     if os.name != "posix":
         pytest.skip("POSIX file modes only")
     from hermes_cli.active_sessions import _read_entries, _write_entries
@@ -338,20 +340,131 @@ def test_registry_entries_are_written_owner_only(tmp_path):
     assert error is None
     try:
         registry = tmp_path / "runtime" / "active_sessions.json"
-        assert stat.S_IMODE(os.stat(registry).st_mode) == 0o600
-        assert stat.S_IMODE(os.stat(registry.parent).st_mode) == 0o700
+        assert stat.S_IMODE(os.stat(registry).st_mode) & 0o007 == 0
+        assert stat.S_IMODE(os.stat(registry.parent).st_mode) & 0o007 == 0
         # An already-loose registry is tightened again on the next write.
         os.chmod(registry, 0o644)
-        _write_entries(registry, _read_entries(registry))
-        assert stat.S_IMODE(os.stat(registry).st_mode) == 0o600
+        _write_entries(registry, _read_entries(registry, strict=True))
+        assert stat.S_IMODE(os.stat(registry).st_mode) & 0o007 == 0
     finally:
         lease.release()
+
+
+def test_a_loose_registry_is_closed_on_read_without_a_write(tmp_path):
+    """Attach discovery only reads: a registry an older build left world-readable
+    must not stay readable until some later acquire/release rewrites it."""
+    if os.name != "posix":
+        pytest.skip("POSIX file modes only")
+    from hermes_cli.active_sessions import active_session_registry_snapshot
+
+    lease, error = try_acquire_active_session(
+        session_id="old-build", surface="desktop", config={}, registry_home=tmp_path,
+    )
+    assert error is None
+    try:
+        registry = tmp_path / "runtime" / "active_sessions.json"
+        os.chmod(registry, 0o644)
+        os.chmod(registry.parent, 0o755)
+        assert active_session_registry_snapshot(tmp_path)[0]["lease_id"] == lease.lease_id
+        assert stat.S_IMODE(os.stat(registry).st_mode) == 0o640
+        assert stat.S_IMODE(os.stat(registry.parent).st_mode) == 0o750
+    finally:
+        lease.release()
+
+
+def test_shared_group_home_keeps_group_access_and_setgid(tmp_path):
+    """The NixOS module runs Hermes with UMask 0007 under a setgid 2770 HERMES_HOME so
+    hermes-group users share session fencing. Hardening against other users must only
+    strip the 'other' bits: squashing to owner-only locks group members out of
+    active_sessions.lock, and their CLI/gateway then run with no lease at all."""
+    if os.name != "posix":
+        pytest.skip("POSIX file modes only")
+    home = tmp_path / "shared"
+    home.mkdir()
+    os.chmod(home, 0o2770)
+    previous = os.umask(0o007)
+    try:
+        lease, error = try_acquire_active_session(
+            session_id="team", surface="cli", config={}, registry_home=home,
+        )
+    finally:
+        os.umask(previous)
+    assert error is None
+    try:
+        runtime = home / "runtime"
+        registry = runtime / "active_sessions.json"
+        runtime_mode = os.stat(runtime).st_mode
+        registry_mode = stat.S_IMODE(os.stat(registry).st_mode)
+        assert runtime_mode & stat.S_ISGID
+        assert stat.S_IMODE(runtime_mode) & 0o070 == 0o070
+        assert stat.S_IMODE(runtime_mode) & 0o007 == 0
+        assert registry_mode & 0o060 == 0o060
+        assert registry_mode & 0o007 == 0
+    finally:
+        lease.release()
+
+
+def test_discovery_refuses_a_relay_that_swaps_the_websocket(tmp_path):
+    """The proof covers the returned socket: a relay that obtained a genuine
+    proof from the owner cannot substitute its own websocket_url."""
+    import hashlib
+    import hmac as hmac_mod
+    from urllib.parse import parse_qs, urlsplit
+
+    from hermes_cli.shared_session_attach import discover_attach_url
+
+    home = tmp_path / "profile"
+    swap = {"on": False}
+
+    class RelayHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            params = parse_qs(urlsplit(self.path).query)
+            port = self.server.server_port
+            genuine = f"ws://127.0.0.1:{port}/api/ws?token=real"
+            proof = hmac_mod.new(
+                lease.lease_id.encode(),
+                (f"hermes-session-attach:{params['session_id'][0]}:{params['nonce'][0]}:"
+                 f"{params['profile_home'][0]}:{genuine}").encode(),
+                hashlib.sha256,
+            ).hexdigest()
+            body = json.dumps({
+                "session_id": params["session_id"][0], "nonce": params["nonce"][0],
+                "profile_home": params["profile_home"][0], "attach_proof": proof,
+                "websocket_url": (f"ws://127.0.0.1:{port}/api/ws?token=stolen"
+                                  if swap["on"] else genuine),
+            }).encode()
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), RelayHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    lease, error = try_acquire_active_session(
+        session_id="relayed", surface="desktop", config={}, registry_home=home,
+        metadata={"live_session_id": "live",
+                  "shared_runtime_url": f"http://127.0.0.1:{server.server_port}"},
+    )
+    assert error is None
+    try:
+        assert discover_attach_url("relayed", registry_home=home).endswith("token=real")
+        swap["on"] = True
+        with pytest.raises(ValueError, match="identity"):
+            discover_attach_url("relayed", registry_home=home)
+    finally:
+        lease.release()
+        server.shutdown()
+        server.server_close()
+        thread.join()
 
 
 def test_discovery_refuses_a_listener_that_reads_the_registry_as_another_user(tmp_path):
     """The informed-listener case: a rogue that forges its proof by reading the
     registry is only as dangerous as the registry's file modes let it be. With
-    the registry owner-only, a listener confined to what other users can read
+    the registry closed to other users, a listener confined to what other users can read
     (the kernel's rule for a non-owner, simulated here) cannot learn the lease
     id and its forged proof is refused."""
     if os.name != "posix":
@@ -376,6 +489,7 @@ def test_discovery_refuses_a_listener_that_reads_the_registry_as_another_user(tm
     class InformedRogueHandler(BaseHTTPRequestHandler):
         def do_GET(self):
             params = parse_qs(urlsplit(self.path).query)
+            stolen = f"ws://127.0.0.1:{self.server.server_port}/api/ws?token=stolen"
             try:
                 lease_id = read_lease_id_as_other_user()
             except PermissionError:
@@ -385,7 +499,8 @@ def test_discovery_refuses_a_listener_that_reads_the_registry_as_another_user(tm
             else:
                 proof = hmac_mod.new(
                     lease_id.encode(),
-                    f"hermes-session-attach:{params['session_id'][0]}:{params['nonce'][0]}".encode(),
+                    (f"hermes-session-attach:{params['session_id'][0]}:{params['nonce'][0]}:"
+                     f"{params['profile_home'][0]}:{stolen}").encode(),
                     hashlib.sha256,
                 ).hexdigest()
             body = json.dumps({
@@ -393,9 +508,7 @@ def test_discovery_refuses_a_listener_that_reads_the_registry_as_another_user(tm
                 "nonce": params["nonce"][0],
                 "profile_home": params["profile_home"][0],
                 "attach_proof": proof,
-                "websocket_url": (
-                    f"ws://127.0.0.1:{self.server.server_port}/api/ws?token=stolen"
-                ),
+                "websocket_url": stolen,
             }).encode()
             self.send_response(200)
             self.end_headers()
@@ -415,7 +528,7 @@ def test_discovery_refuses_a_listener_that_reads_the_registry_as_another_user(tm
     assert error is None
     try:
         registry = home / "runtime" / "active_sessions.json"
-        assert stat.S_IMODE(os.stat(registry).st_mode) == 0o600
+        assert stat.S_IMODE(os.stat(registry).st_mode) & 0o007 == 0
         with pytest.raises(ValueError, match="identity"):
             discover_attach_url("prey", registry_home=home)
     finally:

@@ -28,7 +28,7 @@ Scenarios (the listener answering the advertised port):
 Why the owner side is a test process: no shipped Hermes runtime advertises ``shared_runtime_url`` or
 serves ``/api/session-attach`` yet (``hermes serve`` and the dashboard do not register one), so the
 closest real owner is a process holding the real lease that answers from its own lease knowledge with
-``attach_proof`` = HMAC-SHA256 keyed by the lease over the client's nonce.
+``attach_proof`` = HMAC-SHA256 keyed by the lease over the client's nonce, profile home and socket.
 """
 
 from __future__ import annotations
@@ -94,11 +94,11 @@ class Owner(BaseHTTPRequestHandler):
         q = {k: v[0] for k, v in parse_qs(parts.query).items()}
         lease_id = state["lease"].lease_id
         port = self.server.server_port
-        reply = {"session_id": sid, "lease_id": lease_id, "profile_home": home,
-                 "websocket_url": f"ws://127.0.0.1:{port}/api/ws?token={token}"}
+        ws = f"ws://127.0.0.1:{port}/api/ws?token={token}"
+        reply = {"session_id": sid, "lease_id": lease_id, "profile_home": home, "websocket_url": ws}
         if "nonce" in q:
             reply["nonce"] = q["nonce"]
-            msg = f"hermes-session-attach:{sid}:{q['nonce']}".encode()
+            msg = f"hermes-session-attach:{sid}:{q['nonce']}:{home}:{ws}".encode()
             reply["attach_proof"] = hmac.new(lease_id.encode(), msg, hashlib.sha256).hexdigest()
         body = json.dumps(reply).encode()
         self.send_response(200)

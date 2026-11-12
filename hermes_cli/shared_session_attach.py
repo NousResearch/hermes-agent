@@ -6,11 +6,12 @@ The handshake lets the requester prove it read the registry without the lease
 id travelling in the request: the client sends ``nonce`` plus
 ``client_proof = hex(HMAC_SHA256(lease_id, "hermes-session-attach-request:<session_id>:<nonce>"))``,
 and the reply must echo the request fields and return
-``attach_proof = hex(HMAC_SHA256(lease_id, "hermes-session-attach:<session_id>:<nonce>"))``.
+``attach_proof = hex(HMAC_SHA256(lease_id, "hermes-session-attach:<session_id>:<nonce>:<profile_home>:<websocket_url>"))``,
+covering the returned socket so a relay holding a genuine proof cannot swap in its own.
 The client checks the reply proof against its own registry copy, which refuses
 a listener that only echoes request parameters. That check proves the listener
 could read the registry, not that it is the live owner, so the registry itself
-is written owner-only. ``client_proof`` states the request-side half of the
+is never readable by other users. ``client_proof`` states the request-side half of the
 contract; no shipped runtime verifies it yet.
 """
 from __future__ import annotations
@@ -97,23 +98,24 @@ def discover_attach_url(session_id: str, *, registry_home: str | Path | None = N
                          + session_owner_details(session_id, owner)) from exc
     # Echoed fields only prove the listener heard the request; the proof is what ties the
     # reply to the registry's lease id, which a rogue listener cannot learn from the request.
-    # It can learn it from the registry file itself, which is why the registry is
-    # written owner-only (see _write_entries).
+    # It can learn it from the registry file itself, which is why other users cannot read
+    # the registry (see _write_entries).
+    websocket_url = reply.get("websocket_url") if isinstance(reply, dict) else None
+    if not isinstance(websocket_url, str):
+        raise ValueError("Shared runtime handshake identity does not match the requested owner.")
     expected_proof = hmac.new(
         str(owner["lease_id"]).encode("utf-8"),
-        f"hermes-session-attach:{session_id}:{nonce}".encode(),
+        f"hermes-session-attach:{session_id}:{nonce}:{home}:{websocket_url}".encode("utf-8", "replace"),
         hashlib.sha256,
     ).hexdigest()
-    if (not isinstance(reply, dict)
-            or any(reply.get(key) != value for key, value in {
+    if (any(reply.get(key) != value for key, value in {
                 "session_id": session_id, "nonce": nonce, "profile_home": str(home),
             }.items())
             or not hmac.compare_digest(
                 str(reply.get("attach_proof") or "").encode("utf-8", "replace"),
                 expected_proof.encode("ascii"))):
         raise ValueError("Shared runtime handshake identity does not match the requested owner.")
-    websocket_url = reply.get("websocket_url")
-    if (not isinstance(websocket_url, str) or _local_origin(websocket_url, "ws") != origin
+    if (_local_origin(websocket_url, "ws") != origin
             or urlsplit(websocket_url).path != "/api/ws"):
         raise ValueError("Shared runtime handshake returned a different endpoint.")
     return websocket_url

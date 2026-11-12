@@ -377,10 +377,11 @@ def _stale_live_cache(cache: Path) -> Optional[dict[str, Any]]:
 
 def _download_live_catalog(httpx: Any) -> bytes:
     """Body of :data:`LIVE_CATALOG_URL`, following redirects only onto :data:`_LIVE_CATALOG_HOSTS`
-    over HTTPS and reading at most :data:`_MAX_LIVE_BYTES` (streamed, so the cap bounds memory)."""
+    over HTTPS and refusing a decoded body past :data:`_MAX_LIVE_BYTES` (see :func:`_read_capped`)."""
     url = LIVE_CATALOG_URL
     for _hop in range(_MAX_LIVE_REDIRECTS + 1):
-        with httpx.stream("GET", url, timeout=_REQUEST_TIMEOUT, follow_redirects=False) as resp:
+        with httpx.stream("GET", url, headers={"Accept-Encoding": "gzip"}, timeout=_REQUEST_TIMEOUT,
+                          follow_redirects=False) as resp:
             if resp.next_request is not None:
                 target = resp.next_request.url
                 if target.scheme != "https" or target.host not in _LIVE_CATALOG_HOSTS:
@@ -388,13 +389,37 @@ def _download_live_catalog(httpx: Any) -> bytes:
                 url = str(target)
                 continue
             resp.raise_for_status()
-            body = bytearray()
-            for chunk in resp.iter_bytes():
-                body += chunk
-                if len(body) > _MAX_LIVE_BYTES:
-                    raise ValueError("live catalog payload too large")
-            return bytes(body)
+            return _read_capped(resp)
     raise ValueError("live catalog: too many redirects")
+
+
+def _read_capped(resp: Any) -> bytes:
+    """Read the body while holding at most :data:`_MAX_LIVE_BYTES` (+1) decoded bytes in memory.
+
+    httpx's own decoder (``iter_bytes``) inflates each wire chunk whole and chains stacked
+    encodings, so a 64 KB gzip chunk could expand to 64 MiB before any size check. The raw bytes are
+    inflated here with a ``max_length`` bound instead; only ``identity`` and one ``gzip`` layer (all
+    we ask for) are accepted."""
+    import zlib
+
+    encoding = resp.headers.get("content-encoding", "identity").strip().lower()
+    if encoding not in ("identity", "gzip"):
+        raise ValueError(f"live catalog: unsupported content-encoding {encoding!r}")
+    inflate = zlib.decompressobj(16 + zlib.MAX_WBITS) if encoding == "gzip" else None
+    body = bytearray()
+    raw_len = 0
+    for chunk in resp.iter_raw():
+        raw_len += len(chunk)
+        if inflate is None:
+            body += chunk
+        while inflate is not None and chunk and not inflate.eof and len(body) <= _MAX_LIVE_BYTES:
+            body += inflate.decompress(chunk, _MAX_LIVE_BYTES + 1 - len(body))
+            chunk = inflate.unconsumed_tail
+        if len(body) > _MAX_LIVE_BYTES or raw_len > _MAX_LIVE_BYTES:
+            raise ValueError("live catalog payload too large")
+    if inflate is not None and not inflate.eof:
+        raise ValueError("live catalog: truncated gzip body")
+    return bytes(body)
 
 
 def fetch_live_catalog(*, force: bool = False) -> Optional[dict[str, Any]]:

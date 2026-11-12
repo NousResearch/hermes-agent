@@ -202,7 +202,13 @@ def _serve_with(monkeypatch, handler):
     """Answer every request at the transport: the real httpx client (redirect handling, streaming)
     runs on top, whichever httpx entry point the fetch uses."""
     import httpx
-    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", lambda self, request: handler(request))
+
+    def handle(self, request):
+        resp = handler(request)
+        if resp.is_stream_consumed:  # an in-memory body; the network hands back an unread stream
+            resp = httpx.Response(resp.status_code, headers=resp.headers, stream=resp.stream)
+        return resp
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", handle)
     monkeypatch.setattr(pc, "_live_fetch_failed_until", 0.0)
 
 
@@ -400,3 +406,49 @@ def test_an_endless_body_stops_at_the_cap(tmp_path, monkeypatch):
     _serve_with(monkeypatch, lambda request: httpx.Response(200, content=endless()))
     assert pc.fetch_live_catalog(force=True) is None
     assert len(sent) <= 128
+
+
+def test_a_gzip_bomb_is_refused_without_inflating_it(tmp_path, monkeypatch):
+    """httpx inflates each compressed wire chunk whole (and chains ``gzip, gzip``) before a caller
+    sees it, so the cap must be applied while inflating: 64 MiB of spaces in one ~64 KB chunk is
+    refused with peak memory near the cap, not near the decoded size."""
+    import gzip
+    import httpx
+    import tracemalloc
+    cache = _fresh_cache(tmp_path, monkeypatch, {"entries": [], "removed": []})
+    cache.unlink()
+    monkeypatch.setattr(pc, "_MAX_LIVE_BYTES", 1024 * 1024)
+    bomb = gzip.compress(b" " * (64 * 1024 * 1024))
+
+    class _Wire(httpx.SyncByteStream):  # an unread body, as the network hands it over
+        def __init__(self, raw: bytes):
+            self.raw = raw
+
+        def __iter__(self):
+            yield self.raw
+
+    for encoding in ("gzip", "gzip, gzip"):
+        payload = gzip.compress(bomb) if encoding == "gzip, gzip" else bomb
+        # ``content=`` would make httpx inflate the bomb while building the stub; the wire is a stream
+        _serve_with(monkeypatch, lambda request, p=payload, e=encoding: httpx.Response(
+            200, headers={"content-encoding": e}, stream=_Wire(p)))
+        tracemalloc.start()
+        try:
+            assert pc.fetch_live_catalog(force=True) is None
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+        assert peak < 16 * 1024 * 1024, (encoding, peak)
+        assert not cache.exists()
+
+
+def test_a_gzipped_catalog_doc_is_still_read(tmp_path, monkeypatch):
+    """GitHub Pages serves the doc gzipped; inflating it ourselves must keep that path working."""
+    import gzip
+    import httpx
+    cache = _fresh_cache(tmp_path, monkeypatch, {"entries": [], "removed": []})
+    cache.unlink()
+    doc = json.dumps({"entries": [_entry("published")], "removed": []}).encode()
+    _serve_with(monkeypatch, lambda request: httpx.Response(
+        200, headers={"content-encoding": "gzip"}, content=gzip.compress(doc)))
+    assert [e["name"] for e in pc.fetch_live_catalog(force=True)["entries"]] == ["published"]

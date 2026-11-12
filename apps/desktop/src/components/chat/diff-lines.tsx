@@ -1,5 +1,6 @@
 'use client'
 
+import { splitDiffHunks } from '@hermes/shared'
 import * as React from 'react'
 import type { BundledLanguage, ShikiTransformer, ThemedToken } from 'shiki'
 
@@ -29,6 +30,14 @@ export interface DiffLine {
    *  shown (the preview's full diff). */
   newNo?: number
   oldNo?: number
+  /** Set on the header row a caller asked for at the top of each hunk. */
+  hunk?: number
+}
+
+/** One `@@` hunk as the caller can act on it: its position and exact diff text. */
+export interface DiffHunkRef {
+  index: number
+  text: string
 }
 
 interface ParsedHunk {
@@ -167,7 +176,7 @@ function parseHunks(diff: string): ParsedHunk[] {
 // separator kept between hunks), markers stripped, kind recorded. Old/new line
 // numbers are tracked from each `@@ -a,b +c,d @@` header so a caller that wants
 // a gutter (the preview) can render them; the blank separator carries none.
-function parseDiff(diff: string): DiffLine[] {
+function parseDiff(diff: string, hunkHeaders = false): DiffLine[] {
   const hunks = parseHunks(diff)
 
   if (hunks.length === 0) {
@@ -182,11 +191,13 @@ function parseDiff(diff: string): DiffLine[] {
   let oldNo = 1
   let newNo = 1
 
-  for (const hunk of hunks) {
+  for (const [index, hunk] of hunks.entries()) {
     oldNo = hunk.oldStart
     newNo = hunk.newStart
 
-    if (emitted) {
+    if (hunkHeaders) {
+      out.push({ hunk: index, kind: 'context', text: '' })
+    } else if (emitted) {
       out.push({ kind: 'context', text: '' })
     }
 
@@ -322,15 +333,19 @@ function useThemeName() {
   return theme
 }
 
+type HunkHeaderRenderer = (index: number) => React.ReactNode
+
 function PreviewDiffRows({
   afterLines = 0,
   beforeLines = 0,
   chunks,
+  renderHunkHeader,
   tokens
 }: {
   afterLines?: number
   beforeLines?: number
   chunks: Array<LineChunk<DiffLine>>
+  renderHunkHeader?: HunkHeaderRenderer
   tokens?: ThemedToken[][] | null
 }) {
   return (
@@ -341,6 +356,18 @@ function PreviewDiffRows({
           {chunk.lines.map((line, offset) => {
             const index = chunk.start + offset
             const rowTokens = tokens?.[index] ?? []
+
+            if (line.hunk !== undefined && renderHunkHeader) {
+              return (
+                <span
+                  className="sticky left-0 flex h-5 w-fit items-center gap-0.5 px-1.5"
+                  data-diff-hunk-header={line.hunk}
+                  key={`${index}-hunk`}
+                >
+                  {renderHunkHeader(line.hunk)}
+                </span>
+              )
+            }
 
             return (
               <span className={cn(PREVIEW_DIFF_LINE_BASE, DIFF_KIND_TINT[line.kind])} key={`${index}-${line.text}`}>
@@ -367,7 +394,8 @@ function TokenizedDiffBody({
   chunked = false,
   chunks,
   language,
-  lines
+  lines,
+  renderHunkHeader
 }: {
   afterLines?: number
   beforeLines?: number
@@ -375,6 +403,7 @@ function TokenizedDiffBody({
   chunks?: Array<LineChunk<DiffLine>>
   language: string
   lines: DiffLine[]
+  renderHunkHeader?: HunkHeaderRenderer
 }) {
   const code = React.useMemo(() => lines.map(line => line.text).join('\n'), [lines])
   const theme = useThemeName()
@@ -410,6 +439,7 @@ function TokenizedDiffBody({
         afterLines={afterLines}
         beforeLines={beforeLines}
         chunks={chunks ?? chunkLines(lines, PREVIEW_CHUNK_LINES)}
+        renderHunkHeader={renderHunkHeader}
       />
     ) : (
       <DiffBody lines={lines} />
@@ -422,6 +452,7 @@ function TokenizedDiffBody({
         afterLines={afterLines}
         beforeLines={beforeLines}
         chunks={chunks ?? chunkLines(lines, PREVIEW_CHUNK_LINES)}
+        renderHunkHeader={renderHunkHeader}
         tokens={tokens}
       />
     )
@@ -579,6 +610,11 @@ interface FileDiffPanelProps {
    *  diff in a scrolling pane (the review panel), so only visible rows mount
    *  instead of highlighting every line. `showLineNumbers` implies windowing. */
   virtualized?: boolean
+  /** Windowed hunked diffs only: a row above each hunk holding what this
+   *  returns (the review pane's per-change actions). Skipped when the diff has
+   *  a hunk header the renderer cannot place, so a row never names the wrong
+   *  hunk. */
+  renderHunkActions?: (hunk: DiffHunkRef) => React.ReactNode
 }
 
 export function FileDiffPanel({
@@ -586,12 +622,32 @@ export function FileDiffPanel({
   diff,
   fullText,
   path,
+  renderHunkActions,
   showLineNumbers = false,
   virtualized = false
 }: FileDiffPanelProps) {
+  const windowed = showLineNumbers || virtualized
+
+  // Raw hunk texts, kept only when they line up 1:1 with the parsed hunks.
+  const hunkTexts = React.useMemo(() => {
+    if (!renderHunkActions || !windowed || fullText != null) {
+      return null
+    }
+
+    const { hunks } = splitDiffHunks(diff)
+
+    return hunks.length > 0 && hunks.length === parseHunks(diff).length ? hunks : null
+  }, [diff, fullText, renderHunkActions, windowed])
+
   const lines = React.useMemo(
-    () => (fullText != null ? parseFullFileDiff(diff, fullText) : parseDiff(diff)),
-    [diff, fullText]
+    () => (fullText != null ? parseFullFileDiff(diff, fullText) : parseDiff(diff, hunkTexts !== null)),
+    [diff, fullText, hunkTexts]
+  )
+
+  const renderHunkHeader = React.useMemo<HunkHeaderRenderer | undefined>(
+    () =>
+      hunkTexts && renderHunkActions ? index => renderHunkActions({ index, text: hunkTexts[index] }) : undefined,
+    [hunkTexts, renderHunkActions]
   )
 
   const lineChunks = React.useMemo(() => chunkLines(lines, PREVIEW_CHUNK_LINES), [lines])
@@ -607,7 +663,6 @@ export function FileDiffPanel({
 
   const language = shikiLanguageForFilename(path)
   const canHighlight = Boolean(language) && !exceedsHighlightBudget(fullText ?? diff)
-  const windowed = showLineNumbers || virtualized
   // Edit-tool cards open their diff by default, so a session full of file edits
   // used to tokenize every diff in the loaded window on each switch (seconds of
   // Shiki on the click path). The compact card keeps the plain colored rows
@@ -628,9 +683,15 @@ export function FileDiffPanel({
       chunks={visibleLineChunks}
       language={language}
       lines={lines}
+      renderHunkHeader={renderHunkHeader}
     />
   ) : (
-    <PreviewDiffRows afterLines={afterRows} beforeLines={beforeRows} chunks={visibleLineChunks} />
+    <PreviewDiffRows
+      afterLines={afterRows}
+      beforeLines={beforeRows}
+      chunks={visibleLineChunks}
+      renderHunkHeader={renderHunkHeader}
+    />
   )
 
   const compactBody = !canHighlight || !seen ? (

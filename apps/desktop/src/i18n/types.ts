@@ -3165,6 +3165,10 @@ export interface Translations extends NoticeTranslations {
       revertAll: string
       revertConfirm: string
       revertAllConfirm: string
+      stageHunk: string
+      unstageHunk: string
+      revertHunk: string
+      revertHunkConfirm: string
       staged: string
       noChanges: string
       notRepo: string

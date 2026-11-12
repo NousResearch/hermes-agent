@@ -3,7 +3,7 @@ import { atom, computed } from 'nanostores'
 import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from '@/app/layout-constants'
 import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
 import { isPaneVisible, revealTreePane } from '@/components/pane-shell/tree/store'
-import type { HermesReviewFile, HermesReviewScope, HermesReviewShipInfo } from '@/global'
+import type { HermesReviewFile, HermesReviewHunkAction, HermesReviewScope, HermesReviewShipInfo } from '@/global'
 import { matchesQuery } from '@/hooks/use-media-query'
 import { desktopGit } from '@/lib/desktop-git'
 import { isExcludedPath } from '@/lib/excluded-paths'
@@ -535,15 +535,31 @@ export async function revertReviewFile(path: null | string): Promise<void> {
   await afterMutation()
 }
 
+/** Stage, unstage or revert ONE change (hunk) of `path`, named by its exact diff
+ *  text. The owning side re-reads the diff and refuses a hunk the file no longer
+ *  holds, so a change the agent kept editing is never applied blind. */
+export async function applyReviewHunk(path: string, hunk: string, action: HermesReviewHunkAction): Promise<void> {
+  if ($reviewScope.get() !== 'uncommitted') {
+    return
+  }
+
+  try {
+    await desktopGit()?.review?.hunk(repoCwd() ?? '', path, hunk, action)
+  } finally {
+    await afterMutation()
+  }
+}
+
 // Revert is destructive (discards working-tree edits with no undo), so it always
 // routes through a confirm dialog. The target is `{ path }` where `path === null`
 // means "revert all"; `undefined` means no confirm is open. We wrap the path in
 // an object so the `null` ("all") case is distinguishable from "closed".
-export const $reviewRevertTarget = atom<{ path: null | string } | undefined>(undefined)
+export const $reviewRevertTarget = atom<{ hunk?: string; path: null | string } | undefined>(undefined)
 
-/** Open the revert confirm for a single file, or `null` for all changes. */
-export function requestRevert(path: null | string): void {
-  $reviewRevertTarget.set({ path })
+/** Open the revert confirm for a single file, or `null` for all changes; with
+ *  `hunk`, for that one change of the file. */
+export function requestRevert(path: null | string, hunk?: string): void {
+  $reviewRevertTarget.set(hunk && path ? { hunk, path } : { path })
 }
 
 export function cancelRevert(): void {
@@ -556,7 +572,9 @@ export async function confirmRevert(): Promise<void> {
 
   $reviewRevertTarget.set(undefined)
 
-  if (target) {
+  if (target?.hunk && target.path) {
+    await applyReviewHunk(target.path, target.hunk, 'revert')
+  } else if (target) {
     await revertReviewFile(target.path)
   }
 }

@@ -2900,9 +2900,20 @@ def _retag_legacy_worker_sessions(workspaces_root_path: str) -> None:
 
 
 def _worker_argv(task: Task, profile_arg: str, hermes_home: Optional[str]) -> list[str]:
-    """The profile owner executes; this subprocess only waits for its receipt."""
+    """The profile owner executes; this subprocess only waits for its receipt.
+
+    ``-P`` (Python 3.11+) prevents the interpreter from prepending the process
+    cwd to ``sys.path[0]`` when launching via ``-m``.  Without it, a card whose
+    workspace is a Hermes source checkout shadows ``hermes_bootstrap.py`` and
+    ``hermes_cli/`` from the pinned live install: the checkout's bootstrap
+    resolves ``_root = Path(__file__).parent`` to the checkout, whose install
+    state has no committed dependency environment, and the worker dies with
+    "no dependency environment is committed for this install" before turn 1.
+    ``PYTHONPATH`` is still honoured, so the pinned live install on the path
+    wins and the worker's terminal cwd is not affected.
+    """
     import sys
-    return [sys.executable, "-m", "hermes_cli.kanban_worker_client"]
+    return [sys.executable, "-P", "-m", "hermes_cli.kanban_worker_client"]
 
 
 def _open_worker_log(task: Task, board: Optional[str]):

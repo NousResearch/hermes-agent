@@ -591,6 +591,20 @@ class TestConfigFingerprintAdoption:
         assert not (tmp_path / "session" / "bridge.pid").exists()
         assert (tmp_path / "session" / _BRIDGE_FINGERPRINT_FILE).exists()
 
+    # Named from bridge.js's startup reads, not from _BRIDGE_CONSUMED_ENV, so dropping a key from that tuple fails here.
+    @pytest.mark.parametrize("key", [
+        "WHATSAPP_MODE", "WHATSAPP_DM_POLICY", "WHATSAPP_GROUP_POLICY", "WHATSAPP_ALLOWED_USERS",
+        "WHATSAPP_GROUP_ALLOWED_USERS", "WHATSAPP_REPLY_PREFIX", "WHATSAPP_SEND_READ_RECEIPTS", "WHATSAPP_DEBUG",
+        "WHATSAPP_FORWARD_OWNER_MESSAGES", "WHATSAPP_MAX_MESSAGE_LENGTH", "WHATSAPP_CHUNK_DELAY_MS",
+        "WHATSAPP_SEND_TIMEOUT_MS", "HERMES_IMAGE_CACHE_DIR", "HERMES_AUDIO_CACHE_DIR", "HERMES_DOCUMENT_CACHE_DIR",
+    ])
+    def test_every_key_bridge_js_reads_at_startup_is_fingerprinted(self, key):
+        from plugins.platforms.whatsapp.adapter import _bridge_config_fingerprint
+
+        spawned = _bridge_config_fingerprint({key: "spawned"})
+        assert spawned != _bridge_config_fingerprint({key: "edited"})
+        assert spawned != _bridge_config_fingerprint({})
+
 
 class TestFmtUptime:
     @pytest.mark.parametrize(

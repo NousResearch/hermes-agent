@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
 
 # One request's output cap (streamed hops get 64K; unary 32K). A budget above it needs continuation hops.
 SINGLE_REQUEST_OUTPUT_CAP = 65_536
-_THINKING_LEVELS = {"minimal", "low", "medium", "high"}
+_THINKING_LEVELS = {"minimal", "low", "medium", "high", "xhigh"}
 _TOOL_CHOICES = {"auto": "auto", "required": "any", "none": "none"}
 _IMAGE_MIME_TYPES = {"image/png", "image/jpeg", "image/webp", "image/heic", "image/heif", "image/gif", "image/bmp", "image/tiff"}
 # Interaction.status -> OpenAI finish_reason (requires_continuation is consumed by the hop loop).

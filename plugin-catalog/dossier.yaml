@@ -1,23 +1,7 @@
 name: dossier
 repo: https://github.com/Frazzlesprite/hermes-dossier
 sha: 00f7abe3c3a124fb951ef45051159d374c2f5c8b
-description: >-
-  Sourced, dated, refreshable dossiers on organisations and people in a
-  professional capacity, framed for the meeting you actually have: interview,
-  sales call, partnership, due diligence or supplier review. Every claim keeps a
-  verbatim quote, a source URL, a publication date and a retrieval date;
-  conflicting sources print as contested instead of being resolved, a figure the
-  sources do not agree on is filed as unconfirmed rather than quoted, and a
-  refresh reports only what changed since the last snapshot. Renders an A4 PDF,
-  HTML, a chat card and a Desktop page, and ships an automation blueprint for
-  scheduled refresh. Disclosure: makes outbound HTTP requests to the entity's own
-  site and the pages it links to, to whatever host your configured Hermes web
-  search backend returns, to api.github.com and github.com, and to www.sec.gov /
-  data.sec.gov (SEC EDGAR). ABN Lookup (abr.business.gov.au) and Companies House
-  (api.company-information.service.gov.uk) are contacted only when their
-  credentials are configured. Requests are rate limited to one per host per
-  second, robots.txt is honoured, and a blocked or undated source is reported in
-  the brief rather than dropped.
+description: "Sourced, dated, refreshable dossiers on organisations and people in a professional capacity, framed for the meeting you actually have: interview, sales call, partnership, due diligence or supplier review. Every claim keeps a verbatim quote, a source URL, a publication date and a retrieval date; conflicting sources print as contested instead of being resolved, a figure the sources do not agree on is filed as unconfirmed rather than quoted, and a refresh reports only what changed since the last snapshot. Renders an A4 PDF, HTML, a chat card and a Desktop page, and ships an automation blueprint for scheduled refresh. Disclosure — makes outbound HTTP requests to the entity's own site and the pages it links to, to whatever hosts your configured Hermes web search backend returns, to api.github.com / github.com, and to www.sec.gov / data.sec.gov (SEC EDGAR); ABN Lookup (abr.business.gov.au) and Companies House (api.company-information.service.gov.uk) are contacted only when their credentials are configured; non-public addresses are refused; dossiers on people and organisations are stored under the plugin's data directory until you delete them with /dossier forget or the Desktop button."
 maintainer: Frazzlesprite
 tier: community
 category: tools

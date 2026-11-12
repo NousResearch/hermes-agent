@@ -136,10 +136,11 @@ async def test_a_listed_chat_whose_connector_cannot_bind_is_refused_before_anyth
 
 
 @pytest.mark.asyncio
-async def test_after_new_a_listed_chat_opens_by_origin_while_session_key_stays_refused(monkeypatch):
-    """``open_chats`` covers ``origin`` only (#148065). After ``/new`` the chat's current session holds
-    no committed turn: a ``session_key`` injection is still dropped at dispatch, and an ``origin``
-    injection opens that same session instead of minting another one."""
+async def test_after_new_a_listed_chat_continues_from_its_predecessor_and_is_not_opened(monkeypatch):
+    """After ``/new`` the chat's fresh session has no committed turn of its own, but main's wake path
+    borrows its predecessor's envelope (``wake_route_envelope``). Listing the chat in ``open_chats``
+    changes nothing there: both ``session_key`` and ``origin`` injections run in that same fresh
+    session, and neither takes the opening path (no ``opened`` admission, no minted binding)."""
     from gateway.platforms.event import MessageEvent
     from hermes_constants import get_hermes_home
 
@@ -154,15 +155,13 @@ async def test_after_new_a_listed_chat_opens_by_origin_while_session_key_stays_r
     fresh = runner.session_store.lookup_by_session_key(key).session_id
 
     assert await asyncio.to_thread(ctx.inject_message, "keepalive", session_key=key) is True
-    await async_wait_until(lambda: not runner._background_tasks, timeout=10, what="the dispatch to finish")
-    assert "keepalive" not in executed
-    assert _rows(authority, authority.logical_owner(fresh)) == []
-
-    assert await asyncio.to_thread(ctx.inject_message, "keepalive", origin=_origin("42")) is True
-    await async_wait_until(lambda: "keepalive" in executed, timeout=10, what="the opening plugin turn")
+    await async_wait_until(lambda: "keepalive" in executed, timeout=10, what="the session_key turn")
+    assert await asyncio.to_thread(ctx.inject_message, "kickoff", origin=_origin("42")) is True
+    await async_wait_until(lambda: "kickoff" in executed, timeout=10, what="the origin turn")
     assert runner.session_store.lookup_by_session_key(key).session_id == fresh
-    (opened,) = _rows(authority, authority.logical_owner(fresh))
-    assert opened["payload"]["native_text_v1"]["automation"]["opened"] is True
+    rows = _rows(authority, authority.logical_owner(fresh))
+    assert [r["payload"]["text"] for r in rows] == ["keepalive", "kickoff"]
+    assert all("opened" not in r["payload"]["native_text_v1"]["automation"] for r in rows)
 
 
 @pytest.mark.asyncio

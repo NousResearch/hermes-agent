@@ -1,9 +1,9 @@
 name: prsn-id
 title: PRSN ID
 repo: https://github.com/prsnex/prsn-id-hermes
-sha: d833d031948ba4c41f546e9d3c7165ea6720f607
+sha: e7a5c7a5a14b8ac71147e6c8827f738fbfec4fdc
 version: "0.1.0"
-description: "Gives a Hermes agent its PRSN ID, read live from PRSN Connect, the desktop app that keeps the agent's signing key in the computer's secure hardware. The agent knows its own PRSN ID at each session and can seal email and files with its PRSN's key. Hermes asks the human before each Seal with its own approval prompt. It also asks the human before a command or file action of Hermes's own that names PRSN Connect or its files. /prsn shows the state, and Hermes Desktop gets a status bar item. Disclosure. The plugin reads ~/.prsn-id/gateway.json, which PRSN Connect writes and which holds no token. It starts prsn-gateway-mcp, a program PRSN Connect installed, and talks to it over standard input and output on this computer. PRSN Connect makes the calls to api.prsnid.ai, and a Seal's link opens verify.prsnid.ai. It writes its last state to status.json in its own data folder, and, only with the server_log setting on, PRSN Connect's server log. After a file Seal it opens the Seal's page at verify.prsnid.ai in the default browser, and no other address. It makes no network call of its own, stores no credential and sends no telemetry."
+description: "Gives a Hermes agent its PRSN ID, read live from PRSN Connect, the desktop app that keeps the agent's signing key in the computer's secure hardware. The agent knows its own PRSN ID at each session and can seal email and files with its PRSN's key. Hermes asks the human before each Seal with its own approval prompt. It also asks the human before a command or file action of Hermes's own that names PRSN Connect or its files. /prsn shows the state, and Hermes Desktop gets a status bar item. Disclosure. The plugin reads ~/.prsn-id/gateway.json, which PRSN Connect writes and which holds no token. It starts prsn-gateway-mcp, a program PRSN Connect installed, gives it a short fixed list of environment settings with none of Hermes's API keys, and talks to it over standard input and output on this computer. PRSN Connect makes the calls to api.prsnid.ai, and a Seal's link opens verify.prsnid.ai. It writes its last state to status.json in its own data folder, and, only with the server_log setting on, PRSN Connect's server log. After a file Seal it opens the Seal's page at verify.prsnid.ai in the default browser, and no other address. It makes no network call of its own, stores no credential and sends no telemetry."
 maintainer: PRSN EX Inc.
 tier: community
 category: tools
@@ -12,15 +12,14 @@ docs_url: https://github.com/prsnex/prsn-id-hermes#readme
 readme: true
 platforms: [linux, macos, windows]
 known_issues:
-  - "Needs PRSN Connect v0.2.1 or later running on the same computer and user account. A server with no desktop cannot run it today."
-  - "On Windows, file Seals are refused, and a sealed message cannot carry attachments."
+  - "Needs PRSN Connect v0.2.1 or later on macOS and Linux, and v0.2.2 or later on Windows, running on the same computer and user account. A server with no desktop cannot run it today."
   - "A file Seal's page opens only in the browser on the computer where Hermes runs. Through a chat platform, no working link reaches you."
   - "With Hermes's approvals off, in yolo mode, or in a one-shot hermes -z run, Hermes asks nothing, so a Seal is made without the human's yes. An agent that can run commands can start such a run itself. The plugin's check on commands that name PRSN Connect is not a wall."
 screenshots:
-  - https://raw.githubusercontent.com/prsnex/prsn-id-hermes/d833d031948ba4c41f546e9d3c7165ea6720f607/docs/screenshots/identity-and-status.png
-  - https://raw.githubusercontent.com/prsnex/prsn-id-hermes/d833d031948ba4c41f546e9d3c7165ea6720f607/docs/screenshots/approval-before-a-seal.png
-  - https://raw.githubusercontent.com/prsnex/prsn-id-hermes/d833d031948ba4c41f546e9d3c7165ea6720f607/docs/screenshots/sealed-email-checked.png
-  - https://raw.githubusercontent.com/prsnex/prsn-id-hermes/d833d031948ba4c41f546e9d3c7165ea6720f607/docs/screenshots/sealed-file-verified.png
+  - https://raw.githubusercontent.com/prsnex/prsn-id-hermes/e7a5c7a5a14b8ac71147e6c8827f738fbfec4fdc/docs/screenshots/identity-and-status.png
+  - https://raw.githubusercontent.com/prsnex/prsn-id-hermes/e7a5c7a5a14b8ac71147e6c8827f738fbfec4fdc/docs/screenshots/approval-before-a-seal.png
+  - https://raw.githubusercontent.com/prsnex/prsn-id-hermes/e7a5c7a5a14b8ac71147e6c8827f738fbfec4fdc/docs/screenshots/sealed-email-checked.png
+  - https://raw.githubusercontent.com/prsnex/prsn-id-hermes/e7a5c7a5a14b8ac71147e6c8827f738fbfec4fdc/docs/screenshots/sealed-file-verified.png
 capabilities:
   provides_tools:
     - prsn_id_profile

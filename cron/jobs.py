@@ -36,6 +36,7 @@ from cron.constants import CLAIM_TTL_INACTIVITY_HEADROOM, FIRE_CLAIM_SKEW_SECOND
 from cron.env_settings import cron_env_setting
 from cron.jobs_invariants import _validate_job_mode_invariants, validate_schedule_knobs
 from cron.jobs_model_pin import _main_model_pin
+from cron.output_retention import SILENT_OUTPUT_SUFFIX, is_silent_output, normalize_output_retention, output_keep
 from cron import jobs_time
 from cron.scheduler_ownership import _claim_owner_is_dead
 from cron import extra_fire, store_health
@@ -1767,6 +1768,7 @@ _CREATE_FIELD_NORMALIZERS: dict[str, Callable[[Any], Any]] = {
     "timezone": jobs_time.normalize_timezone,
     "grace_minutes": jobs_time.normalize_grace_minutes,
     "catch_up": _normalize_catch_up,
+    "output_retention": normalize_output_retention,
 }
 _UPDATE_FIELD_NORMALIZERS: dict[str, Callable[[Any], Any]] = {
     # [] is an explicit zero-tool allowlist and must survive the update path as [] too (#82010).
@@ -1781,6 +1783,7 @@ _UPDATE_FIELD_NORMALIZERS: dict[str, Callable[[Any], Any]] = {
     "timezone": jobs_time.normalize_timezone,
     "grace_minutes": jobs_time.normalize_grace_minutes,
     "catch_up": _normalize_catch_up,
+    "output_retention": normalize_output_retention,
 }
 
 
@@ -1835,6 +1838,7 @@ def create_job(
     interpreter: Optional[str] = None,
     timezone: Optional[str] = None,
     grace_minutes: Optional[int] = None,
+    output_retention: Optional[int] = None,
 ) -> dict[str, Any]:
     """Create a new cron job and return the stored record.
 
@@ -1938,7 +1942,7 @@ def create_job(
         ("attach_to_session", normalized_attach), ("reasoning_effort", normalized_reasoning_effort),
         ("failure_deliver", f["failure_deliver"]), ("interpreter", f["interpreter"]),
         ("timezone", f["timezone"]), ("grace_minutes", f["grace_minutes"]),
-        ("catch_up", f["catch_up"]),
+        ("catch_up", f["catch_up"]), ("output_retention", f["output_retention"]),
     ):
         if value is not None:
             job[key] = value
@@ -3315,28 +3319,20 @@ def _get_due_jobs_locked() -> list[dict[str, Any]]:
 
 # --- Run output ---
 
-# Per-run output files (`cron/output/<job>/<timestamp>.md`) are capped so a frequent job can't fill
-# the disk.
-# Unlike the quick-snapshot store (`hermes_cli.backup`, capped at 20) it had no retention, so a
-# frequently-scheduled job on a long-running deploy accumulated one file per run forever and could fill the
-# disk (#52383). Keep the most recent N files per job; a non-positive value disables pruning (opt-out).
+# Per-run output files (`cron/output/<job>/<timestamp>[.silent].md`) are capped per job so a frequent job can't
+# fill the disk (#52383); silent runs keep their own, smaller cap (cron/output_retention.py). <= 0 = never prune.
 _CRON_OUTPUT_DEFAULT_KEEP = 50
 
 
-def _cron_output_keep() -> int:
-    """Per-job output-file retention cap (``cron.output_retention``)."""
-    return _cron_config_number("output_retention", _CRON_OUTPUT_DEFAULT_KEEP, int)
-
-
-def _prune_job_output(job_output_dir: Path, keep: int) -> int:
-    """Remove the oldest ``*.md`` run-output files beyond *keep*; returns count deleted. Filenames
-    are timestamps, so a reverse lexical sort is newest-first. Non-positive *keep* disables pruning;
-    failures are swallowed so they can never break output saving."""
+def _prune_job_output(job_output_dir: Path, keep: int, *, silent: bool = False) -> int:
+    """Remove the oldest run-output files of one tier (silent or not) beyond *keep*; returns count
+    deleted. Filenames are timestamps, so a reverse lexical sort is newest-first. Non-positive *keep*
+    disables pruning; failures are swallowed so they can never break output saving."""
     if keep <= 0:
         return 0
     try:
         files = sorted(
-            (f for f in job_output_dir.glob("*.md") if f.is_file()),
+            (f for f in job_output_dir.glob("*.md") if f.is_file() and is_silent_output(f.name) == silent),
             key=lambda f: f.name, reverse=True)
     except OSError:
         return 0
@@ -3350,17 +3346,17 @@ def _prune_job_output(job_output_dir: Path, keep: int) -> int:
     return deleted
 
 
-def save_job_output(job_id: str, output: str):
-    """Save job output to file."""
+def save_job_output(job_id: str, output: str, *, job: Optional[dict[str, Any]] = None, silent: bool = False):
+    """Save one run's document; *silent* runs use the silent tier, *job* supplies a per-job cap."""
     ensure_dirs()
     job_output_dir = _job_output_dir(job_id)
     _ensure_cron_dir(job_output_dir)
     _secure_dir(job_output_dir)
-    output_file = job_output_dir / f"{_hermes_now().strftime('%Y-%m-%d_%H-%M-%S')}.md"
+    output_file = job_output_dir / f"{_hermes_now().strftime('%Y-%m-%d_%H-%M-%S')}{SILENT_OUTPUT_SUFFIX if silent else '.md'}"
     atomic_write_text(output_file, output, tmp_prefix=".output_", mode=0o600)
     _secure_file(output_file)
     # Bound per-job output growth so long-running deploys don't fill the disk (#52383).
-    _prune_job_output(job_output_dir, _cron_output_keep())
+    _prune_job_output(job_output_dir, output_keep(job, silent=silent), silent=silent)
     return output_file
 
 

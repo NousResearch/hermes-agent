@@ -728,7 +728,7 @@ def _action_create(a: dict[str, Any]) -> str:
             # CLI-only lane: absent from CRONJOB_SCHEMA and the model dispatch (models don't pick models).
             reasoning_effort=a["reasoning_effort"], interpreter=a["interpreter"],
             timezone=_normalize_optional_job_value(a["timezone"]),
-            grace_minutes=a["grace_minutes"],
+            grace_minutes=a["grace_minutes"], output_retention=a["output_retention"],
             pinned=bool(a["pinned"]),
             failure_deliver=_resolve_cron_context_deliver(_normalize_deliver_param(a["failure_deliver"])),
             catch_up=a["catch_up"],
@@ -964,6 +964,9 @@ def _update_run_fields(job: dict[str, Any], a: dict[str, Any], updates: dict[str
     if a["timezone"] is not None:
         # '' clears the pin (the job inherits the profile timezone); update_job validates the key.
         updates["timezone"] = _normalize_optional_job_value(a["timezone"]) or ""
+    if a["output_retention"] is not None:
+        # '' clears the override (back to cron.output_retention[_silent]); 0 / negative = never prune.
+        updates["output_retention"] = a["output_retention"]
     if a["grace_minutes"] is not None:
         # '' / null clears the override; 0 is a real value ("never catch up") and passes through.
         updates["grace_minutes"] = (
@@ -1076,7 +1079,8 @@ def cronjob(
     pinned: Optional[bool] = None,
     interpreter: Optional[str] = None,
     timezone: Optional[str] = None,
-    grace_minutes: Optional[int | str] = None) -> str:
+    grace_minutes: Optional[int | str] = None,
+    output_retention: Optional[int | str] = None) -> str:
     """Unified cron job management tool."""
     a = dict(locals())
     del a["task_id"]  # unused but kept for handler signature compatibility
@@ -1167,6 +1171,10 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
                 "items": {"type": "string"},
                 "description": "Optional ordered skill names loaded before the cron prompt. On update, [] clears."
             },
+            "output_retention": {
+                "type": "integer",
+                "description": "Optional: how many run documents to keep for THIS job (each tier: normal runs and silent [SILENT] runs). Overrides cron.output_retention / cron.output_retention_silent. 0 or negative = never prune. Omit to use the global defaults."
+            },
             "catch_up": {
                 "type": "boolean",
                 "description": "Runs missed while the machine was off: true = run once on return, false = skip. Omit for the default (recurring run once, one-shots skip)."
@@ -1238,7 +1246,7 @@ def check_cronjob_requirements() -> bool:
 _HANDLER_FORWARDED_ARGS = (
     "job_id", "prompt", "schedule", "name", "repeat", "deliver", "failure_deliver", "skill", "skills", "reason",
     "script", "context_from", "continuity", "enabled_toolsets", "workdir", "no_agent", "attach_to_session",
-    "paused_reason", "pinned", "timezone", "grace_minutes", "catch_up")
+    "paused_reason", "pinned", "timezone", "grace_minutes", "catch_up", "output_retention")
 
 
 def _cronjob_handler(args, **kw):

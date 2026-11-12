@@ -14,6 +14,7 @@ import pytest
 
 import cron.scheduler as s
 
+SAVED_KWARGS: dict = {}  # job id -> kwargs of the last fake save_job_output call
 
 def _patch_pipeline(monkeypatch, *, success=True, output="out", final="final response",
                     error=None, silent_marker_in=None):
@@ -25,8 +26,9 @@ def _patch_pipeline(monkeypatch, *, success=True, output="out", final="final res
         fr = final if silent_marker_in is None else silent_marker_in
         return (success, output, fr, error)
 
-    def fake_save(jid, out):
+    def fake_save(jid, out, **kw):
         calls.append(("save", jid))
+        SAVED_KWARGS[jid] = kw
         return f"/tmp/{jid}.txt"
 
     def fake_deliver(execution_id, job, content, **kwargs):
@@ -291,7 +293,7 @@ def test_run_one_job_exception_after_delivery_does_not_redeliver(monkeypatch):
         "run_job",
         lambda *_a, **_kw: (True, "out", "final response", None),
     )
-    monkeypatch.setattr(s, "save_job_output", lambda jid, out: f"/tmp/{jid}.txt")
+    monkeypatch.setattr(s, "save_job_output", lambda jid, out, **_kw: f"/tmp/{jid}.txt")
     monkeypatch.setattr(
         s,
         "_deliver_result",
@@ -401,7 +403,7 @@ def test_run_one_job_installs_secret_scope_under_multiplex(monkeypatch, tmp_path
         return {"status": "pending"}
 
     monkeypatch.setattr(s, "run_job", fake_run_job)
-    monkeypatch.setattr(s, "save_job_output", lambda jid, out: f"/tmp/{jid}.txt")
+    monkeypatch.setattr(s, "save_job_output", lambda jid, out, **_kw: f"/tmp/{jid}.txt")
     monkeypatch.setattr("cron.delivery_queue.enqueue", fake_deliver)
     monkeypatch.setattr(s, "mark_job_run", lambda *a, **k: None)
 
@@ -420,3 +422,19 @@ def test_run_one_job_installs_secret_scope_under_multiplex(monkeypatch, tmp_path
     # And it was torn down after the full lifecycle returned (no leak).
     assert ss.current_secret_scope() is None
 
+
+
+@pytest.mark.parametrize("success, final, silent", [
+    (True, "[SILENT]", True),            # nothing to report: silent retention tier
+    (True, "final response", False),     # a real report keeps the normal tier
+    (False, "[SILENT]", False),          # a failed run is never filed as silent
+])
+def test_run_one_job_files_silent_runs_in_the_silent_tier(monkeypatch, success, final, silent):
+    _patch_pipeline(monkeypatch, success=success, final=final, error=None if success else "boom")
+    job = {"id": f"tier-{success}-{silent}", "name": "t", "deliver": "telegram", "output_retention": 7}
+
+    s.run_one_job(job)
+
+    saved = SAVED_KWARGS[job["id"]]
+    assert saved["silent"] is silent
+    assert saved["job"]["output_retention"] == 7

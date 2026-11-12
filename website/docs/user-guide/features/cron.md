@@ -908,6 +908,19 @@ Otherwise, report the issue.
 
 Failed jobs always deliver regardless of the `[SILENT]` marker — only successful runs can be silenced. For quiet monitoring jobs, prompt the agent to reply with only `[SILENT]` when there is nothing to report.
 
+### Run output retention
+
+Each run writes one document under `~/.hermes/cron/output/<job_id>/`. Silent runs (a `[SILENT]` reply, an empty or `wakeAgent: false` script) are written as `<timestamp>.silent.md` and kept on their own, smaller cap, so a watchdog's heartbeats never push the runs that reported something (or failed) out of the window:
+
+```yaml
+# ~/.hermes/config.yaml
+cron:
+  output_retention: 50          # newest run documents kept per job (default 50)
+  output_retention_silent: 20   # newest silent-run documents kept per job (default 20)
+```
+
+A job can override both caps with its own `output_retention` (the `cronjob` tool's `output_retention` parameter, or the field in `jobs.json`). `0` or a negative value disables pruning, for the global caps and per job alike. Caps must be whole numbers: a fractional per-job value (`0.5`) is rejected, and a fractional global cap falls back to its default instead of being truncated.
+
 ### Declaring a failed run
 
 Only runtime failures (exceptions, timeouts, an unreachable model) mark a run as failed. When the agent itself

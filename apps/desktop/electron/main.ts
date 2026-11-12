@@ -531,7 +531,7 @@ import {
 } from './remote-liveness'
 import { resolveRemoteOauthTicket, rosterSourceEnumerationTimeoutMs } from './remote-oauth-ticket'
 import { createRemoteOwnerCache } from './remote-owner-cache'
-import { remoteSessionCookies } from './remote-session-cookies'
+import { jarWriteFromSetCookie, remoteSessionCookies } from './remote-session-cookies'
 import {
   applyRemoteRequestHeaders,
   attachRemoteRequestHeaderListener,
@@ -6879,6 +6879,7 @@ function getOauthSession() {
 
   oauthSession = session.fromPartition(OAUTH_SESSION_PARTITION)
   installRemoteHeaderRulesOnSession(oauthSession)
+  keepMirrorInStepWithJar(oauthSession, OAUTH_SESSION_PARTITION)
 
   return oauthSession
 }
@@ -6923,6 +6924,7 @@ function getOauthSessionForUrl(url, { connectionId = '', pendingAuthMode = '', p
     sess = session.fromPartition(partition)
     oauthSessionsByPartition.set(partition, sess)
     installRemoteHeaderRulesOnSession(sess)
+    keepMirrorInStepWithJar(sess, partition)
   }
 
   return sess
@@ -6981,6 +6983,35 @@ function warmOauthCookieStore(url?) {
 // Bare + prefixed variants of the session cookies live in
 // connection-config.ts (cookiesHaveSession / cookiesHaveLiveSession). See
 // that module for details.
+
+// One rotating refresh token, two cookie stores: the partition jar and the
+// in-memory mirror (#61457). Each store only sees the rotations made through
+// it, so whichever lagged replayed the previous token, and the portal revokes
+// the whole session on a replay. Follow every jar write into the mirror here;
+// fetchJsonViaOauthSession writes the mirror's Set-Cookies into the jar.
+function keepMirrorInStepWithJar(sess, partition) {
+  sess.cookies.on('changed', (_event, cookie, _cause, removed) => {
+    if (!removed) {
+      remoteSessionCookies.followJarWrite(partition, cookie)
+    }
+  })
+}
+
+async function writeSetCookiesIntoJar(sess, url, setCookie) {
+  for (const header of [setCookie ?? []].flat()) {
+    const write = jarWriteFromSetCookie(url, header)
+
+    try {
+      if (write?.kind === 'set') {
+        await sess.cookies.set(write.details)
+      } else if (write?.kind === 'remove') {
+        await sess.cookies.remove(url, write.name)
+      }
+    } catch (error) {
+      rememberLog(`Remote session cookie jar write failed for ${new URL(url).host}: ${error?.message || error}`)
+    }
+  }
+}
 
 // #61457: snapshot a partition jar's session cookies for this gateway into
 // the in-memory mirror, keyed by the SAME partition the jar belongs to.
@@ -7273,7 +7304,10 @@ function fetchJsonViaOauthSession(url, options: any = {}) {
           clearTimer: (): void => clearTimeout(timer),
           resolve,
           reject,
-          onSetCookies: setCookie => remoteSessionCookies.record(partition, url, setCookie)
+          onSetCookies: setCookie => {
+            remoteSessionCookies.record(partition, url, setCookie)
+            void writeSetCookiesIntoJar(sess, url, setCookie)
+          }
         })
       })
       request.on('error', error => {

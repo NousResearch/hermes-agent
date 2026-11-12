@@ -139,6 +139,114 @@ export function cookiePathMatches(cookiePath: string, requestPath: string): bool
   return cookiePath.endsWith('/') || requestPath.charAt(cookiePath.length) === '/'
 }
 
+/** A cookie as Electron's `cookies` 'changed' event reports a jar write. */
+export interface JarCookieWrite {
+  name?: string
+  value?: string
+  domain?: string
+  path?: string
+  hostOnly?: boolean
+}
+
+/** The `Electron.CookiesSetDetails` subset a `Set-Cookie` header carries. */
+export interface JarCookieDetails {
+  url: string
+  name: string
+  value: string
+  path: string
+  domain?: string
+  secure: boolean
+  httpOnly: boolean
+  sameSite?: 'no_restriction' | 'lax' | 'strict'
+  expirationDate?: number
+}
+
+export type JarWrite = { kind: 'set'; details: JarCookieDetails } | { kind: 'remove'; name: string }
+
+const SAME_SITE: Record<string, JarCookieDetails['sameSite']> = {
+  none: 'no_restriction',
+  lax: 'lax',
+  strict: 'strict'
+}
+
+/**
+ * The jar write a response's `Set-Cookie` header asks for, so a cookie the mirror captured also reaches the
+ * partition's Chromium jar; null when unparsable. No `Max-Age`/`Expires` keeps it a session cookie.
+ */
+export function jarWriteFromSetCookie(url: string, header: string, nowMs: number = Date.now()): JarWrite | null {
+  const parsed = parseSetCookie(header)
+
+  if (!parsed) {
+    return null
+  }
+
+  if (parsed.expired) {
+    return { kind: 'remove', name: parsed.name }
+  }
+
+  const details: JarCookieDetails = {
+    url,
+    name: parsed.name,
+    value: parsed.value,
+    path: parsed.path,
+    secure: false,
+    httpOnly: false
+  }
+
+  let maxAgeSeconds: number | undefined
+  let expiresMs: number | undefined
+
+  for (const attribute of header.split(';').slice(1)) {
+    const eq = attribute.indexOf('=')
+    const name = (eq >= 0 ? attribute.slice(0, eq) : attribute).trim().toLowerCase()
+    const value = eq >= 0 ? attribute.slice(eq + 1).trim() : ''
+
+    if (name === 'secure') {
+      details.secure = true
+    } else if (name === 'httponly') {
+      details.httpOnly = true
+    } else if (name === 'domain' && value) {
+      details.domain = value
+    } else if (name === 'samesite') {
+      details.sameSite = SAME_SITE[value.toLowerCase()]
+    } else if (name === 'max-age' && Number.isFinite(Number(value))) {
+      maxAgeSeconds = Number(value)
+    } else if (name === 'expires' && Number.isFinite(Date.parse(value))) {
+      expiresMs = Date.parse(value)
+    }
+  }
+
+  // RFC 6265 §5.3: Max-Age wins over Expires.
+  if (maxAgeSeconds !== undefined) {
+    details.expirationDate = Math.floor(nowMs / 1000) + maxAgeSeconds
+  } else if (expiresMs !== undefined) {
+    details.expirationDate = Math.floor(expiresMs / 1000)
+  }
+
+  return { kind: 'set', details }
+}
+
+function hostOfOrigin(origin: string): string {
+  try {
+    return new URL(origin).hostname.toLowerCase()
+  } catch {
+    return ''
+  }
+}
+
+/** RFC 6265 §5.1.3 domain-match of a jar cookie against a request host. */
+function cookieDomainMatches(cookie: JarCookieWrite, host: string): boolean {
+  const domain = String(cookie.domain ?? '')
+    .replace(/^\./, '')
+    .toLowerCase()
+
+  if (!domain || !host) {
+    return false
+  }
+
+  return host === domain || (!cookie.hostOnly && host.endsWith(`.${domain}`))
+}
+
 export class RemoteSessionCookieStore {
   /** partition → origin → cookie name → mirrored cookie */
   private readonly byPartition = new Map<string, Map<string, Map<string, MirroredCookie>>>()
@@ -210,6 +318,31 @@ export class RemoteSessionCookieStore {
           value: cookie.value,
           path: normalizeCookiePath(typeof cookie.path === 'string' ? cookie.path : undefined)
         })
+      }
+    }
+  }
+
+  /**
+   * Follow a write to the partition's Chromium jar into the mirror. Only a cookie the mirror already holds
+   * for a matching host and path is updated, so the mirror never gains a credential it did not have.
+   *
+   * The gateway rotates its refresh-token cookie on every refresh, and a refresh through a jar-only path
+   * (the sign-in window, media streams) used to leave the mirror holding the previous token. The next
+   * mirrored request replayed it, and the portal read that replay as refresh-token theft and revoked the
+   * whole session: the daily "you are not signed in" on Hermes Cloud agents.
+   */
+  followJarWrite(partition: string, cookie: JarCookieWrite): void {
+    const origins = this.byPartition.get(partition)
+
+    if (!origins || !cookie.name || !cookie.value) {
+      return
+    }
+
+    const path = normalizeCookiePath(cookie.path)
+
+    for (const [origin, jar] of origins) {
+      if (jar.get(cookie.name)?.path === path && cookieDomainMatches(cookie, hostOfOrigin(origin))) {
+        jar.set(cookie.name, { value: cookie.value, path })
       }
     }
   }

@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
-import { cookiePathMatches, originKeyFor, parseSetCookie, RemoteSessionCookieStore } from './remote-session-cookies'
+import {
+  cookiePathMatches,
+  jarWriteFromSetCookie,
+  originKeyFor,
+  parseSetCookie,
+  RemoteSessionCookieStore
+} from './remote-session-cookies'
 
 const LEGACY = 'persist:hermes-remote-oauth'
 const CONN_A = 'persist:hermes-remote-oauth-conn-a'
@@ -143,5 +149,112 @@ describe('RemoteSessionCookieStore', () => {
 
     store.clear()
     expect(store.cookieHeaderFor(CONN_A, 'https://gw.example.com/')).toBeNull()
+  })
+})
+
+describe('RemoteSessionCookieStore.followJarWrite', () => {
+  const AGENT = 'https://agent.agents.example.com'
+  const TICKET = `${AGENT}/api/auth/ws-ticket`
+
+  it('a refresh-token rotation in the jar replaces the mirrored token, so the mirror never replays it', () => {
+    const store = new RemoteSessionCookieStore()
+
+    store.record(LEGACY, TICKET, '__Host-hermes_session_rt=rt-1; Path=/; HttpOnly; Secure')
+    store.followJarWrite(LEGACY, {
+      name: '__Host-hermes_session_rt',
+      value: 'rt-2',
+      domain: 'agent.agents.example.com',
+      path: '/',
+      hostOnly: true
+    })
+
+    expect(store.cookieHeaderFor(LEGACY, TICKET)).toBe('__Host-hermes_session_rt=rt-2')
+  })
+
+  it('never adds a cookie the mirror did not hold, nor crosses partition, host or path', () => {
+    const store = new RemoteSessionCookieStore()
+    const other = 'https://other.agents.example.com/api'
+
+    store.record(LEGACY, TICKET, 'rt=old; Path=/')
+    store.record(CONN_A, TICKET, 'rt=conn-a; Path=/')
+    store.record(LEGACY, other, 'rt=other; Path=/')
+
+    store.followJarWrite(LEGACY, { name: 'fresh', value: 'x', domain: 'agent.agents.example.com', path: '/' })
+    store.followJarWrite(LEGACY, { name: 'rt', value: 'wrong-path', domain: 'agent.agents.example.com', path: '/gw' })
+    store.followJarWrite(LEGACY, {
+      name: 'rt',
+      value: 'new',
+      domain: 'agent.agents.example.com',
+      path: '/',
+      hostOnly: true
+    })
+
+    expect(store.cookieHeaderFor(LEGACY, TICKET)).toBe('rt=new')
+    expect(store.cookieHeaderFor(CONN_A, TICKET)).toBe('rt=conn-a')
+    expect(store.cookieHeaderFor(LEGACY, other)).toBe('rt=other')
+  })
+
+  it('a domain cookie reaches subdomain origins; a host-only one does not', () => {
+    const store = new RemoteSessionCookieStore()
+
+    store.record(LEGACY, TICKET, 'rt=old; Path=/')
+    store.followJarWrite(LEGACY, {
+      name: 'rt',
+      value: 'host-only',
+      domain: 'agents.example.com',
+      path: '/',
+      hostOnly: true
+    })
+    expect(store.cookieHeaderFor(LEGACY, TICKET)).toBe('rt=old')
+
+    store.followJarWrite(LEGACY, { name: 'rt', value: 'domain', domain: '.agents.example.com', path: '/' })
+    expect(store.cookieHeaderFor(LEGACY, TICKET)).toBe('rt=domain')
+  })
+})
+
+describe('jarWriteFromSetCookie', () => {
+  const URL_ = 'https://agent.agents.example.com/api/auth/ws-ticket'
+
+  it("turns the gateway's rotated refresh cookie into jar details", () => {
+    const now = Date.UTC(2026, 10, 12)
+
+    expect(
+      jarWriteFromSetCookie(
+        URL_,
+        '__Host-hermes_session_rt=rt-2; HttpOnly; Max-Age=2592000; Path=/; SameSite=lax; Secure',
+        now
+      )
+    ).toEqual({
+      kind: 'set',
+      details: {
+        url: URL_,
+        name: '__Host-hermes_session_rt',
+        value: 'rt-2',
+        path: '/',
+        secure: true,
+        httpOnly: true,
+        sameSite: 'lax',
+        expirationDate: now / 1000 + 2592000
+      }
+    })
+  })
+
+  it('keeps Domain, honours Expires, and leaves a cookie without either a session cookie', () => {
+    const set = jarWriteFromSetCookie(URL_, 'a=1; Domain=.example.com; Expires=Wed, 01 Jan 2031 00:00:00 GMT')
+
+    expect(set?.kind === 'set' && set.details.domain).toBe('.example.com')
+    expect(set?.kind === 'set' && set.details.expirationDate).toBe(Date.UTC(2031, 0, 1) / 1000)
+
+    const session = jarWriteFromSetCookie(URL_, 'a=1; Path=/')
+
+    expect(session?.kind === 'set' && session.details.expirationDate).toBeUndefined()
+  })
+
+  it('a deletion removes the jar cookie; junk is ignored', () => {
+    expect(jarWriteFromSetCookie(URL_, '__Host-hermes_session_rt=; Max-Age=0; Path=/')).toEqual({
+      kind: 'remove',
+      name: '__Host-hermes_session_rt'
+    })
+    expect(jarWriteFromSetCookie(URL_, 'nonsense')).toBeNull()
   })
 })

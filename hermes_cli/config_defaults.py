@@ -802,8 +802,8 @@ DEFAULT_CONFIG = {
     "display": {
         "compact": False,
         "personality": "",
-        "resume_display": "full",
-        # Recap tuning for /resume and startup resume.
+        "resume_display": "full",          # full (recap) | transcript (all messages, live-chat style) | minimal | off
+        # Recap tuning for /resume and startup resume (``full`` mode only).
         "resume_exchanges": 10,            # max user+assistant pairs to show
         "resume_max_user_chars": 300,      # truncate user message text
         "resume_max_assistant_chars": 200, # truncate non-last assistant text

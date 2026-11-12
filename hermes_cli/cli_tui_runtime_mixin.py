@@ -325,7 +325,8 @@ class CLITuiRuntimeMixin:
             except Exception:
                 logger.debug("auto-prune offer failed", exc_info=True)
 
-        if self._resumed and self._preload_resumed_session():
+        resumed_ok = self._resumed and self._preload_resumed_session()
+        if resumed_ok:
             self._display_resumed_history()
 
         _welcome_skin = None  # stays None when the skin engine failed
@@ -338,7 +339,10 @@ class CLITuiRuntimeMixin:
             _welcome_color = _welcome_skin.get_color("banner_text", _welcome_color)
         except Exception:
             pass
-        self._console_print(f"[{_welcome_color}]{_welcome_text}[/]")
+        # A resumed session is not a fresh one: the welcome line belongs to a new
+        # conversation, and printing it over replayed history reads as if it was lost.
+        if not resumed_ok:
+            self._console_print(f"[{_welcome_color}]{_welcome_text}[/]")
 
         self._tui_startup_prewarm_and_warnings(_welcome_skin)
         if _show_vscode_images_hint:

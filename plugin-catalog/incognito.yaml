@@ -1,6 +1,6 @@
 name: incognito
 repo: https://github.com/nicolasbuelvas/hermes-incognito
-sha: 5fed3531d4daa87755e380b92a1ab2c5701e00f2
+sha: b51395c31bd3385e8a3f8631cd1cfb3541d81de1
 title: Hermes Incognito
 description: "Zero-trace ephemeral and incognito sessions across Hermes CLI, TUI, Gateway, and Desktop: hides active chats from sidebars and cross-session searches, blocks persistent memory and skill mutations, strips profile and personal memory in RAM in strict clean-room mode, optionally masks outbound PII via a reversible RAM-only vault, zero-fills transcript and hook spill files before unlinking on close or TTL expiry, and emits content-free SHA-256 verification receipts. Disclosure: reads and deletes only incognito-tagged rows in $HERMES_HOME/state.db and files in $HERMES_HOME/sessions/ and $HERMES_HOME/hook_outputs/ when an incognito session is burned or swept; stores content-free leases and receipt hashes under $HERMES_HOME/plugin-data/incognito/; attaches provider non-retention flags to outbound LLM requests; makes no third-party network calls."
 maintainer: nicolasbuelvas

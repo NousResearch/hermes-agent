@@ -1,16 +1,7 @@
 name: evm-token-inspector
 repo: https://github.com/sawi57003-ops/evm-token-inspector
 sha: abe6d9bdb2e93c1a4426ad5912a7394ade35f2a6
-description: >-
-  Inspect any EVM token contract before interacting with it: name, symbol,
-  decimals, total supply, owner/renounced status, EIP-1967 proxy detection,
-  and the DEX V2 pair plus liquidity reserves — one tool, evm_token_check,
-  on BSC, Ethereum, Base and Arbitrum. Read-only; public JSON-RPC only, no
-  API key, no signing, no credentials. Disclosure — the tool POSTs to public
-  RPC endpoints (bsc-dataseed, publicnode, drpc, blastapi, mainnet.base.org,
-  arb1.arbitrum.io) with the contract address; it does not detect honeypots
-  or hidden taxes, it reports the on-chain facts (owner, proxy, pair,
-  reserves) so the agent and user can judge. It is not financial advice.
+description: "Inspect any EVM token contract before interacting with it: name, symbol, decimals, total supply, owner/renounced status, EIP-1967 proxy detection, and the DEX V2 pair plus liquidity reserves — one tool, evm_token_check, on BSC, Ethereum, Base and Arbitrum. Read-only; public JSON-RPC only, no API key, no signing, no credentials. Disclosure — read-only: the evm_token_check tool sends the contract address in standard JSON-RPC read calls (via the system curl binary, falling back to Python urllib) to fixed public RPC endpoints (bsc-dataseed.binance.org, bsc.publicnode.com, rpc-bsc.48.club, bsc-dataseed1.ninicoin.io, ethereum.publicnode.com, eth.drpc.org, eth-mainnet.public.blastapi.io, mainnet.base.org, base.publicnode.com, arb1.arbitrum.io, arbitrum.publicnode.com); no keys, no signing, no transactions. It does not detect honeypots or hidden taxes; it reports on-chain facts (owner, proxy, pair, reserves) for the user to judge, and is not financial advice."
 maintainer: sawi57003-ops
 tier: community
 category: tools

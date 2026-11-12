@@ -14,9 +14,11 @@ from pathlib import Path
 # Requests under these prefixes are files, never client-side routes, so a miss is a 404 rather
 # than the SPA shell (a font answered with HTML renders in a fallback face, silently).
 STATIC_ASSET_PREFIXES: tuple[str, ...] = ("assets/", "ds-assets/", "fonts/", "fonts-terminal/")
-# Root page icons answer without sign-in, so a missing (or out-of-dist) icon must be a 404, not
-# the SPA shell served anonymously.
-STATIC_ASSET_FILES: frozenset[str] = frozenset({"apple-touch-icon.png", "favicon.ico"})
+# The Webapp's install manifest and the icons it names. Browsers fetch them without cookies.
+WEBAPP_INSTALL_FILES: frozenset[str] = frozenset({"manifest.webmanifest", "pwa-192.png", "pwa-512.png"})
+# Root page icons and install files answer without sign-in, so a missing (or out-of-dist) one must
+# be a 404, not the SPA shell served anonymously.
+STATIC_ASSET_FILES: frozenset[str] = frozenset({"apple-touch-icon.png", "favicon.ico"}) | WEBAPP_INSTALL_FILES
 _PUBLIC_FONT_DIRS: tuple[str, ...] = ("fonts", "fonts-terminal")
 _WEB_PUBLIC = Path(__file__).resolve().parent.parent / "web" / "public"
 

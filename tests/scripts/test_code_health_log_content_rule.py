@@ -24,6 +24,9 @@ def _flagged(src: str) -> bool:
     "self._log.warning('quote=%s', quote_text)",
     "logging.info('from %s', from_number)",
     "logger.info('x %s' % text)",
+    "logger.info('Voice input from user %d: %s', user_id, transcript[:100])",
+    "logger.info('resolved (user=%s)', user_display)",
+    "logger.info('from %s', getattr(message.author, 'display_name', 'unknown'))",
 ])
 def test_flags_user_content_at_info_and_above(src):
     assert _flagged(src), src
@@ -39,6 +42,8 @@ def test_flags_user_content_at_info_and_above(src):
     "logger.info('user=%s chat=%s', user_id, chat_id)",  # ids are allowed
     "print('text', text)",
     "logger.info('has text: %s', bool(text))",
+    "logger.info('from %s', getattr(message.author, 'id', 'unknown'))",
+    "logger.warning('HTTP %s', getattr(resp, 'text', ''))",  # transport payload via getattr
 ])
 def test_ignores_metadata_debug_and_transport_payloads(src):
     assert not _flagged(src), src

@@ -446,10 +446,22 @@ def _read_or_create_log_hash_salt(home: Path) -> bytes:
                 os.link(temporary, path)
             except FileExistsError:
                 data = path.read_bytes()
+            except OSError:  # no hard links (Android SELinux, exFAT): exclusive create, first wins
+                data = _create_log_hash_salt_exclusive(path, data)
         finally:
             temporary.unlink(missing_ok=True)
     if len(data) != 32:
         raise ValueError("log hash salt is invalid")
+    return data
+
+
+def _create_log_hash_salt_exclusive(path: Path, data: bytes) -> bytes:
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        return path.read_bytes()
+    with os.fdopen(fd, "wb") as stream:
+        stream.write(data)
     return data
 
 
@@ -458,12 +470,17 @@ def _log_hash_salt() -> bytes:
     try:
         home = get_hermes_home()
         key = hermes_home_key(home)
-        if (cached := _LOG_HASH_SALTS.get(key)) is None:
-            cached = _LOG_HASH_SALTS[key] = _read_or_create_log_hash_salt(home)
-        return cached
     except (OSError, ValueError):
-        # Must never raise into a log call; a process-random salt still correlates within this run.
         return _PROCESS_LOG_HASH_SALT
+    if (cached := _LOG_HASH_SALTS.get(key)) is None:
+        try:
+            cached = _read_or_create_log_hash_salt(home)
+        except (OSError, ValueError):
+            # Must never raise into a log call; a process-random salt still correlates within this
+            # run. Cached so an unwritable home doesn't retry file I/O on every log line.
+            cached = _PROCESS_LOG_HASH_SALT
+        _LOG_HASH_SALTS[key] = cached
+    return cached
 
 
 def hash_for_log(value: object) -> str:

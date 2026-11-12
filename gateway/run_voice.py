@@ -374,8 +374,8 @@ class GatewayVoiceMixin:
             return
         binding = (getattr(adapter, "_owner_profile", None), guild_id, text_ch_id)
         if self._is_duplicate_voice_transcript(binding, user_id, transcript):
-            logger.info("Suppressing duplicate voice transcript for guild=%s user=%s: %s",
-                        guild_id, user_id, transcript[:100])
+            logger.info("Suppressing duplicate voice transcript for guild=%s user=%s (%d chars)",
+                        guild_id, user_id, len(transcript))
             return
         # Echo the transcript into the text channel (after auth, with mention sanitization).
         with suppress(Exception):

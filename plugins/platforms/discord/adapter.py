@@ -3943,7 +3943,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             transcript = result.get("transcript", "").strip()
             if not transcript or is_whisper_hallucination(transcript):
                 return
-            logger.info("Voice input from user %d: %s", user_id, transcript[:100])
+            logger.info("Voice input from user %d (%d chars)", user_id, len(transcript))
             if getattr(self, "_voice_text_channels", {}).get(guild_id) != captured_for:
                 logger.info("Dropping voice input from user %d: binding moved during transcription", user_id)
                 return
@@ -4400,7 +4400,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         deferred_response = await self._defer_unless_expired(
             interaction,
             "[Discord] slash %s: interaction expired before defer. "
-            "Executing command anyway, skipping interaction followup.", command_text,
+            "Executing command anyway, skipping interaction followup.", command_text.split(" ", 1)[0],
         )
         event = self._build_slash_event(interaction, command_text)
         await self.handle_message(event)
@@ -6193,7 +6193,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             if (mention_prefix and not media_urls and not pending_text_injection):
                 logger.info(
                     "[%s] Ignoring mention-only message from %s in %s", self.name,
-                    getattr(message.author, "display_name", getattr(message.author, "name", "unknown")),
+                    getattr(message.author, "id", "unknown"),
                     getattr(message.channel, "id", "unknown"),
                 )
                 return False

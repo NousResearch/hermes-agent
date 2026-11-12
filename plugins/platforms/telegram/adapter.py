@@ -4420,7 +4420,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             from tools.approval import resolve_gateway_approval_card
             count = resolve_gateway_approval_card(session_key, choice, request_id,
                                                   actor_id=getattr(query.from_user, "id", ""), extra=self.config.extra)
-            logger.info("Telegram button resolved %d approval(s) for session %s (choice=%s, user=%s)", count, session_key, choice, user_display)
+            logger.info("Telegram button resolved %d approval(s) for session %s (choice=%s, user=%s)", count, session_key, choice, getattr(query.from_user, "id", None))
         except Exception as exc:
             logger.error("Failed to resolve gateway approval from Telegram button: %s", exc)
             count = 0

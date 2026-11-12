@@ -28,7 +28,7 @@ from scripts.code_health.py_ast import Ctx, _dotted
 _LEVELS = {"info", "warning", "warn", "error", "critical", "exception"}
 _CONTENT = re.compile(
     r"(?:text|body|content|subject|caption|(?!(?:error|err|stderr|stdout|body|status|resp|response)_)\w+_text"
-    r"|user_?name|display_name|sender_name|nickname|first_name|last_name|full_name"
+    r"|transcript|user_?name|user_display|display_name|sender_name|nickname|first_name|last_name|full_name"
     r"|sender_addr|from_addr|to_addr|email|email_address|sender_email|from_number|to_number"
     r"|phone|phone_number)",
     re.IGNORECASE,
@@ -75,6 +75,8 @@ def _prints_content(node: ast.AST | None) -> bool:
             return _prints_content(func.value)
         if _dotted(func) in _PASSTHROUGH_CALLS:
             return bool(node.args) and _prints_content(node.args[0])
+        if _dotted(func) == "getattr" and len(node.args) >= 2 and isinstance(node.args[1], ast.Constant):
+            return _named_content(ast.Attribute(node.args[0], str(node.args[1].value), ast.Load()))
     return False
 
 

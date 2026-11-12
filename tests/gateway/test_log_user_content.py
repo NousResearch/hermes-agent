@@ -57,6 +57,35 @@ def test_hash_for_log_is_salted_per_install(tmp_path, monkeypatch):
     assert hash_for_log(phone) != digest_a
 
 
+def test_hash_for_log_salt_persists_without_hard_links(tmp_path, monkeypatch):
+    # Android (SELinux) and exFAT refuse link(): the salt must still be written once and reused.
+    home = _fresh_home(tmp_path, monkeypatch, "nolink")
+
+    def refuse_link(*_args, **_kwargs):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(os, "link", refuse_link)
+    digest = hash_for_log("+155****1111")
+    assert len((home / "log_hash_salt").read_bytes()) == 32
+    monkeypatch.setattr(helpers, "_LOG_HASH_SALTS", {})  # a new process on the same install
+    assert hash_for_log("+155****1111") == digest
+    assert not list(home.glob(".log_hash_salt.*"))  # no temp file left behind
+
+
+def test_hash_for_log_salt_failure_is_not_retried_per_call(tmp_path, monkeypatch):
+    _fresh_home(tmp_path, monkeypatch, "broken")
+    attempts = []
+
+    def fail(home):
+        attempts.append(home)
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(helpers, "_read_or_create_log_hash_salt", fail)
+    assert hash_for_log("a") == hash_for_log("a")
+    hash_for_log("b")
+    assert len(attempts) == 1
+
+
 @pytest.mark.platforms("posix")  # POSIX permission bits
 def test_hash_for_log_salt_is_private_and_unwritable_home_falls_back(tmp_path, monkeypatch):
     home = _fresh_home(tmp_path, monkeypatch, "posix")

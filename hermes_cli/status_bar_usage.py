@@ -5,9 +5,13 @@ The number comes from the provider's usage API (:mod:`agent.account_usage`), so 
 fetches it on the render path. It reads the shared cache (:mod:`agent.account_usage_cache`) and
 asks for a background refresh, which that cache throttles to one try per provider every
 ``REFRESH_AFTER_S``. The segment stays hidden instead of guessing: before the first fetch lands,
-for a provider without a usage API, for a fresh reading with no account-wide weekly window (an
-Anthropic API key, OpenRouter; such a provider is asked again only once the reading goes stale),
-for a credential pool of several accounts, and for a snapshot past the cache's staleness bound.
+for a provider without a usage API, for a reading with no account-wide weekly window, for a
+credential pool of several credentials, and for a snapshot past the cache's staleness bound.
+
+A provider whose usage API answers with windows but no weekly one (an OpenRouter key with a credit
+limit) is asked again only once that reading goes stale. One that answers with no windows at all
+(an Anthropic API key, an OpenRouter key without a limit) leaves the cache nothing to store, so it
+is asked again every ``REFRESH_AFTER_S``.
 """
 
 from __future__ import annotations
@@ -25,9 +29,9 @@ logger = logging.getLogger(__name__)
 # ``seven_day`` ("Current week"), Codex's 7-day window and plugin providers such as OpenCode Go
 # (``opencode-go``, "Weekly"). Model-scoped weeks (Anthropic's Opus/Sonnet) never stand for the account.
 WEEKLY_WINDOW_LABELS = frozenset({"Current week", "Weekly"})
-# The cached reading belongs to one login, so a pool of this many accounts gets none: it may not be
-# the account serving the session (the /model picker's rule for its usage gauge).
-MULTI_ACCOUNT_POOL_SIZE = 2
+# The cached reading belongs to one login, so a pool of this many credentials gets none: it may not
+# be the one serving the session (the /model picker's rule for its usage gauge).
+MULTI_CREDENTIAL_POOL_SIZE = 2
 # Readings arrive as floats: 7.000000000000001 is 7%, not a sliver over it, before rounding up.
 _FLOAT_NOISE_DECIMALS = 6
 
@@ -72,7 +76,7 @@ def _cached_weekly_usage_percent(provider: Optional[str], credential_pool: Any) 
         cached_account_usage, has_account_usage, refresh_account_usage_async, snapshot_is_stale,
     )
 
-    if not provider or not has_account_usage(provider) or _pooled_accounts(credential_pool) >= MULTI_ACCOUNT_POOL_SIZE:
+    if not provider or not has_account_usage(provider) or _pooled_credentials(credential_pool) >= MULTI_CREDENTIAL_POOL_SIZE:
         return None
     snapshot = cached_account_usage(provider)
     fresh = not snapshot_is_stale(snapshot)
@@ -85,5 +89,5 @@ def _cached_weekly_usage_percent(provider: Optional[str], credential_pool: Any) 
     return max(0, min(100, math.ceil(round(float(window.used_percent), _FLOAT_NOISE_DECIMALS))))
 
 
-def _pooled_accounts(credential_pool: Any) -> int:
-    return len(credential_pool.entries()) if credential_pool is not None else 0
+def _pooled_credentials(credential_pool: Any) -> int:
+    return credential_pool.entry_count() if credential_pool is not None else 0

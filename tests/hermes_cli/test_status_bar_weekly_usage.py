@@ -16,6 +16,7 @@ import providers
 from agent import account_usage, account_usage_cache
 from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
 from agent.account_usage_cache import cached_account_usage, remember_account_usage
+from agent.credential_pool import CredentialPool, PooledCredential
 from agent.i18n import t
 from cli import HermesCLI
 from hermes_cli import status_bar_usage
@@ -34,6 +35,8 @@ _NARROW_COLUMNS = 40
 _FIRST_MID_COLUMNS = 52
 _LAST_NARROW_COLUMNS = 51
 _FETCH_DEADLINE_SECONDS = 30
+# A repaint that has not returned by then is waiting on something: a lock or the network.
+_REPAINT_DEADLINE_SECONDS = 5
 _OAUTH_SHAPED_TOKEN = "sk-ant-oat01-test"
 
 
@@ -82,13 +85,20 @@ def _no_refresh(monkeypatch):
 
 
 class _Pool:
-    """A credential pool stand-in holding *accounts* logins."""
+    """A credential pool stand-in holding *credentials* entries."""
 
-    def __init__(self, accounts):
-        self._entries = [object() for _ in range(accounts)]
+    def __init__(self, credentials):
+        self._count = credentials
 
-    def entries(self):
-        return list(self._entries)
+    def entry_count(self):
+        return self._count
+
+
+def _real_pool(credentials):
+    return CredentialPool("anthropic", [
+        PooledCredential(provider="anthropic", id=f"entry-{index}", label=f"login {index}", auth_type="oauth",
+                         priority=index, source="test", access_token=f"fixture-token-{index}")
+        for index in range(credentials)])
 
 
 class _CountingUsageApi:
@@ -170,6 +180,22 @@ def test_a_usage_api_without_a_weekly_window_is_asked_again_only_once_its_readin
                                                    age=timedelta(hours=1)))
     assert weekly_usage_percent("openrouter") is None
     assert calls == [["openrouter"]]
+
+
+def test_a_usage_api_that_answers_with_no_windows_is_asked_again_every_interval(monkeypatch):
+    # An Anthropic API key, or an OpenRouter key without a credit limit: the cache never stores a windowless
+    # answer, so unlike the case above there is no reading to back off on, only the cache's own interval.
+    usage_api = _CountingUsageApi(answer=_snapshot(provider="openrouter"))
+    monkeypatch.setitem(account_usage._USAGE_FETCHERS, "openrouter", usage_api)
+    monkeypatch.setattr("agent.account_usage_cache.REFRESH_AFTER_S", 0.0)  # every repaint is past the interval
+    cli_obj = _make_cli(_OPTED_IN, provider="openrouter")
+
+    def repaint_then_count():
+        cli_obj._get_status_bar_snapshot()
+        return usage_api.calls >= 2
+
+    wait_until(repaint_then_count, timeout=_FETCH_DEADLINE_SECONDS, what="a later interval asked again")
+    assert cli_obj._get_status_bar_snapshot()["weekly_usage_percent"] is None
 
 
 def test_provider_without_a_usage_api_never_starts_a_fetch(monkeypatch):
@@ -263,7 +289,7 @@ def test_repaints_ask_the_usage_api_once_per_refresh_interval(monkeypatch):
 
     def repaint_then_count():  # repaint inside the wait: one repaint can lose to the in-flight first fetch
         cli_obj._get_status_bar_snapshot()
-        return usage_api.calls == 2
+        return usage_api.calls >= 2  # a later poll may already have started a third
 
     wait_until(repaint_then_count, timeout=_FETCH_DEADLINE_SECONDS, what="a repaint after the interval asked again")
 
@@ -317,15 +343,40 @@ def test_a_plugin_providers_weekly_window_reaches_the_bar(monkeypatch):
 # ── Whose usage ────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize(("accounts", "shown"), [(1, 49), (2, None), (3, None)])
-def test_a_pool_of_several_accounts_gets_no_provider_wide_reading(monkeypatch, accounts, shown):
+@pytest.mark.parametrize(("credentials", "shown"), [(1, 49), (2, None), (3, None)])
+def test_a_pool_of_several_credentials_gets_no_provider_wide_reading(monkeypatch, credentials, shown):
     calls = _no_refresh(monkeypatch)
     remember_account_usage("anthropic", _snapshot(_week(49.0)))
     cli_obj = _make_cli(_OPTED_IN)
-    cli_obj.agent._credential_pool = _Pool(accounts)
+    cli_obj.agent._credential_pool = _Pool(credentials)
 
     assert cli_obj._get_status_bar_snapshot()["weekly_usage_percent"] == shown
     assert calls == ([["anthropic"]] if shown is not None else []), "no request for a reading the bar won't show"
+
+
+@pytest.mark.parametrize(("credentials", "shown"), [(1, 49), (2, None)])
+def test_a_repaint_never_waits_on_the_credential_pool_lock(monkeypatch, credentials, shown):
+    # The agent holds the pool lock across token refreshes and auth.json writes (CredentialPool.select).
+    _no_refresh(monkeypatch)
+    remember_account_usage("anthropic", _snapshot(_week(49.0)))
+    cli_obj = _make_cli(_OPTED_IN)
+    pool = cli_obj.agent._credential_pool = _real_pool(credentials)
+    held, release, painted = threading.Event(), threading.Event(), {}
+
+    def hold_the_lock():
+        with pool._lock:
+            held.set()
+            release.wait(_FETCH_DEADLINE_SECONDS)
+
+    threading.Thread(target=hold_the_lock, daemon=True).start()
+    assert held.wait(_FETCH_DEADLINE_SECONDS)
+    painter = threading.Thread(target=lambda: painted.update(cli_obj._get_status_bar_snapshot()), daemon=True)
+    painter.start()
+    painter.join(_REPAINT_DEADLINE_SECONDS)
+    release.set()
+
+    assert not painter.is_alive(), "the repaint waited on the credential pool's lock"
+    assert painted["weekly_usage_percent"] == shown
 
 
 def test_the_cli_pool_stands_in_until_an_agent_exists(monkeypatch):

@@ -91,7 +91,8 @@ class CLIStatusBarMixin:
 
     def _weekly_usage_segments(self, snapshot, field_set) -> list:
         """The ``wk N%`` segment, or none: unlisted in the fields, or no usable reading (none fetched
-        yet, stale, or no weekly window for this provider)."""
+        yet, stale, no usage API or weekly window for this provider, or a pool of several
+        credentials)."""
         percent = snapshot.get("weekly_usage_percent")
         if percent is None or field_set is None or "weekly_usage" not in field_set:
             return []

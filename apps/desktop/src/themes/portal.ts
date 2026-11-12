@@ -63,7 +63,7 @@ export const portalTheme: DesktopTheme = {
     letterSpacing: '0'
   },
   // Palette surfaces only; brand marks and the flat-overlay look belong to the redesigned shell
-  // (app/redesign/portal-colors.css), so they follow the shell rather than this skin.
+  // (app/redesign/tokens/color.css), so they follow the shell rather than this skin.
   // `--portal-skin-window` is the redesigned shell's window canvas (rails and band): dark is the pages'
   // and Variation 1's navy #0a0a1a (895/856, 147:7470), light Brand rev's #ededed. The panels are
   // derived from it and from the background above (#07071a, the stage). Nothing outside the

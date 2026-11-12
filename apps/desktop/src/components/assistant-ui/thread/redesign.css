@@ -14,11 +14,11 @@
   --turn-block-gap: 1.25rem;
   --portal-conversation-turn-gap: 1.875rem;
   --portal-conversation-prompt-clearance: 0.75rem;
-  --portal-conversation-fill: color-mix(in srgb, var(--ui-base) 5%, transparent);
+  --portal-conversation-fill: var(--portal-raw-ink-5);
   /* The tool-steps row is its own, quieter fill (Var1 147:7470: light/3). */
-  --portal-conversation-tool-fill: color-mix(in srgb, var(--ui-base) 3%, transparent);
-  --portal-conversation-dash: color-mix(in srgb, var(--ui-base) 10%, transparent);
-  --portal-conversation-done: color-mix(in srgb, #00f279 50%, transparent);
+  --portal-conversation-tool-fill: var(--portal-raw-ink-3);
+  --portal-conversation-dash: var(--portal-raw-ink-10);
+  --portal-conversation-done: color-mix(in srgb, var(--portal-raw-green) 50%, transparent);
   --dt-user-bubble: var(--portal-conversation-fill);
   /* The stage header overlays the top row (app/chat/stage.css): the first turn
      starts below it and a pinned prompt sticks under it. */
@@ -31,13 +31,17 @@
 /* Lines scrolling up fade out beneath the stage header row. A static mask on
    the scroller: no repaint per scroll frame. */
 :root[data-shell='portal'] [data-chat-surface] [data-slot='aui_thread-viewport'] {
-  mask-image: linear-gradient(to bottom, transparent 0.75rem, #000 var(--portal-stage-header-height));
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0.75rem,
+    var(--portal-raw-black) var(--portal-stage-header-height)
+  );
 }
 
 :root[data-shell='portal']:not(.dark) [data-slot='aui_thread-content'] {
-  --portal-conversation-fill: color-mix(in srgb, var(--ui-base) 2%, transparent);
-  --portal-conversation-tool-fill: color-mix(in srgb, var(--ui-base) 2%, transparent);
-  --portal-conversation-dash: color-mix(in srgb, var(--ui-base) 5%, transparent);
+  --portal-conversation-fill: var(--portal-raw-ink-2);
+  --portal-conversation-tool-fill: var(--portal-raw-ink-2);
+  --portal-conversation-dash: var(--portal-raw-ink-5);
 }
 
 /* ── Turn rhythm ───────────────────────────────────────────────────────── */
@@ -85,7 +89,7 @@
    at Figma's 32px while longer prompts take the 1.6 leading. */
 :root[data-shell='portal'] .composer-human-message {
   border-color: transparent;
-  border-radius: 6px;
+  border-radius: var(--portal-radius-surface);
   padding: calc(0.375rem - 1px) calc(0.625rem - 1px);
   background-color: var(--portal-conversation-fill);
   color: var(--ui-text-primary);
@@ -128,7 +132,7 @@
 :root[data-shell='portal'] [data-slot='aui_thread-content'] [data-slot='timeline-timestamp'] {
   font-size: var(--conversation-caption-font-size);
   line-height: 1.4;
-  letter-spacing: 0.01em;
+  letter-spacing: var(--portal-tracking-ui);
   color: var(--ui-text-tertiary);
 }
 
@@ -200,7 +204,7 @@
   [data-slot='aui_thread-content']
   :where(.aui-md :not(pre) > code, [data-slot='aui_user-inline-code']) {
   padding: 0.0625rem 0.25rem;
-  border-radius: 3px;
+  border-radius: var(--portal-radius-control);
   background: var(--portal-conversation-fill);
   font-size: 0.9em;
 }
@@ -208,7 +212,7 @@
 /* Fenced code, diffs and raw payloads: the reply's own fill, 6px corners. */
 :root[data-shell='portal'] [data-slot='aui_thread-content'] [data-slot='code-card'] {
   --expandable-fade-from: var(--ui-chat-surface-background);
-  border-radius: 6px;
+  border-radius: var(--portal-radius-surface);
   background: var(--portal-conversation-fill);
 }
 
@@ -243,7 +247,7 @@
   --dash-y: repeating-linear-gradient(to bottom, var(--portal-conversation-dash) 0 2px, transparent 2px 6px);
   padding: 0.5rem 0.625rem;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--portal-radius-surface);
   background:
     var(--dash-x) top / 100% 1px no-repeat,
     var(--dash-x) bottom / 100% 1px no-repeat,
@@ -251,7 +255,7 @@
     var(--dash-y) right / 1px 100% no-repeat,
     var(--portal-conversation-tool-fill);
   color: var(--ui-text-tertiary);
-  letter-spacing: 0.01em;
+  letter-spacing: var(--portal-tracking-ui);
   opacity: 1;
 }
 
@@ -315,7 +319,7 @@
   [data-slot='aui_thread-content']
   :is([data-slot='aui_changed-files'], [data-slot='aui_artifact-card']) {
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--portal-radius-surface);
   background: var(--portal-conversation-fill);
   box-shadow: none;
 }
@@ -329,7 +333,7 @@
    when the turn is blocked. */
 :root[data-shell='portal'] [data-slot='aui_thread-content'] .aui-error-card {
   border-color: transparent;
-  border-radius: 6px;
+  border-radius: var(--portal-radius-surface);
   background: var(--portal-conversation-fill);
   font-size: var(--conversation-text-font-size);
 }
@@ -344,13 +348,13 @@
 :root[data-shell='portal'] [data-slot='aui_thread-content'] [data-slot='aui_msg-actions'] button {
   width: 1.875rem;
   height: 1.875rem;
-  border-radius: 3px;
-  background: color-mix(in srgb, var(--ui-base) 2%, transparent);
+  border-radius: var(--portal-radius-control);
+  background: var(--portal-raw-ink-2);
   color: var(--ui-text-tertiary);
 }
 
 :root[data-shell='portal'] [data-slot='aui_thread-content'] [data-slot='aui_msg-actions'] button:hover {
-  background: color-mix(in srgb, var(--ui-base) 5%, transparent);
+  background: var(--portal-raw-ink-5);
   color: var(--ui-text-primary);
 }
 
@@ -369,7 +373,7 @@
   [data-slot='aui_thread-content']
   :is([data-slot='card-stack-surface'], [data-slot='clarify-inline']) {
   border-color: transparent;
-  border-radius: 6px;
+  border-radius: var(--portal-radius-surface);
   background: color-mix(in srgb, var(--ui-base) 5%, var(--ui-chat-surface-background));
   box-shadow: none;
 }
@@ -392,8 +396,8 @@
   :is(button, a)[data-size][data-variant] {
   height: 2.25rem;
   padding-inline: 0.75rem;
-  font-size: 0.75rem;
-  letter-spacing: 0.01em;
+  font-size: var(--portal-type-meta-size);
+  letter-spacing: var(--portal-tracking-ui);
 }
 
 /* Timeline rail (timeline.css): out of sight at rest, so a short thread's one or two ticks never

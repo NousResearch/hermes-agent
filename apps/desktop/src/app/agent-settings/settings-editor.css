@@ -30,9 +30,9 @@
 .agent-settings-nav-group h2 {
   margin: 0 0.625rem 0.375rem;
   color: var(--ui-text-tertiary);
-  font-size: 0.625rem;
+  font-size: var(--portal-type-caption-size);
   font-weight: 400;
-  letter-spacing: 0.06em;
+  letter-spacing: var(--portal-tracking-caption);
   line-height: 1.4;
   text-transform: uppercase;
 }
@@ -44,21 +44,21 @@
   width: 100%;
   min-height: 2rem;
   padding: 0.375rem 0.625rem;
-  border-radius: 3px;
+  border-radius: var(--portal-radius-control);
   color: color-mix(in srgb, var(--ui-base) 80%, transparent);
-  font-size: 0.8125rem;
-  letter-spacing: 0.01em;
+  font-size: var(--portal-type-ui-size);
+  letter-spacing: var(--portal-tracking-ui);
   line-height: 1.4;
   text-align: start;
 }
 /* Sub-nav counts (895:13886 "Tools 13"): 11px, quiet, right-aligned. */
 .agent-settings-nav-count {
   color: var(--ui-text-tertiary);
-  font-size: 0.6875rem;
+  font-size: var(--portal-type-micro-size);
   font-variant-numeric: tabular-nums;
 }
 .agent-settings-nav-group button:hover {
-  background: color-mix(in srgb, var(--ui-base) 3%, transparent);
+  background: var(--portal-surface-row-hover);
   color: var(--ui-text-primary);
 }
 .agent-settings-nav-group button[aria-current] {
@@ -82,15 +82,15 @@
 }
 .agent-settings-body > header h2 {
   font-family: var(--portal-font-display);
-  font-size: 1.875rem;
+  font-size: var(--portal-type-display-lg-size);
   font-weight: 300;
-  letter-spacing: -0.01em;
+  letter-spacing: var(--portal-tracking-display);
   line-height: 1.1;
 }
 .agent-settings-body > header p {
   margin-top: 6px;
   color: var(--ui-text-tertiary);
-  font-size: 0.8125rem;
+  font-size: var(--portal-type-ui-size);
   line-height: 1.4;
 }
 /* Embedded editors size to their content: a grid item with min-height 0 would shrink under the
@@ -106,7 +106,7 @@
 }
 .agent-settings-card {
   border: 1px solid var(--ui-stroke-tertiary);
-  border-radius: 4px;
+  border-radius: var(--portal-radius-card);
   background: var(--ui-bg-card);
 }
 .agent-settings-card > [class~='@container'] {
@@ -116,7 +116,7 @@
 .agent-settings-body [data-slot='settings-content'] > div > .grid {
   padding: 12px 16px;
   border: 1px solid var(--ui-stroke-tertiary);
-  border-radius: 4px;
+  border-radius: var(--portal-radius-card);
   background: var(--ui-bg-card);
 }
 .agent-settings-main-model h3 {
@@ -130,7 +130,7 @@
 }
 /* Agent pages draw r4 cards (895:9666); the shared list cards follow them here. */
 .agent-settings-body .global-settings-card {
-  border-radius: 4px;
+  border-radius: var(--portal-radius-card);
 }
 /* Titled settings groups (895:9666) and their 64px rows with a text column plus controls. */
 .agent-settings-group {
@@ -138,7 +138,7 @@
   gap: 0.75rem;
 }
 .agent-settings-group > h3 {
-  font-size: 0.9375rem;
+  font-size: var(--portal-type-section-size);
   font-weight: 500;
   line-height: 1.1;
 }
@@ -146,31 +146,31 @@
   padding-inline: 1rem;
 }
 .agent-settings-group [data-slot='settings-row'] + [data-slot='settings-row'] {
-  border-top: 1px solid color-mix(in srgb, var(--ui-base) 3%, transparent);
+  border-top: 1px solid var(--portal-stroke-divider);
 }
 .agent-settings-group [data-slot='settings-row'] > div {
   min-height: 4rem;
   column-gap: 1.25rem;
 }
 .agent-settings-group [data-slot='settings-row'] > div > div:first-child > div:first-child {
-  font-size: 0.875rem;
+  font-size: var(--portal-type-body-size);
   font-weight: 500;
 }
 .agent-settings-group [data-slot='settings-row'] > div > div:first-child > div:nth-child(2) {
   margin-top: 2px;
-  font-size: 0.8125rem;
+  font-size: var(--portal-type-ui-size);
   line-height: 1.4;
 }
 .agent-settings-group [data-slot='settings-row'] .font-mono {
   color: var(--ui-text-tertiary);
-  font-size: 0.75rem;
+  font-size: var(--portal-type-meta-size);
   overflow-wrap: anywhere;
 }
 .agent-settings-value {
   min-width: 0;
   overflow: hidden;
   color: var(--ui-text-secondary);
-  font-size: 0.8125rem;
+  font-size: var(--portal-type-ui-size);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -211,7 +211,7 @@
   overflow: hidden;
   color: var(--ui-text-tertiary);
   font-family: var(--font-mono);
-  font-size: 0.6875rem;
+  font-size: var(--portal-type-micro-size);
   line-height: 15px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -223,7 +223,7 @@
   min-width: 0;
   overflow: hidden;
   border: 1px solid var(--ui-stroke-tertiary);
-  border-radius: 4px;
+  border-radius: var(--portal-radius-card);
   background: var(--ui-bg-card);
 }
 .agent-settings-instructions-footer {
@@ -366,8 +366,8 @@
   align-self: flex-start;
   gap: 0.25rem;
   color: var(--ui-text-primary);
-  font-size: 0.8125rem;
-  letter-spacing: -0.01em;
+  font-size: var(--portal-type-ui-size);
+  letter-spacing: var(--portal-tracking-display);
   line-height: 1.25rem;
 }
 
@@ -376,7 +376,7 @@
 }
 
 .agent-settings-panel-back:focus-visible {
-  border-radius: 2px;
+  border-radius: var(--portal-radius-chip);
   outline: 2px solid var(--portal-brand-ink);
   outline-offset: 2px;
 }
@@ -389,9 +389,9 @@
   margin: 0.9375rem 0 1.25rem;
   padding-inline: 0.625rem;
   color: var(--ui-text-primary);
-  font-size: 0.8125rem;
+  font-size: var(--portal-type-ui-size);
   font-weight: 500;
-  letter-spacing: 0.01em;
+  letter-spacing: var(--portal-tracking-ui);
 }
 
 .agent-settings-panel .agent-settings-navigation {
@@ -408,10 +408,10 @@
   height: 2.25rem;
   padding-inline: 0.75rem;
   border: 1px solid var(--portal-field-stroke);
-  border-radius: 3px;
+  border-radius: var(--portal-radius-control);
   background: var(--portal-field-fill);
   color: var(--ui-text-primary);
-  font-size: 0.875rem;
+  font-size: var(--portal-type-body-size);
   text-align: start;
   text-overflow: ellipsis;
   white-space: nowrap;

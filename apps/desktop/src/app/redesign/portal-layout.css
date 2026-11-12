@@ -1,33 +1,5 @@
-/* Finished 1280px frames: 60px rails, 320px navigation, 640px reading column.
-   Native titlebar height and user-controlled panes keep their existing policy. */
-:root[data-shell='portal'] {
-  /* Root-scoped so route overlays and body-portalled dialogs, menus and popovers share the shell's geometry. */
-  --radius-scalar: 0.6;
-  --terminal-panel-min-width: min(22rem, 40vw);
-  --global-nav-width: 3.75rem;
-  /* ONE sidebar column for every rail destination: page panels (Agents, Schedules, Settings) take the
-     chat sidebar's width — the user's sash width once they size it (published by the pane tree as
-     --portal-sidebar-width), else its default — so switching destinations never moves the panel
-     edge, its divider or the stage's content edge. */
-  --page-nav-width: var(--portal-sidebar-width, var(--sessions-pane-width));
-  --page-nav-row-height: 2.5rem;
-  /* The page-frame contract: where a page's content column starts, from the stage edge it shares
-     with the page's sidebar panel (the freshest frames, 1036:7189 / 895:*: 20px after the divider,
-     one value for Agents, Settings and Schedules alike), and from the stage's own edge on a page
-     with no panel (919:9281: x 90 in the stage). Left insets, never centring, at every window
-     width, so switching pages never moves the column sideways. */
-  --page-panel-inset: 1.25rem;
-  --page-stage-inset: 5.625rem;
-  /* The column's one max width per page kind: forms and details (1036:7189 General: 840) and
-     catalogs and tables (919:9281: 980). */
-  --page-form-max-width: 52.5rem;
-  --page-catalog-max-width: 61.25rem;
-  --page-title-size: 1.875rem;
-  --composer-width: 40rem;
-  --dialog-body-padding: 1.5rem;
-  --dialog-body-gap: 1.25rem;
-}
-
+/* The page frame (tokens/space.css): beside a sidebar panel the column starts at the frame inset,
+   without one at the stage inset; both hold the form width. */
 :root[data-shell='portal'] [data-page-surface] [data-slot='overlay-main'] {
   /* The form column at the panel inset. */
   max-width: calc(var(--page-panel-inset) + var(--page-form-max-width) + var(--page-panel-inset));
@@ -56,8 +28,8 @@
 .page-nav-title {
   margin: 0 0 1.875rem;
   color: var(--ui-text-primary);
-  font: 300 1.875rem/1.1 var(--portal-font-display);
-  letter-spacing: -0.01em;
+  font: 300 var(--portal-type-display-lg-size)/1.1 var(--portal-font-display);
+  letter-spacing: var(--portal-tracking-display);
 }
 
 :root[data-shell='portal'] [data-page-surface] [data-slot='page-heading']:not(:has(nav:not(.hidden))) > div:last-child {

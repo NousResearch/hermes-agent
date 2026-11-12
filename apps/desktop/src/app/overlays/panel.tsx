@@ -95,7 +95,7 @@ export function PanelHeader({ actions, meta, subtitle, title, simplifiedTitle, h
       className={cn('panel-header mb-3 flex shrink-0 items-start justify-between gap-3', actions ? 'pr-8' : undefined)}
     >
       <div className="min-w-0">
-        <Heading className="text-[length:var(--page-title-size,0.875rem)] leading-tight font-semibold text-foreground">
+        <Heading className="text-[length:var(--portal-type-display-lg-size,0.875rem)] leading-tight font-semibold text-foreground">
           {simplified ? (simplifiedTitle ?? title) : title}
         </Heading>
         {subtitle ? <p className="truncate text-xs text-muted-foreground/80">{subtitle}</p> : null}

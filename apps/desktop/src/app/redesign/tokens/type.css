@@ -1,0 +1,53 @@
+/* Type (LANGUAGE §2). Figma sets Rules Compressed and Aeonik Fono Pro (trial-licensed); the redesign
+   ships the bundled SIL OFL stand-ins: Oswald for display, Mona Sans for everything else. Sizes are rem,
+   so the user's text-size preference scales them; each size belongs to one role. */
+@font-face {
+  font-family: 'Oswald';
+  font-style: normal;
+  font-weight: 200 700;
+  font-display: swap;
+  src: url('../../../fonts/Oswald.ttf') format('truetype');
+}
+
+@font-face {
+  font-family: 'Mona Sans';
+  font-style: normal;
+  font-weight: 200 900;
+  font-stretch: 75% 125%;
+  font-display: swap;
+  src: url('../../../fonts/MonaSans.ttf') format('truetype');
+}
+
+:root[data-shell='portal'] {
+  /* H1, panel, dialog and drawer titles, the wordmark. */
+  --portal-font-display: 'Oswald', var(--dt-font-sans);
+  /* Every other line of UI. */
+  --portal-font-body: 'Mona Sans', var(--dt-font-sans);
+
+  /* Page H1, agent name (1036:7378). */
+  --portal-type-display-xl-size: 2.5rem;
+  /* Panel title, sub-page H2, dialog and drawer title (1036:7476, 1038:7797). */
+  --portal-type-display-lg-size: 1.875rem;
+  /* Section heading, stat value (1036:7481). */
+  --portal-type-section-size: 0.9375rem;
+  /* Row label, button, tab, input value (label 500, body 400). */
+  --portal-type-body-size: 0.875rem;
+  /* Nav row, sidebar row, menu item, description (1036:7410). */
+  --portal-type-ui-size: 0.8125rem;
+  /* Timestamps, row meta, the composer's model row (906:19738). */
+  --portal-type-meta-size: 0.75rem;
+  /* Nav counts, tags, keycaps, the "You" label (1036:7434). */
+  --portal-type-micro-size: 0.6875rem;
+  /* UPPERCASE group labels, table headers, stat labels, menu labels (1036:7408). */
+  --portal-type-caption-size: 0.625rem;
+  /* UPPERCASE DEFAULT / RUNNING / EMPTY chips (1036:7318). */
+  --portal-type-chip-size: 0.5625rem;
+
+  /* Tracking per role: display titles tighten, small UI opens up, captions and chips open most. */
+  --portal-tracking-display: -0.01em;
+  --portal-tracking-ui: 0.01em;
+  --portal-tracking-chip: 0.04em;
+  --portal-tracking-caption: 0.06em;
+  /* The chat sidebar's section captions (Pinned / Agents / Machines) track at the chip's 0.04em. */
+  --portal-legacy-caption-tracking-sidebar: 0.04em;
+}

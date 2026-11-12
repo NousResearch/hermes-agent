@@ -1,25 +1,6 @@
 /* Redesigned shell frame (Figma 906:19396): the window canvas shows through the titlebar band and
    the 60px rails; zones at the window top become panels whose OUTER top corners round at 9px,
-   with a hairline between neighbours. Colors come from portal-colors.css, the wing from
-   portal-artwork.css. */
-
-:root[data-shell='portal'] {
-  --portal-panel-radius: 9px;
-  /* Figma's 30×30 chrome buttons (r3, 16px glyphs): titlebar, rails, pane headers. */
-  --portal-chrome-button-size: 1.875rem;
-  --titlebar-control-size: var(--portal-chrome-button-size);
-  --titlebar-control-height: var(--portal-chrome-button-size);
-  --titlebar-icon-size: 1rem;
-  /* Figma's breadcrumb spacing (906:19467). */
-  --titlebar-control-gap: 0.625rem;
-  /* The redesign's one motion scale: fast for hover returns and small state flips, base for
-     disclosures and reveals, slow for decorative fades. One easing (a quick settle). Navigation has
-     no enter animation, and every transition stands down under prefers-reduced-motion. */
-  --portal-motion-fast: 120ms;
-  --portal-motion-base: 180ms;
-  --portal-motion-slow: 240ms;
-  --portal-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
-}
+   with a hairline between neighbours. Tokens come from tokens/, the wing from portal-artwork.css. */
 
 /* A page or route overlay paints over the chat it covers (contrib/route-cover.tsx). The chat keeps
    its rendering state (scroll, draft) but is skipped by style, layout and paint, so covering and
@@ -105,8 +86,8 @@
   inline-size: var(--portal-chrome-button-size);
   block-size: var(--portal-chrome-button-size);
   padding: 0;
-  border-radius: 3px;
-  background-color: color-mix(in srgb, var(--ui-base) 2%, transparent);
+  border-radius: var(--portal-radius-control);
+  background-color: var(--portal-surface-chrome);
   box-shadow: none;
   color: var(--ui-text-quaternary);
   font-size: 1rem;
@@ -126,19 +107,19 @@
 }
 
 :root[data-shell='portal'] .portal-chrome-button:is(:hover, [data-state='open']):not(:disabled) {
-  background-color: color-mix(in srgb, var(--ui-base) 5%, transparent);
+  background-color: var(--portal-surface-chrome-hover);
   color: var(--ui-text-secondary);
 }
 
 :root[data-shell='portal'] .portal-chrome-button:active:not(:disabled) {
-  background-color: color-mix(in srgb, var(--ui-base) 10%, transparent);
+  background-color: var(--portal-surface-chrome-pressed);
   color: var(--ui-text-primary);
 }
 
 :root[data-shell='portal'] .portal-chrome-button:is([aria-current='page'], [aria-pressed='true']) {
   background-color: var(--portal-selection-background);
   /* 895:17703 draws the ring at ~.6 of the brand fill. */
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--portal-brand-fill) 60%, transparent);
+  box-shadow: inset 0 0 0 1px var(--portal-raw-brand-60);
   color: var(--ui-text-primary);
 }
 
@@ -153,12 +134,12 @@
 }
 
 :root[data-shell='portal'] .portal-chrome-button.portal-chrome-button-brand:hover:not(:disabled) {
-  background-color: color-mix(in srgb, var(--portal-brand-fill) 85%, #000);
+  background-color: color-mix(in srgb, var(--portal-brand-fill) 85%, var(--portal-raw-black));
   color: var(--portal-on-brand);
 }
 
 :root[data-shell='portal'] .portal-chrome-button.portal-chrome-button-brand:active:not(:disabled) {
-  background-color: color-mix(in srgb, var(--portal-brand-fill) 70%, #000);
+  background-color: color-mix(in srgb, var(--portal-brand-fill) 70%, var(--portal-raw-black));
   color: var(--portal-on-brand);
 }
 
@@ -247,7 +228,7 @@
   padding-inline-start: 0;
   color: var(--ui-text-primary);
   font: 300 2rem / 1.1 var(--portal-font-display);
-  letter-spacing: -0.01em;
+  letter-spacing: var(--portal-tracking-display);
   text-transform: none;
 }
 
@@ -260,9 +241,9 @@
 
 :root[data-shell='portal'] [data-slot='pane-subtitle'] {
   color: var(--ui-text-tertiary);
-  font-size: 0.75rem;
+  font-size: var(--portal-type-meta-size);
   font-weight: 300;
-  letter-spacing: 0.01em;
+  letter-spacing: var(--portal-tracking-ui);
   line-height: 1.4;
 }
 
@@ -271,7 +252,7 @@
   [data-slot='pane-section-header']
   [data-slot='button'] {
   margin-block-start: 0.25rem;
-  border-radius: 3px;
+  border-radius: var(--portal-radius-control);
 }
 
 /* A pane's one-line empty state ("No diffs") reads as a quiet sentence, not a tracked label. */
@@ -280,7 +261,7 @@
   :not([data-slot='pane-section-header'] *)
   > [data-slot='panel-label'] {
   color: var(--ui-text-tertiary);
-  font-size: 0.8125rem;
+  font-size: var(--portal-type-ui-size);
   font-weight: 400;
   letter-spacing: 0;
   text-transform: none;
@@ -290,8 +271,8 @@
 :root[data-shell='portal'] [data-project-tree] [data-slot='tree-row'] {
   gap: 0.625rem;
   margin-inline: 0.625rem;
-  border-radius: 3px;
-  font-size: 0.8125rem;
+  border-radius: var(--portal-radius-control);
+  font-size: var(--portal-type-ui-size);
 }
 
 :root[data-shell='portal'] [data-project-tree] [data-slot='tree-row'][aria-selected='true'] {
@@ -327,9 +308,9 @@
 :root[data-shell='portal'] [data-zone-tabstrip] [role='tab'] {
   block-size: 1.5rem;
   border-width: 0;
-  border-radius: 3px;
+  border-radius: var(--portal-radius-control);
   box-shadow: none;
-  font-size: 0.8125rem;
+  font-size: var(--portal-type-ui-size);
   font-weight: 400;
 }
 
@@ -339,11 +320,11 @@
 }
 
 :root[data-shell='portal'] [data-zone-tabstrip] [role='tab']:hover {
-  background-color: color-mix(in srgb, var(--ui-base) 2%, transparent);
+  background-color: var(--portal-legacy-row-hover-quiet);
 }
 
 :root[data-shell='portal'] [data-zone-tabstrip] [role='tab'][data-active='true'] {
-  background-color: color-mix(in srgb, var(--ui-base) 5%, transparent);
+  background-color: var(--portal-surface-selected);
 }
 
 /* Kept-alive pane hosts (terminal, browser) float over their zone's body: the outer corners too. */
@@ -409,10 +390,10 @@
   block-size: var(--portal-chrome-button-size);
   overflow: hidden;
   padding: 0 0.625rem;
-  border-radius: 3px;
-  background-color: color-mix(in srgb, var(--ui-base) 2%, transparent);
+  border-radius: var(--portal-radius-control);
+  background-color: var(--portal-surface-chrome);
   color: var(--ui-text-primary);
-  font-size: 0.8125rem;
+  font-size: var(--portal-type-ui-size);
   line-height: var(--portal-chrome-button-size);
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -487,13 +468,13 @@
    r8, hairline, the shared shadow; their buttons hover like menu rows. */
 :root[data-shell='portal'] :is([data-slot='find-bar'], [data-slot='layout-edit-card']) {
   border-color: var(--portal-floating-stroke);
-  border-radius: 8px;
+  border-radius: var(--portal-radius-floating);
   background-color: var(--portal-floating-surface);
   box-shadow: var(--portal-floating-shadow);
 }
 
 :root[data-shell='portal'] [data-slot='find-bar'] button {
-  border-radius: 3px;
+  border-radius: var(--portal-radius-control);
 }
 
 :root[data-shell='portal'] [data-slot='find-bar'] button:hover {
@@ -501,5 +482,5 @@
 }
 
 :root[data-shell='portal'] [data-slot='find-bar'] input {
-  border-radius: 3px;
+  border-radius: var(--portal-radius-control);
 }

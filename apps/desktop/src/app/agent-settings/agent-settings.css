@@ -1,9 +1,11 @@
-/* The page-frame contract (portal-layout.css): the agent column starts at the stage inset, or at
+/* The page-frame contract (tokens/space.css): the agent column starts at the stage inset, or at
    the panel inset beside the agents panel, and holds the form width at every window width. No
    bottom padding: the scrollers run to the stage's edge and keep their own end space. */
 [data-page-surface] .management-panel.agent-management {
-  --ui-bg-card: color-mix(in srgb, var(--ui-base) 2%, transparent);
-  --ui-stroke-tertiary: color-mix(in srgb, var(--ui-base) 5%, transparent);
+  /* Agent pages already wear the language's card (1036:7576); global settings still read the legacy
+     5% fill through --ui-bg-card (DESIGN.md, Phase B). */
+  --ui-bg-card: var(--portal-surface-card);
+  --ui-stroke-tertiary: var(--portal-stroke-hairline);
   width: 100%;
   max-width: calc(var(--page-stage-inset) + var(--page-form-max-width) + var(--page-panel-inset));
   margin-inline: 0;
@@ -16,7 +18,9 @@
    the header. */
 [data-page-surface] .management-panel.agent-management:has(> .page-sidebar-panel) {
   position: relative;
-  max-width: calc(var(--page-nav-width) + var(--page-panel-inset) + var(--page-form-max-width) + var(--page-panel-inset));
+  max-width: calc(
+    var(--page-nav-width) + var(--page-panel-inset) + var(--page-form-max-width) + var(--page-panel-inset)
+  );
   padding-inline: calc(var(--page-nav-width) + var(--page-panel-inset)) var(--page-panel-inset);
 }
 
@@ -33,7 +37,7 @@
   width: 56px;
   height: 56px;
   flex-shrink: 0;
-  border-radius: 4px;
+  border-radius: var(--portal-radius-card);
 }
 
 .agent-management-avatar > img {
@@ -65,8 +69,8 @@
   gap: 8px;
   margin-top: 6px;
   color: var(--ui-text-quaternary);
-  font-size: 0.8125rem;
-  letter-spacing: 0.01em;
+  font-size: var(--portal-type-ui-size);
+  letter-spacing: var(--portal-tracking-ui);
   line-height: 1.4;
 }
 
@@ -89,9 +93,9 @@
   margin-bottom: 2rem;
   padding: 0.75rem 0.75rem 0.75rem 1rem;
   border: 1px solid color-mix(in srgb, var(--portal-control-danger-fill) 40%, transparent);
-  border-radius: 4px;
+  border-radius: var(--portal-radius-card);
   background: color-mix(in srgb, var(--portal-control-danger-fill) 8%, transparent);
-  font-size: 0.875rem;
+  font-size: var(--portal-type-body-size);
   font-weight: 500;
   line-height: 1.4;
 }
@@ -100,13 +104,13 @@
   flex-shrink: 0;
   width: 1rem;
   height: 1rem;
-  color: var(--portal-pages-warning-ink);
+  color: var(--portal-status-pending);
 }
 
 .agent-channel-warning p + p {
   margin-top: 0.125rem;
   color: var(--ui-text-secondary);
-  font-size: 0.8125rem;
+  font-size: var(--portal-type-ui-size);
   font-weight: 400;
 }
 
@@ -132,7 +136,7 @@
 
 /* 877:4307: a #a22a20 dot beside softer #cc8a84 text (the dot alone carries the alarm colour). */
 .agent-channel-status[data-tone='disconnected'] {
-  color: var(--portal-pages-offline-ink);
+  color: var(--portal-status-error-ink);
 }
 
 .agent-channel-status[data-tone='disconnected']::before {
@@ -155,7 +159,7 @@
   gap: 0.75rem;
   border-radius: 0.375rem;
   padding: 0.5rem 0.75rem;
-  font-size: 0.875rem;
+  font-size: var(--portal-type-body-size);
 }
 
 /* Tabs (877:4200): 24px apart, 2px #0000f2 underline on the active label, a light/5 rule under the row. */
@@ -164,7 +168,7 @@
   flex-shrink: 0;
   gap: 24px;
   margin-bottom: 24px;
-  border-bottom: 1px solid color-mix(in srgb, var(--ui-base) 5%, transparent);
+  border-bottom: 1px solid var(--portal-legacy-tab-rail);
 }
 
 /* The active underline overlaps the row's rule rather than sitting on top of it. */
@@ -174,7 +178,7 @@
   padding-bottom: 0.5rem;
   border-bottom: 2px solid transparent;
   color: var(--ui-text-tertiary);
-  font-size: 0.875rem;
+  font-size: var(--portal-type-body-size);
   font-weight: 500;
   line-height: 1.4;
 }
@@ -191,7 +195,7 @@
 .agent-management-tabs button:focus-visible {
   outline: 2px solid var(--portal-brand-ink);
   outline-offset: 2px;
-  border-radius: 2px;
+  border-radius: var(--portal-radius-chip);
 }
 
 .agent-management-scroll,
@@ -256,7 +260,7 @@
 .agent-overview-section-link:focus-visible {
   outline: 2px solid var(--portal-brand-ink);
   outline-offset: 4px;
-  border-radius: 2px;
+  border-radius: var(--portal-radius-chip);
 }
 
 .agent-overview-row:has(.agent-overview-row-subtitle) {
@@ -266,7 +270,7 @@
 .agent-overview-card {
   overflow: hidden;
   border: 1px solid var(--ui-stroke-tertiary);
-  border-radius: 4px;
+  border-radius: var(--portal-radius-card);
   background: var(--ui-bg-card);
 }
 
@@ -286,11 +290,11 @@
 
 .agent-overview-row + .agent-overview-row,
 .agent-overview-footer {
-  border-top: 1px solid color-mix(in srgb, var(--ui-base) 3%, transparent);
+  border-top: 1px solid var(--portal-stroke-divider);
 }
 
 .agent-overview-row:hover {
-  background: color-mix(in srgb, var(--ui-base) 3%, transparent);
+  background: var(--portal-surface-row-hover);
 }
 
 .agent-overview-row:focus-visible {
@@ -299,7 +303,7 @@
 }
 
 .agent-overview-row > span:nth-child(2) {
-  font-size: 0.8125rem;
+  font-size: var(--portal-type-ui-size);
   font-weight: 400;
 }
 
@@ -396,17 +400,17 @@
   align-self: center;
   flex-shrink: 0;
   padding: 0 4px;
-  border-radius: 2px;
-  background: color-mix(in srgb, var(--portal-brand-fill) 25%, transparent);
+  border-radius: var(--portal-radius-chip);
+  background: var(--portal-legacy-brand-selected);
   box-shadow: inset 0 0 0 0.5px var(--portal-brand-ink);
   color: var(--ui-text-primary);
-  font-size: 0.5625rem;
-  letter-spacing: 0.04em;
+  font-size: var(--portal-type-chip-size);
+  letter-spacing: var(--portal-tracking-chip);
   line-height: 0.875rem;
   text-transform: uppercase;
 }
 
 :root:not(.dark) .agent-management-default {
-  background: color-mix(in srgb, var(--portal-brand-fill) 10%, transparent);
+  background: var(--portal-legacy-brand-selected);
   color: var(--portal-brand-fill);
 }

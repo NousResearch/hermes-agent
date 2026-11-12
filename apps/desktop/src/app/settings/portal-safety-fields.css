@@ -22,11 +22,11 @@
 }
 
 .portal-safety-mode:hover:not(:has(:checked)) {
-  background: color-mix(in srgb, var(--ui-base) 2%, transparent);
+  background: var(--portal-raw-ink-2);
 }
 
 .portal-safety-mode:has(:checked) {
-  background: color-mix(in srgb, var(--portal-brand-fill) 10%, transparent);
+  background: var(--portal-raw-brand-10);
 }
 
 .portal-safety-mode:has(:focus-visible) {
@@ -44,14 +44,14 @@
 }
 
 .portal-safety-mode:has(:checked) .portal-safety-icon {
-  background: color-mix(in srgb, var(--portal-brand-fill) 25%, transparent);
+  background: var(--portal-raw-brand-25);
   box-shadow: inset 0 0 0 0.5px var(--portal-brand-ink);
   color: var(--ui-text-primary);
 }
 
 .portal-safety-mode-title {
   grid-column: 2;
-  font-size: 0.875rem;
+  font-size: var(--portal-type-body-size);
   font-weight: 500;
   line-height: 1.4;
 }
@@ -59,7 +59,7 @@
 .portal-safety-mode-description {
   grid-column: 2;
   color: var(--ui-text-tertiary);
-  font-size: 0.8125rem;
+  font-size: var(--portal-type-ui-size);
   line-height: 1.4;
 }
 
@@ -75,7 +75,7 @@
   border: 1px solid var(--portal-select-stroke);
   border-radius: 50%;
   appearance: none;
-  background: color-mix(in srgb, var(--ui-base) 2%, transparent);
+  background: var(--portal-raw-ink-2);
   cursor: pointer;
 }
 

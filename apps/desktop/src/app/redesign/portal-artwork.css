@@ -50,7 +50,7 @@
    over the light canvas's trace. */
 :root[data-shell='portal'] {
   --portal-page-panel-fill:
-    linear-gradient(color-mix(in srgb, #fff 30%, transparent)),
+    linear-gradient(color-mix(in srgb, var(--portal-raw-pure-white) 30%, transparent)),
     linear-gradient(
       color-mix(in srgb, var(--portal-page-canvas) calc((1 - var(--portal-wing-opacity)) * 100%), transparent)
     ),

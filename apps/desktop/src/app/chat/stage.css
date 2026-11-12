@@ -4,11 +4,11 @@
    it (600). Both resolve 100cqw against this container, so they measure the
    same box even though one lives in the scroller and the other overlays it. */
 :root[data-shell='portal'] [data-chat-surface] {
-  --portal-conversation-width: 40rem;
+  --portal-conversation-width: var(--portal-column-conversation);
   --portal-conversation-inset: 1.25rem;
   --portal-conversation-gutter: 1rem;
   --portal-conversation-column: min(var(--portal-conversation-width), 100cqw - 2 * var(--portal-conversation-gutter));
-  --portal-landing-composer-width: 30rem;
+  --portal-landing-composer-width: var(--portal-column-landing);
   /* Figma's sizes are the Default text-size preset; other presets scale from it. */
   --chat-text-scale: var(--chat-text-scale-relative, 1);
   container: chat-stage / inline-size;
@@ -133,16 +133,16 @@
 /* Profile wake / sync notices over the stage: flat 6px plates in body type. */
 :root[data-shell='portal'] :is([data-slot='chat-swap-pill'], [data-slot='chat-sync-badge']) {
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--portal-radius-surface);
   background: var(--ui-bg-elevated);
   box-shadow: none;
   font-family: var(--portal-font-body);
-  letter-spacing: 0.01em;
+  letter-spacing: var(--portal-tracking-ui);
 }
 
 :root[data-shell='portal'] [data-slot='chat-swap-pill'] {
   padding: 0.5rem 0.75rem;
-  font-size: 0.75rem;
+  font-size: var(--portal-type-meta-size);
 }
 
 /* The stage header (connection label + Agent settings) is a transparent row
@@ -155,7 +155,7 @@
 
 :root[data-shell='portal'] [data-slot='portal-conversation-header'] {
   position: absolute;
-  z-index: 20;
+  z-index: var(--portal-layer-stage-overlay);
   inset-inline: 0;
   top: var(--zone-band-height, 0px);
   display: flex;
@@ -176,14 +176,14 @@
   height: var(--portal-chrome-button-size);
   gap: 0.375rem;
   padding-inline: 0.625rem;
-  border-radius: 3px;
-  background-color: color-mix(in srgb, var(--ui-base) 2%, transparent);
+  border-radius: var(--portal-radius-control);
+  background-color: var(--portal-raw-ink-2);
   color: var(--ui-text-secondary);
-  font-size: 0.75rem;
+  font-size: var(--portal-type-meta-size);
   font-weight: 400;
 }
 
 :root[data-shell='portal'] [data-slot='portal-conversation-header'] button:hover:not(:disabled) {
-  background-color: color-mix(in srgb, var(--ui-base) 5%, transparent);
+  background-color: var(--portal-raw-ink-5);
   color: var(--ui-text-primary);
 }

@@ -6,14 +6,14 @@
   min-width: 0;
   font-family: var(--portal-font-body);
   container-type: inline-size;
-  font-size: 0.875rem;
+  font-size: var(--portal-type-body-size);
   line-height: 1.4;
 }
 
 .appearance-overview-intro,
 .appearance-overview-description {
   color: var(--ui-text-tertiary);
-  font-size: 0.8125rem;
+  font-size: var(--portal-type-ui-size);
   line-height: 1.4;
   font-weight: 400;
 }
@@ -24,7 +24,7 @@
 
 .appearance-mode-section legend {
   margin-bottom: 2px;
-  font-size: 0.9375rem;
+  font-size: var(--portal-type-section-size);
   line-height: 1.1;
   font-weight: 500;
 }
@@ -45,7 +45,7 @@
   gap: 0.5rem;
   padding: 0.75rem;
   border: 1px solid var(--ui-stroke-tertiary);
-  border-radius: 8px;
+  border-radius: var(--portal-radius-floating);
   background: var(--ui-bg-card);
   cursor: pointer;
 }
@@ -75,7 +75,7 @@
   height: 4.5rem;
   flex: 0 0 4.5rem;
   border: 1px solid var(--ui-stroke-secondary);
-  border-radius: 2px;
+  border-radius: var(--portal-radius-chip);
 }
 
 .appearance-mode-label {
@@ -90,12 +90,12 @@
 /* DEFAULT chip (856:3431): green tint, uppercase, tracked. */
 .appearance-mode-default {
   padding: 0 0.1875rem;
-  border-radius: 2px;
+  border-radius: var(--portal-radius-chip);
   color: var(--ui-green);
   background: color-mix(in srgb, var(--ui-green) 14%, transparent);
-  font-size: 0.5625rem;
+  font-size: var(--portal-type-chip-size);
   font-weight: 500;
-  letter-spacing: 0.04em;
+  letter-spacing: var(--portal-tracking-chip);
   line-height: 0.8125rem;
   text-transform: uppercase;
 }
@@ -121,7 +121,7 @@
   padding-bottom: 0.25rem;
   border-bottom: 1px solid var(--ui-stroke-tertiary);
   color: var(--ui-text-secondary);
-  font-size: 0.8125rem;
+  font-size: var(--portal-type-ui-size);
   font-weight: 500;
   line-height: 1.3;
 }

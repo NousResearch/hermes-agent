@@ -1,39 +1,8 @@
 /* Shared primitives in the redesign (pages.md §4 "Shared button and control scale"): buttons, text
    fields, select triggers, segmented controls, switches, checkboxes, chips and kbd keys. Components
    stay single-sourced in components/ui; this file only restyles them under the root gate. Controls
-   in pages and floating surfaces take the Figma 36px page scale; chrome elsewhere keeps its density. */
-:root[data-shell='portal'] {
-  --portal-control-radius: 3px;
-  --portal-control-fill: color-mix(in srgb, var(--ui-base) 5%, transparent);
-  --portal-control-fill-hover: color-mix(in srgb, var(--ui-base) 8%, transparent);
-  --portal-control-fill-pressed: color-mix(in srgb, var(--ui-base) 11%, transparent);
-  --portal-control-stroke: color-mix(in srgb, var(--ui-base) 10%, transparent);
-  --portal-field-fill: color-mix(in srgb, var(--ui-base) 4%, transparent);
-  --portal-field-stroke: color-mix(in srgb, var(--ui-base) 14%, transparent);
-  --portal-select-fill: color-mix(in srgb, var(--ui-base) 8%, transparent);
-  --portal-select-stroke: color-mix(in srgb, var(--ui-base) 28%, transparent);
-  /* The one focus ring: 2px of brand ink as an outline, so it never replaces a control's own
-     stroke shadow. Outset by default; a context whose scroller or overflow would clip an outset
-     ring (sidebar, page nav) sets --portal-focus-ring-offset to the inset value on its container
-     and every control inside follows. */
-  --portal-focus-ring-color: var(--portal-brand-ink);
-  --portal-focus-ring-width: 2px;
-  --portal-focus-ring-outset: 1px;
-  --portal-focus-ring-inset: calc(-1 * var(--portal-focus-ring-width));
-  --portal-focus-ring-offset: var(--portal-focus-ring-outset);
-}
-
-/* Light paints the same alphas over #f2f2f2; strokes need one step more to stay visible. */
-:root[data-shell='portal']:not(.dark) {
-  --portal-control-fill: color-mix(in srgb, var(--ui-base) 3%, transparent);
-  --portal-control-fill-hover: color-mix(in srgb, var(--ui-base) 6%, transparent);
-  --portal-control-fill-pressed: color-mix(in srgb, var(--ui-base) 9%, transparent);
-  --portal-control-stroke: color-mix(in srgb, var(--ui-base) 14%, transparent);
-  --portal-field-fill: color-mix(in srgb, var(--ui-base) 2%, transparent);
-  --portal-field-stroke: color-mix(in srgb, var(--ui-base) 18%, transparent);
-  --portal-select-fill: color-mix(in srgb, var(--ui-base) 4%, transparent);
-  --portal-select-stroke: color-mix(in srgb, var(--ui-base) 28%, transparent);
-}
+   in pages and floating surfaces take the Figma 36px page scale; chrome elsewhere keeps its density. Tokens: tokens/color.css (fills, strokes), tokens/shape.css
+   (radii, the focus ring). */
 
 /* ── Buttons ──────────────────────────────────────────────────────────────── */
 /* Matched by Button's own data-size/data-variant: wrapped in a Tip, menu or popover trigger, Radix
@@ -93,17 +62,12 @@
 }
 
 :root[data-shell='portal'] :is(button, a)[data-size][data-variant][data-variant='default']:active {
-  background-color: color-mix(in srgb, var(--portal-brand-fill) 80%, black);
+  background-color: color-mix(in srgb, var(--portal-brand-fill) 80%, var(--portal-raw-black));
 }
 
 /* Destructive. The confirm of a destructive dialog (878:7066 "Delete 2 items", 878:8958) is a solid
    #A22A20 slab with white ink (7.3:1); inline and secondary destructive actions ("Delete agent" 895:*,
    the History selection bar's Delete, row "Remove") take destructiveOutline: a red-tinted outline. */
-:root[data-shell='portal'] {
-  --portal-control-danger-fill: #a22a20;
-  --portal-control-on-danger: #fff;
-}
-
 :root[data-shell='portal'] :is(button, a)[data-size][data-variant][data-variant='destructive'] {
   background-color: var(--portal-control-danger-fill);
   box-shadow: none;
@@ -111,11 +75,11 @@
 }
 
 :root[data-shell='portal'] :is(button, a)[data-size][data-variant][data-variant='destructive']:hover {
-  background-color: color-mix(in srgb, var(--portal-control-danger-fill) 88%, white);
+  background-color: color-mix(in srgb, var(--portal-control-danger-fill) 88%, var(--portal-raw-pure-white));
 }
 
 :root[data-shell='portal'] :is(button, a)[data-size][data-variant][data-variant='destructive']:active {
-  background-color: color-mix(in srgb, var(--portal-control-danger-fill) 82%, black);
+  background-color: color-mix(in srgb, var(--portal-control-danger-fill) 82%, var(--portal-raw-black));
 }
 
 :root[data-shell='portal'] :is(button, a)[data-size][data-variant][data-variant='destructive']:focus-visible {
@@ -150,7 +114,7 @@
   min-height: 2.25rem;
   padding-block: 0;
   padding-inline: 1rem;
-  font-size: 0.875rem;
+  font-size: var(--portal-type-body-size);
   line-height: 1.4;
 }
 
@@ -186,7 +150,7 @@
   gap: 0.5rem;
   padding-block: 0;
   padding-inline: 1rem;
-  font-size: 0.875rem;
+  font-size: var(--portal-type-body-size);
   line-height: 1.4;
 }
 
@@ -229,7 +193,7 @@
   border-color: var(--portal-field-stroke);
   border-radius: var(--portal-control-radius);
   background-color: var(--portal-field-fill);
-  font-size: 0.875rem;
+  font-size: var(--portal-type-body-size);
   line-height: 1.4;
 }
 
@@ -249,7 +213,7 @@
 :root[data-shell='portal']
   :is([data-page-surface], [data-slot='dialog-content'])
   :is([data-slot='input']:not([class~='border-0']), [data-slot='input-group'], [data-slot='textarea']):hover {
-  border-color: color-mix(in srgb, var(--ui-base) 22%, transparent);
+  border-color: var(--portal-raw-ink-22);
 }
 
 :root[data-shell='portal']
@@ -271,13 +235,13 @@
   border-color: var(--portal-select-stroke);
   border-radius: var(--portal-control-radius);
   background-color: var(--portal-select-fill);
-  font-size: 0.875rem;
+  font-size: var(--portal-type-body-size);
   font-weight: 500;
   line-height: 1.4;
 }
 
 :root[data-shell='portal'] :is([data-page-surface], [data-slot='dialog-content']) [data-slot='select-trigger']:hover {
-  border-color: color-mix(in srgb, var(--ui-base) 40%, transparent);
+  border-color: var(--portal-raw-ink-40);
 }
 
 /* ── Segmented control (856:3444) ─────────────────────────────────────────── */
@@ -294,9 +258,9 @@
 :root[data-shell='portal'] [data-page-surface] [data-slot='segmented-control'] > button {
   min-height: 1.75rem;
   padding-inline: 0.75rem;
-  border-radius: 2px;
+  border-radius: var(--portal-radius-chip);
   color: var(--ui-text-secondary);
-  font-size: 0.875rem;
+  font-size: var(--portal-type-body-size);
   line-height: 1.4;
 }
 
@@ -309,7 +273,7 @@
 }
 
 :root[data-shell='portal'] [data-page-surface] [data-slot='segmented-control'] > button[aria-pressed='true'] {
-  background-color: color-mix(in srgb, var(--portal-brand-fill) 25%, transparent);
+  background-color: var(--portal-surface-brand-selected);
   box-shadow: inset 0 0 0 0.5px var(--portal-brand-ink);
   color: var(--ui-text-primary);
 }
@@ -318,7 +282,7 @@
   [data-page-surface]
   [data-slot='segmented-control']
   > button[aria-pressed='true'] {
-  background-color: color-mix(in srgb, var(--portal-brand-fill) 12%, transparent);
+  background-color: var(--portal-surface-brand-selected);
 }
 
 :root[data-shell='portal'] [data-page-surface] [data-slot='segmented-control'] > button:focus-visible {
@@ -336,7 +300,7 @@
   border-radius: var(--portal-control-radius);
   background-color: var(--portal-control-fill);
   color: var(--ui-text-secondary);
-  font-size: 0.8125rem;
+  font-size: var(--portal-type-ui-size);
   line-height: 1.4;
 }
 
@@ -347,13 +311,13 @@
 
 :root[data-shell='portal'] [data-slot='scope-chip'][aria-pressed='true'] {
   border-color: transparent;
-  background-color: color-mix(in srgb, var(--portal-brand-fill) 25%, transparent);
+  background-color: var(--portal-surface-brand-selected);
   box-shadow: inset 0 0 0 0.5px var(--portal-brand-ink);
   color: var(--ui-text-primary);
 }
 
 :root[data-shell='portal']:not(.dark) [data-slot='scope-chip'][aria-pressed='true'] {
-  background-color: color-mix(in srgb, var(--portal-brand-fill) 12%, transparent);
+  background-color: var(--portal-surface-brand-selected);
 }
 
 :root[data-shell='portal'] [data-slot='scope-chip']:focus-visible {
@@ -369,7 +333,7 @@
 }
 
 :root[data-shell='portal'] [data-slot='switch'][data-state='unchecked'] {
-  background: color-mix(in srgb, var(--ui-base) 14%, transparent);
+  background: var(--portal-raw-ink-14);
 }
 
 :root[data-shell='portal'] [data-slot='switch'][data-state='unchecked']:hover:not(:disabled) {
@@ -393,7 +357,7 @@
 :root[data-shell='portal'] :is([data-slot='checkbox'], [data-slot='checkbox-mark']) {
   border-color: var(--portal-select-stroke);
   border-radius: var(--portal-control-radius);
-  background-color: color-mix(in srgb, var(--ui-base) 2%, transparent);
+  background-color: var(--portal-raw-ink-2);
   box-shadow: none;
 }
 
@@ -411,7 +375,7 @@
 /* ── Badges and kbd keys ──────────────────────────────────────────────────── */
 
 :root[data-shell='portal'] [data-slot='badge'] {
-  border-radius: 2px;
+  border-radius: var(--portal-radius-chip);
 }
 
 :root[data-shell='portal']
@@ -419,7 +383,7 @@
   [data-slot='kbd'] {
   border-color: var(--portal-control-stroke);
   border-radius: var(--portal-control-radius);
-  background-color: color-mix(in srgb, var(--ui-base) 4%, transparent);
+  background-color: var(--portal-raw-ink-4);
   box-shadow: none;
   color: var(--ui-text-secondary);
 }
@@ -435,7 +399,7 @@
   background-color: var(--portal-select-fill);
   box-shadow: inset 0 0 0 1px var(--portal-select-stroke);
   color: var(--ui-text-primary);
-  font-size: 0.875rem;
+  font-size: var(--portal-type-body-size);
   font-weight: 500;
   line-height: 1.4;
 }
@@ -457,7 +421,7 @@
 :root[data-shell='portal']
   :is([data-page-surface], [data-slot='dialog-content'])
   [data-slot='search-field'][data-variant='box']:hover {
-  border-color: color-mix(in srgb, var(--ui-base) 22%, transparent);
+  border-color: var(--portal-raw-ink-22);
 }
 
 :root[data-shell='portal']
@@ -471,5 +435,5 @@
   :is([data-page-surface], [data-slot='dialog-content'])
   [data-slot='search-field'][data-variant='box']
   input {
-  font-size: 0.875rem;
+  font-size: var(--portal-type-body-size);
 }

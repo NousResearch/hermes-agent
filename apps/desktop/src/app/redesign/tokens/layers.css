@@ -1,0 +1,8 @@
+/* Layers (LANGUAGE §4), portal-local: stacking inside the stage and the composer. The app's overlay
+   stack (styles.css --z-*) stays authoritative for menus, dialogs and toasts. */
+:root[data-shell='portal'] {
+  /* The docked composer's own top layer (its spectrum edge over the card). */
+  --portal-layer-dock: 5;
+  /* What floats over the transcript inside the stage (the conversation header row). */
+  --portal-layer-stage-overlay: 20;
+}

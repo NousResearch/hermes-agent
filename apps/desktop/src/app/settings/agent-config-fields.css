@@ -10,7 +10,7 @@
 
 .agent-config-fields > section > h3 {
   margin-bottom: 0.75rem;
-  font-size: 0.9375rem;
+  font-size: var(--portal-type-section-size);
   font-weight: 500;
   line-height: 1.1;
 }
@@ -20,5 +20,5 @@
 }
 
 .agent-config-card > div + div {
-  border-top: 1px solid color-mix(in srgb, var(--ui-base) 3%, transparent);
+  border-top: 1px solid var(--portal-stroke-divider);
 }

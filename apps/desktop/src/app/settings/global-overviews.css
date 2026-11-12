@@ -17,7 +17,7 @@
 .global-settings-card {
   overflow: hidden;
   border: 1px solid var(--ui-stroke-tertiary);
-  border-radius: 8px;
+  border-radius: var(--portal-legacy-card-radius-settings);
   background: var(--ui-bg-card);
 }
 
@@ -49,7 +49,7 @@
   > div
   > div:first-child
   > div:first-child {
-  font-size: 0.875rem;
+  font-size: var(--portal-type-body-size);
   font-weight: 500;
   line-height: 1.4;
 }
@@ -60,7 +60,7 @@
   > div:first-child
   > div:nth-child(2) {
   margin-top: 2px;
-  font-size: 0.8125rem;
+  font-size: var(--portal-type-ui-size);
   line-height: 1.4;
 }
 
@@ -98,23 +98,23 @@
 }
 
 .global-settings-section-head h3 {
-  font-size: 0.9375rem;
+  font-size: var(--portal-type-section-size);
   font-weight: 500;
   line-height: 1.1;
 }
 
 .global-settings-section-head > span {
   color: var(--ui-text-secondary);
-  font-size: 0.8125rem;
+  font-size: var(--portal-type-ui-size);
   line-height: 1.4;
 }
 
 /* ── Advanced disclosure (856:3467): 3% fill, 10% stroke, r4, count badge + chevron ── */
 
 .global-settings-disclosure {
-  border: 1px solid color-mix(in srgb, var(--ui-base) 10%, transparent);
-  border-radius: 4px;
-  background: color-mix(in srgb, var(--ui-base) 3%, transparent);
+  border: 1px solid var(--portal-legacy-disclosure-stroke);
+  border-radius: var(--portal-radius-card);
+  background: var(--portal-legacy-disclosure-fill);
 }
 
 .global-settings-disclosure > summary {
@@ -123,7 +123,7 @@
   align-items: center;
   gap: 0.75rem;
   padding: 0.875rem 1rem;
-  border-radius: 3px;
+  border-radius: var(--portal-radius-control);
   list-style: none;
   cursor: pointer;
 }
@@ -133,7 +133,7 @@
 }
 
 .global-settings-disclosure > summary:hover {
-  background: color-mix(in srgb, var(--ui-base) 2%, transparent);
+  background: var(--portal-legacy-row-hover-quiet);
 }
 
 .global-settings-disclosure > summary:focus-visible {
@@ -149,23 +149,23 @@
 }
 
 .global-settings-disclosure-title {
-  font-size: 0.875rem;
+  font-size: var(--portal-type-body-size);
   font-weight: 600;
   line-height: 1.4;
 }
 
 .global-settings-disclosure-description {
   color: var(--ui-text-tertiary);
-  font-size: 0.8125rem;
+  font-size: var(--portal-type-ui-size);
   line-height: 1.4;
 }
 
 .global-settings-disclosure-count {
   min-width: 1.375rem;
   padding: 0 0.375rem;
-  border-radius: 2px;
-  background: color-mix(in srgb, var(--ui-base) 10%, transparent);
-  font-size: 0.625rem;
+  border-radius: var(--portal-radius-chip);
+  background: var(--portal-raw-ink-10);
+  font-size: var(--portal-type-caption-size);
   font-weight: 500;
   line-height: 0.875rem;
   text-align: center;
@@ -233,16 +233,16 @@
   gap: 0.625rem;
   padding: 0.75rem 0.625rem;
   border: 1px solid var(--ui-stroke-tertiary);
-  border-radius: 8px;
+  border-radius: var(--portal-legacy-card-radius-settings);
   background: var(--ui-bg-card);
   color: var(--ui-text-primary);
-  font-size: 0.8125rem;
+  font-size: var(--portal-type-ui-size);
   line-height: 1.4;
   text-align: start;
 }
 
 .settings-agent-link:hover {
-  background: color-mix(in srgb, var(--ui-base) 8%, transparent);
+  background: var(--portal-raw-ink-8);
 }
 
 .settings-agent-link:focus-visible {
@@ -260,7 +260,7 @@
   min-width: 0;
   flex: 1;
   gap: 2px;
-  letter-spacing: 0.01em;
+  letter-spacing: var(--portal-tracking-ui);
 }
 
 .settings-agent-link-text > span + span {
@@ -277,7 +277,7 @@
   flex-basis: 100%;
   margin-top: -0.375rem;
   color: var(--ui-text-tertiary);
-  font-size: 0.8125rem;
+  font-size: var(--portal-type-ui-size);
   line-height: 1.4;
 }
 
@@ -285,7 +285,7 @@
 .global-settings-empty-row {
   padding: 0.875rem 1rem;
   color: var(--ui-text-tertiary);
-  font-size: 0.8125rem;
+  font-size: var(--portal-type-ui-size);
   line-height: 1.4;
 }
 
@@ -306,7 +306,7 @@
 }
 
 .global-settings-link-row:hover {
-  background: color-mix(in srgb, var(--ui-base) 3%, transparent);
+  background: var(--portal-surface-row-hover);
 }
 
 .global-settings-link-row:focus-visible {
@@ -322,7 +322,7 @@
 }
 
 .global-settings-link-row-title {
-  font-size: 0.875rem;
+  font-size: var(--portal-type-body-size);
   font-weight: 500;
   line-height: 1.4;
 }
@@ -330,7 +330,7 @@
 .global-settings-link-row-description,
 .global-settings-link-row-meta {
   color: var(--ui-text-tertiary);
-  font-size: 0.8125rem;
+  font-size: var(--portal-type-ui-size);
   line-height: 1.4;
 }
 
@@ -348,7 +348,7 @@
   gap: 0.625rem;
   padding: 0 1rem;
   color: var(--ui-text-primary);
-  font-size: 0.875rem;
+  font-size: var(--portal-type-body-size);
   text-align: start;
 }
 
@@ -357,7 +357,7 @@
 }
 
 .global-settings-add-row:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--ui-base) 3%, transparent);
+  background: var(--portal-surface-row-hover);
 }
 
 .global-settings-add-row:focus-visible {
@@ -396,7 +396,7 @@
   gap: 0.25rem;
   padding: 0.75rem;
   border: 1px solid var(--ui-stroke-tertiary);
-  border-radius: 8px;
+  border-radius: var(--portal-radius-floating);
   background: var(--ui-bg-card);
   color: var(--ui-text-primary);
   text-align: start;
@@ -407,8 +407,8 @@
   height: 4.5rem;
   margin-bottom: 0.625rem;
   place-items: center;
-  border-radius: 4px;
-  background: color-mix(in srgb, var(--ui-base) 4%, transparent);
+  border-radius: var(--portal-radius-card);
+  background: var(--portal-raw-ink-4);
   color: var(--ui-text-secondary);
 }
 
@@ -421,23 +421,23 @@
   display: flex;
   align-items: center;
   gap: 0.375rem;
-  font-size: 0.875rem;
+  font-size: var(--portal-type-body-size);
   font-weight: 500;
   line-height: 1.4;
 }
 
 .gateway-mode-card-description {
   color: var(--ui-text-tertiary);
-  font-size: 0.8125rem;
+  font-size: var(--portal-type-ui-size);
   line-height: 1.4;
 }
 
 .gateway-mode-card:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--ui-base) 8%, transparent);
+  background: var(--portal-raw-ink-8);
 }
 
 .gateway-mode-card[aria-pressed='true'] {
-  border-color: color-mix(in srgb, var(--portal-brand-fill) 60%, transparent);
+  border-color: var(--portal-raw-brand-60);
   background: var(--portal-selection-background);
 }
 
@@ -466,7 +466,7 @@
 
 .billing-summary-value {
   color: var(--ui-text-primary);
-  font-size: 0.875rem;
+  font-size: var(--portal-type-body-size);
   font-variant-numeric: tabular-nums;
   font-weight: 500;
 }
@@ -481,7 +481,7 @@
 
 .billing-footnote {
   color: var(--ui-text-tertiary);
-  font-size: 0.8125rem;
+  font-size: var(--portal-type-ui-size);
   line-height: 1.4;
 }
 
@@ -517,9 +517,9 @@
 
 .credential-keys-group > h4 {
   color: var(--ui-text-tertiary);
-  font-size: 0.625rem;
+  font-size: var(--portal-type-caption-size);
   font-weight: 400;
-  letter-spacing: 0.06em;
+  letter-spacing: var(--portal-tracking-caption);
   line-height: 1.4;
   text-transform: uppercase;
 }

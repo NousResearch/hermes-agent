@@ -1,0 +1,52 @@
+/* Primitives: the only colour literals in the redesign (scripts/check_desktop_design_tokens.py flags a
+   colour anywhere else). Theme-independent; the roles in color.css choose among them. An ink step is the
+   skin's foreground (--ui-base) at an alpha, so it is right in both modes and every skin. */
+:root[data-shell='portal'] {
+  /* Figma primary/blue: fills of primary actions, toggles, checked states, the active tab underline. */
+  --portal-raw-blue: #0000f2;
+  /* The blue lightened to AA for thin marks (rings, links, counts) on navy. */
+  --portal-raw-blue-ink-dark: #8585ff;
+  /* Figma primary/white: ink on the brand fill. */
+  --portal-raw-white: #f2f2f2;
+  --portal-raw-pure-white: #fff;
+  --portal-raw-black: #000;
+  /* Figma secondary/green (live dots and gradients). */
+  --portal-raw-green: #00f279;
+  /* Connected / online ink on dark (877:4308); its AA-darkened twin for light. */
+  --portal-raw-mint: #6df2a8;
+  --portal-raw-mint-deep: #1f8a65;
+  /* Figma secondary/orange: pending and warning. */
+  --portal-raw-orange: #f27900;
+  /* Danger fill and stroke (877:4212, 878:7066, 1038:7836) and its soft status text (877:4312). */
+  --portal-raw-danger: #a22a20;
+  --portal-raw-danger-soft: #cc8a84;
+  /* The composer's spectrum edge (906:19872). */
+  --portal-raw-spectrum-red: #aa1515;
+  --portal-raw-spectrum-yellow: #ddd61c;
+  /* Shadow inks. */
+  --portal-raw-shadow-4: rgb(0 0 0 / 0.04);
+  --portal-raw-shadow-8: rgb(0 0 0 / 0.08);
+  --portal-raw-shadow-20: rgb(0 0 0 / 0.2);
+  --portal-raw-shadow-25: rgb(0 0 0 / 0.25);
+  --portal-raw-shadow-50: rgb(0 0 0 / 0.5);
+  /* The ink ladder (LANGUAGE §1.1): Figma's light/2, 5, 10, 40 plus the page steps 3, 4, 8, 14, 22, 28.
+     No other neutral alpha belongs to the language; the off-ladder steps still in use are listed in
+     color.css and the Phase B table. */
+  --portal-raw-ink-2: color-mix(in srgb, var(--ui-base) 2%, transparent);
+  --portal-raw-ink-3: color-mix(in srgb, var(--ui-base) 3%, transparent);
+  --portal-raw-ink-4: color-mix(in srgb, var(--ui-base) 4%, transparent);
+  --portal-raw-ink-5: color-mix(in srgb, var(--ui-base) 5%, transparent);
+  --portal-raw-ink-8: color-mix(in srgb, var(--ui-base) 8%, transparent);
+  --portal-raw-ink-10: color-mix(in srgb, var(--ui-base) 10%, transparent);
+  --portal-raw-ink-14: color-mix(in srgb, var(--ui-base) 14%, transparent);
+  --portal-raw-ink-22: color-mix(in srgb, var(--ui-base) 22%, transparent);
+  --portal-raw-ink-28: color-mix(in srgb, var(--ui-base) 28%, transparent);
+  --portal-raw-ink-40: color-mix(in srgb, var(--ui-base) 40%, transparent);
+  /* Brand tints: row selection 8, info banner 10, light brand selection 12, dark brand selection 25,
+     info banner stroke 60. */
+  --portal-raw-brand-8: color-mix(in srgb, var(--portal-raw-blue) 8%, transparent);
+  --portal-raw-brand-10: color-mix(in srgb, var(--portal-raw-blue) 10%, transparent);
+  --portal-raw-brand-12: color-mix(in srgb, var(--portal-raw-blue) 12%, transparent);
+  --portal-raw-brand-25: color-mix(in srgb, var(--portal-raw-blue) 25%, transparent);
+  --portal-raw-brand-60: color-mix(in srgb, var(--portal-raw-blue) 60%, transparent);
+}

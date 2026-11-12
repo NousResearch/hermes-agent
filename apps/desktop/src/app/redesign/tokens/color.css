@@ -1,0 +1,191 @@
+/* Colour roles (LANGUAGE §1.2). Base = dark, `:not(.dark)` = light. A role reads primitives (raw.css)
+   or the skin's seeds (--ui-base, --ui-bg-chrome, --ui-bg-elevated, --portal-skin-window); a skin never
+   decides a role. Values are today's: where Figma's newest frames want another value, the Phase B table
+   in DESIGN.md says so, and the change is a one-line edit here. */
+:root[data-shell='portal'] {
+  /* Brand. The fill is the same in every theme and mode; thin rings, underlines and small blue text
+     use the brand ink, which lightens on dark canvases for contrast. */
+  --portal-surface-brand: var(--portal-raw-blue);
+  --portal-text-on-brand: var(--portal-raw-white);
+  --portal-text-brand: var(--portal-raw-blue-ink-dark);
+  /* Brand selection: the selected segment, scope chip and cleanup choice (856:3444). */
+  --portal-surface-brand-selected: var(--portal-raw-brand-25);
+  --portal-spectrum-red: var(--portal-raw-spectrum-red);
+  --portal-spectrum-yellow: var(--portal-raw-spectrum-yellow);
+
+  /* Text ladder. Figma steps ink 1 / .8 / .6 / .5 / .4 / .3, but .4 and .3 fail AA for the 12-13px meta
+     and labels that use them, so the ladder's floor is the least ink that keeps 4.5:1 on every real
+     surface (sidebar, stage, page canvas, cards, popovers, selected rows), and the rungs above are spaced
+     by contrast, not alpha: light ≈ 16 / 8.9 / 6.7 / 5.1:1, dark ≈ 17 / 8.7 / 6.6 / 4.9:1. Dark ink on
+     light canvases loses contrast faster, so light needs more alpha per rung. */
+  --portal-text-primary: var(--ui-base);
+  --portal-text-secondary: color-mix(in srgb, var(--ui-base) 70%, transparent);
+  --portal-text-tertiary: color-mix(in srgb, var(--ui-base) 60%, transparent);
+  --portal-text-quaternary: color-mix(in srgb, var(--ui-base) 50%, transparent);
+
+  /* Window canvas (rails, titlebar band): the skin's own canvas, else its chrome. */
+  --portal-surface-canvas: var(--portal-skin-window, var(--ui-bg-chrome));
+  /* Panels laid on the canvas (chat sidebar, page panels, side tool panels): #0A0A1A@.90 over the
+     canvas (856:2740), so the wing reads through at a tenth of its strength. */
+  --portal-surface-panel: color-mix(in srgb, var(--portal-surface-canvas) 90%, transparent);
+  /* The stage: #07071A@.96 over the canvas (856:2809, Var1 147:7470), the skin's chrome. */
+  --portal-surface-stage: color-mix(in srgb, var(--ui-bg-chrome) 96%, var(--portal-surface-canvas));
+  /* The chat sidebar's opaque fill (the shared sidebar surface). */
+  --portal-sidebar-background: var(--portal-surface-canvas);
+  /* Routed pages lay their body on the canvas (Overview 856:2809) and their nav on a panel. */
+  --portal-page-canvas: var(--ui-bg-chrome);
+  --portal-page-background: var(--portal-page-canvas);
+  --portal-page-sidebar-background: var(--portal-surface-panel);
+  /* Menus, popovers, dialogs, drawers, toasts: the solid floating fill (878:6044 #0D0D1E on dark). */
+  --portal-surface-elevated: var(--ui-bg-elevated);
+  /* Cards of grouped rows (1036:7576, 1038:7803). */
+  --portal-surface-card: var(--portal-raw-ink-2);
+  /* Neutral selection: list rows, nav rows (1036:7409), with --portal-stroke-selected. */
+  --portal-surface-selected: var(--portal-raw-ink-5);
+  /* A row under the pointer on a panel, the stage or a card: one ink step over its rest. */
+  --portal-surface-row-hover: var(--portal-raw-ink-3);
+  /* 30px chrome buttons and the session pill (906:19469): rest, hover, pressed. */
+  --portal-surface-chrome: var(--portal-raw-ink-2);
+  --portal-surface-chrome-hover: var(--portal-raw-ink-5);
+  --portal-surface-chrome-pressed: var(--portal-raw-ink-10);
+  /* Secondary and icon buttons (877:4189) at rest, hover and pressed. */
+  --portal-surface-control: var(--portal-raw-ink-5);
+  --portal-surface-control-hover: var(--portal-raw-ink-8);
+  --portal-surface-control-pressed: color-mix(in srgb, var(--ui-base) 11%, transparent);
+  /* Inputs, search, segmented tracks (895:9670). */
+  --portal-surface-field: var(--portal-raw-ink-4);
+  /* Select triggers (856:3456). */
+  --portal-surface-select: var(--portal-raw-ink-8);
+  /* A menu item under the pointer, on the elevated surface. */
+  --portal-surface-floating-hover: color-mix(in srgb, var(--ui-base) 6%, transparent);
+  /* The modal scrim: a plain dim, never a blur. */
+  --portal-surface-scrim: var(--portal-raw-shadow-50);
+  /* The confirm of a destructive dialog (878:7066): a solid danger slab with white ink (7.3:1). */
+  --portal-surface-danger-solid: var(--portal-raw-danger);
+  --portal-text-on-danger: var(--portal-raw-pure-white);
+
+  /* Strokes. Card edges, the panel-to-stage edge, page footer rules (1038:7803). */
+  --portal-stroke-hairline: var(--portal-raw-ink-5);
+  /* Between rows inside a card (877:4229, 1038:7499). */
+  --portal-stroke-divider: var(--portal-raw-ink-3);
+  /* The chat sidebar's edge and header rule (Var1 147:7470: light/10). */
+  --portal-stroke-edge: var(--portal-raw-ink-10);
+  --portal-stroke-control: var(--portal-raw-ink-10);
+  --portal-stroke-field: var(--portal-raw-ink-14);
+  /* Selects, checkbox and radio at rest. */
+  --portal-stroke-strong: var(--portal-raw-ink-28);
+  --portal-stroke-selected: var(--portal-raw-ink-5);
+  --portal-stroke-floating: var(--portal-raw-ink-10);
+  /* Menu separators and the floating menu's item ink (Figma .9). */
+  --portal-floating-separator: color-mix(in srgb, var(--ui-base) 6%, transparent);
+  --portal-floating-item-ink: color-mix(in srgb, var(--ui-base) 90%, transparent);
+
+  /* Status inks, one set for the whole redesign (sidebar machines, dots, chips, page status text):
+     online is the pages' spec green (877:4308), pending Figma's orange, failed its soft red; each passes
+     4.5:1 on its mode's panels. */
+  --portal-status-online: var(--portal-raw-mint);
+  --portal-status-pending: var(--portal-raw-orange);
+  --portal-status-error-ink: var(--portal-raw-danger-soft);
+
+  /* The one focus ring's colour (geometry in shape.css). */
+  --portal-focus-ring-color: var(--portal-text-brand);
+
+  /* Names in use before the role names; Phase B moves their readers to the role and deletes them. */
+  --portal-brand-fill: var(--portal-surface-brand);
+  --portal-on-brand: var(--portal-text-on-brand);
+  --portal-brand-ink: var(--portal-text-brand);
+  --portal-selection-background: var(--portal-legacy-brand-selected);
+  --portal-neutral-selection-background: var(--portal-surface-selected);
+  --portal-neutral-selection-stroke: var(--portal-stroke-selected);
+  --portal-window-background: var(--portal-surface-canvas);
+  --portal-sidebar-panel-background: var(--portal-surface-panel);
+  --portal-panel-divider: var(--portal-stroke-hairline);
+  --portal-control-fill: var(--portal-surface-control);
+  --portal-control-fill-hover: var(--portal-surface-control-hover);
+  --portal-control-fill-pressed: var(--portal-surface-control-pressed);
+  --portal-control-stroke: var(--portal-stroke-control);
+  --portal-field-fill: var(--portal-surface-field);
+  --portal-field-stroke: var(--portal-stroke-field);
+  --portal-select-fill: var(--portal-surface-select);
+  --portal-select-stroke: var(--portal-stroke-strong);
+  --portal-control-danger-fill: var(--portal-surface-danger-solid);
+  --portal-control-on-danger: var(--portal-text-on-danger);
+  --portal-floating-surface: var(--portal-surface-elevated);
+  --portal-floating-stroke: var(--portal-stroke-floating);
+  --portal-floating-item-hover: var(--portal-surface-floating-hover);
+
+  /* Values one role still has at two or more call sites (DESIGN.md "To unify in Phase B"). */
+  /* Global settings cards (--ui-bg-card at the root): 5%; agent pages already read the card role. */
+  --portal-legacy-card-fill-settings: var(--portal-raw-ink-5);
+  /* The global settings Advanced disclosure: its own fill and a control-strength stroke. */
+  --portal-legacy-disclosure-fill: var(--portal-raw-ink-3);
+  --portal-legacy-disclosure-stroke: var(--portal-raw-ink-10);
+  /* The rail under the agent page tabs: a hairline where the divider role is lighter. */
+  --portal-legacy-tab-rail: var(--portal-raw-ink-5);
+  /* Hover on the disclosure summary and on pane tab-strip tabs: a step quieter than row hover. */
+  --portal-legacy-row-hover-quiet: var(--portal-raw-ink-2);
+  /* The shell's brand selection (selected destinations), RUNNING and DEFAULT chips: light at 10%
+     where the role takes 12%. */
+  --portal-legacy-brand-selected: var(--portal-raw-brand-25);
+}
+
+/* Light: Brand rev 491 + AA. The same alphas over #f2f2f2; strokes take one step more to stay visible. */
+:root[data-shell='portal']:not(.dark) {
+  --portal-text-brand: var(--portal-raw-blue);
+  --portal-surface-brand-selected: var(--portal-raw-brand-12);
+  --portal-legacy-brand-selected: var(--portal-raw-brand-10);
+  --portal-text-secondary: color-mix(in srgb, var(--ui-base) 80%, transparent);
+  --portal-text-tertiary: color-mix(in srgb, var(--ui-base) 72%, transparent);
+  --portal-text-quaternary: color-mix(in srgb, var(--ui-base) 64%, transparent);
+  /* A skin without its own canvas gets chrome with 5% ink. */
+  --portal-surface-canvas: var(--portal-skin-window, color-mix(in srgb, var(--ui-base) 5%, var(--ui-bg-chrome)));
+  /* Light panels lift toward white: the panel is one translucent white layer, so the canvas wing reads
+     through it as a trace (Light draws it barely there, 491:46161). */
+  --portal-surface-panel: color-mix(in srgb, var(--portal-raw-pure-white) 30%, transparent);
+  --portal-surface-stage: color-mix(in srgb, var(--portal-raw-pure-white) 90%, var(--portal-surface-canvas));
+  --portal-sidebar-background: color-mix(in srgb, var(--portal-raw-pure-white) 30%, var(--portal-surface-canvas));
+  --portal-page-canvas: var(--portal-surface-canvas);
+  --portal-page-background: var(--portal-surface-stage);
+  --portal-page-sidebar-background: var(--portal-sidebar-background);
+  --portal-surface-control: var(--portal-raw-ink-3);
+  --portal-surface-control-hover: color-mix(in srgb, var(--ui-base) 6%, transparent);
+  --portal-surface-control-pressed: color-mix(in srgb, var(--ui-base) 9%, transparent);
+  --portal-surface-field: var(--portal-raw-ink-2);
+  --portal-surface-select: var(--portal-raw-ink-4);
+  --portal-surface-floating-hover: var(--portal-raw-ink-5);
+  --portal-surface-scrim: var(--portal-raw-shadow-20);
+  --portal-stroke-control: var(--portal-raw-ink-14);
+  --portal-stroke-field: color-mix(in srgb, var(--ui-base) 18%, transparent);
+  --portal-stroke-floating: color-mix(in srgb, var(--ui-base) 12%, transparent);
+  --portal-status-online: var(--portal-raw-mint-deep);
+  --portal-status-pending: color-mix(in srgb, var(--portal-raw-orange) 70%, var(--portal-raw-black));
+  --portal-status-error-ink: var(--portal-raw-danger);
+}
+
+/* Window Glass (macOS default): the native material shows only on the canvas — the rails and the
+   band — tinted with the portal canvas at the user's Glass intensity (0 = solid). styles.css clears
+   the shell's own canvas paint for Glass; <body> is the canvas's one painter. Panels, cards and the
+   wing above it render exactly as without Glass. These rules are unlayered on purpose: they hold
+   under Glass too (styles.css `@layer base`). */
+:root[data-shell='portal'][data-hermes-glass] body {
+  background: color-mix(in srgb, var(--portal-window-background) var(--translucency-glass-keep, 100%), transparent);
+}
+
+/* Pages — overlays (Settings, Agents, …) and the workspace's own pages (Capabilities, Library, …)
+   — share one frame: square, full bleed beside the rail, nav and body laid on the page canvas
+   (Overview 856:2740 / 856:2809 / 919:9263) rather than on chat panels. */
+:root[data-shell='portal'] [data-overlay-surface][data-page-surface] {
+  background-color: var(--portal-page-canvas);
+}
+
+:root[data-shell='portal'] :is([data-slot='page-toolbar'], [data-tree-group][data-zone-page] > [data-panel-header]) {
+  background-color: var(--portal-page-canvas);
+}
+
+/* A page's band is canvas like every other screen's: under Glass it shows the material (a route
+   overlay's covered chat is unpainted, contrib/route-cover.tsx), so the band never changes material
+   between Chats and a page. */
+:root[data-shell='portal'][data-hermes-glass]
+  :is([data-slot='page-toolbar'], [data-tree-group][data-zone-page] > [data-panel-header]) {
+  background-color: transparent;
+}

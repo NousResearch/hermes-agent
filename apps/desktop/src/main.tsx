@@ -1,5 +1,7 @@
 // Loaded by src/entry.ts once the machine's shared UI preferences hydrated.
 import './styles.css'
+// The redesign's tokens: after styles.css, whose `:root.dark` rules they tie on specificity.
+import './app/redesign/tokens/index.css'
 // Install the loopback browser host before any store/App modules evaluate.
 // Electron preload remains authoritative when its bridge already exists.
 import './lib/browser-desktop-bridge-install'

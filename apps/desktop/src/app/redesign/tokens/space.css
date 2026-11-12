@@ -1,0 +1,42 @@
+/* Space and layout (LANGUAGE §3). Spacing itself is Tailwind's 4px scale (`gap-3` = 12px); these are the
+   named geometry every page and the shell share. Root-scoped so route overlays and body-portalled
+   dialogs, menus and popovers see the shell's geometry. */
+:root[data-shell='portal'] {
+  /* The global rail and the developer rail (1036:7202). */
+  --portal-rail-width: 3.75rem;
+  /* ONE sidebar column for every rail destination: page panels (Agents, Schedules, Settings) take the
+     chat sidebar's width — the user's sash width once they size it (published by the pane tree as
+     --portal-sidebar-width), else its default — so switching destinations never moves the panel edge,
+     its divider or the stage's content edge. */
+  --portal-panel-width: var(--portal-sidebar-width, var(--sessions-pane-width));
+  /* The page-frame contract: where a page's content column starts, from the stage edge it shares with
+     the page's sidebar panel (the freshest frames, 1036:7189 / 895:*: 20px after the divider, one value
+     for Agents, Settings and Schedules alike), and from the stage's own edge on a page with no panel
+     (919:9281: x 90 in the stage). Left insets, never centring, at every window width, so switching
+     pages never moves the column sideways. */
+  --portal-frame-inset: 1.25rem;
+  --portal-stage-inset: 5.625rem;
+  /* The column's one max width per page kind: forms and details (1036:7189 General: 840), catalogs and
+     tables (919:9281: 980), and the conversation shared by the transcript and the docked composer. */
+  --portal-column-form: 52.5rem;
+  --portal-column-catalog: 61.25rem;
+  --portal-column-conversation: 40rem;
+  /* The landing's composer before the first message (906). */
+  --portal-column-landing: 30rem;
+  /* Full-width pages without a panel pad their catalog column by this much on each side. */
+  --page-content-inset: 1.5rem;
+  --page-content-max-width: calc(var(--portal-column-catalog) + 2 * var(--page-content-inset));
+  /* The space a page scroller keeps below its last row, under its bottom fade. */
+  --portal-page-end-space: 2rem;
+  /* Row heights: 30 chrome buttons (906:19469), 40 panel list rows (1038:7408). */
+  --portal-row-chrome: 1.875rem;
+  --portal-row-panel: 2.5rem;
+
+  /* Names in use before the role names; Phase B moves their readers to the role and deletes them. */
+  --page-nav-width: var(--portal-panel-width);
+  --page-panel-inset: var(--portal-frame-inset);
+  --page-stage-inset: var(--portal-stage-inset);
+  --page-form-max-width: var(--portal-column-form);
+  --page-catalog-max-width: var(--portal-column-catalog);
+  --portal-chrome-button-size: var(--portal-row-chrome);
+}

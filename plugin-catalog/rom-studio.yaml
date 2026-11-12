@@ -1,6 +1,6 @@
 name: rom-studio
 repo: "https://github.com/erosika/rom-studio"
-sha: "57a948716969467f4edf86a5887aa6f23da7f29b"
+sha: "5c454550636976ff52dcaee7ad020db1fc9d84fc"
 version: "0.1.0"
 title: ROM Studio
 description: "Make your own small game by talking with your agent, one scene at a time, from a decomp (the community-made source of an original handheld game) that you supply. A pane in the desktop app shows each change as a sentence with a picture from the running game, plus a play link, scenes, gallery, maps, music, dialogue, source search and the agent's questions. Ships a command-line kit the agent runs, a browser player with an always-on flash guard and the make-your-game skill; starts one local page on 127.0.0.1 once a game folder is set. No agent tools, hooks, middleware or env vars. Linux only."
@@ -8,12 +8,12 @@ maintainer: erosika
 tier: community
 category: desktop
 requires_hermes: ">=0.21.6"
-docs_url: "https://github.com/erosika/rom-studio/blob/57a948716969467f4edf86a5887aa6f23da7f29b/README.md"
-image: "https://raw.githubusercontent.com/erosika/rom-studio/57a948716969467f4edf86a5887aa6f23da7f29b/docs/images/banner.png"
+docs_url: "https://github.com/erosika/rom-studio/blob/5c454550636976ff52dcaee7ad020db1fc9d84fc/README.md"
+image: "https://raw.githubusercontent.com/erosika/rom-studio/5c454550636976ff52dcaee7ad020db1fc9d84fc/docs/images/banner.png"
 screenshots:
-  - "https://raw.githubusercontent.com/erosika/rom-studio/57a948716969467f4edf86a5887aa6f23da7f29b/docs/images/tour-host.jpg"
-  - "https://raw.githubusercontent.com/erosika/rom-studio/57a948716969467f4edf86a5887aa6f23da7f29b/docs/images/tour-gallery.jpg"
-  - "https://raw.githubusercontent.com/erosika/rom-studio/57a948716969467f4edf86a5887aa6f23da7f29b/docs/images/tour-decisions.jpg"
+  - "https://raw.githubusercontent.com/erosika/rom-studio/5c454550636976ff52dcaee7ad020db1fc9d84fc/docs/images/tour-host.jpg"
+  - "https://raw.githubusercontent.com/erosika/rom-studio/5c454550636976ff52dcaee7ad020db1fc9d84fc/docs/images/tour-gallery.jpg"
+  - "https://raw.githubusercontent.com/erosika/rom-studio/5c454550636976ff52dcaee7ad020db1fc9d84fc/docs/images/tour-decisions.jpg"
 readme: true
 platforms: [linux]
 capabilities:

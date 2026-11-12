@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import ipaddress
 import json
 import logging
 import os
@@ -198,12 +197,6 @@ def redact_outbound(text: str) -> str:
     return _EMAIL_RE.sub("[redacted-email]", redact_for_egress(text))
 
 
-# Blocked even in localhost-only mode — a remote peer must not make us probe internal services
-# (link-local/AWS metadata, RFC1918, unspecified, IPv6 link-local/ULA). Loopback only in localhost mode.
-_BLOCKED_PREFIXES = ("169.254.", "127.", "10.", *(f"172.{i}." for i in range(16, 32)), "192.168.",
-                     "0.0.0.0", "::1", "fe80:", "fc00:", "fd00:")
-
-
 def is_loopback_host_header(host_header: Optional[str], public_url: str = "") -> bool:
     """True when an HTTP ``Host`` value names a loopback address or the ``A2A_PUBLIC_URL`` host
     (any port); malformed fails closed."""
@@ -222,29 +215,43 @@ def is_loopback_host_header(host_header: Optional[str], public_url: str = "") ->
 
 
 def is_safe_callback_url(url: str, *, localhost_mode: Optional[bool] = None) -> bool:
-    """True when a push callback URL is http(s) and not internal/private/loopback."""
+    """True when a push callback URL is http(s) and may be dialed. Loopback only in localhost-only
+    mode; everything else goes through the shared SSRF policy (``tools.url_safety.is_safe_url``),
+    which resolves the host and checks every answer, so a DNS name or an integer/hex IPv4 spelling
+    of a metadata/RFC1918 address is refused as the dotted form is."""
     if localhost_mode is None:
         localhost_mode = localhost_only()
-    try:
-        parsed = urllib.parse.urlparse(url) if url and isinstance(url, str) else None
-    except Exception:
+    if not url or not isinstance(url, str):
         return False
-    hostname = (parsed.hostname or "") if parsed and parsed.scheme in ("http", "https") else ""
-    if not hostname:
-        return False
-    hostname_lower = hostname.lower()
-    if hostname_lower == "localhost":
-        return localhost_mode
-    for prefix in _BLOCKED_PREFIXES:
-        if hostname_lower.startswith(prefix.lower()):
-            return bool(localhost_mode and prefix in ("127.", "::1"))
     try:
-        ip = ipaddress.ip_address(hostname)
-        if ip.is_loopback or ip.is_link_local or ip.is_private or ip.is_reserved:
-            return bool(localhost_mode and ip.is_loopback)
+        parsed = urllib.parse.urlparse(url)
     except ValueError:
-        pass  # a hostname, not an IP
-    return True
+        return False
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return False
+    if is_loopback_host(parsed.hostname):
+        return localhost_mode
+    from tools.url_safety import is_safe_url
+
+    return is_safe_url(url)
+
+
+def post_callback(url: str, body: bytes, headers: dict, *, localhost_mode: bool, timeout: float = 10.0) -> int:
+    """POST *body* to a callback URL that passed ``is_safe_callback_url``; returns the HTTP status.
+
+    Redirects are not followed: the check covered this URL only, and a 302 from a public host
+    would otherwise land the request on metadata or an internal service. Non-loopback targets go
+    through ``create_ssrf_safe_client``, which re-resolves and validates at connect time and dials
+    the vetted IP, so a name cannot answer public for the check and loopback for the socket."""
+    import httpx
+    from tools.url_safety import create_ssrf_safe_client
+
+    if localhost_mode and is_loopback_host(httpx.URL(url).host):
+        client = httpx.Client(timeout=timeout, follow_redirects=False, trust_env=False)
+    else:
+        client = create_ssrf_safe_client(timeout=timeout, follow_redirects=False)
+    with client:
+        return client.post(url, content=body, headers=headers).status_code
 
 
 def audit(direction: str, peer: str, task_id: str, summary: str) -> None:

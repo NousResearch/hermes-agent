@@ -16,7 +16,6 @@ import socket
 import threading
 import time
 import urllib.parse
-import urllib.request
 from collections import OrderedDict, deque
 from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FuturesTimeout
@@ -853,9 +852,8 @@ class A2AAdapter(BasePlatformAdapter):
         if signature := self._security_context.sign_push_payload(payload):
             headers["X-A2A-Signature"] = signature
         try:
-            req = urllib.request.Request(callback_url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                status = resp.status
+            status = security.post_callback(callback_url, json.dumps(payload).encode("utf-8"), headers,
+                                            localhost_mode=self._security_context.localhost_only())
         except Exception as e:
             return fail("failed: %s", e)
         if not 200 <= status < 300:

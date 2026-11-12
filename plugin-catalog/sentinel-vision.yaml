@@ -4,7 +4,7 @@ repo: https://github.com/StarAtNyte/hermes-sentinel
 sha: 059c91740ee65dd3df55c9744c4c76ecb28654d9
 subdir: sentinel-vision
 title: Sentinel Vision
-description: "Tell Hermes what to watch on a camera, screen or video, and Sentinel detects events, stores snapshots and injects alerts into your chat. A local change detector and configurable call caps reduce vision-model usage; rules, event history and feedback make the watcher useful over time. Frames and rule text are sent to your configured model; see the README for setup, privacy and limitations."
+description: "Tell Hermes what to watch on a camera, screen or video, and Sentinel detects events, stores snapshots and injects alerts into your chat. A local change detector and configurable call caps reduce vision-model usage; rules, event history and feedback make the watcher useful over time. Frames and rule text are sent to your configured model; see the README for setup, privacy and limitations. Disclosure — Captures from local cameras, the screen (mss), image folders, video files and stream/snapshot URLs you configure. A background watcher (capture threads, judge workers, scheduler) starts about 25 s after load when rules exist and sends camera/screen frames and rule text to your configured vision model. Snapshots, events, teaching images and chat routes are stored under HERMES_HOME/plugin-data/sentinel-vision/. Fired rules inject alerts as user messages and can replay a rule's stored action prompt as unattended agent turns; outside the classic CLI this needs plugins.entries.sentinel-vision.allow_gateway_injection: true. The model can name local image/video paths to read and send to the vision model."
 maintainer: StarAtNyte
 tier: community
 category: automation

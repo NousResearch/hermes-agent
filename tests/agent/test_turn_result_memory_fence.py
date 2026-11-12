@@ -144,3 +144,9 @@ def test_held_row_with_memory_only_content_stays_hidden():
     row = _held_tool_round_row(_make_agent(), ECHOED_BLOCK)
 
     assert row["display_kind"] == "hidden"
+
+
+def test_held_row_with_commentary_and_no_content_stays_hidden():
+    row = _held_tool_round_row(_make_agent(), "", commentary="Checking the inbox.")
+
+    assert row["display_kind"] == "hidden"

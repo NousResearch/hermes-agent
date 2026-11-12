@@ -583,9 +583,9 @@ def settle_held_final(agent, result: Any) -> None:
 
 
 def fence_result_reply(result: Any) -> None:
-    """Strip echoed ``<memory-context>`` spans from the reply every surface delivers (#81312).
-    Streamed deltas pass the stateful scrubber, but a non-streamed reply reaches adapters (email
-    bodies included) only through ``final_response``; the transcript row keeps the raw text."""
+    """Strip echoed ``<memory-context>`` spans from ``final_response``/``pre_transform_response`` (#81312).
+    A non-streamed reply reaches adapters (email bodies included) only through ``final_response``;
+    ``result["messages"]`` and the stored row keep the raw text (API Runs transcripts, ``get_messages``)."""
     if not isinstance(result, dict):
         return
     from agent.memory_context import fence_recalled_context

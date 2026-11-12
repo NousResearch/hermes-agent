@@ -141,7 +141,8 @@ def test_non_mapping_kanban_section_skips_all_cards(
     ("kanban:\n  dispatch_profiles: [researcher, sage]\n", "researcher, sage"),
     ("kanban:\n  dispatch_profiles: []\n", "none (fail-closed"),
     ("kanban: [1, 2]\n", "none (fail-closed"),
-], ids=["absent", "listed", "empty_list", "non_mapping_section"])
+    ("kanban:\n#  dispatch_profiles: [sage]\n", "any"),
+], ids=["absent", "listed", "empty_list", "non_mapping_section", "empty_section"])
 def test_diagnostics_reports_resolved_allowlist(kanban_home, capsys, config, expected):
     """`hermes kanban diagnostics` (text and --json) shows what this home may claim."""
     import argparse

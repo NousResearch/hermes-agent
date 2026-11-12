@@ -1734,14 +1734,14 @@ def _dispatch_profile_allowlist(normalize_profile_name) -> Optional[frozenset]:
     Returns ``None`` only when the key is absent from the user config (upstream
     behavior: any existing profile is claimable). A present value is fail-closed:
     an empty list, ``null`` or a bare ``dispatch_profiles:`` claims nothing, and
-    so does a ``kanban`` section that is not a mapping or an unreadable config
-    (#113620, #147532) — the user layer is read without the ``DEFAULT_CONFIG``
-    merge, whose ``None`` placeholder would make the key look present everywhere.
+    so does a non-mapping ``kanban`` section (a bare ``kanban:`` is absent) or an
+    unreadable config (#113620, #147532) — the user layer is read without the
+    ``DEFAULT_CONFIG`` merge, whose ``None`` placeholder fakes the key's presence.
     """
     try:
         from hermes_cli.config_effective import load_user_config_effective
-        kanban = (load_user_config_effective(fail_closed=True) or {}).get("kanban", {})
-        if not isinstance(kanban, Mapping):
+        kanban = (load_user_config_effective(fail_closed=True) or {}).get("kanban")
+        if kanban is not None and not isinstance(kanban, Mapping):
             raise TypeError(f"the `kanban` section is {type(kanban).__name__}, not a mapping")
     except Exception as exc:
         _kb._log.warning(
@@ -1749,7 +1749,7 @@ def _dispatch_profile_allowlist(normalize_profile_name) -> Optional[frozenset]:
             type(exc).__name__, exc,
         )
         return frozenset()
-    if "dispatch_profiles" not in kanban:
+    if "dispatch_profiles" not in (kanban or {}):
         return None
     raw = kanban["dispatch_profiles"]
     if raw is None or (isinstance(raw, str) and not raw.strip()):

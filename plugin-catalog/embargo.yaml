@@ -1,6 +1,6 @@
 name: embargo
 repo: https://github.com/inkandwire/hermes-embargo
-sha: "ee4605a7804b892c5b570ac173d7fa9b329364a8"
+sha: "2691bde130f2a9ddbe2594040b537f773a633fe0"
 title: Embargo
 description: "Embargoed news stays embargoed. When your agent reads 'EMBARGOED UNTIL <time>', tool calls that carry that text are blocked until the clock passes; a live countdown stamp shows what is held, and the hold lifts by itself. Disclosure: hooks pre_tool_call (blocks matching calls; fails closed while an embargo exists), post_tool_call and pre_llm_call (detect embargo headers in files read and messages), transform_llm_output (adds the card); stores label, lift time, file paths and hashed 6-word fingerprints plus hashed headline names and figures, never the raw release text (the one-line label, up to 80 characters, is plain text), in its data folder. Your model provider still sees the text you share; this is a send guard, not a privacy filter. Catches copies, quotes and reworded posts that repeat the headline names and figures; not a full paraphrase detector. Standard library only; it makes no network or model calls and reports nothing anywhere."
 maintainer: inkandwire
@@ -9,7 +9,7 @@ category: tools
 requires_hermes: ">=0.22.5"
 docs_url: https://github.com/inkandwire/hermes-embargo#readme
 screenshots:
-  - https://raw.githubusercontent.com/inkandwire/hermes-embargo/ee4605a7804b892c5b570ac173d7fa9b329364a8/docs/screenshots/embargo-card-states.png
+  - https://raw.githubusercontent.com/inkandwire/hermes-embargo/2691bde130f2a9ddbe2594040b537f773a633fe0/docs/screenshots/embargo-card-states.png
 version: "0.1.0"
 platforms: []
 capabilities:

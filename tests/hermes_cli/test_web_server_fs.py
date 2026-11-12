@@ -257,6 +257,27 @@ def test_fs_readers_reject_sensitive_resolved_ssh_path_before_reading(client, mo
     assert response.json()["detail"] == "Access to sensitive files is not allowed"
 
 
+@pytest.mark.parametrize("endpoint", ["/api/fs/read-text", "/api/fs/read-data-url"])
+def test_fs_ssh_readers_read_the_resolved_path_they_vetted(client, monkeypatch, endpoint):
+    """The preview reads the resolved target the sensitive-path check judged, not the link again."""
+    reads = []
+
+    class FakeSshFs:
+        def inspect_file(self, _path):
+            return "/srv/repos/notes.txt", 2
+
+        def read_bytes(self, path, *, max_bytes, read_limit=None):
+            reads.append(path)
+            return b"hi", 2, path
+
+    monkeypatch.setattr(file_routes, "_fs_backend", lambda profile=None: FakeSshFs())
+
+    response = client.get(endpoint, params={"path": "/srv/repos/safe-link", "profile": "remote-dev"})
+
+    assert response.status_code == 200
+    assert reads == ["/srv/repos/notes.txt"]
+
+
 @pytest.mark.parametrize("endpoint", ["/api/fs/read-text", "/api/fs/read-data-url", "/api/fs/download"])
 def test_fs_ssh_readers_refuse_a_resolved_name_the_adapter_would_rewrite(client, monkeypatch, endpoint):
     """The real adapter strips whitespace from paths it reads, so a link resolving to ``.env ``

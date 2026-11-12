@@ -45,7 +45,7 @@ import {
   validateRemotePath,
   writeLockfile
 } from './remote-lifecycle'
-import type { SshConnection } from './ssh-connection'
+import { decodeRemoteProgram, type SshConnection } from './ssh-connection'
 
 const OWNERSHIP_ID = '0123456789abcdef0123456789abcdef'
 const SPAWN_NONCE = '0123456789abcdef'
@@ -1748,14 +1748,14 @@ test('spawnRemoteDashboard upload uses exclusive-create and O_NOFOLLOW', async (
     token: 'tk',
     ownershipId: OWNERSHIP_ID
   })
-  const uploadCmd = calls.find(c => /python3 -c/.test(c) && !/fcntl\.flock/.test(c))
-  assert.ok(uploadCmd, 'must use python3 -c for token upload')
-  assert.match(uploadCmd, /O_EXCL/, 'upload must use O_EXCL to reject existing files')
-  assert.match(uploadCmd, /O_NOFOLLOW/, 'upload must use O_NOFOLLOW to reject symlinks')
-  assert.match(uploadCmd, /O_WRONLY/, 'upload must open write-only')
-  assert.match(uploadCmd, /dir_fd=dd/, 'upload must create relative to the opened parent directory')
-  assert.match(uploadCmd, /os\.fstat\(dd\)/, 'upload must validate the opened parent directory')
-  assert.ok(!uploadCmd.includes('tk'), 'token must not appear in the upload command')
+  const uploadRaw = calls.find(c => /python3 -c/.test(c) && !/fcntl\.flock/.test(c))
+  assert.ok(uploadRaw && !/[\r\n]/.test(uploadRaw), 'one argv line, or a csh/tcsh login shell fails')
+  assert.match(decodeRemoteProgram(uploadRaw), /O_EXCL/, 'upload must use O_EXCL to reject existing files')
+  assert.match(decodeRemoteProgram(uploadRaw), /O_NOFOLLOW/, 'upload must use O_NOFOLLOW to reject symlinks')
+  assert.match(decodeRemoteProgram(uploadRaw), /O_WRONLY/, 'upload must open write-only')
+  assert.match(decodeRemoteProgram(uploadRaw), /dir_fd=dd/, 'upload must create against the opened parent')
+  assert.match(decodeRemoteProgram(uploadRaw), /os\.fstat\(dd\)/, 'upload must validate the opened parent directory')
+  assert.ok(!uploadRaw.includes('tk'), 'token must not appear in the upload command')
 })
 
 test('readLockfile treats a lock with non-integer pid as skew', async () => {

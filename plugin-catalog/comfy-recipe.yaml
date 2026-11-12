@@ -1,7 +1,7 @@
 name: "comfy-recipe"
 title: "Comfy Recipe"
 repo: "https://github.com/dotroza/hermes-comfy-recipe"
-sha: "6fb92768c869445f5127f18ae9c279c3e85a52e2"
+sha: "188d0336115bb8809d1b6fe653b81ba2f2f29c5e"
 subdir: "plugin"
 description: "Visible ComfyUI sessions, consent-based setup, workflow tools and media preparation inside Hermes."
 maintainer: "dotroza"
@@ -9,13 +9,13 @@ tier: "community"
 category: "desktop"
 requires_hermes: ">=0.23.1"
 version: "0.4.0"
-docs_url: "https://github.com/dotroza/hermes-comfy-recipe/blob/6fb92768c869445f5127f18ae9c279c3e85a52e2/README.md"
+docs_url: "https://github.com/dotroza/hermes-comfy-recipe/blob/188d0336115bb8809d1b6fe653b81ba2f2f29c5e/README.md"
 readme: true
 platforms: []
 screenshots:
-  - "https://raw.githubusercontent.com/dotroza/hermes-comfy-recipe/6fb92768c869445f5127f18ae9c279c3e85a52e2/docs/screenshots/visible-session-cat-generation.png"
-  - "https://raw.githubusercontent.com/dotroza/hermes-comfy-recipe/6fb92768c869445f5127f18ae9c279c3e85a52e2/docs/screenshots/visible-session-image-editing.png"
-  - "https://raw.githubusercontent.com/dotroza/hermes-comfy-recipe/6fb92768c869445f5127f18ae9c279c3e85a52e2/docs/screenshots/visible-session-pet-sheet.png"
+  - "https://raw.githubusercontent.com/dotroza/hermes-comfy-recipe/188d0336115bb8809d1b6fe653b81ba2f2f29c5e/docs/screenshots/visible-session-cat-generation.png"
+  - "https://raw.githubusercontent.com/dotroza/hermes-comfy-recipe/188d0336115bb8809d1b6fe653b81ba2f2f29c5e/docs/screenshots/visible-session-image-editing.png"
+  - "https://raw.githubusercontent.com/dotroza/hermes-comfy-recipe/188d0336115bb8809d1b6fe653b81ba2f2f29c5e/docs/screenshots/visible-session-pet-sheet.png"
 known_issues:
   - "Windows 11 verified; macOS and Linux paths are implemented but not live-verified."
   - "Workflow models, suitable hardware and optional custom nodes are separate requirements; cloud runs need ComfyUI sign-in, credits and consent."

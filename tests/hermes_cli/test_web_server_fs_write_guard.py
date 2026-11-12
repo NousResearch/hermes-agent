@@ -183,6 +183,7 @@ def test_write_text_refuses_the_approval_gated_ssh_config(client, tmp_path, monk
     r"\\?\UNC\example.invalid\share\notes.txt",
     r"\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy1\notes.txt",
     r"\\.\PhysicalDrive0",
+    r" \\?\UNC\example.invalid\share\notes.txt",
 ])
 def test_write_text_refuses_nt_namespaces_before_any_path_resolution(client, monkeypatch, path):
     """Raw NT namespace input must be rejected before a Windows filesystem path is touched."""
@@ -191,4 +192,19 @@ def test_write_text_refuses_nt_namespaces_before_any_path_resolution(client, mon
 
     monkeypatch.setattr(file_routes, "_remote_fs_backend", unexpected_fs_access)
     response = _save(client, path)
+    assert response.status_code == 403, response.text
+
+
+@pytest.mark.platforms("windows")
+@pytest.mark.parametrize("url", [
+    "file:////%3F/UNC/example.invalid/share/notes.txt",
+    "file:////./PhysicalDrive0",
+])
+def test_write_text_refuses_a_file_url_naming_an_nt_namespace(client, monkeypatch, url):
+    """On Windows these URLs decode to NT namespace paths: judge the decoded path, not the URL."""
+    def unexpected_fs_access(*_args, **_kwargs):
+        raise AssertionError("NT namespace input reached filesystem path inspection")
+
+    monkeypatch.setattr(file_routes, "_remote_fs_backend", unexpected_fs_access)
+    response = _save(client, url)
     assert response.status_code == 403, response.text

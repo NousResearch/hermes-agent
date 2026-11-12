@@ -1141,8 +1141,13 @@ async def fs_write_text(payload: FsWriteText, profile: Optional[str] = None):
     sensitive-file denylist and a locked managed-files root (#95306).
     """
     text = payload.content or ""
-    # Refuse NT namespace paths on raw input: resolving them can initiate SMB auth.
-    if get_nt_namespace_error(payload.path, verb="Write"):
+    # Refuse NT namespace paths on raw input: resolving them can initiate SMB auth. Judge the path as
+    # the resolvers read it: stripped, and a file: URL by the path it decodes to.
+    raw = payload.path.strip()
+    if raw.lower().startswith("file:"):
+        with contextlib.suppress(ValueError, OSError):
+            raw = _file_url_path(raw)
+    if get_nt_namespace_error(raw, verb="Write"):
         raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
     session = await _fs_owned_session(payload.session_id, profile)
     # Save where read-text read: a staged paste or pick on this host, all else on the SSH machine.

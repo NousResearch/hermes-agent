@@ -17,7 +17,7 @@ def test_attach_reference_guidance_never_mutates_the_trailing_user_turn():
     moa_loop._attach_reference_guidance(messages, "REFERENCE BLOCK")
 
     assert messages[1] == {"role": "user", "content": "ORIGINAL TASK"}
-    assert messages[-1] == {"role": "user", "content": "REFERENCE BLOCK"}
+    assert messages[-1] == {"role": "assistant", "content": "REFERENCE BLOCK"}
     assert moa_loop.peel_reference_guidance(messages, "REFERENCE BLOCK") == messages[:-1]
 
 
@@ -42,12 +42,14 @@ def test_prepared_aggregator_requests_share_a_byte_identical_prefix_across_itera
          {"role": "tool", "tool_call_id": "1", "content": "result"}],
     ):
         prepared = facade.rebase_prepared_request({"guidance": guidance, "aggregator": aggregator,
-                                                   "aggregator_temperature": None}, messages)
+                                                   "aggregator_temperature": None, "guidance_anchor": len(history),
+                                                   "guidance_prefix_key": moa_loop._hash_messages(history)}, messages)
         facade._call_prepared_aggregator(prepared, {"tools": [{"type": "function", "function": {"name": "lookup"}}]})
 
     first, second = (c["messages"] for c in calls)
-    assert second[: len(first) - 1] == first[:-1]
-    assert second[-1] == first[-1] == {"role": "user", "content": guidance}
+    assert second[:len(first)] == first
+    assert first[-1] == second[len(history)] == {"role": "assistant", "content": guidance}
+    assert second[-1]["role"] == "tool"
 
 
 def test_anthropic_wire_keeps_the_task_block_byte_stable_with_guidance_as_its_own_block():
@@ -64,11 +66,13 @@ def test_anthropic_wire_keeps_the_task_block_byte_stable_with_guidance_as_its_ow
             {"id": "1", "type": "function", "function": {"name": "lookup", "arguments": "{}"}}]},
         {"role": "tool", "tool_call_id": "1", "content": "result"},
     ]
-    moa_loop._attach_reference_guidance(iteration_2, guidance)
+    moa_loop._attach_reference_guidance(iteration_2, guidance, len(history))
 
     _, first = convert_messages_to_anthropic(iteration_1)
     _, second = convert_messages_to_anthropic(iteration_2)
 
-    assert first[0]["content"] == [{"type": "text", "text": "task"}, {"type": "text", "text": guidance}]
-    assert second[0]["content"] == "task"
-    assert first[0]["content"][0]["text"] == second[0]["content"]
+    assert first[0] == second[0] == {"role": "user", "content": "task"}
+    assert first[1]["role"] == second[1]["role"] == "assistant"
+    assert first[1]["content"] == [{"type": "text", "text": guidance}]
+    assert second[1]["content"][0] == {"type": "text", "text": guidance}
+    assert second[-1]["role"] == "user"

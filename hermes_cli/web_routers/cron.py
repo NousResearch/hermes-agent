@@ -52,6 +52,17 @@ def _job_not_found() -> HTTPException:
     return HTTPException(status_code=404, detail="Job not found")
 
 
+# The cronjob tool's user-editable surface. Everything else on a stored job is scheduler
+# bookkeeping (manual_run_prompt, run/fire claims, state, next_run_at, ...): update_job would
+# store it verbatim, and manual_run_prompt reaches the agent as extra_prompt unscanned.
+_DASHBOARD_UPDATABLE_FIELDS = frozenset({
+    "name", "prompt", "schedule", "deliver", "failure_deliver", "skills", "skill", "repeat",
+    "enabled", "model", "provider", "base_url", "reasoning_effort", "pinned", "script",
+    "monitor_script", "monitor_url", "interpreter", "context_from", "enabled_toolsets",
+    "attach_to_session", "workdir", "no_agent", "timezone", "grace_minutes", "catch_up",
+})
+
+
 def _normalize_dashboard_cron_updates(updates: dict[str, Any], profile_home: Path) -> dict[str, Any]:
     """Normalize dashboard JSON into cron.jobs.update_job's storage shape.
 
@@ -60,11 +71,16 @@ def _normalize_dashboard_cron_updates(updates: dict[str, Any], profile_home: Pat
     core functions already accept.
     """
     normalized = dict(updates or {})
+    internal = sorted(set(normalized) - _DASHBOARD_UPDATABLE_FIELDS)
+    if internal:
+        raise HTTPException(
+            status_code=400, detail=f"Cron job field(s) cannot be updated: {', '.join(internal)}")
     for key in ("model", "provider", "workdir"):
         if key in normalized:
             normalized[key] = _cron_optional_text(normalized[key])
-    if "script" in normalized:
-        normalized["script"] = _normalize_dashboard_cron_script(normalized["script"], profile_home)
+    for key in ("script", "monitor_script"):
+        if key in normalized:
+            normalized[key] = _normalize_dashboard_cron_script(normalized[key], profile_home)
     if "base_url" in normalized:
         normalized["base_url"] = _cron_optional_text(normalized["base_url"], strip_trailing_slash=True)
     if "deliver" in normalized:

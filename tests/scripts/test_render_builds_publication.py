@@ -41,11 +41,11 @@ def test_tag_publication_pending_rerun_stale_and_dry_run(monkeypatch, r2_server,
     version = tag[1:]
     prefix = f'releases/tag/{tag}/'
     visible = [f'HermesBundled-{version}-mac-arm64.dmg', f'HermesBundled-{version}-win-x64.msix',
-               f'HermesBundled-{version}-win-arm64.msix', f'HermesBundled-{version}-linux-x64.AppImage',
-               f'HermesLight-{version}-win-x64.msix']
+               f'HermesBundled-{version}-win-arm64.msix', f'HermesLight-{version}-win-x64.msix']
     hidden = [f'HermesBundled-{version}-mac-arm64.zip', f'HermesBundled-{version}-win.msixbundle',
               f'HermesBundled-{version}-win-x64.msix.blockmap', 'latest.yml',
-              'HermesBundled-9.9.9-win-x64.msix']
+              'HermesBundled-9.9.9-win-x64.msix', f'HermesBundled-{version}-linux-x64.AppImage',
+              f'HermesBundled-{version}-linux-arm64.AppImage', 'canary-linux-arm64.yml']
     for name in visible + hidden:
         r2_server.store[prefix + name] = (name.encode(), '"e"')
     r2_server.store['releases/tag/v9.9.9/HermesBundled-9.9.9-win-x64.msix'] = (b'neighbor', '"e"')
@@ -72,7 +72,7 @@ def test_tag_publication_pending_rerun_stale_and_dry_run(monkeypatch, r2_server,
     assert set(re.findall(r'href="(http[^"]+)"', page)) == expected | {release_url}
     assert rbt.recorded_build(page) == tag and 'Bundle environment' not in page
     assert all(name not in page and name not in body for name in hidden)
-    assert 'linux-arm64' not in page
+    assert 'Linux' not in body.split('Native install/chat smoke')[0]
     for url in expected:
         with urlopen(url, timeout=5) as response:
             assert response.read() == unquote(url.rsplit('/', 1)[1]).encode()

@@ -1,0 +1,17 @@
+name: customs
+title: customs
+repo: https://github.com/pgreyy/customs
+sha: 8363fe0d10d49f2321eb652d00b62e9c816f910d
+description: "Plants fake credential files on your machine and blocks a hijacked agent the moment a tool call reaches for one, before the tool runs. It also redacts its own fake values from tool results and from the request to the model provider, reads local scripts before they run, and asks for approval when an upload follows a credential search and packaging. Disclosure — plants fake credential files (mode 600, never over an existing file, inside a Git repository only at paths Git ignores) under the home folder, including ~/.ssh and ~/.aws, when the user runs /customs plant, blend or add, and keeps its own state in its plugin data folder; it only recognizes its own bait files and fake values and does not find or protect real credentials. Its hooks read every tool call's arguments and results and every outgoing model request, block or send to Hermes approval the calls that touch bait or carry a fake value, redact fake values from tool results and model requests, and after a block require approval for network actions in that session until /customs unlock (on by default). It reads the local scripts a command is about to run (up to 8 files, 512 KB each) and, during /customs blend, folder names under the home folder, and runs git check-ignore when planting inside a Git repository. No network calls by default; with alert_target set, alerts go out through hermes send on the user's own Hermes messaging route and carry the rule, the bait file's path, the likely source and a masked preview of the call (first 200 characters)."
+maintainer: pgreyy
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/pgreyy/customs/blob/8363fe0d10d49f2321eb652d00b62e9c816f910d/README.md
+version: "0.6.5"
+platforms: [linux]
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_tool_call, post_tool_call, transform_tool_result, post_approval_response]
+  provides_middleware: [llm_request]
+  requires_env: []

@@ -537,6 +537,17 @@ def _replay_env(home: str) -> dict:
     return served_profile_child_env(target_home=home, inherit_credentials=True)
 
 
+def _bare_replay_env(home: str) -> dict:
+    """The replayed gateway's env: no supervisor marker of the updater's (an ``/update`` sent to a
+    launchd/systemd gateway carries them), or the replay believes the service launched it and skips
+    the supervised-gateway guard (#73480). Its profile pin rides on."""
+    from hermes_cli.gateway_runtime_start import strip_supervisor_markers
+    env = strip_supervisor_markers(_replay_env(home))
+    for leaked in ("HERMES_UPDATE_PAUSED", "_HERMES_GATEWAY"):
+        env.pop(leaked, None)
+    return env
+
+
 def _relaunch_bare(entry: dict) -> int:
     """Replay a bare gateway from its recorded argv under its recorded home; the new PID once it
     is serving. A gateway already serving that home (an earlier attempt's) is adopted instead."""
@@ -544,9 +555,7 @@ def _relaunch_bare(entry: dict) -> int:
         return existing
     logs = Path(entry["home"]) / "logs"
     logs.mkdir(parents=True, exist_ok=True)
-    env = _replay_env(entry["home"])
-    for leaked in ("INVOCATION_ID", "JOURNAL_STREAM", "HERMES_UPDATE_PAUSED", "_HERMES_GATEWAY"):
-        env.pop(leaked, None)
+    env = _bare_replay_env(entry["home"])
     with open(logs / "gateway-update-resume.log", "ab") as log:
         proc = subprocess.Popen(list(entry["argv"]), env=env, stdin=subprocess.DEVNULL, stdout=log,
                                 # detached-spawn: ok — resumes the paused gateway after an update; it must outlive the updater

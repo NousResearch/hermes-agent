@@ -1761,8 +1761,7 @@ class _AnthropicCompletionsAdapter:
             from agent.anthropic_adapter import _forbids_sampling_params
             if not _forbids_sampling_params(model):
                 anthropic_kwargs["temperature"] = temperature
-        # Per-request HTTP headers (OpenCode session affinity) — the Anthropic SDK accepts
-        # ``extra_headers`` on messages.create/stream too.
+        # Per-request HTTP headers (OpenCode session affinity); Messages create/stream accept them too.
         if isinstance(kwargs.get("extra_headers"), dict) and kwargs["extra_headers"]:
             anthropic_kwargs["extra_headers"] = {
                 **(anthropic_kwargs.get("extra_headers") or {}),
@@ -1771,9 +1770,8 @@ class _AnthropicCompletionsAdapter:
         # response_format: top-level gets the same translation as the extra_body form; when both
         # are present the extra_body form wins. Passthrough excludes ``reasoning``/``response_format``
         # (already TRANSLATED to native fields — raw would 400 on strict gateways) and ``_`` Hermes plumbing.
-        # The adapter builds the Messages body from a fixed allow-list of kwargs, so before this an
-        # unrecognized top-level kwarg was dropped on the floor: the request succeeded but the schema
-        # contract silently became prompt compliance (#85626 review, point 2).
+        # The Messages body is built from a fixed allow-list of kwargs (``timeout`` included, below): an
+        # unlisted kwarg is dropped, so a schema contract became prompt compliance (#85626 review, point 2).
         top_level_response_format = kwargs.get("response_format")
         if top_level_response_format is not None:
             _translate_anthropic_response_format(anthropic_kwargs, top_level_response_format)
@@ -1789,6 +1787,8 @@ class _AnthropicCompletionsAdapter:
                 if not isinstance(existing, dict):
                     existing = {}
                 anthropic_kwargs["extra_body"] = {**existing, **passthrough}
+        if isinstance(kwargs.get("timeout"), (int, float)) and kwargs["timeout"] > 0:  # else the client's 900 s read
+            anthropic_kwargs["timeout"] = kwargs["timeout"]
         response = create_anthropic_message(
             self._client,
             anthropic_kwargs,

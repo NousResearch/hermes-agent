@@ -15,6 +15,7 @@ from __future__ import annotations
 import threading
 import time
 from collections import OrderedDict
+import math
 from collections.abc import Mapping
 from typing import Any
 
@@ -73,7 +74,7 @@ def record_task_progress(room_id: str, task_id: str, execution_generation: int, 
     reported = _generation(info.get("execution_generation"))
     matches = str(info.get("task_id") or "") == task_id and reported in (None, execution_generation)
     update = {"active": matches and reported == execution_generation and info.get("active") is True}
-    if matches and type(progress_at) in (int, float):
+    if matches and type(progress_at) in (int, float) and math.isfinite(progress_at):
         update.update(tool=tool[:128] if isinstance(tool, str) and tool else None, progress_at=float(progress_at))
     with _progress_lock:
         _store((room_id, task_id), int(execution_generation), update)
@@ -88,6 +89,23 @@ def forget_task_progress(room_id: str, task_id: str, execution_generation: int) 
             return  # the replacement may already have published its first frame
         _progress.pop((room_id, task_id), None)
         _store((room_id, task_id), int(execution_generation) + 1, {})
+
+
+# ``live_progress`` signs ``progress_at`` to this many seconds: a member going quiet and resuming moves the
+# signature well inside the Desktop's 120 s "stalled" rule, while a frame alone does not.
+_PROGRESS_SIGN_SECONDS = 30
+
+
+def live_progress() -> list[tuple[str, str, int, str | None, bool, int | None]]:
+    """``(room_id, task_id, generation, tool, active, progress bucket)`` for every attempt this process holds
+    progress for: what ``groups.state`` projects from memory (``task_progress``, ``task_is_active``), with
+    ``progress_at`` coarsened to ``_PROGRESS_SIGN_SECONDS``. The empty entries ``forget_task_progress`` leaves
+    (they only fence a late write) show nothing, so they are left out: the LRU evicting one is not a change."""
+    with _progress_lock:
+        return [(room_id, task_id, entry["generation"], entry["tool"], bool(entry["active"]),
+                 None if entry["progress_at"] is None else int(entry["progress_at"] // _PROGRESS_SIGN_SECONDS))
+                for (room_id, task_id), entry in _progress.items()
+                if entry["tool"] or entry["active"] or entry["progress_at"] is not None]
 
 
 def task_is_active(room_id: str, task_id: str, execution_generation: int) -> bool:

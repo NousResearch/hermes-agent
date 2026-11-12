@@ -213,7 +213,10 @@ _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
         ("deepseek-flash", "deepseek-v4-flash", "deepseek-chat", "deepseek-reasoner"): ("0.15", "0.60", "0.003"),
         "deepseek-v4-pro": ("0.66", "1.98", "0.022"),
     }),
-    # Introductory rates through 2026-11-30; from 2026-12-01 they double ($4 / $20 / $0.20).
+    # Gemini 4 introductory rates through 2026-11-30; from 2026-12-01 they double ($4 / $20 / $0.20).
+    ("google", "https://ai.google.dev/gemini-api/docs/pricing", "google-pricing-2026-11-10", {
+        "gemini-4-carbon": ("2.00", "10.00", "0.10"),
+    }),
     ("google", "https://ai.google.dev/gemini-api/docs/pricing", "google-pricing-2026-10-13", {
         "gemini-4-argon": ("2.00", "10.00", "0.10"),
     }),
@@ -675,9 +678,11 @@ def normalize_usage(
 
     # Responses API: output_tokens_details.reasoning_tokens. Chat Completions
     # (OpenAI, OpenRouter, DeepSeek, ...): completion_tokens_details.reasoning_tokens.
-    # Hidden thinking dominates output spend on reasoning models, so read both.
+    # Anthropic Messages: output_tokens_details.thinking_tokens (the full thinking, not the summary).
+    # Hidden thinking dominates output spend on reasoning models, so read all three.
     reasoning_tokens = _first_nonzero(
-        u, ("output_tokens_details", "reasoning_tokens"), ("completion_tokens_details", "reasoning_tokens")
+        u, ("output_tokens_details", "reasoning_tokens"), ("completion_tokens_details", "reasoning_tokens"),
+        ("output_tokens_details", "thinking_tokens"),
     )
 
     # On MiniMax-M3's Anthropic wire, cache_read_input_tokens carries a constant

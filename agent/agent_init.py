@@ -1161,8 +1161,8 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
     agent._turns_since_memory = 0
     agent._iters_since_skill = 0
     from agent.safe_worker_policy import safe_worker_enabled
-
-    if safe_worker_enabled():
+    from tools.hosted_tool_policy import host_feature_enabled
+    if safe_worker_enabled() or not host_feature_enabled("builtin_memory"):  # hosted: not the agent's memory
         agent._memory_manager = None
         return
     # skip_memory skips the external *provider*; enabled_toolsets=["memory"] still gets the

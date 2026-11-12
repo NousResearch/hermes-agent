@@ -23,7 +23,7 @@ def test_main_terminates_via_os_exit_not_systemexit(monkeypatch):
     propagate instead of our os._exit sentinel and this test would fail.
 
     Test contributed by @AgenticSpark (PR #53122, duplicate of #53121)."""
-    async def fake_start_gateway(config=None):
+    async def fake_start_gateway(config=None, **kwargs):
         return False
 
     stdout = SimpleNamespace(flush=Mock())
@@ -47,7 +47,7 @@ def test_main_routes_systemexit_through_os_exit(monkeypatch):
     (#53107) — a SystemExit propagating to interpreter finalization would join a
     stuck non-daemon worker and hang. Verifies the explicit code (e.g. 78) is
     preserved through the os._exit backstop."""
-    async def fake_start_gateway(config=None):
+    async def fake_start_gateway(config=None, **kwargs):
         raise SystemExit(78)
 
     stdout = SimpleNamespace(flush=Mock())
@@ -66,6 +66,28 @@ def test_main_routes_systemexit_through_os_exit(monkeypatch):
     assert exc_info.value.code == 78
     stdout.flush.assert_called_once_with()
     stderr.flush.assert_called_once_with()
+
+
+@pytest.mark.parametrize(("argv", "verbosity"), [([], 0), (["-v"], 1), (["-vv"], 2)])
+def test_main_passes_verbose_flag_to_start_gateway(monkeypatch, argv, verbosity):
+    """``python -m gateway.run -v`` must reach start_gateway(); it used to be
+    parsed and dropped, leaving stderr at WARNING."""
+    seen = {}
+
+    async def fake_start_gateway(config=None, **kwargs):
+        seen.update(kwargs)
+        return True
+
+    monkeypatch.setattr(gateway_run, "start_gateway", fake_start_gateway)
+    monkeypatch.setattr(gateway_run.os, "_exit", _raise_exit)
+    monkeypatch.setattr(gateway_run.sys, "argv", ["gateway.run", *argv])
+    monkeypatch.setattr(gateway_run.sys, "stdout", SimpleNamespace(flush=Mock()))
+    monkeypatch.setattr(gateway_run.sys, "stderr", SimpleNamespace(flush=Mock()))
+
+    with pytest.raises(_ExitCalled):
+        gateway_run.main()
+
+    assert seen["verbosity"] == verbosity
 
 
 def test_exit_backstop_releases_pid_file_and_runtime_lock(monkeypatch):

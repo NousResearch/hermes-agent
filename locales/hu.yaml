@@ -657,8 +657,6 @@ gateway:
     media_delivery_failed_with_name: "⚠️ Nem sikerült kézbesíteni a mellékletet ({kind}: {file_name})."
     delivery_failed_retry: "⚠️ Az üzenet kézbesítése több próbálkozás után sem sikerült. Próbáld újra — a kérésed feldolgoztam, de a választ nem tudtam elküldeni."
     plain_fallback_prefix: "(A válasz formázása nem sikerült, egyszerű szöveg:)\n\n{content}"
-    turn_error_no_details: "nincs elérhető részlet"
-    turn_error_detailed: "Sajnálom, hibába ütköztem ({error_type}).\n{error_detail}\nPróbáld újra, vagy kezdj új munkamenetet a /reset paranccsal."
     turn_error: "Sajnálom, hibába ütköztem."
     context_injection_refused: "A kontextusbeszúrás elutasítva."
     no_home_channel: "📬 Nincs beállítva home csatorna a(z) {platform} platformhoz. A home csatornába kézbesíti a Hermes a cronfeladatok eredményeit és a platformok közötti üzeneteket.\n\nÍrd be: {sethome_cmd}, hogy ez a csevegés legyen a home csatornád, vagy hagyd figyelmen kívül."

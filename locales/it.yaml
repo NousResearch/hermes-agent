@@ -647,8 +647,6 @@ gateway:
     media_delivery_failed_with_name: "⚠️ Impossibile recapitare l'allegato {kind} ({file_name})."
     delivery_failed_retry: "⚠️ Invio del messaggio non riuscito dopo diversi tentativi. Riprova — la tua richiesta è stata elaborata ma la risposta non è stata inviata."
     plain_fallback_prefix: "(Formattazione della risposta non riuscita, testo semplice:)\n\n{content}"
-    turn_error_no_details: "nessun dettaglio disponibile"
-    turn_error_detailed: "Mi dispiace, si è verificato un errore ({error_type}).\n{error_detail}\nRiprova oppure usa /reset per avviare una nuova sessione."
     turn_error: "Mi dispiace, si è verificato un errore."
     context_injection_refused: "Iniezione di contesto rifiutata."
     no_home_channel: "📬 Nessun canale principale impostato per {platform}. Il canale principale è dove Hermes recapita i risultati dei cron job e i messaggi tra piattaforme.\n\nDigita {sethome_cmd} per rendere questa chat il tuo canale principale, oppure ignora questo messaggio."

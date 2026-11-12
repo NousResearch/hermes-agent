@@ -6,7 +6,7 @@ import { itSessionCommands } from './it_session_commands'
 export const itNotices = {
   remoteDisplayBanner: {
     message: reason =>
-      `Rendering software attivo — rilevato uno schermo remoto (${reason}). L’accelerazione GPU è stata disattivata per evitare lo sfarfallio.`
+      `Rendering software attivo: rilevato uno schermo remoto (${reason}). L’accelerazione GPU è stata disattivata per evitare lo sfarfallio.`
   },
   butterbar: {
     goTo: (index, total) => `Mostra avviso ${index} di ${total}`,

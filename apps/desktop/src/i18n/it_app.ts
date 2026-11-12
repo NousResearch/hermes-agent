@@ -616,7 +616,7 @@ export const itApp = {
       elevenLabsNeedsKey: 'L’input vocale richiede una chiave ElevenLabs. Aggiungine una in Impostazioni → Chiavi.',
       elevenLabsRejectedKey:
         'ElevenLabs non ha accettato la tua chiave API. Aggiornala in Impostazioni → Chiavi e riprova.',
-      diskFull: 'Disco pieno — libera spazio e riprova.',
+      diskFull: 'Disco pieno: libera spazio e riprova.',
       storageFailure: 'Hermes non è riuscito a salvare nella propria cartella dati. Apri Manutenzione per verificarla e ripararla.',
       gatewayAuthFailed:
         'Questo Hermes non accetta più il tuo accesso salvato. Apri Gateways ed effettua di nuovo l’accesso (o incolla un nuovo token di accesso) e riprova.',
@@ -669,11 +669,11 @@ export const itApp = {
     },
     native: {
       approvalTitle: 'Approvazione necessaria',
-      approvalTitleNamed: session => `Approvazione necessaria — ${session}`,
+      approvalTitleNamed: session => `Approvazione necessaria: ${session}`,
       approveAction: 'Approva',
       rejectAction: 'Rifiuta',
       inputTitle: 'Informazioni necessarie',
-      inputTitleNamed: session => `È necessaria una risposta — ${session}`,
+      inputTitleNamed: session => `È necessaria una risposta: ${session}`,
       inputBody: 'Hermes è in attesa della tua risposta.',
       turnDoneTitle: 'Hermes ha terminato',
       turnDoneBody: '',
@@ -685,7 +685,7 @@ export const itApp = {
   },
   billingBlock: {
     titleNous: 'Senza crediti Nous',
-    titleProvider: provider => `Senza crediti — ${provider}`,
+    titleProvider: provider => `Senza crediti: ${provider}`,
     fallbackMessage: 'Il tuo account ha esaurito i crediti. Aggiungi crediti per continuare.',
     openBilling: 'Apri la fatturazione',
     addCredits: 'Aggiungi crediti',
@@ -731,7 +731,7 @@ export const itApp = {
     exitHud: 'Esci dalla modalità HUD',
     resetHudLayout: 'Ripristina dimensioni e posizione dell’HUD',
     layoutEditor: 'Editor del layout',
-    layoutEditorTitle: mod => `Editor del layout — clic ${mod} ripristina il layout`
+    layoutEditorTitle: mod => `Editor del layout: clic ${mod} ripristina il layout`
   },
   keybinds: {
     title: 'Scorciatoie da tastiera',
@@ -951,7 +951,7 @@ export const itApp = {
     revokedUser: name => `${name} revocato`,
     failedApprove: name => `Impossibile approvare ${name}`,
     failedRevoke: name => `Impossibile revocare ${name}`,
-    pairingLockedOut: 'Troppi errori di approvazione — questa piattaforma è bloccata. Riprova più tardi.',
+    pairingLockedOut: 'Troppi errori di approvazione: questa piattaforma è bloccata. Riprova più tardi.',
     waitingSince: minutes => (minutes < 1 ? 'proprio ora' : `${minutes}m fa`),
     restartNeeded: 'Salvato. Riavvia il gateway di messaggistica perché la nuova configurazione abbia effetto.',
     restartNow: 'Riavvia ora',

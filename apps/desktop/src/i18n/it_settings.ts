@@ -442,7 +442,7 @@ export const itSettings = {
         'Mostra i prezzi di input, output e lettura della cache per milione di token nel selettore dei modelli.',
       reactionsTitle: 'Reazioni ai messaggi',
       reactionsDesc:
-        'Reazioni emoji in stile iMessage — reagisci ai messaggi, e Hermes può reagire ai tuoi.',
+        'Reazioni emoji in stile iMessage: reagisci ai messaggi, e Hermes può reagire ai tuoi.',
       tipsTitle: 'Consigli nell’app',
       tipsDesc:
         'Suggerimenti occasionali dell’app e di Hermes. Ogni consiglio appare una volta sola. Si disattiva automaticamente dopo i tuoi primi 30 giorni; puoi riattivarlo.',
@@ -1014,7 +1014,7 @@ export const itSettings = {
       shortcutTitle: 'Scorciatoia di ingresso rapido',
       shortcutDesc: 'Richiede almeno un modificatore, ad es. CommandOrControl+Shift+Spazio.',
       active: 'La scorciatoia è attiva.',
-      takenBy: 'Un’altra app usa già questa scorciatoia — scegline una diversa.',
+      takenBy: 'Un’altra app usa già questa scorciatoia: scegline una diversa.',
       invalidShortcut: 'Non è una scorciatoia valida. Includi almeno un tasto modificatore.'
     },
     credentials: {
@@ -1257,7 +1257,7 @@ export const itSettings = {
       sshTestConnection: 'Prova SSH',
       sshConnect: 'Connetti',
       sshButtonsHint: 'Salva si applica al prossimo avvio. Connetti si riconnette subito.',
-      sshReachable: (host, platform) => `Raggiungibile: ${host} (${platform}) — Hermes trovato`,
+      sshReachable: (host, platform) => `Raggiungibile: ${host} (${platform}), Hermes trovato`,
       sshIncompleteHost: 'Inserisci un host SSH prima di connetterti.',
       sshErrUnreachable: 'Impossibile accedere a quell’host via SSH. Controlla host, porta e rete.',
       sshErrAuth:
@@ -1340,7 +1340,7 @@ export const itSettings = {
     builtinDesc: 'MEMORY.md e USER.md sono la memoria di Hermes, separata da qualsiasi provider esterno. Entrambi si caricano nelle sessioni per impostazione predefinita; i toggle memoria e profilo utente in Impostazioni › Memoria e contesto disattivano ciascuno. Un provider si aggiunge a questo livello; non lo sostituisce.',
     builtinLayer: 'Livello integrato',
     builtinMemory: 'solo memoria integrata',
-    noProvider: 'Nessuno — solo memoria integrata',
+    noProvider: 'Nessuno (solo memoria integrata)',
     noProviderDesc: 'Hermes usa solo il livello integrato sotto. Scegli un provider esterno sotto Impostazioni › Memoria e contesto per aggiungerne uno.',
     off: 'Disattivato',
     on: 'Attivato',

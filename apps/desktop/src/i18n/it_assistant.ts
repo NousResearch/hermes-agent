@@ -286,7 +286,7 @@ export const itAssistant = {
       react: 'Reagisci',
       dismissError: 'Ignora errore',
       responseStopped: 'Risposta interrotta',
-      contentRefusedNotice: 'Questo messaggio è stato rifiutato dal filtro di sicurezza del modello — prova una query diversa.',
+      contentRefusedNotice: 'Questo messaggio è stato rifiutato dal filtro di sicurezza del modello: prova una query diversa.',
       errorLayers: {
         auth: 'Problema di accesso',
         billing: 'Crediti esauriti',
@@ -650,7 +650,7 @@ export const itAssistant = {
       launchCwd: dir => `Directory di lavoro: ${dir}`,
       envRequired: 'Compila prima le credenziali obbligatorie',
       sendFailed: 'Impossibile inviare la risposta di configurazione MCP',
-      reloadFailed: 'Server salvato, ma il ricaricamento degli strumenti MCP non è riuscito — verranno caricati nella prossima sessione',
+      reloadFailed: 'Server salvato, ma il ricaricamento degli strumenti MCP non è riuscito: verranno caricati nella prossima sessione',
       gatewayDisconnected: 'Hermes non è connesso in questo momento. Riconnettiti e invialo di nuovo.'
     },
     tool: {

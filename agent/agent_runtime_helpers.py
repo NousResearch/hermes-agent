@@ -1957,6 +1957,7 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
         _follow_redirects = resolve_primary_follow_redirects(agent, client_kwargs.get("base_url", ""))
     if client_kwargs.get("base_url"):
         client_kwargs["base_url"] = _to_openai_base_url(client_kwargs["base_url"])
+    profile = None
     try:
         from providers import get_provider_profile
 
@@ -1986,6 +1987,15 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     )
     _validate_proxy_env_urls()
     _validate_base_url(client_kwargs.get("base_url"))
+    from agent.auxiliary_client import _GEMINI_NATIVE_PROVIDER_NAMES
+    from agent.gemini_native_adapter import is_native_gemini_base_url
+    base_url = str(client_kwargs.get("base_url") or "")
+    if (getattr(profile, "uses_primary_http_client", False)
+            and is_native_gemini_base_url(base_url) and "http_client" not in client_kwargs):
+        # Opt-in only: provider-owned clients and transports take precedence.
+        keepalive_http = build_primary_http_client(agent, base_url, httpx_verify, _follow_redirects)
+        if keepalive_http is not None:
+            client_kwargs["http_client"] = keepalive_http
     # Provider-supplied client (registration seam): a provider whose wire protocol is not
     # OpenAI-over-HTTP supplies its own client from ProviderProfile.create_client(). Consulted
     # before the built-in ladder so a profile registered from ~/.hermes/plugins/ or a pip entry
@@ -1998,26 +2008,13 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
             agent.provider, reason, shared, agent._client_log_context(),
         )
         return provider_client
-    from agent.auxiliary_client import _GEMINI_NATIVE_PROVIDER_NAMES
     if agent.provider in _GEMINI_NATIVE_PROVIDER_NAMES:
         client = _gemini_native_client(agent, client_kwargs, httpx_verify, reason=reason, shared=shared, _follow_redirects=_follow_redirects)
         if client is not None:
             return client
-    # TCP keepalives so dead provider connections are detected (~60s) instead of hanging in
-    # CLOSE-WAIT. Injected into the local copy only, so each client gets its own httpx.Client;
-    # pinned by tests/agent/test_create_openai_client_reuse.py. What IS shared across those per-client wrappers is the
-    # connection pool: ``build_keepalive_http_client`` mounts a process-shared ``HTTPTransport``
-    # behind a per-client view whose ``close()`` is a no-op for the pool, so a closed wrapper
-    # never takes a sibling's (or the successor's) connections with it
-    # (tests/agent/test_shared_http_transport.py).
-    # Without this, a peer that drops mid-stream leaves the socket in a state where epoll_wait never fires,
-    # ``httpx`` read timeout may not trigger, and the agent hangs until manually killed. Probes after 30s
-    # idle, retry every 10s, give up after 3 → dead peer detected within ~60s. Safety against #10933: the
-    # ``client_kwargs = dict(client_kwargs)`` above means this injection only lands in the local per-call
-    # copy, never back into ``agent._client_kwargs``. Each ``_create_openai_client`` invocation therefore
-    # gets its OWN fresh ``httpx.Client`` whose lifetime is tied to the OpenAI client it is passed to. When
-    # the OpenAI client is closed (rebuild, teardown, credential rotation), the paired ``httpx.Client``
-    # closes with it, and the next call constructs a fresh one — no stale closed transport can be reused.
+    # TCP keepalives detect dead peers (~60s). Each client owns a fresh httpx wrapper,
+    # but closing it leaves the shared pool alive for siblings and successors.
+    # Only local kwargs receive the transport: reconstruction must not reuse a closed wrapper (#10933).
     # Bedrock Mantle: the ``aws-sdk`` placeholder is a sentinel for IAM-chain auth, not a bearer token.
     # Every rebuild from bare ``{api_key, base_url}`` kwargs (switch_model, fallback restore, credential
     # rotation, request-scoped clients) must reinstall the SigV4 http_client or Mantle answers 401.

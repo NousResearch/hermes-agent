@@ -52,10 +52,10 @@ def get_provider_follow_redirects(
     The current URL wins over a stale requested custom identity after rotation. An
     explicit model override, including an invalid value, never inherits a provider opt-in.
     """
-    from hermes_cli.config import get_compatible_custom_providers, load_config_readonly
-    from hermes_cli.config_read_errors import FailedConfigRead
+    from hermes_cli.config import load_config_readonly
     from hermes_cli.config_providers import (
         _coerce_ssl_verify, _normalize_custom_provider_entry, _normalize_provider_models, find_provider_entry,
+        providers_dict_to_custom_providers,
     )
     from hermes_cli.providers import custom_provider_aliases
     from hermes_cli.route_identity import normalize_route_base_url
@@ -75,11 +75,12 @@ def get_provider_follow_redirects(
     if not provider_id:
         return None
     config = load_config_readonly()
-    if not isinstance(config, dict) or isinstance(config, FailedConfigRead):
+    if not isinstance(config, dict):
         return None
+    # FailedConfigRead retains last-known-good settings. Discarding an explicit
+    # policy here would restore unguarded SDK defaults when rebuilding a client.
     identity = (requested_provider if provider_id == "custom" else provider_id).strip().lower()
-    # The picker view deduplicates display-name/URL pairs, not durable identities.
-    # Read the selected key from the original mapping before consulting that view.
+    # Read the selected durable key before attempting an unambiguous route match.
     providers = config.get("providers")
     _, provider_config = find_provider_entry(providers, identity)
     if provider_config is None and isinstance(providers, dict):
@@ -90,13 +91,21 @@ def get_provider_follow_redirects(
         normalized = _normalize_custom_provider_entry(provider_config, provider_key=identity)
         if normalized is None or not active_route or route_normalize(normalized["base_url"]) != active_route:
             provider_config = None
-    entries = get_compatible_custom_providers(config)
+    # The picker view deduplicates display-name/URL pairs, losing distinct policy
+    # identities. Keep every candidate so shared routes remain ambiguous.
+    legacy = config.get("custom_providers")
+    entries = [_normalize_custom_provider_entry(entry) for entry in legacy] if isinstance(legacy, list) else []
+    entries = [entry for entry in entries if entry is not None]
+    entries += providers_dict_to_custom_providers(providers)
     route_entries = [entry for entry in entries if active_route and
                      route_normalize(entry.get("base_url", "")) == active_route]
     if provider_config is None:
         matches = [entry for entry in route_entries if identity in custom_provider_aliases(
             entry.get("name", ""), entry.get("provider_key", ""))]
-        provider_config = matches[0] if matches else route_entries[0] if len(route_entries) == 1 else None
+        if len(matches) == 1:
+            provider_config = matches[0]
+        elif not matches and len(route_entries) == 1:
+            provider_config = route_entries[0]
     if provider_config is None:
         # Ambiguous or unknown rotated custom routes must not inherit another route's opt-in.
         if base_url and (route_entries or provider_id == "custom" or provider_id.startswith("custom:")):

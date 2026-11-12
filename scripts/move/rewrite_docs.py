@@ -25,10 +25,14 @@ Left alone, and counted as ``skip-*``: a path behind any ``/`` (``~/.hermes/cron
 ``./x``); bare directories that also name HERMES_HOME dirs or other projects' dirs (``tools/``, ``cron/``), and a
 glob that takes every file of one (``cron/*``, ``plugins/**``);
 a name whose root is a moved *file* that other projects share (``utils.x``, ``cli.x``); config keys
-(``agent.reasoning_effort``, ``plugins.enabled``, ``gateway.platforms.*`` outside an import); i18n keys
+(``agent.reasoning_effort``, ``plugins.enabled``, ``gateway.platforms.telegram`` outside an import); i18n keys
 (``t("gateway.status.*")``); tree-diagram lines; and the files in
 ``EXCLUDED`` (frozen surfaces, generated pages, third-party skill docs, locale values) and the shims
 and byte copies ``generate_shims.py`` writes at old module paths.
+
+Left alone, and counted as ``flagged-config-or-module`` for a person: a config path that is also a package
+(``gateway.platforms``), alone or before a placeholder or wildcard (``gateway.platforms.<name>.enabled``,
+``gateway.platforms.*``). Nothing in the name says whether it is the config block or the package.
 """
 from __future__ import annotations
 
@@ -71,6 +75,15 @@ AMBIGUOUS_ROOTS = frozenset({
 #: Config paths that are also module paths. Matched by name, never by the words around them.
 CONFIG_DENY = re.compile(
     r"^(?:agent\.(?:reasoning_effort|reasoning_overrides|system_prompt)|gateway\.platforms\.)")
+
+
+def _config_stem(name: str) -> bool:
+    """``name`` is a CONFIG_DENY path cut before its last segment (``gateway.platforms``).
+
+    The token stops there when the text goes on with a placeholder or a wildcard (``.<name>.enabled``,
+    ``.*``) or with nothing. That name is the package and the config block at once, so it stays as written.
+    """
+    return not CONFIG_DENY.match(name) and bool(CONFIG_DENY.match(name + ".x"))
 FILE_EXT = {"py", "md", "mdx", "txt", "yaml", "yml", "json", "toml", "ts", "tsx", "js", "jsx", "mjs", "cjs",
             "sh", "ps1", "cfg", "ini", "lock", "html", "css", "png", "svg", "example", "db", "log", "jsonl"}
 TEXT_SUFFIXES = (".md", ".mdx", ".txt")
@@ -327,6 +340,9 @@ def _dotted(name: str, plan: Plan, stats: Stats, importing: bool, before: str = 
     if not importing:
         if CONFIG_DENY.match(name) or _config_key(name, plan):
             stats.skips["config-key"] += 1
+            return None
+        if _config_stem(name):
+            stats.skips["flagged-config-or-module"] += 1
             return None
         if name in plan.i18n_keys or _I18N_CALL.search(before):
             stats.skips["i18n-key"] += 1

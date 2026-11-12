@@ -36,3 +36,21 @@ def test_whole_folder_glob_on_another_folder_moves_and_an_unmoved_root_counts_no
 
     assert rewrite_docs.rewrite_text("`tui_gateway/*` and cron/*", plan, stats) == "`hermes_agent/tui_gateway/*` and cron/*"
     assert stats.skips["bare-dir"] == 0  # this chunk does not move cron/, so nothing was skipped for it
+
+
+def test_config_path_that_is_also_a_package_stays_before_a_placeholder_and_is_flagged():
+    rewrite_docs = _load()
+    tree = ["gateway/__init__.py", "gateway/run.py", "gateway/platforms/__init__.py", "gateway/platforms/base.py"]
+    plan = rewrite_docs.Plan({"gateway": "hermes_agent.gateway"}, [(p, f"hermes_agent/{p}") for p in tree], tree)
+    stats = rewrite_docs.Stats()
+
+    # config.yaml keys: the name is the package and the config block at once, so it stays as written.
+    for text in ("turns on via `gateway.platforms.<name>.enabled` in `config.yaml`",
+                 "``gateway.platforms.*`` then top-level ``platforms.*``",
+                 "the block under ``gateway.platforms`` / ``platforms``"):
+        assert rewrite_docs.rewrite_text(text, plan, stats) == text
+    assert stats.skips["flagged-config-or-module"] == 3
+    # A module name and a `-m` target still follow the move.
+    assert rewrite_docs.rewrite_text("see `gateway.run`", plan) == "see `hermes_agent.gateway.run`"
+    assert (rewrite_docs.rewrite_text("`python -m gateway.platforms.base`", plan)
+            == "`python -m hermes_agent.gateway.platforms.base`")

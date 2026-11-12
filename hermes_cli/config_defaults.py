@@ -1337,9 +1337,9 @@ DEFAULT_CONFIG = {
         # and every compaction is a chance to lose detail, so the default stays off. A token count >= 16000 enables it;
         # other values (true, "200k") are config errors: warned and ignored.
         "compression_threshold_tokens": 0,
-        # When delegate_task narrows child toolsets, keep the parent's enabled MCP toolsets (so
-        # toolsets=["web"] doesn't strip MCP). false = strict intersection.
-        "inherit_mcp_toolsets": True,
+        # Background subagents may pause to ask the parent (tools/ask_parent.py); off = no schema change.
+        "ask_parent": {"enabled": False, "max_questions": 3, "timeout_seconds": 1800},
+        "inherit_mcp_toolsets": True,  # narrowed child toolsets keep the parent's MCP toolsets; false = strict
         # Per-subagent iteration cap (own budget, independent of the parent's).
         "max_iterations": 250,
         # Hard per-summary char ceiling on subagent results, layered on the dynamic budget (each

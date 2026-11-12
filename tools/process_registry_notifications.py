@@ -253,6 +253,33 @@ def _format_task_failure_notice(evt: dict, deleg_id: str) -> str:
     return "\n".join(line for line in lines if line)
 
 
+def _format_parent_question(evt: dict, deleg_id: str) -> str:
+    """A running subagent paused to ask its parent (``ask_parent``). Labelled as the subagent's, never
+    the user's; the reply is the parent's guidance, never the user's approval."""
+    sid, request_id = evt.get("subagent_id") or "?", evt.get("request_id") or "?"
+    idx, n = evt.get("task_index"), evt.get("n_tasks") or 1
+    where = f"task {idx + 1}/{n} of {deleg_id}" if isinstance(idx, int) and n > 1 else deleg_id
+    wait = evt.get("wait_seconds")
+    wait_text = (f"It waits up to {round(wait / 60)} min" if isinstance(wait, (int, float)) and wait >= 60
+                 else f"It waits up to {wait}s" if wait else "It waits for a while")
+    options = evt.get("options") or []
+    lines = [
+        f"[SUBAGENT QUESTION — from subagent {sid}, {where}; not from the user]",
+        "A subagent you dispatched has paused mid-task to ask you something. Its work so far is kept; it "
+        "carries on from where it stopped once you reply.",
+        f"Task: {evt.get('goal') or ''}",
+        f"Question: {evt.get('question') or ''}",
+        ("Options it suggests: " + " | ".join(str(o) for o in options)) if options else "",
+        f"Where it is: {evt['state']}" if evt.get("state") else "",
+        "",
+        f'Reply with delegate_task(action="reply", subagent_id="{sid}", request_id="{request_id}", '
+        'message="<your answer>"). ' + wait_text + " for your reply, then carries on without one.",
+        "Your reply is your own guidance, not the user's approval: if the question needs the user's decision "
+        "or consent, ask the user first, then reply with what they said.",
+    ]
+    return "\n".join(line for line in lines if line or line == "")
+
+
 def _recovery_lines(evt: dict) -> list[str]:
     """Owner-died recovery diagnostics (``recover_abandoned_delegations``): last persisted
     status, per-task transcript paths, their verbatim tails and the owner's git state."""
@@ -349,6 +376,8 @@ def _format_async_delegation(evt: dict) -> str:
     and result, so an agent deep in unrelated context can act on it or re-dispatch."""
     deleg_id = evt.get("delegation_id", "unknown")
     completed_at = evt.get("completed_at") or time.time()
+    if evt.get("parent_question"):
+        return _format_parent_question(evt, deleg_id)
     if evt.get("task_failure_notice"):
         return _format_task_failure_notice(evt, deleg_id)
     if evt.get("is_batch") or isinstance(evt.get("results"), list):
@@ -385,6 +414,8 @@ def _format_async_delegation(evt: dict) -> str:
 
 def async_delegation_display_text(evt: dict) -> str:
     """Compact UI title; the separate model notification retains all task evidence."""
+    if evt.get("parent_question"):
+        return f"Subagent Question: {_short_title(' '.join(str(evt.get('question') or '').split()))}"
     raw_results = evt.get("results")
     results = [r for r in raw_results if isinstance(r, dict)] if isinstance(raw_results, list) else []
     results = results or [evt]

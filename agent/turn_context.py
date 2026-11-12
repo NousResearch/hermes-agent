@@ -1319,6 +1319,13 @@ def build_turn_context(
         ensure_message_agent_tool(agent)
     except Exception:
         logger.debug("message_agent injection skipped", exc_info=True)
+    # ask_parent — injected ONLY into a delegated child while delegation.ask_parent.enabled is on.
+    try:
+        from tools.ask_parent import ensure_ask_parent_tool
+
+        ensure_ask_parent_tool(agent)
+    except Exception:
+        logger.debug("ask_parent injection skipped", exc_info=True)
 
     _ensure_session_row(agent, pending_cli_message)
 

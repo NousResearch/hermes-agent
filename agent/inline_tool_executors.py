@@ -305,6 +305,11 @@ _RAW_INLINE_TOOL_EXECUTORS: dict[str, InlineToolExecutor] = {
     ),
     "session_search": _session_search,
     "memory": _memory,
+    # Injected into delegated children only (tools.ask_parent.ensure_ask_parent_tool), never registered.
+    "ask_parent": _tool(
+        "tools.ask_parent", "ask_parent_tool", ("question", "question", ""), ("state", "state", ""),
+        ("options", "options", None), agent=lambda agent, ctx: agent,
+    ),
     "clarify": _tool(
         "tools.clarify_tool", "clarify_tool", ("questions", "questions"),
         callback=lambda agent, ctx: agent.clarify_callback,

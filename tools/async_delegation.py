@@ -602,10 +602,21 @@ def claim_completion_delivery(delegation_id: str, claim_id: str) -> bool:
 
 
 def is_interim_delegation_event(evt: dict[str, Any]) -> bool:
-    """An early per-task notice for a batch that is still running. It shares the batch's
-    ``delegation_id`` but is NOT the durable completion: it must never claim, acknowledge or
-    dedup against the final result's row (independent review reproduced exactly that loss)."""
-    return evt.get("type") == "async_delegation" and bool(evt.get("task_failure_notice"))
+    """An early per-task notice (a failed task, or a subagent's question) for a unit that is still
+    running. It shares the unit's ``delegation_id`` but is NOT the durable completion: it must never
+    claim, acknowledge or dedup against the final result's row (independent review reproduced
+    exactly that loss)."""
+    return evt.get("type") == "async_delegation" and bool(evt.get("task_failure_notice") or evt.get("parent_question"))
+
+
+def interim_notice_key(evt: dict[str, Any]) -> str:
+    """What tells one interim notice of a unit from another (and from its final result, ``""``):
+    ``task_failure:<task index>`` or ``question:<request id>``."""
+    if evt.get("parent_question"):
+        return f"question:{evt.get('request_id', '')}"
+    if evt.get("task_failure_notice"):
+        return f"task_failure:{((evt.get('results') or [{}])[0] or {}).get('task_index', '')}"
+    return ""
 
 
 def claim_event_delivery(evt: dict[str, Any], consumer: str) -> Optional[str]:
@@ -1207,6 +1218,46 @@ def push_task_failure_notice(delegation_id: str, entry: dict[str, Any], *, n_tas
         process_registry.completion_queue.put(evt)
     except Exception as exc:  # pragma: no cover
         logger.error("Async delegation batch %s: failed to enqueue task failure notice: %s", delegation_id, exc)
+
+
+_QUESTION_KEYS = ("subagent_id", "request_id", "task_index", "question", "state", "options", "wait_seconds")
+
+
+def push_parent_question(delegation_id: str, question: dict[str, Any]) -> bool:
+    """Put a running subagent's question (``tools.ask_parent``) in front of its parent as an interim
+    event of the background unit ``delegation_id``: the same ``type="async_delegation"`` shape as
+    ``push_task_failure_notice``, flagged ``parent_question``, so it wakes an idle parent as a new
+    turn without touching the unit's durable completion. False (nothing queued) when the unit is not
+    running in the background: its parent is not waiting for events (a joined call) or has moved on,
+    or the unit's results only reach the session history (``origin_session_id``: an API-server
+    session's next client turn reads them, and no model wakes up to answer)."""
+    with _records_lock:
+        record = _records.get(delegation_id)
+        if record is None or record.get("status") not in _ACTIVE_STATES or record.get("origin_session_id"):
+            return False
+        snapshot = dict(record)
+    try:
+        from tools.process_registry import process_registry
+    except ImportError:  # pragma: no cover
+        logger.exception("Async delegation %s: subagent question dropped (process_registry import)", delegation_id)
+        return False
+    evt = {
+        "type": "async_delegation", "parent_question": True, "delegation_id": delegation_id,
+        **{k: question.get(k) for k in _QUESTION_KEYS}, "goal": question.get("goal") or snapshot.get("goal", ""),
+        "n_tasks": len(snapshot.get("goals") or []) or 1,
+        "session_key": snapshot.get("session_key", ""),
+        "origin_ui_session_id": snapshot.get("origin_ui_session_id", ""),
+        "origin_session_id": snapshot.get("origin_session_id", ""),
+        "parent_session_id": snapshot.get("parent_session_id"),
+        "role": snapshot.get("role"), "model": snapshot.get("model"),
+        "status": "running", "dispatched_at": snapshot.get("dispatched_at") or time.time(), "completed_at": time.time(),
+        **{k: snapshot[k] for k in _ROUTING_KEYS if snapshot.get(k)}}
+    try:
+        process_registry.completion_queue.put(evt)
+    except Exception:  # pragma: no cover
+        logger.exception("Async delegation %s: failed to enqueue subagent question", delegation_id)
+        return False
+    return True
 
 
 # ── Stale monitor ───────────────────────────────────────────────────────────

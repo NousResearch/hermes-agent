@@ -568,7 +568,7 @@ def delegate_task(
     max_iterations: Optional[int] = None, role: Optional[str] = None, background: Optional[bool] = None,
     output_schema: Optional[dict[str, Any]] = None, images: Optional[list[str]] = None, action: Optional[str] = None,
     subagent_id: Optional[str] = None, message: Optional[str] = None, parent_agent=None,
-    credentials_cfg: Optional[dict[str, Any]] = None,
+    credentials_cfg: Optional[dict[str, Any]] = None, request_id: Optional[str] = None,
 ) -> str:
     """Spawn child agents (single ``goal`` or ``tasks=[...]`` batch) or control running ones. ``action``
     list/steer/stop run synchronously and bypass the pause gate, depth limit and async dispatch. ``role`` is legacy
@@ -582,7 +582,7 @@ def delegate_task(
 
     normalized_action = (action or "").strip().lower()
     if normalized_action in _CONTROL_ACTIONS:
-        return _handle_control_action(normalized_action, subagent_id, message, parent_agent)
+        return _handle_control_action(normalized_action, subagent_id, message, parent_agent, request_id=request_id)
     if normalized_action and normalized_action != "spawn":
         return tool_error(f"Unknown action '{action}'. Use spawn (default), list, steer, or stop.")
 
@@ -788,11 +788,26 @@ def _build_dynamic_schema_overrides() -> dict:
     if extra_params:
         tasks = overrides_params["properties"]["tasks"]
         tasks["items"] = {**tasks["items"], "properties": {**tasks["items"]["properties"], **extra_params}}
+    _add_reply_action(overrides_params["properties"])
     description = _build_top_level_description(independent_completions=independent_completions)
     return {
         "description": f"{description}\n{addendum}" if addendum else description,
         "parameters": overrides_params,
     }
+
+def _add_reply_action(properties: dict) -> None:
+    """With ``delegation.ask_parent.enabled``, advertise ``action='reply'`` and ``request_id`` so the parent can answer
+    a subagent's question. Off (the default) leaves the schema byte-identical."""
+    from tools.ask_parent import ask_parent_settings
+    if not ask_parent_settings()["enabled"]:
+        return
+    action = properties["action"]
+    properties["action"] = {**action, "enum": [*action["enum"], "reply"], "description": action["description"].replace(
+        " Control actions", " 'reply' = answer a subagent's question (subagent_id + request_id + message): it is "
+        "paused until you reply. Control actions")}
+    properties["message"] = {**properties["message"], "description": properties["message"]["description"]
+                             + " For action='reply': your answer to the subagent's question."}
+    properties["request_id"] = _p("string", "For action='reply': the request_id from the subagent's question.")
 
 def _p(type_: str, description: str, **extra) -> dict:
     return {"type": type_, **extra, "description": description}
@@ -877,7 +892,7 @@ DELEGATE_TASK_SCHEMA = {
 }
 
 
-_LIVE_CONTROL_PARAMS = frozenset({"action", "subagent_id", "message"})
+_LIVE_CONTROL_PARAMS = frozenset({"action", "subagent_id", "message", "request_id"})
 
 
 def oneshot_delegate_function(function: dict) -> dict:
@@ -951,7 +966,7 @@ registry.register(
         max_iterations=args.get("max_iterations"), role=args.get("role"),
         background=_model_background_value(args, kw.get("parent_agent")), output_schema=args.get("output_schema"),
         images=args.get("images"), action=args.get("action"), subagent_id=args.get("subagent_id"), message=args.get("message"),
-        parent_agent=kw.get("parent_agent"),
+        parent_agent=kw.get("parent_agent"), request_id=args.get("request_id"),
     ),
     check_fn=check_delegate_requirements,
     emoji="🔀",

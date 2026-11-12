@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import json
+from contextlib import suppress
 import threading
 import time
 from typing import Any, Dict, List, Optional
@@ -62,6 +63,9 @@ def _unregister_subagent(subagent_id: str, *, agent: Any = None) -> None:
         if record is None or not (agent is None or record.get("agent") is agent):
             return
         _active_subagents.pop(subagent_id, None)
+        with suppress(Exception):
+            from tools.ask_parent import forget
+            forget(subagent_id)  # an open question ends as abandoned; its allowance is dropped
         sid = record.get("subagent_id")
         if not sid:
             return
@@ -195,7 +199,7 @@ def _is_descendant_of(child_agent: Any, parent_agent: Any, max_hops: int = 8) ->
 
 # Model-facing control actions accepted by delegate_task(action=...).
 # "spawn" (or omitted) keeps the historical spawn semantics.
-_CONTROL_ACTIONS = frozenset({"list", "steer", "stop"})
+_CONTROL_ACTIONS = frozenset({"list", "steer", "stop", "reply"})
 
 def _resolve_session_lineage(session_id: Optional[str], parent_agent: Any) -> str:
     """Tip of a session id's compression lineage via the parent's live SessionDB (best-effort; input unchanged when
@@ -251,6 +255,7 @@ def _list_payload(parent_agent: Any) -> dict[str, Any]:
             "running_seconds": round(time.time() - started, 1) if isinstance(started, (int, float)) else None,
             "accepting_steer": bool(r.get("accepting_steer", False)),
             "live_transcript": getattr(r.get("agent"), "_live_transcript_path", None),
+            **_pending_question_field(r.get("subagent_id")),
         })
     payload: dict[str, Any] = {"action": "list", "count": len(entries), "subagents": entries}
     if not entries:
@@ -261,7 +266,26 @@ def _list_payload(parent_agent: Any) -> dict[str, Any]:
         )
     return payload
 
-def _handle_control_action(action: str, subagent_id: Optional[str], message: Optional[str], parent_agent: Any) -> str:
+def _pending_question_field(subagent_id: Optional[str]) -> dict[str, Any]:
+    """``{"pending_question": {...}}`` while the child waits on its parent (ask_parent), else ``{}``."""
+    from tools.ask_parent import pending_question
+    pending = pending_question(subagent_id) if subagent_id else None
+    return {"pending_question": pending} if pending else {}
+
+def _reply(sid: str, request_id: Optional[str], message: Optional[str]) -> str:
+    """Answer the child's open ask_parent question (ownership already checked)."""
+    from tools.ask_parent import answer_question
+    if not (request_id or "").strip() or not (message or "").strip():
+        return tool_error("action='reply' requires request_id (from the subagent's question) and a non-empty message.")
+    refused = answer_question(sid, request_id.strip(), message)
+    if refused:
+        return tool_error(refused)
+    return json.dumps({"action": "reply", "subagent_id": sid, "request_id": request_id.strip(), "status": "answered",
+                       "note": "The subagent has your answer and carries on from where it paused. Its result "
+                               "arrives as a normal completion message — do not wait or poll."}, ensure_ascii=False)
+
+def _handle_control_action(action: str, subagent_id: Optional[str], message: Optional[str], parent_agent: Any,
+                           request_id: Optional[str] = None) -> str:
     """Synchronous control plane for delegate_task: list/steer/stop. Runs in-turn (never backgrounded) over the same
     registry the TUI overlay drives, scoped so a conversation can only control its own spawn tree."""
     if action == "list":
@@ -279,6 +303,8 @@ def _handle_control_action(action: str, subagent_id: Optional[str], message: Opt
             "may have already finished (its result arrives as a normal "
             "completion message). Use action='list' to see live children."
         )
+    if action == "reply":
+        return _reply(sid, request_id, message)
     if action == "steer" and not (message or "").strip():
         return tool_error("action='steer' requires a non-empty 'message' describing the course correction.")
     outcome = _CONTROL_OUTCOMES.get(action)

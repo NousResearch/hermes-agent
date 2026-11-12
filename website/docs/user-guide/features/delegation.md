@@ -560,6 +560,51 @@ Subagent ids come from `delegation.status` (or `list_active_subagents()`) — th
 
 So the parent (or the operator driving it) can tell a steered child from one that finished on the old instructions, and re-issue the guidance as a follow-up instead of trusting that it landed.
 
+## Subagent Questions (`ask_parent`, opt-in)
+
+Steering goes from parent to child. With `delegation.ask_parent.enabled: true` a background subagent can also go the other way: pause mid-task, ask the agent that delegated it a question, and carry on with the answer in the same run, keeping everything it has done so far.
+
+```yaml
+delegation:
+  ask_parent:
+    enabled: true            # default false: no ask_parent tool, no reply action, no schema change
+    max_questions: 3         # per subagent, one open at a time
+    timeout_seconds: 1800    # how long a subagent waits before carrying on without an answer
+```
+
+1. The child calls `ask_parent(question, state, options?)`. `state` says where it is, since the parent knows only the task it handed out. The call blocks with the child's conversation intact; `delegate_task(action="list")` shows the child as `awaiting_parent` with its open question.
+2. The parent gets the question as a new turn, after any turn it is in the middle of, through the same path as completions and early failure notices. It is labelled as coming from the subagent, never presented as a user message:
+
+   ```
+   [SUBAGENT QUESTION — from subagent sa-0-09baa701, deleg_98f0bf93; not from the user]
+   ...
+   Question: Which word should I write?
+   Options it suggests: alpha | beta
+   Where it is: Just started; nothing written yet.
+
+   Reply with delegate_task(action="reply", subagent_id="sa-0-09baa701", request_id="req-5c7f786b3f", message="<your answer>"). ...
+   ```
+
+3. The parent answers with `{"action": "reply", "subagent_id": "...", "request_id": "...", "message": "beta"}`, under the same ownership rule as `steer` and `stop`: only the conversation that spawned the child can answer it.
+4. The child's `ask_parent` call returns and it continues:
+
+   ```json
+   {"outcome": "answered", "answer": "beta", "request_id": "req-5c7f786b3f", "waited_seconds": 2.6, "note": "..."}
+   ```
+
+Every question ends with an explicit `outcome`, and only `answered` carries answer text; nothing is invented:
+
+| Outcome | When | The child |
+|---|---|---|
+| `answered` | The parent replied | Continues with the answer |
+| `timed_out` | No reply within `timeout_seconds` | Carries on with its best judgment and says what it assumed |
+| `abandoned` | The child or its delegation was stopped (`stop`, `/stop`, the session closing) while it waited | Wraps up and returns what it has |
+| `parent_unavailable` | Nothing can take the question: the call is joined (one-shot `-q`, cron, an orchestrator's own workers, the capacity fallback), the background unit has ended, or results only reach the session history (API-server sessions) | Carries on at once, without using up one of its questions |
+
+**An answer is the parent agent's guidance, never the user's approval.** The child is told so, and anything that needs the user's consent still needs it. When the question really needs the user, the parent asks the user itself (for example with `clarify`) and then replies.
+
+A waiting child keeps reporting activity, so the [stall monitor](#stall-detection-for-background-subagents) never treats a wait as a hang. Questions live in memory with the waiting child, so if Hermes restarts they go with it, like any running delegation.
+
 ## Live Transcripts
 
 Every `delegate_task` dispatch also creates one **append-only, human-readable log per task** so you (or the parent agent) can watch a subagent work in real time instead of waiting for the consolidated summary:
@@ -703,7 +748,7 @@ For **durable execution** that must survive session closure or process restart, 
 - Each subagent gets its **own terminal session** (separate from the parent)
 - Subagents inherit the parent's enabled toolsets; the model cannot select or widen them per call
 - **Nested delegation is opt-in** — only `role="orchestrator"` children can delegate further, and only when `max_spawn_depth` is raised from its default of 1 (flat). Disable globally with `orchestrator_enabled: false`.
-- Leaf subagents **cannot** call: `delegate_task`, `clarify`, `memory`, `send_message`, `cronjob`. Orchestrator subagents retain `delegate_task` but keep the other blocks. Both roles retain `execute_code` (programmatic tool calling) so children can batch mechanical work instead of burning reasoning iterations.
+- Leaf subagents **cannot** call: `delegate_task`, `clarify`, `memory`, `send_message`, `cronjob`. Orchestrator subagents retain `delegate_task` but keep the other blocks. Subagents never ask the user directly; with [`ask_parent`](#subagent-questions-ask_parent-opt-in) enabled, a background subagent can ask its parent agent instead. Both roles retain `execute_code` (programmatic tool calling) so children can batch mechanical work instead of burning reasoning iterations.
 - **Cancellation follows ownership** — `/stop` or closing/resetting the owning session ends its background children and the synchronous descendants beneath them; each returns an interrupted completion carrying its partial output
 - Only the final summary enters the parent's context, keeping token usage efficient
 - Subagents inherit the parent's **API key, provider configuration, and credential pool** (enabling key rotation on rate limits)
@@ -770,6 +815,7 @@ delegation:
   # worktree_isolation: false               # Give each child its own git worktree (see Worktree Isolation above)
   # max_spawn_depth: 1                      # Tree depth (floor 1, no ceiling, default 1 = flat). Raise to 2 to allow orchestrator children to spawn leaves; 3+ for deeper trees.
   # orchestrator_enabled: true              # Disable to force all children to leaf role.
+  # ask_parent: {enabled: false}            # Let background subagents pause to ask you a question (see Subagent Questions)
   model: "google/gemini-3-flash-preview"             # Optional provider/model override
   provider: "openrouter"                             # Optional built-in provider
   api_mode: anthropic_messages                       # optional; auto-detected from base_url for anthropic_messages endpoints

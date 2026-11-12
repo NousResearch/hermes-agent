@@ -195,7 +195,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
 
     # Coalescing keys: process completions (short-window fan-in) and async delegations (+ parent session).
     _COMPLETION_BATCH_KEY_FIELDS = ("session_key", "platform", "chat_type", "chat_id", "thread_id", "user_id")
-    _ASYNC_GROUP_KEY_FIELDS = ("session_key", "parent_session_id", "task_failure_notice", *_COMPLETION_BATCH_KEY_FIELDS[1:])
+    _ASYNC_GROUP_KEY_FIELDS = ("session_key", "parent_session_id", "task_failure_notice", "parent_question",
+                               *_COMPLETION_BATCH_KEY_FIELDS[1:])
 
     @dataclasses.dataclass
     class _CompletionClaim:
@@ -1063,12 +1064,10 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             producer_id = str(evt.get("delegation_id") or "")
             if not producer_id:
                 return None
-            if evt.get("task_failure_notice"):
-                # An interim per-task notice is its own producer event: it must not mark the
-                # batch's final result as already delivered, nor a sibling's notice.
-                task_idx = ((evt.get("results") or [{}])[0] or {}).get("task_index", "")
-                return (evt_type, producer_id, f"task_failure:{task_idx}")
-            return (evt_type, producer_id, "")
+            # An interim notice (a failed task, a subagent's question) is its own producer event: it
+            # must not mark the unit's final result as already delivered, nor another notice.
+            from tools.async_delegation import interim_notice_key
+            return (evt_type, producer_id, interim_notice_key(evt))
         # A liveness tick is one watch event like a match: without an identity the session authority
         # refuses it and the drain requeues it forever.
         if evt_type in {"watch_match", "watch_disabled", "heartbeat"} and evt.get("event_id"):
@@ -1209,9 +1208,10 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         if evt_type == "async_delegation" and not await self._completion_delivery_ready(evt):
             claim.proceed, claim.early_result = False, False
             return claim
-        # An interim per-task notice shares the batch's delegation_id but is not the durable
-        # completion; claiming that row here would acknowledge the FINAL result before it exists.
-        if evt_type == "async_delegation" and not evt.get("task_failure_notice"):
+        # An interim notice shares the unit's delegation_id but is not the durable completion;
+        # claiming that row here would acknowledge the FINAL result before it exists.
+        from tools.async_delegation import is_interim_delegation_event
+        if evt_type == "async_delegation" and not is_interim_delegation_event(evt):
             claim.delegation_id = str(evt.get("delegation_id") or "")
             if claim.delegation_id:
                 try:

@@ -173,8 +173,11 @@ What a release publishes follows what it built:
   bundle file, and moves no channel. The protected R2 stable head, the App Installer and macOS
   feeds, the APT channel, downloads page,
   `releases/stable/release-candidates.json` and the signed-package baseline stay
-  on the previous full release. Source checkouts on the official repository
-  follow `releases/stable/release-candidates.json`, so they stay too.
+  on the previous full release. Source checkouts of the official repository on
+  `stable`, their default channel, do not stay: that channel is GitHub's latest
+  published `vX.Y.Z` release (`_resolve_stable` in
+  `hermes_cli/source_releases.py`) and reads no R2 pointer, so every published
+  release moves them, whatever its lanes.
 - **Finished.** A release that advances the desktop channel is finished when
   the protected R2 head names it. One that only moves Docker is finished when
   the `stable` alias carries the digest its final tag binds. One that moves no
@@ -370,7 +373,9 @@ the short SHA. All desktop icon formats derive from the same artwork.
 One-off stamps use `source: commit-build`. No app update feed or App Installer
 subscription is published for them, and both the GUI and bundled CLI refuse
 update requests. They direct the recipient to ask the developer for a new
-build. Source checkouts are separate: `main` is their only valid channel.
+build. Source checkouts are separate: an official-repository checkout follows
+`stable` and a fork or mirror follows `main`, until
+`hermes update --set-channel` picks another channel.
 
 `--build-commit` prints its deterministic downloads-page URL before dispatch,
 including in dry runs:

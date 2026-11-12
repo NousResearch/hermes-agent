@@ -732,7 +732,7 @@ stage_repository() {
     # (#146032): the ceiling keeps the probe to INSTALL_DIR's own .git.
     local ceiling
     ceiling="$(CDPATH="" cd "$INSTALL_DIR" 2>/dev/null && pwd -P)" && ceiling="$(dirname "$ceiling")" || ceiling=""
-    if [ -e "$INSTALL_DIR/.git" ] && ! GIT_CEILING_DIRECTORIES="$ceiling" git -C "$INSTALL_DIR" rev-parse --verify HEAD >/dev/null 2>&1; then
+    if { [ -e "$INSTALL_DIR/.git" ] || [ -L "$INSTALL_DIR/.git" ]; } && ! GIT_CEILING_DIRECTORIES="$ceiling" git -C "$INSTALL_DIR" rev-parse --verify HEAD >/dev/null 2>&1; then
         local broken
         broken="${INSTALL_DIR}.broken-$(date -u +%Y%m%d-%H%M%S)"
         log_warn "$INSTALL_DIR is not a usable git checkout (interrupted clone or damaged .git); moving it aside to $broken"

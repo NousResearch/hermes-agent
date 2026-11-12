@@ -980,6 +980,7 @@ platform:
     denied: "❌ 已拒绝。"
     approval_expired: "⌛ 审批已过期——命令未执行（已超时或已在别处处理）。"
   shared:
+    response_as_file: "📎 回复较长：完整内容已作为文件附上。"
     truncated_suffix: "\n...（已截断）"
     unknown: "未知"
     approval_expired: "⌛ 审批已过期——命令未执行（已超时或已在别处处理）。"
@@ -1193,8 +1194,6 @@ platform:
       upload_too_large: "⚠️ 无法附加 `{filename}` — {size_mb} MB 超出了 Discord 对此频道 {limit_mb} MB 的上传上限。请压缩文件或改为分享链接。"
       image_skipped_too_large: "⚠️ 已跳过 `{filename}` — {size_mb} MB 超出了 Discord {limit_mb} MB 的上传上限。"
   telegram:
-    limits:
-      response_truncated: "⚠️ **回复已截断** — 本次回复超出了投递上限（{max_messages} 条消息）。有 {dropped_chars} 个字符未能送达；完整回复见会话日志。"
     approval:
       action_once: "✅ 允许一次"
       action_session: "✅ 本会话"

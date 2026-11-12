@@ -980,6 +980,7 @@ platform:
     denied: "❌ Geweier."
     approval_expired: "⌛ Goedkeuring het verval — die opdrag is nie uitgevoer nie (reeds uitgetel of elders afgehandel)."
   shared:
+    response_as_file: "📎 Lang antwoord: die volledige teks is aangeheg."
     truncated_suffix: "\n...(afgekap)"
     unknown: "onbekend"
     approval_expired: "⌛ Goedkeuring het verval — die opdrag is nie uitgevoer nie (dit het reeds uitgetel of is elders afgehandel)."
@@ -1193,8 +1194,6 @@ platform:
       upload_too_large: "⚠️ Kon nie `{filename}` aanheg nie — {size_mb} MB oorskry Discord se oplaailimiet van {limit_mb} MB vir hierdie kanaal. Pers die lêer saam of deel eerder 'n skakel."
       image_skipped_too_large: "⚠️ `{filename}` oorgeslaan — {size_mb} MB oorskry Discord se oplaailimiet van {limit_mb} MB."
   telegram:
-    limits:
-      response_truncated: "⚠️ **Antwoord afgekap** — hierdie antwoord het die afleweringslimiet ({max_messages} boodskappe) oorskry. {dropped_chars} karakters is nie afgelewer nie; die volledige antwoord is in die sessieloglae."
     approval:
       action_once: "✅ Eenmalig"
       action_session: "✅ Sessie"

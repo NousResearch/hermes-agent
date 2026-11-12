@@ -22,6 +22,7 @@ Recorded call names: ``get_me``, ``get_app``, ``list_commands``, ``bulk_commands
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import datetime as _dt
 import itertools
 import json
@@ -211,7 +212,8 @@ class DiscordStandin(StandinServer):
             async for part in reader:
                 if part.filename:
                     data = await part.read()
-                    files.append({"name": part.name, "filename": part.filename, "size": len(data)})
+                    files.append({"name": part.name, "filename": part.filename, "size": len(data),
+                                  "sha256": hashlib.sha256(data).hexdigest()})
                 elif part.name == "payload_json":
                     params.update(json.loads(await part.text()))
                 else:

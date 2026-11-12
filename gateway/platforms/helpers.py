@@ -941,3 +941,106 @@ def scaled_upload_deadline(deadline: float, upload_seconds: float) -> float:
     if upload_seconds <= 0:
         return deadline
     return max(deadline, min(MEDIA_UPLOAD_DEADLINE_MAX, deadline + 1.5 * upload_seconds))
+
+
+# ── Long reply handoff (#152012) ─────────────────────────────────────────────────────────────────
+# A reply that needs more than an adapter's ``MAX_SPLIT_MESSAGES`` goes out whole as a document:
+# a runaway reply sent as hundreds of messages gets the bot flood-banned, and cutting it loses text.
+
+
+def reply_file_parts(text: str, limit_bytes: int) -> list[bytes]:
+    """``text`` as UTF-8 parts of at most ``limit_bytes`` each, cut at a line break when one is in the
+    back half of a part and never inside a character; one part when it fits."""
+    data = text.encode("utf-8")
+    parts: list[bytes] = []
+    while len(data) > limit_bytes:
+        cut = data.rfind(b"\n", 0, limit_bytes) + 1
+        if cut < limit_bytes // 2:
+            cut = limit_bytes
+            while cut and (data[cut] & 0xC0) == 0x80:  # a UTF-8 continuation byte: back up to its lead byte
+                cut -= 1
+        parts.append(data[:cut])
+        data = data[cut:]
+    return [*parts, data] if data or not parts else parts
+
+
+def reply_document_sender(adapter: Any) -> Any:
+    """The adapter's upload for a reply file: ``send_reply_document`` (an upload whose failure is a
+    failed result, never a text notice reported as sent), else a native ``send_document``; None when
+    it has neither (the base ``send_document`` only posts a failure notice)."""
+    from gateway.platforms.base import BasePlatformAdapter
+    if callable(getattr(type(adapter), "send_reply_document", None)):
+        return adapter.send_reply_document
+    native = getattr(type(adapter), "send_document", None) not in (None, BasePlatformAdapter.send_document)
+    return adapter.send_document if native else None
+
+
+async def send_reply_as_file(adapter: Any, chat_id: str, text: str, *, reply_to: Optional[str] = None,
+                             metadata: Optional[dict] = None) -> Optional[list[str]]:
+    """Upload ``text`` whole as ``reply-<id>.md`` (numbered files when it is over the adapter's
+    ``REPLY_FILE_MAX_BYTES``), the localized caption on the first. Returns the files' message ids, or
+    ``None`` when the adapter cannot upload or an upload was not confirmed: the caller then delivers
+    the text as messages and deletes nothing, so no text is lost."""
+    import shutil
+    import tempfile
+    from agent.i18n import t
+
+    send = reply_document_sender(adapter)
+    if send is None:
+        return None
+    parts = reply_file_parts(text, int(getattr(adapter, "REPLY_FILE_MAX_BYTES", 8 * 1024 * 1024)))
+    stem, ids = f"reply-{secrets.token_hex(4)}", []
+    folder = await asyncio.to_thread(tempfile.mkdtemp, prefix="hermes-reply-")
+    try:
+        for index, part in enumerate(parts, 1):
+            name = f"{stem}.md" if len(parts) == 1 else f"{stem}-{index}.md"
+            path = os.path.join(folder, name)
+            await asyncio.to_thread(Path(path).write_bytes, part)
+            result = await send(chat_id, path, caption=t("platform.shared.response_as_file") if index == 1 else None,
+                                file_name=name, reply_to=reply_to if index == 1 else None, metadata=metadata)
+            raw = getattr(result, "raw_response", None)
+            if not getattr(result, "success", False) or (isinstance(raw, dict) and raw.get("ambiguous")):
+                logger.warning("Long reply file %s was not confirmed delivered: %s", name, getattr(result, "error", None))
+                return None
+            if getattr(result, "message_id", None):
+                ids.append(str(result.message_id))
+    finally:
+        await asyncio.to_thread(shutil.rmtree, folder, True)
+    return ids
+
+
+def reply_message_cap(adapter: Any) -> Optional[int]:
+    """How many messages one reply may take on ``adapter`` before it goes out as a file
+    (``MAX_SPLIT_MESSAGES``); None when it has no cap or cannot upload one."""
+    cap = getattr(adapter, "MAX_SPLIT_MESSAGES", None)
+    if type(cap) is not int or cap <= 1 or reply_document_sender(adapter) is None:
+        return None
+    return cap
+
+
+def _over_reply_cap(adapter: Any, content: str, metadata: Optional[dict]) -> bool:
+    """``content`` needs more messages than the adapter's per-reply cap (``reply_message_count``)."""
+    cap, count = reply_message_cap(adapter), getattr(type(adapter), "reply_message_count", None)
+    if cap is None or not callable(count) or not content:
+        return False
+    # Fast path for ordinary messages: escaping, UTF-16 units and line-break splits grow a text by
+    # at most 8x, so one this short always fits the cap and is never formatted twice.
+    if len(content) * 8 <= cap * int(getattr(adapter, "MAX_MESSAGE_LENGTH", 0) or 0):
+        return False
+    return adapter.reply_message_count(content, metadata) > cap
+
+
+async def send_long_reply_as_file(adapter: Any, chat_id: str, content: str, *, reply_to: Optional[str] = None,
+                                  metadata: Optional[dict] = None) -> Any:
+    """A whole reply that needs more than the adapter's ``MAX_SPLIT_MESSAGES`` messages goes out as
+    one file instead: the ``SendResult`` of that upload, or ``None`` to send it as messages as usual
+    (under the cap, no upload support, or the upload failed: nothing is lost either way)."""
+    if not _over_reply_cap(adapter, content, metadata):
+        return None
+    ids = await send_reply_as_file(adapter, chat_id, content, reply_to=reply_to, metadata=metadata)
+    if ids is None:
+        logger.warning("Long reply could not be sent as a file; sending it as messages")
+        return None
+    from gateway.platforms.base import SendResult
+    return SendResult(success=True, message_id=ids[0] if ids else None,
+                      raw_response={"message_ids": ids, "sent_as_file": True})

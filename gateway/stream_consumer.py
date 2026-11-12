@@ -159,7 +159,6 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         self._edit_supported = True  # False once progressive edits stop working
         self._last_edit_time = 0.0
         self._last_edit_overflowed = False  # last _send_or_edit split into continuations
-        self._last_edit_capped = False  # ...and the adapter capped that split (see _split_capped)
         self._flood_strikes = 0
         self._current_edit_interval = self.cfg.edit_interval  # adaptive backoff
         self._delivered_commentary_texts: list[str] = []
@@ -216,7 +215,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         self._tool_progress_lines: list[str] = []
         self._tool_progress_active: bool = False
         self._clear_turn_final_flags()
-        self._reset_ceiling()  # one reply = one segment: its message budget (MAX_SPLIT_MESSAGES)
+        self._reset_ceiling()  # one reply = one segment: its message count and file handoff
 
     def _clear_turn_final_flags(self) -> None:
         """Reset every turn-final delivery flag to "nothing delivered yet".
@@ -232,9 +231,6 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         self._final_content_delivered = False  # content landed even if the cosmetic edit failed
         self._delivered_final_text: Optional[str] = None
         self._turn_split_delivery = False
-        # The raw text a capped turn-final split was cut from ("" = not capped): the adapter posted its
-        # truncation notice, so the delivery is final by design though it never matches final_response.
-        self._split_capped = ""
         # True when a full-final send timed out in a way that MAY have reached the platform
         # (``_send_empty_fallback_final`` → "ambiguous"). The only case where a payload-less delivery flag
         # keeps legacy trust in ``delivered_final_matches`` (#95382 tightening) — re-sending there risks a
@@ -281,7 +277,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             meta["expect_edits"] = True
         if final:
             meta["notify"] = True
-        return self._add_split_budget(meta) or None
+        return meta or None
 
     # Read-only views for the gateway (flag semantics: see _clear_turn_final_flags).
     already_sent = property(lambda self: self._already_sent)
@@ -308,7 +304,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         if self._tool_progress_lines:  # real text overwrites the overlay
             self._tool_progress_lines.clear()
             self._tool_progress_active = False
-        if not self._ceiling_hit:  # a reply cut at its message ceiling shows nothing more
+        if not getattr(self, "_ceiling_hit", False):  # a reply being handed off as a file shows nothing more
             self._accumulated += text
         self._stream_ledger += text
 
@@ -334,11 +330,6 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         if record is not None:
             self._record_turn_final_payload(record)
 
-    def _capped_source(self, text: str) -> str:
-        """The raw source of a capped split edit of ``text`` (the whole stream on a split turn)."""
-        source = self._stream_ledger if self._turn_split_delivery and self._stream_ledger else text
-        return self._clean_for_display(source).strip()
-
     def _display_payload(self, text: str) -> str:
         """Normalize like ``_send_or_edit`` output: directive strip + fence close + strip."""
         return ensure_closed_code_fences(self._clean_for_display(text or "")).strip()
@@ -360,13 +351,6 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         target = self._display_payload(final_text)
         if not target:
             return None
-        capped = getattr(self, "_split_capped", None)  # fixtures built with object.__new__ lack it
-        # Compared raw, before display-only fence closing: a capped edit cut inside a code block
-        # records a closed fence the final continues past.
-        if capped and self._clean_for_display(final_text).strip().startswith(capped):
-            # A capped split shows the head chunks and a truncation notice; the final it was cut from
-            # (also a longer final the cancel path only saw a prefix of) would be capped to the same head.
-            return True
         if self._delivered_final_text is not None:
             # A segment break / commentary may have delivered it under another record.
             return (self._delivered_final_text.strip() == target
@@ -840,12 +824,12 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         """No message to edit yet and the buffer overflows: seal only the head chunks; the
         tail stays in _accumulated as the active preview later deltas edit in place.
         True when the turn finished here (the run loop returns)."""
+        if (handed_off := await self._ceiling_split_first_send(tick)) is not None:
+            return handed_off
         chunks = self._truncate_for_stream(self._accumulated, self._safe_limit, self._len_fn)
         if len(chunks) <= 1:
             # Malformed/legacy adapter result must still be splittable.
             chunks = self._split_text_chunks(self._accumulated, self._safe_limit, self._len_fn)
-        if (capped := await self._ceiling_split_first_send(tick, chunks)) is not None:
-            return capped
         reply_to = self._initial_reply_to_id
         heads_delivered = len(chunks) > 1
         for index, chunk in enumerate(chunks[:-1]):
@@ -860,8 +844,6 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                 break
             # An ack-lost head has no id to thread against; it is still shown.
             reply_to = None if new_id == "__no_edit__" else new_id
-            self._split_inflight = "".join(chunks[:index + 1])  # a cancel never resends these
-        self._split_inflight = None
 
         if heads_delivered:
             # truncate_message suffixes multi-chunk output with " (n/n)"; the tail is the LIVE
@@ -901,20 +883,22 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
 
     async def _seal_overflow_heads(self, *, final: bool = False) -> None:
         """Existing message overflowing: seal it with the head, start a new message for the rest."""
+        if final and self._ceiling_final_cut():
+            return  # the final edit would pass the reply's message cap: it goes out as a file
         while self._overflows() and self._message_id is not None and self._edit_supported:
             cp_budget = _custom_unit_to_cp(self._accumulated, self._safe_limit, self._len_fn)
             split_at = self._accumulated.rfind("\n", 0, cp_budget)
             if split_at < cp_budget // 2:
                 split_at = cp_budget
-            if await self._ceiling_seal_cut(split_at, final=final):
-                break  # the reply reached its message ceiling: this head is its last text
+            if self._ceiling_seal_cut(split_at, final=final):
+                break  # past the reply's message cap: it goes out as a file once complete
             chunk = self._accumulated[:split_at]
             # finalize=True: the sealed chunk is never edited again, so it needs its
             # rich-text pass now.  is_turn_final=False: a split head is not the
             # answer, so fresh-final must not mark the turn delivered on it.
             ok = await self._send_or_edit(chunk, finalize=True, is_turn_final=False)
-            if self._fallback_final_send or not ok or self._ceiling_capped_seal(split_at):
-                break  # keep the full text intact for the fallback final send, or the reply was cut
+            if self._fallback_final_send or not ok:
+                break  # keep the full text intact for the fallback final send
             self._accumulated = self._accumulated[split_at:].lstrip("\n")
             self._message_id = None
             self._last_sent_text = ""
@@ -947,7 +931,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
 
     async def _finalize_turn(self, tick: _Tick) -> None:
         """got_done: final edit without cursor, or one continuation send if edits failed."""
-        if await self._ceiling_finish():
+        if await self._ceiling_finish(tick):
             return
         if self._accumulated or self._message_id is not None or self._already_sent:
             await self._notify_before_finalize()
@@ -1018,6 +1002,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         resetting _accumulated would break the append-only invariant / lose text."""
         cumulative = self._cumulative_transport()
         if not cumulative:
+            await self._ceiling_segment_end()  # a reply being handed off as a file is complete here
             self._reset_segment_state()
         await self._send_commentary(commentary_text)
         self._last_edit_time = time.monotonic()
@@ -1033,6 +1018,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         continuation goes out once via _send_fallback_final."""
         if self._cumulative_transport():
             return
+        await self._ceiling_segment_end(tick)
         # If the segment-break edit or send didn't land (flood control / fallback mode, or a
         # failed first send of a split tail with no message id yet), _accumulated holds unseen
         # pre-boundary text — flush it before the reset clears it.
@@ -1058,10 +1044,6 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             # visibly live and the adapter keeps armed interception state).
             await self._abandon_native_stream()
         if best_effort_ok and not self._final_response_sent:
-            # The gateway cancels a consumer still delivering a huge final after its flush window; a
-            # capped split from this edit is the turn's delivery, so no normal send repeats its heads.
-            if getattr(self, "_last_edit_capped", False) and not getattr(self, "_split_capped", None):
-                self._split_capped = self._capped_source(self._accumulated)
             self._mark_final_delivered(record=self._accumulated)
 
     def _wake_flush_waiters(self) -> None:

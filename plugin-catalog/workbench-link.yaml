@@ -1,0 +1,24 @@
+name: workbench-link
+title: Workbench Link
+repo: https://github.com/dotmantissa/workbench_link
+sha: 657bfda03bef3e47a2a89652ecf2bdbcfdf5a839
+description: "Route Hermes native file, terminal and code tools to one explicitly selected Linux/Docker project worker. Disclosure — when `terminal.backend: workbench_link` is selected, terminal, file and code-execution commands and their output are sent over HMAC-authenticated HTTPS to a project worker you start and bind, which runs them in a network-less, read-only Docker container with your project directory mounted read-write; `hermes workbench-link serve` opens a TCP listener (127.0.0.1:8765 by default, any address you pass with --listen) and keeps a ledger of commands' retained output under the plugin data folder."
+maintainer: dotmantissa
+tier: community
+category: tools
+requires_hermes: ">=0.23.0,<0.24.0"
+version: "0.1.0"
+docs_url: https://github.com/dotmantissa/workbench_link/blob/657bfda03bef3e47a2a89652ecf2bdbcfdf5a839/README.md
+readme: true
+platforms:
+  - linux
+known_issues:
+  - Requires plugins.isolation=in_process, one foreground CLI session per profile, and explicit broker/worker startup.
+  - Linux/Docker worker only; gateway multiplexing, PTY/background stdin and persist_on_release are unsupported.
+  - Physical WAN behavior and live-model conversations have not been verified.
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

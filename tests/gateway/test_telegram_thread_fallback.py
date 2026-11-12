@@ -343,9 +343,7 @@ async def test_gateway_runner_busy_ack_replies_to_triggering_message_for_telegra
     runner = object.__new__(GatewayRunner)
     runner.adapters = {Platform.TELEGRAM: adapter}
     runner._running_agents = {session_key: BusyAgent()}
-    runner._running_agents_ts = {}
     runner._pending_messages = {}
-    runner._busy_ack_ts = {}
     runner._draining = False
     runner._busy_input_mode = "interrupt"
     runner._is_user_authorized = lambda _source: True
@@ -594,10 +592,19 @@ async def test_send_image_upload_dm_topic_reply_not_found_retry_preserves_thread
         return SimpleNamespace(message_id=785)
 
     class _FakeResponse:
-        content = b"image-data"
+        headers = {}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
 
         def raise_for_status(self):
             return None
+
+        async def aiter_bytes(self):
+            yield b"image-data"
 
     class _FakeAsyncClient:
         def __init__(self, *args, **kwargs):
@@ -609,7 +616,7 @@ async def test_send_image_upload_dm_topic_reply_not_found_retry_preserves_thread
         async def __aexit__(self, *args):
             return None
 
-        async def get(self, _url):
+        def stream(self, _method, _url):
             return _FakeResponse()
 
     adapter._bot = SimpleNamespace(send_photo=mock_send_photo)
@@ -668,8 +675,8 @@ async def test_overflow_reply_anchor_retry_preserves_private_topic_route(error_t
 
 @pytest.mark.asyncio
 async def test_control_message_to_dead_private_topic_lands_in_root_without_its_anchor():
-    """A rejected private topic is tried once by its native id, then delivered to the chat root
-    without the reply anchor (which points into the dead topic)."""
+    """A rejected private topic is delivered to the chat root without the reply anchor (which points
+    into the dead topic); never by ``direct_messages_topic_id``, which a bot's private chat ignores (#151852)."""
     adapter = _make_adapter()
     call_log = []
 
@@ -691,7 +698,7 @@ async def test_control_message_to_dead_private_topic_lands_in_root_without_its_a
 
     assert sent.message_id == 9
     assert [(c.get("message_thread_id"), c.get("direct_messages_topic_id"), c.get("reply_to_message_id"))
-            for c in call_log] == [(20197, None, 462), (None, 20197, 462), (None, None, None)]
+            for c in call_log] == [(20197, None, 462), (None, None, None)]
 
 @pytest.mark.asyncio
 async def test_send_image_upload_fallback_blocks_connect_time_rebind(monkeypatch):
@@ -859,9 +866,9 @@ async def test_thread_fallback_only_fires_once():
 
 @pytest.mark.asyncio
 async def test_reply_into_dead_private_topic_reaches_chat_root_and_prunes_binding(tmp_path):
-    """Topics turned off client-side: a private-topic reply is tried by thread id, then by native
-    topic id, then lands in the chat root without the dead topic's anchor, and the stale binding
-    is pruned so inbound recovery stops steering into it."""
+    """Topics turned off client-side: a private-topic reply is tried by thread id, then lands in the
+    chat root without the dead topic's anchor, and the stale binding is pruned so inbound recovery
+    stops steering into it."""
     from hermes_state import SessionDB
 
     db = SessionDB(db_path=tmp_path / "state.db")
@@ -888,7 +895,7 @@ async def test_reply_into_dead_private_topic_reaches_chat_root_and_prunes_bindin
     assert result.success is True
     routes = [(c.get("message_thread_id"), c.get("direct_messages_topic_id"), c.get("reply_to_message_id")) for c in call_log]
     assert routes[0] == (20197, None, 462)
-    assert (None, 20197, 462) in routes
+    assert all(c.get("direct_messages_topic_id") is None for c in call_log)
     assert routes[-1] == (None, None, None)
     assert db.get_telegram_topic_binding(chat_id="123", thread_id="20197") is None
     assert db.is_telegram_topic_mode_enabled(chat_id="123", user_id="123") is False
@@ -934,8 +941,8 @@ async def test_deleted_anchor_and_dead_topic_media_reply_still_reaches_chat_root
 
     assert result.success is True
     routes = [(c.get("message_thread_id"), c.get("direct_messages_topic_id"), c.get("reply_to_message_id")) for c in call_log]
-    # anchor dropped with the topic kept, the same thread once more, then the native id, then the root without the anchor
-    assert routes == [(20197, None, 462), (20197, None, None), (20197, None, None), (None, 20197, None), (None, None, None)]
+    # anchor dropped with the topic kept, the same thread once more, then the root without the anchor
+    assert routes == [(20197, None, 462), (20197, None, None), (20197, None, None), (None, None, None)]
 
 
 @pytest.mark.asyncio
@@ -960,39 +967,6 @@ async def test_named_topic_media_to_dead_topic_fails_closed_instead_of_landing_i
     assert call_log and all(c.get("message_thread_id") or c.get("direct_messages_topic_id") for c in call_log), call_log
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("native_err", [FakeTimedOut("Timed out"), FakeRetryAfter(3)])
-async def test_control_message_native_topic_unconfirmed_failure_keeps_binding_and_skips_root(tmp_path, native_err):
-    """A native-topic attempt that may have delivered (timeout) or was refused for load (flood) is not a
-    dead topic: it reaches the caller, sends nothing to the root, and keeps the binding."""
-    from hermes_state import SessionDB
-
-    db = SessionDB(db_path=tmp_path / "state.db")
-    db.enable_telegram_topic_mode(chat_id="123", user_id="123")
-    db.create_session(session_id="s1", source="telegram", user_id="123")
-    db.bind_telegram_topic(chat_id="123", thread_id="20197", user_id="123", session_key="k", session_id="s1")
-    adapter = _make_adapter()
-    adapter._session_store = SimpleNamespace(_db=db)
-    call_log = []
-
-    async def mock_send_message(**kwargs):
-        call_log.append(dict(kwargs))
-        if kwargs.get("message_thread_id"):
-            raise FakeBadRequest("Message thread not found")
-        if kwargs.get("direct_messages_topic_id"):
-            raise native_err
-        return SimpleNamespace(message_id=9)
-
-    adapter._bot = SimpleNamespace(send_message=mock_send_message)
-
-    with pytest.raises(type(native_err)):
-        await adapter._send_control_message(
-            "123", "control", parse_mode=None, thread_id="20197", metadata=dict(_GONE_META))
-
-    assert len(call_log) == 2
-    assert db.get_telegram_topic_binding(chat_id="123", thread_id="20197") is not None
-
-
 # The metadata gateway/platforms/base.py::_thread_metadata_for_source builds for a private topic reply.
 _GATEWAY_META = {**_GONE_META, "direct_messages_topic_id": "20197"}
 
@@ -1008,8 +982,39 @@ def _topic_db(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("err", [FakeTimedOut("Timed out"), FakeRetryAfter(3)], ids=["timeout", "flood"])
+async def test_private_topic_unconfirmed_failure_keeps_binding_and_skips_root(tmp_path, err, monkeypatch):
+    """A private-topic send that may have delivered (timeout) or was refused for load (flood) is not a dead
+    topic: control and text sends report the failure, never re-send to the root, and keep the binding."""
+    async def _no_sleep(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr("asyncio.sleep", _no_sleep)
+    db = _topic_db(tmp_path)
+    adapter = _make_adapter()
+    adapter._session_store = SimpleNamespace(_db=db)
+    call_log = []
+
+    async def mock_send_message(**kwargs):
+        call_log.append(dict(kwargs))
+        if kwargs.get("message_thread_id"):
+            raise err
+        return SimpleNamespace(message_id=9)
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    with pytest.raises(type(err)):
+        await adapter._send_control_message("123", "control", parse_mode=None, thread_id="20197", metadata=dict(_GATEWAY_META))
+    result = await adapter.send(chat_id="123", content="text", reply_to="462", metadata=dict(_GATEWAY_META))
+
+    assert result.success is False
+    assert call_log and all(c.get("message_thread_id") == 20197 for c in call_log), call_log
+    assert db.get_telegram_topic_binding(chat_id="123", thread_id="20197") is not None
+
+
+@pytest.mark.asyncio
 async def test_media_ladder_ends_when_even_the_chat_root_is_rejected():
-    """Each media step drops a constraint; the native id is not rebuilt from metadata after the root step."""
+    """Each media step drops a constraint; the topic is not rebuilt from metadata after the root step."""
     adapter = _make_adapter()
     call_log = []
 
@@ -1025,42 +1030,15 @@ async def test_media_ladder_ends_when_even_the_chat_root_is_rejected():
 
     assert result.success is False
     routes = [(c.get("message_thread_id"), c.get("direct_messages_topic_id"), c.get("reply_to_message_id")) for c in call_log]
-    assert routes[:4] == [(20197, None, 462), (20197, None, 462), (None, 20197, 462), (None, None, None)]
-    assert (None, 20197, None) not in routes  # the native id is not rebuilt after the root step
+    assert routes == [(20197, None, 462), (20197, None, 462), (None, None, None)]
 
 
 @pytest.mark.asyncio
-async def test_native_topic_deleted_wording_still_reaches_chat_root(tmp_path):
-    """The native-id attempt may answer TOPIC_DELETED instead of "thread not found": nothing was delivered, so the
-    control message and the attachment go to the chat root (as on origin/main) and the binding is pruned."""
-    db = _topic_db(tmp_path)
-    adapter = _make_adapter()
-    adapter._session_store = SimpleNamespace(_db=db)
-    call_log = []
-
-    async def _native_topic_deleted(**kwargs):
-        call_log.append(dict(kwargs))
-        if kwargs.get("message_thread_id"):
-            raise FakeBadRequest("Message thread not found")
-        if kwargs.get("direct_messages_topic_id"):
-            raise FakeBadRequest("Bad Request: TOPIC_DELETED")
-        return SimpleNamespace(message_id=5)
-
-    adapter._bot = SimpleNamespace(send_message=_native_topic_deleted, send_animation=_native_topic_deleted)
-
-    sent = await adapter._send_control_message("123", "control", parse_mode=None, thread_id="20197", metadata=dict(_GATEWAY_META))
-    media = await adapter.send_animation(chat_id="123", animation_url="https://example.com/anim.gif", metadata=dict(_GATEWAY_META))
-
-    assert sent.message_id == 5 and media.success is True
-    routes = [(c.get("message_thread_id"), c.get("direct_messages_topic_id"), c.get("reply_to_message_id")) for c in call_log]
-    control, media = [(20197, None, 462), (None, 20197, 462), (None, None, None)], [(20197, None, 462)] * 2
-    assert routes == control + media + control[1:]
-    assert db.get_telegram_topic_binding(chat_id="123", thread_id="20197") is None
-
-
-@pytest.mark.asyncio
-async def test_anchorless_wakeup_reaches_chat_root_when_native_topic_is_deleted(tmp_path):
-    """Loop wakeups, watcher notices and cron sends carry no anchor; origin/main delivered them to the root."""
+async def test_dead_private_topic_reaches_root_with_prune_and_fallback_flag_not_via_native_id(tmp_path):
+    """Bot API honours ``direct_messages_topic_id`` only in a channel's DM supergroup; in a bot's private chat it is
+    ignored and the message lands in the root as a success (#151852). The stand-in bot follows that rule, so a
+    native-id step would read as "delivered in the topic". Text and control sends must instead go to the root
+    themselves, prune the dead binding and (text) report ``thread_fallback`` for cron's note."""
     db = _topic_db(tmp_path)
     adapter = _make_adapter()
     adapter._session_store = SimpleNamespace(_db=db)
@@ -1070,8 +1048,6 @@ async def test_anchorless_wakeup_reaches_chat_root_when_native_topic_is_deleted(
         call_log.append(dict(kwargs))
         if kwargs.get("message_thread_id"):
             raise FakeBadRequest("Message thread not found")
-        if kwargs.get("direct_messages_topic_id"):
-            raise FakeBadRequest("Bad Request: TOPIC_DELETED")
         return SimpleNamespace(message_id=6)
 
     adapter._bot = SimpleNamespace(send_message=mock_send_message)
@@ -1079,9 +1055,17 @@ async def test_anchorless_wakeup_reaches_chat_root_when_native_topic_is_deleted(
 
     result = await adapter.send(chat_id="123", content="wakeup", metadata=meta)
 
-    assert result.success is True
-    routes = [(c.get("message_thread_id"), c.get("direct_messages_topic_id")) for c in call_log]
-    assert routes == [(20197, None), (20197, None), (None, 20197), (None, None)]
+    assert result.success is True and result.raw_response["thread_fallback"] is True
+    assert [(c.get("message_thread_id"), c.get("direct_messages_topic_id")) for c in call_log] == [
+        (20197, None), (20197, None), (None, None)]
+    assert db.get_telegram_topic_binding(chat_id="123", thread_id="20197") is None
+
+    db.bind_telegram_topic(chat_id="123", thread_id="20197", user_id="123", session_key="k", session_id="s1")
+    call_log.clear()
+    await adapter._send_control_message("123", "control", parse_mode=None, thread_id="20197", metadata=dict(_GATEWAY_META))
+
+    assert [(c.get("message_thread_id"), c.get("direct_messages_topic_id"), c.get("reply_to_message_id"))
+            for c in call_log] == [(20197, None, 462), (None, None, None)]
     assert db.get_telegram_topic_binding(chat_id="123", thread_id="20197") is None
 
 
@@ -1102,29 +1086,6 @@ async def test_rejected_direct_topic_outside_private_chats_is_not_retried():
 
     assert result.success is False
     assert [c.get("direct_messages_topic_id") for c in call_log] == [55]
-
-
-@pytest.mark.asyncio
-async def test_control_native_topic_parse_error_keeps_binding_and_skips_root(tmp_path):
-    """A BadRequest about the message itself (MarkdownV2) on the native route says the topic is alive: no prune."""
-    db = _topic_db(tmp_path)
-    adapter = _make_adapter()
-    adapter._session_store = SimpleNamespace(_db=db)
-    call_log = []
-
-    async def mock_send_message(**kwargs):
-        call_log.append(dict(kwargs))
-        if kwargs.get("message_thread_id"):
-            raise FakeBadRequest("Message thread not found")
-        raise FakeBadRequest("Can't parse entities: character '!' is reserved")
-
-    adapter._bot = SimpleNamespace(send_message=mock_send_message)
-
-    with pytest.raises(FakeBadRequest):
-        await adapter._send_control_message("123", "x!", parse_mode="MarkdownV2", thread_id="20197", metadata=dict(_GATEWAY_META))
-
-    assert len(call_log) == 2
-    assert db.get_telegram_topic_binding(chat_id="123", thread_id="20197") is not None
 
 
 @pytest.mark.asyncio

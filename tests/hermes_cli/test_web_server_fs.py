@@ -622,6 +622,38 @@ def test_fs_write_text_never_decodes_percent_path(client, tmp_path):
     assert (tmp_path / "report%20v2.md").read_text() == "new"
 
 
+@pytest.mark.parametrize("name", [".env", "config.yaml", "auth.json"])
+def test_fs_write_text_refuses_sensitive_files(client, tmp_path, name):
+    """#85387: read-text refuses credential files, so the spot editor's save must too."""
+    secret = tmp_path / name
+    secret.write_text("SECRET=1")
+
+    for target in (str(secret), secret.as_uri()):
+        response = client.post("/api/fs/write-text", json={"path": target, "content": "EVIL=1"})
+        assert response.status_code == 403, target
+    assert secret.read_text() == "SECRET=1"
+
+
+@pytest.mark.require_symlinks
+def test_fs_write_text_refuses_sensitive_files_through_symlinks(client, tmp_path):
+    """A link to a credential file is refused, and so is a credential name linking to a backing file."""
+    secret = tmp_path / "auth.json"
+    secret.write_text("SECRET=1")
+    alias = tmp_path / "notes.md"
+    alias.symlink_to(secret)
+    store = tmp_path / "settings-store"
+    store.write_text("model: safe\n")
+    config = tmp_path / "config.yaml"
+    config.symlink_to(store)
+
+    encoded = f"{tmp_path.as_uri()}/config%2Eyaml"  # only the decode turns this into the link's name
+    for target in (str(alias), str(config), f"{config} ", config.as_uri(), encoded, f"{encoded} "):
+        response = client.post("/api/fs/write-text", json={"path": target, "content": "EVIL=1"})
+        assert response.status_code == 403, repr(target)
+    assert secret.read_text() == "SECRET=1"
+    assert store.read_text() == "model: safe\n"
+
+
 def test_fs_read_data_url_reads_a_browser_paste_from_the_host_for_an_ssh_profile(client, monkeypatch):
     """A browser paste is saved in the profile's host image cache even when its workspace is an
     SSH machine. Sending it reads it back through this route, so that one host-owned path must not

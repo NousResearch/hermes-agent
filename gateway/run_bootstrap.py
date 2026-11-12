@@ -730,6 +730,15 @@ def _start_gateway_early_environment_probe() -> None:
 
 async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = False,
                         verbosity: Optional[int] = 0, force: bool = False, idle_exit: bool = False) -> bool:
+    """Run the gateway without ever turning an inherited daemon TTY (tmux respawn loop, hidden
+    Windows console) into a lazy-install ``input()`` prompt that blocks the event loop (#125607)."""
+    from pm.extras import suppress_interactive_install_prompts
+    with suppress_interactive_install_prompts():
+        return await _start_gateway_runtime(config, replace, verbosity, force, idle_exit)
+
+
+async def _start_gateway_runtime(config: Optional[GatewayConfig] = None, replace: bool = False,
+                                 verbosity: Optional[int] = 0, force: bool = False, idle_exit: bool = False) -> bool:
     """Start the gateway and run until interrupted; False if it failed to start (non-zero exit so
     systemd can auto-restart). ``replace`` kills any existing instance first (avoids restart-loop
     deadlocks); ``force`` starts without consulting the host owner at all; ``idle_exit`` arms the

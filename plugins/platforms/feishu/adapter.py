@@ -84,6 +84,7 @@ _lark_import_lock = threading.Lock()
 FEISHU_WEBSOCKET_AVAILABLE = websockets is not None
 FEISHU_WEBHOOK_AVAILABLE = aiohttp is not None
 
+from gateway.approval_actor import approval_refusal, refusal_text, update_prompt_refusal
 from gateway.config import Platform, PlatformConfig
 from agent.i18n import t
 from gateway.platforms.base import (
@@ -92,7 +93,7 @@ from gateway.platforms.base import (
     cache_audio_from_bytes_async, cache_image_from_bytes_async,
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
-from gateway.platforms.helpers import send_chunks
+from gateway.platforms.helpers import caption_is_command, prompt_id_counter, send_chunks
 from plugins.platforms.feishu.adapter_choice_cards import FeishuChoiceCardsMixin
 from gateway.status import acquire_scoped_lock
 from gateway.status_scoped_locks import release_scoped_lock
@@ -1343,9 +1344,9 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
         self._pending_media_batch_tasks = self._media_batch_state.tasks
         # Button-card state: id → {session_key, message_id, chat_id}
         self._approval_state: dict[int, dict[str, str]] = {}
-        self._approval_counter = itertools.count(1)
+        self._approval_counter = prompt_id_counter()
         self._update_prompt_state: dict[int, dict[str, str]] = {}
-        self._update_prompt_counter = itertools.count(1)
+        self._update_prompt_counter = prompt_id_counter()
         self._init_choice_card_state()
         # Reaction deletion needs the opaque reaction_id from create, cached per message_id.
         self._pending_processing_reactions: OrderedDict[str, str] = OrderedDict()
@@ -2314,9 +2315,9 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
         if checked is None:
             return self._card_response()
         open_id, chat_id, user_name, user_id, union_id = checked
-        from gateway.approval_actor import approval_refusal, refusal_text
         # SessionSource.user_id is the tenant user_id when the app can see it, else the open_id.
-        if requester := approval_refusal(state["session_key"], user_id or open_id, extra=self.config.extra, request_id=state.get("request_id")):
+        if requester := approval_refusal(state["session_key"], user_id or open_id, extra=self.config.extra,
+                                         request_id=state.get("request_id"), choice=choice):
             return self._card_toast(refusal_text(requester))  # only the clicker sees it; card unchanged
         if not self._submit_on_loop(loop, self._resolve_approval(
                 approval_id=approval_id, choice=choice, user_name=user_name, open_id=open_id, chat_id=chat_id,
@@ -2342,9 +2343,9 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
         if checked is None:
             return self._card_response()
         open_id, chat_id, user_name, user_id, union_id = checked
-        coro = self._resolve_update_prompt(
-            prompt_id, answer, user_name, open_id=open_id, chat_id=chat_id, user_id=user_id, union_id=union_id,
-        )
+        if requester := update_prompt_refusal(user_id or open_id, extra=self.config.extra):
+            return self._card_toast(refusal_text(requester))  # not the /update sender or an admin: card stays open
+        coro = self._resolve_update_prompt(prompt_id, answer, user_name, open_id=open_id, chat_id=chat_id, user_id=user_id, union_id=union_id)
         if not self._submit_on_loop(loop, coro):
             return self._card_response()
         return self._card_response(self._build_resolved_update_prompt_card(answer=answer, user_name=user_name))
@@ -2741,6 +2742,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
             self._pending_media_batches[key] = event
             self._schedule_media_batch_flush(key)
             return
+        existing.absorb_turn_input(event)
         existing.media_urls.extend(event.media_urls)
         existing.media_types.extend(event.media_types)
         existing.media_text_inlined.extend(event.media_text_inlined)
@@ -2783,21 +2785,21 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
         return await cache_image_from_url(image_url, ext=ext)
 
     async def _download_remote_document(self, file_url: str, *, default_ext: str, preferred_name: str) -> tuple[str, str]:
-        from gateway.platforms.base import ssrf_redirect_guard
+        from gateway.platforms.base import read_httpx_body_with_limit, ssrf_redirect_guard
         from tools.url_safety import create_ssrf_safe_async_client, is_safe_url
         if not is_safe_url(file_url):
             raise ValueError(f"Blocked unsafe URL (SSRF protection): {file_url[:80]}")
         async with create_ssrf_safe_async_client(
             timeout=30.0, follow_redirects=True, event_hooks={"response": [ssrf_redirect_guard]},
         ) as client:
-            response = await client.get(
-                file_url, headers={"User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)", "Accept": "*/*"},
-            )
-            response.raise_for_status()
-            # Snapshot headers + body inside the context so pooled connections fully release.
-            # See #18451.
-            content_type_hdr = str(response.headers.get("Content-Type", ""))
-            body = response.content
+            async with client.stream(
+                "GET", file_url, headers={"User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)", "Accept": "*/*"},
+            ) as response:
+                response.raise_for_status()
+                # Snapshot headers + body inside the context so pooled connections fully release.
+                # See #18451.
+                content_type_hdr = str(response.headers.get("Content-Type", ""))
+                body = await read_httpx_body_with_limit(response, media_type="document")
         filename = self._derive_remote_filename(
             file_url, content_type=content_type_hdr, default_name=preferred_name, default_ext=default_ext,
         )
@@ -3005,6 +3007,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
             return
 
         existing.text = next_text
+        existing.absorb_turn_input(event)
         existing.media_urls.extend(event.media_urls)
         existing.media_types.extend(event.media_types)
         existing.media_text_inlined.extend(event.media_text_inlined)
@@ -3055,8 +3058,9 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
         text = normalized.text_content
         media_text_inlined: list[bool] = []
         inlined_parts: list[str] = []
+        is_command = caption_is_command(_strip_edge_self_mentions(text, normalized.mentions))  # "@Hermes /goal x"
         for media_url, media_type in zip(media_urls, media_types):
-            extracted = await self._maybe_extract_text_document(media_url, media_type)
+            extracted = "" if is_command else await self._maybe_extract_text_document(media_url, media_type)
             media_text_inlined.append(bool(extracted))
             if extracted:
                 inlined_parts.append(extracted)

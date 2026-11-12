@@ -174,7 +174,9 @@ def _bypasses(no_proxy: str, host: str | None, netloc: str) -> bool:
 
 def _shown_in_full(proxy: str) -> bool:
     """True when rendering prints all of ``proxy`` (lowercased scheme and host, integer port):
-    ``HTTP://Proxy:03128`` holds nothing ``http://proxy:3128`` leaves out."""
+    ``HTTP://Proxy:03128`` holds nothing ``http://proxy:3128`` leaves out. A bare ``host:port`` is
+    read as ``http://`` like :func:`_proxy_scheme`, since httpx and requests both accept it."""
+    proxy = proxy if "://" in proxy else f"http://{proxy}"
     m = _BARE_AUTHORITY.fullmatch(proxy)
     canonical = m and f"{m[1].lower()}://{m[2].lower()}" + (f":{int(m[3])}" if m[3] else "")
     return bool(canonical) and safe_proxy_url_for_log(proxy, max_len=len(proxy) + 64) == canonical

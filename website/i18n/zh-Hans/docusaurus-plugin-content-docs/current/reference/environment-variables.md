@@ -500,10 +500,10 @@ Graph 事件（Teams 会议、日历、聊天等）的入站变更通知监听�
 
 | 变量 | 描述 |
 |----------|-------------|
-| `HERMES_TELEGRAM_TEXT_BATCH_DELAY_SECONDS` | 刷新排队 Telegram 文本块前的宽限窗口（默认：`0.6`）。 |
+| `HERMES_TELEGRAM_TEXT_BATCH_DELAY_SECONDS` | 刷新超过 1,024 个字符的 Telegram 文本前的宽限窗口（默认：`1.5`）。较短的文本仍使用 0.18/0.24 秒的自适应快速路径。 |
 | `HERMES_TELEGRAM_TEXT_BATCH_SPLIT_DELAY_SECONDS` | 单条 Telegram 消息超过长度限制时分块之间的延迟（默认：`2.0`）。 |
 | `HERMES_TELEGRAM_MEDIA_BATCH_DELAY_SECONDS` | 刷新排队 Telegram 媒体前的宽限窗口（默认：`0.6`）。 |
-| `HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS` | agent 完成后发送后续消息前的延迟，以避免与最后一个流块竞争。 |
+| `HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS` | 回合开始后的若干秒内，Telegram 纯文本后续消息会进入队列，而不会打断或重定向该回合（默认 `3`；`0` 关闭此宽限期）。命令和媒体不会被暂存。 |
 | `HERMES_TELEGRAM_HTTP_CONNECT_TIMEOUT` / `_READ_TIMEOUT` / `_WRITE_TIMEOUT` / `_POOL_TIMEOUT` | 覆盖底层 `python-telegram-bot` HTTP 超时（秒）。 |
 | `HERMES_TELEGRAM_HTTP_POOL_SIZE` | 到 Telegram API 的最大并发 HTTP 连接数。 |
 | `HERMES_TELEGRAM_DISABLE_FALLBACK_IPS` | 禁用 DNS 失败时使用的硬编码 Cloudflare 回退 IP（`true`/`false`）。 |

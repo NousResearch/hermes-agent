@@ -75,3 +75,45 @@ def test_telegram_tags_take_the_html_branch(
 
     assert (parse_mode, has_html) == ("HTML", True)
     assert formatted == markup  # HTML is passed through untouched
+
+
+@pytest.mark.parametrize("message, sent", [
+    # A model-invented tag beside a real one is escaped, so the real tag still renders.
+    ("<b>Status</b>: restart <service> now", "<b>Status</b>: restart &lt;service&gt; now"),
+    ('<a href="https://x.y/?a=1&amp;b=2">l</a> 5 > 3 & up',
+     '<a href="https://x.y/?a=1&amp;b=2">l</a> 5 &gt; 3 &amp; up'),
+])
+def test_html_send_escapes_markup_telegram_does_not_support(
+        monkeypatch: pytest.MonkeyPatch, message: str, sent: str) -> None:
+    from plugins.platforms.telegram.standalone import _send_telegram
+
+    _no_proxy(monkeypatch)
+    bot = MagicMock()
+    bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
+    _install_telegram_mock(monkeypatch, MagicMock(return_value=bot))
+
+    assert asyncio.run(_send_telegram("tok", "123", message))["success"] is True
+    bot.send_message.assert_awaited_once()
+    assert bot.send_message.await_args.kwargs["parse_mode"] == "HTML"
+    assert bot.send_message.await_args.kwargs["text"] == sent
+
+
+@pytest.mark.parametrize("code", ["`<b>x</b>`", "``<b>x</b>``", "`` a ` <b>x</b> ``"])
+def test_tag_shown_only_as_markdown_code_keeps_the_markdown_branch(
+        monkeypatch: pytest.MonkeyPatch, code: str) -> None:
+    from plugins.platforms.telegram.standalone import _telegram_format
+
+    _install_telegram_mock(monkeypatch, MagicMock())
+    formatted, parse_mode, has_html = _telegram_format(f"**Note**: example {code} here")
+
+    assert (parse_mode, has_html) == ("MarkdownV2", False)
+    assert formatted.startswith("*Note*") and "**" not in formatted
+
+
+def test_a_quoted_gt_inside_an_attribute_does_not_break_the_tag(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    from plugins.platforms.telegram.standalone import _telegram_format
+
+    _install_telegram_mock(monkeypatch, MagicMock())
+    markup = '<a href="https://x.y/?q=a>b">link</a> and <b>bold</b>'
+    assert _telegram_format(markup) == (markup, "HTML", True)

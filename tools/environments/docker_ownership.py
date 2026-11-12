@@ -244,6 +244,45 @@ def hand_back_sandbox_files(docker_exe: str, container_id: str, mounts: list[tup
     strip_sandbox_privileges(docker_exe, container_id, info)
 
 
+def hand_back_media_file(docker_exe: str, host_path: str) -> bool:
+    """Give one root-owned file in a LIVE root sandbox's bind mount to the host user, so the
+    gateway can read a MEDIA file the agent restricted (``chmod 600``) before teardown runs
+    the full handback. Runs ``chown`` inside the container that mounts it (the agent's own
+    root could do the same), on that regular file only (``find -P``, no symlinks), and records
+    it so the next root container takes it back. Returns whether ownership changed; a Docker or
+    record failure is ``False`` (the reply still goes out, with the usual undeliverable notice)."""
+    try:
+        return _hand_back_media_file(docker_exe, host_path)
+    except (subprocess.TimeoutExpired, OSError) as e:
+        logger.debug("MEDIA handback of %s failed: %s", host_path, e)
+        return False
+
+
+def _hand_back_media_file(docker_exe: str, host_path: str) -> bool:
+    ids = _handback_ids(docker_exe)
+    listing = run_capture([docker_exe, "ps", "-q", "--filter", "label=hermes-agent=1"], timeout=10) if ids else None
+    for container_id in (listing.stdout.split() if listing and listing.returncode == 0 else []):
+        info = _inspect(docker_exe, container_id)
+        if not ids or not info or not _runs_as_root(info):
+            continue
+        mounts = _sandbox_binds(info)
+        nested = [m["Destination"].rstrip("/") for m in info.get("Mounts") or []]
+        for src, dst in mounts:
+            if os.path.commonpath([src, host_path]) != src or host_path == src:
+                continue
+            inner = f"{dst}/{os.path.relpath(host_path, src)}"
+            if any(p != dst and (inner + "/").startswith(p + "/") for p in nested):
+                return False  # another mount covers it in the container: not this sandbox file
+            argv = ["/usr/bin/find", "-P", inner, "-maxdepth", "0", "-type", "f", "-user", "0",
+                    "-exec", "/bin/chown", "-h", f"{ids[0]}:{ids[1]}", "{}", "+", "-print0"]
+            with (Path(src).parent / HANDBACK_RECORD).open("ab") as fh:  # recorded before the chown, like teardown
+                fh.write(inner.encode() + b"\0")
+            result = _docker(docker_exe, ["exec", "-i", "-u", "0:0", *_SAFE_ENV, container_id], argv,
+                             time.monotonic() + _CHOWN_TIMEOUT_S)
+            return result.returncode == 0 and bool(result.stdout)
+    return False
+
+
 def reclaim_sandbox_files(docker_exe: str, container_id: str, mounts: list[tuple[str, str]]) -> None:
     """After a container mounts sandbox dirs an earlier teardown handed back: when it runs as root,
     return the recorded paths to root (so git/ssh ownership checks pass again), then drop the

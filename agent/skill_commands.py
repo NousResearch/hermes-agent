@@ -82,6 +82,14 @@ SKILL_EXCERPT_JOINT = "\x1e"
 
 
 
+def _skills_off() -> bool:
+    """Skills read this host's profile skill files: off for a safe worker and in a hosted scope
+    (where they are not the agent's), so nothing below discovers, reads or renders one."""
+    from agent.safe_worker_policy import safe_worker_enabled
+    from tools.hosted_tool_policy import host_feature_enabled
+    return safe_worker_enabled() or not host_feature_enabled("skills")
+
+
 def slugify_skill_name(name: str) -> str:
     """Normalize a skill/bundle name to a ``/command`` slug (``Foo Bar`` -> ``foo-bar``);
     strips chars (``+``, ``/``) that would make invalid Telegram command names."""
@@ -252,9 +260,7 @@ def _resolve_skill_commands_project() -> Optional[str]:
 
 def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tuple[dict[str, Any], Path | None, str] | None:
     """Load a skill by name/path and return (loaded_payload, skill_dir, display_name)."""
-    from agent.safe_worker_policy import safe_worker_enabled
-
-    if safe_worker_enabled():
+    if _skills_off():
         return None
     raw_identifier = (skill_identifier or "").strip()
     if not raw_identifier:
@@ -518,9 +524,7 @@ def scan_skill_commands() -> dict[str, dict[str, Any]]:
     Builds a local map and publishes once at the end: writing straight into the
     global exposed partial results to overlapping scans, which then logged
     bogus "already claimed" collisions against their own incumbents."""
-    from agent.safe_worker_policy import safe_worker_enabled
-
-    if safe_worker_enabled():
+    if _skills_off():
         return {}
     key = (_resolve_skill_commands_platform(), _resolve_skill_commands_home(), _resolve_skill_commands_project())
     # Build into a local map and publish once, at the end. Writing straight into the global made a scan's
@@ -634,9 +638,7 @@ def get_skill_commands() -> dict[str, dict[str, Any]]:
 
     See #14536, #88023, #114359, #104849.
     """
-    from agent.safe_worker_policy import safe_worker_enabled
-
-    if safe_worker_enabled():
+    if _skills_off():
         return {}
     key = (_resolve_skill_commands_platform(), _resolve_skill_commands_home(), _resolve_skill_commands_project())
     with _publish_lock:
@@ -757,6 +759,8 @@ def _merge_interactive_skill_commands(
 def get_interactive_skill_commands() -> dict[str, dict[str, Any]]:
     """Filesystem skills plus profile-scoped plugin skills; never use for
     messaging/native command menus (plugin skills are CLI/TUI/desktop only)."""
+    if _skills_off():
+        return {}
     identity = (_resolve_skill_commands_platform(), _resolve_skill_commands_home(), _resolve_skill_commands_project())
     commands = _merge_interactive_skill_commands(get_skill_commands(), get_plugin_skill_commands())
     with _publish_lock:
@@ -964,9 +968,7 @@ def build_preloaded_skills_prompt(
     ``_load_skill_payload``, bypassing ``get_skill_commands()``'s scan-time disabled filter — mirrors the
     bundle-invocation gate (#59156).
     """
-    from agent.safe_worker_policy import safe_worker_enabled
-
-    if safe_worker_enabled():
+    if _skills_off():
         return "", [], list(skill_identifiers)
     loaded_names, missing, _disabled, prompt_parts = _load_skill_blocks(
         [(raw or "").strip() for raw in skill_identifiers],
@@ -1009,6 +1011,8 @@ def build_auto_load_prompt(
     that lost the HERMES_HOME ContextVar cannot pin the launch profile's skills into another profile's prompt.
     """
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    if _skills_off():
+        return "", [], []
     home_token = set_hermes_home_override(str(home_override)) if home_override is not None else None
     try:
         auto_skills = resolve_auto_load_skills(user_config)

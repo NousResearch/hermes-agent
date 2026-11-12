@@ -238,9 +238,10 @@ def _handle_send(args):
     mirror_text = cleaned_message.strip() or _describe_media_for_mirror(media_files)
     used_home_channel = not chat_id
     if used_home_channel:
-        chat_id, err = _home_chat_id(config, platform, platform_name)
+        chat_id, home_thread_id, err = _home_chat_id(config, platform, platform_name)
         if err:
             return tool_error(err)
+        thread_id = thread_id if thread_id is not None else home_thread_id
     if duplicate_skip := _maybe_skip_cron_duplicate_send(platform_name, chat_id, thread_id):
         return json.dumps(duplicate_skip)
     # Slack: resolve user targets to DM channel IDs before sending. _parse_target_ref emits internal
@@ -396,17 +397,18 @@ def _secret_sources_state(user_config):
 
 
 def _home_chat_id(config, platform, platform_name):
-    """``(home chat_id, None)`` or ``(None, actionable error)``; Weixin also honours WEIXIN_HOME_CHANNEL."""
+    """``(home chat_id, home thread_id, None)`` or ``(None, None, actionable error)``; the thread is
+    where /sethome ran (a Telegram topic). Weixin also honours WEIXIN_HOME_CHANNEL."""
     home = config.get_home_channel(platform)
     if home:
-        return home.chat_id, None
+        return home.chat_id, getattr(home, "thread_id", None) or None, None
     # Home channel is a per-profile target like the token beside it: a raw environ read would post a
     # multiplexed secondary's message into the default profile's Weixin chat.
     wx_home = (get_secret("WEIXIN_HOME_CHANNEL", "") or "").strip() if platform_name == "weixin" else ""
     if wx_home:
-        return wx_home, None
+        return wx_home, None, None
     home_env = _HOME_CHANNEL_ENV_OVERRIDES.get(platform_name, f"{platform_name.upper()}_HOME_CHANNEL")
-    return None, (f"No home channel set for {platform_name} to determine where to send the message. "
+    return None, None, (f"No home channel set for {platform_name} to determine where to send the message. "
                   f"Either specify a channel directly with '{platform_name}:CHANNEL_NAME', "
                   f"or set a home channel via: hermes config set {home_env} <channel_id>")
 
@@ -602,7 +604,12 @@ async def _send_via_adapter(platform, pconfig, chat_id, chunk, *, thread_id=None
 
 
 async def _send_chunks(chunks, send_one):
-    """``send_one(chunk, is_last)`` in order; stop at the first error dict, else last result."""
+    """``send_one(chunk, is_last)`` in order; stop at the first error dict, else last result. An
+    error after a chunk landed is a PARTIAL delivery (``gateway.platforms._shared`` contract): it
+    loses ``retryable`` (replaying the whole payload would post the landed head twice) and carries
+    the landed chunks' ids."""
+    from gateway.platforms._shared import DeliveryOutcome
+    outcome = DeliveryOutcome()
     result = None
     # --- Matrix: route ALL sends through the native adapter so text is encrypted in E2EE rooms too (issue:
     # text-only sends arrived with a red padlock because they took the raw-HTTP standalone path). The
@@ -611,7 +618,12 @@ async def _send_chunks(chunks, send_one):
     for i, chunk in enumerate(chunks):
         result = await send_one(chunk, i == len(chunks) - 1)
         if isinstance(result, dict) and result.get("error"):
+            if outcome.has_landed:
+                result = outcome.failure(result)
             break
+        outcome.landed(result.get("message_id") if isinstance(result, dict) else None)
+    if isinstance(result, dict) and not result.get("error"):
+        result = {**result, **outcome.split_fields()}
     return result
 
 

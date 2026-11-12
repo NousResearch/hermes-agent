@@ -68,6 +68,12 @@ TOKENHUB_EFFORTS: tuple[str, ...] = ("low", "medium", "high")
 NEBIUS_EFFORTS: tuple[str, ...] = ("low", "medium", "high")
 SOLAR_EFFORTS: tuple[str, ...] = ("low", "medium", "high")
 
+#: Xiaomi MiMo chat completions (live-verified 2026-10 on api.xiaomimimo.com): top-level
+#: ``reasoning_effort`` accepts exactly none/low/medium/high — any other level 400s
+#: "Param Incorrect" — plus the ``extra_body.thinking`` on/off toggle. ``xhigh``/``max``/
+#: ``ultra`` round down to ``high`` (nearest weaker supported level).
+MIMO_EFFORTS: tuple[str, ...] = ("low", "medium", "high")
+
 #: GLM-5.2 native knob: exactly ``high`` (its minimum thinking level) and ``max``; GLM-5.3
 #: widens it to a graded scale (live-verified, monotonic). ``xhigh`` requests the top tier.
 GLM52_EFFORTS: tuple[str, ...] = ("high", "max")

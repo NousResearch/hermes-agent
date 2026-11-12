@@ -8,6 +8,7 @@ agent-config files surface only the low *_ref finding — static regexes cannot 
 destination; future coverage belongs as a fourth "mechanical" tier next to agent_config_mod_shell."""
 
 import re
+import codecs
 import hashlib
 import io
 import json
@@ -749,14 +750,17 @@ def _decoded_views(raw: bytes, rel_path: str, suffix: str) -> tuple[list[str], l
             # CPython also breaks lines on a lone CR; detect_encoding splits on LF only.
             lf_raw = raw.replace(b'\r\n', b'\n').replace(b'\r', b'\n')
             codec = tokenize.detect_encoding(io.BytesIO(lf_raw).readline)[0]
-            if codec not in ("utf-8", "utf-8-sig"):
+            if codecs.lookup(codec).name not in ("utf-8", "utf-8-sig"):  # detect_encoding leaves 'utf8' as is
                 try:
-                    texts.append(raw.decode(codec, errors='replace'))
-                except UnicodeError:  # e.g. idna refuses 'replace' yet CPython runs it; the finding below still blocks
-                    texts.append(raw.decode('latin-1'))
-                findings.append(Finding("non_utf8_source_encoding", "high", "obfuscation", rel_path, 1,
-                                        f"coding: {codec}", f"Python source declares the {codec} encoding "
-                                        "(possible encoding-obfuscated payload)"))
+                    alt = raw.decode(codec, errors='replace')
+                except UnicodeError:  # e.g. idna refuses 'replace' yet CPython runs it; flag it on a latin-1 view
+                    alt = None
+                # ascii/latin-1 over ASCII-only bytes runs exactly the text already scanned: nothing is hidden.
+                if alt != texts[0]:
+                    texts.append(raw.decode('latin-1') if alt is None else alt)
+                    findings.append(Finding("non_utf8_source_encoding", "high", "obfuscation", rel_path, 1,
+                                            f"coding: {codec}", f"Python source declares the {codec} encoding "
+                                            "(possible encoding-obfuscated payload)"))
     if '\x00' in texts[0]:
         texts.append(texts[0].replace('\x00', ''))
         findings.append(Finding("nul_byte", "high", "obfuscation", rel_path, _line_at(texts[0][:texts[0].index('\x00')]),

@@ -171,28 +171,37 @@ KANBAN_BLOCK_SCHEMA = _schema(
         "Set ``kind`` to say which: 'dependency' (waiting on another task — "
         "goes to todo and auto-resumes when that task finishes, no human "
         "needed), 'needs_input' (you need a human decision/answer), "
-        "'capability' (a hard wall: no access, missing credentials, an action "
-        "no agent can do), or 'transient' (a flaky failure that may clear). "
-        "``reason`` is shown to the human on the board. If a task keeps "
-        "getting unblocked and re-blocked for the same reason, it is "
-        "auto-escalated to triage. Use for genuine blockers only — don't "
-        "block on things you can resolve yourself."
+        "'hold' (a judged hold: the card has an owner, a named release "
+        "condition and no parent that can release it — it parks in blocked "
+        "where blocked-hours count it, and only an explicit unblock moves "
+        "it), 'capability' (a hard wall: no access, missing credentials, an "
+        "action no agent can do), or 'transient' (a flaky failure that may "
+        "clear). ``reason`` is shown to the human on the board. If a "
+        "non-hold task keeps getting unblocked and re-blocked for the same "
+        "reason, it is auto-escalated to triage; a hold never is. Use for "
+        "genuine blockers only — don't block on things you can resolve "
+        "yourself."
     ),
     {
         "task_id": _prop("string", _DESC_TASK_ID_DEFAULT),
         "reason": _prop("string", (
                 "What you need answered or what stopped you, in one or "
                 "two sentences. Don't paste the whole conversation; the "
-                "human has the board and can ask follow-ups via comments."
+                "human has the board and can ask follow-ups via comments. "
+                "For kind='hold' this is the release condition: name the "
+                "check that has to read true and the card that releases it."
         )),
         "kind": {
             "type": "string",
-            "enum": ["dependency", "needs_input", "capability", "transient"],
+            "enum": ["dependency", "hold", "needs_input", "capability", "transient"],
             "description": (
                 "Why you're blocked. 'dependency' waits in todo and "
                 "resumes automatically when an incomplete parent finishes; "
                 "if no parent is open it is recorded as needs_input instead. "
-                "The others surface to a human. Omit only if none apply."
+                "'hold' parks a judged card in blocked with its condition "
+                "named (no parent needed) and never trips the triage "
+                "breaker. The others surface to a human. Omit only if none "
+                "apply."
             ),
         },
     },

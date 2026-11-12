@@ -319,7 +319,12 @@ _SPECS = [
         _arg("--kind", choices=sorted(kb.VALID_BLOCK_KINDS),
              help="Typed block reason. 'dependency' waits in todo (auto-promoted when "
                   "parents finish, no human); 'needs_input'/'capability' go to "
-                  "blocked for a human; 'transient' marks a maybe-flaky failure. "
+                  "blocked for a human; 'hold' parks a judged card in blocked with "
+                  "its condition (the reason) named — no parent required, counted in "
+                  "blocked-hours, and never tripped into triage by the recurrence "
+                  "breaker; it is also the only kind that may lift a card out of "
+                  "triage (a lane judge's verdict); 'transient' marks a maybe-flaky "
+                  "failure. "
                   "Repeated same-kind re-blocks after unblock route the task to "
                   "triage to break unblock loops. Omit for a generic block."),
     ], help="Mark one or more tasks blocked"),

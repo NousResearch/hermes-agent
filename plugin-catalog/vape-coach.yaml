@@ -1,17 +1,17 @@
 name: vape-coach
 title: Vape Coach
 repo: https://github.com/NeelM0906/Vape-Coach
-sha: 8d014ab474507f906b274f0e74a5f1f6091e44cc
+sha: c767187973e3cfbba3c92fefd82151186de8161f
 description: "Local-first webcam vape tracker and taper coach. A MediaPipe watcher spots hand-to-mouth puffs plus the exhale, and the target gap between vaping sessions grows ~10%/day after a 1-day baseline. Hitting early climbs a nudge ladder: a roast, a sarcastic (never real) PR threat, a protein-shake order, then jumping jacks the same watcher counts on camera by itself. Nag-only: never blocks a request, never gates a tool, no tool that can touch code. Desktop pane with camera Start/Stop and a live rep counter, a status-bar countdown, pet/toast roasts, /vape and three agent tools. Disclosure — uses the webcam only while the watcher runs (after the user clicks Start camera, which starts `python -m vapecoach.cli watch` as a child process, or while `hermes vape watch` runs in a terminal); frames stay in memory and are never written or sent; stores timestamps, scores and counts in the plugin data dir; downloads three SHA256-pinned MediaPipe models from storage.googleapis.com on first start; the Desktop half polls the plugin's own local API every 3 s. No LLM calls, credentials or telemetry."
 maintainer: NeelM0906
 tier: community
 category: desktop
 requires_hermes: ">=0.23.0"
-docs_url: https://github.com/NeelM0906/Vape-Coach/blob/8d014ab474507f906b274f0e74a5f1f6091e44cc/README.md
-version: "0.2.0"
+docs_url: https://github.com/NeelM0906/Vape-Coach/blob/c767187973e3cfbba3c92fefd82151186de8161f/README.md
+version: "0.2.1"
 screenshots:
-  - https://raw.githubusercontent.com/NeelM0906/Vape-Coach/8d014ab474507f906b274f0e74a5f1f6091e44cc/docs/desktop.png
-  - https://raw.githubusercontent.com/NeelM0906/Vape-Coach/8d014ab474507f906b274f0e74a5f1f6091e44cc/docs/pane.png
+  - https://raw.githubusercontent.com/NeelM0906/Vape-Coach/c767187973e3cfbba3c92fefd82151186de8161f/docs/desktop.png
+  - https://raw.githubusercontent.com/NeelM0906/Vape-Coach/c767187973e3cfbba3c92fefd82151186de8161f/docs/pane.png
 known_issues:
   - "Needs a webcam. Snacking, face-scratching and phone calls can still trigger false alarms; `hermes vape undo` voids one and its penalty."
 capabilities:

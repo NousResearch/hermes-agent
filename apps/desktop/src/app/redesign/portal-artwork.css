@@ -2,16 +2,18 @@
    (34.6, -182.3) in the 1280×880 frame — horizontally centered, its center at 48% of the window
    height, scaled with the window width. The SVG carries Figma's full-strength stack (blue .8 +
    color-dodge fringes); a veil of the surface's own color laid over the art sets its strength. */
-:root[data-shell='portal']:not([data-hermes-glass]) {
+:root[data-shell='portal'] {
   --portal-wing-size: 94.43vw;
   --portal-wing-position: calc(50vw - var(--portal-wing-size) / 2) calc(48vh - var(--portal-wing-size) / 2);
-  /* Light draws the wing as blue .05 (491:46161); panels hide it everywhere but the bare canvas. */
+  /* Light draws the wing as blue .05 (491:46161): a trace on the bare canvas, fainter still through
+     the sidebar's white lift. */
   --portal-wing-opacity: 0.0625;
-  /* Pages lay their nav and body straight over the canvas (856:2643): a faint wing behind both. */
-  --portal-page-wing-opacity: 0;
+  /* Pages lay their nav and body straight over the canvas (856:2643): a faint wing behind both,
+     about as strong as it reads through the light sidebar. */
+  --portal-page-wing-opacity: 0.04;
 }
 
-:root.dark[data-shell='portal']:not([data-hermes-glass]) {
+:root.dark[data-shell='portal'] {
   --portal-wing-opacity: 1;
   --portal-page-wing-opacity: 0.05;
 }
@@ -19,7 +21,7 @@
 /* Painted ONCE on the window canvas; it shows only where the panels over it are translucent (the
    dark sidebar). The shell root spans the window and never scrolls, so a plain background lands
    the art at window coordinates. */
-:root[data-shell='portal']:not([data-hermes-glass]) [data-contrib-shell] {
+:root[data-shell='portal'] [data-contrib-shell] {
   background:
     linear-gradient(
       color-mix(in srgb, var(--portal-window-background) calc((1 - var(--portal-wing-opacity)) * 100%), transparent)
@@ -31,14 +33,36 @@
 /* A page (an overlay card, or a workspace page's panel layer) repaints the page canvas with the
    art on its own non-scrolling layer, attached to the viewport to stay registered with the
    window's art. */
-:root[data-shell='portal']:not([data-hermes-glass]) [data-overlay-surface][data-page-surface] [data-glass-raised],
-:root[data-shell='portal']:not([data-hermes-glass])
-  [data-tree-group][data-window-top][data-zone-page]
-  > [data-panel-header]::before {
+:root[data-shell='portal'] [data-overlay-surface][data-page-surface] [data-glass-raised],
+:root[data-shell='portal'] [data-tree-group][data-window-top][data-zone-page] > [data-panel-header]::before {
   background:
     linear-gradient(
       color-mix(in srgb, var(--portal-page-background) calc((1 - var(--portal-page-wing-opacity)) * 100%), transparent)
     ),
     url('../../assets/portal-wing.svg') var(--portal-wing-position) / var(--portal-wing-size) no-repeat fixed,
     var(--portal-page-background);
+}
+
+/* A page's sidebar panel (Settings 856:2740, Agents 895:8991) lies over the FULL-strength wing, not
+   over the page body's faint trace: Figma stacks #0A0A1A@.90 on the art, so a tenth of the wing
+   reads through it (a clearly visible navy feather). The panel therefore carries its own art layer,
+   registered to the viewport like the page layer above. Light keeps the chat sidebar's white lift
+   over the light canvas's trace. */
+:root[data-shell='portal'] {
+  --portal-page-panel-fill:
+    linear-gradient(color-mix(in srgb, #fff 30%, transparent)),
+    linear-gradient(
+      color-mix(in srgb, var(--portal-page-canvas) calc((1 - var(--portal-wing-opacity)) * 100%), transparent)
+    ),
+    url('../../assets/portal-wing.svg') var(--portal-wing-position) / var(--portal-wing-size) no-repeat fixed,
+    var(--portal-page-canvas);
+}
+
+:root.dark[data-shell='portal'] {
+  --portal-page-panel-fill:
+    linear-gradient(
+      color-mix(in srgb, color-mix(in srgb, var(--ui-base) 1.5%, var(--portal-page-canvas)) 90%, transparent)
+    ),
+    url('../../assets/portal-wing.svg') var(--portal-wing-position) / var(--portal-wing-size) no-repeat fixed,
+    var(--portal-page-canvas);
 }

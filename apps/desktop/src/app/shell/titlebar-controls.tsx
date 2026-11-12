@@ -34,10 +34,18 @@ import {
 } from '@/store/layout'
 import { REVIEW_PANE_ID } from '@/store/review'
 import { $unreadSessionCount } from '@/store/session-dot-state'
+import { $focusedStoredSessionId } from '@/store/session-focus'
 import { usePortalShell } from '@/store/shell-variant'
 import { $titlebarAppActionsSide, TITLEBAR_FIXED_TOOLS } from '@/store/titlebar-app-actions'
 
-import { $workspaceIsPage, appViewForPath, hidesFixedTitlebarClusters, isOverlayView } from '../routes'
+import {
+  $workspaceIsPage,
+  appViewForPath,
+  hidesFixedTitlebarClusters,
+  isOverlayView,
+  NEW_CHAT_ROUTE,
+  sessionRoute
+} from '../routes'
 
 import { PortalSessionTab } from './portal-session-tab'
 import {
@@ -196,9 +204,26 @@ function useBandSidebarToolHidden(portal: boolean, sidebarOpen: boolean): boolea
   return portal && !narrow && (sidebarOpen || workspacePage)
 }
 
+/** A redesigned workspace page (Capabilities, Library, …) is a rail destination like Settings and
+ *  Agents, so its band leads with the same Back (Figma 856:2713) instead of an empty strip; Back
+ *  returns to the chat the Chats destination would open. */
+function usePortalPageBack(portal: boolean): TitlebarTool {
+  const { t } = useI18n()
+  const workspacePage = useStore($workspaceIsPage)
+  const sessionId = useStore($focusedStoredSessionId)
+
+  return {
+    hidden: !(portal && workspacePage),
+    icon: <TitlebarIcon name="arrow-left" />,
+    id: 'page-back',
+    label: t.common.back,
+    to: sessionId ? sessionRoute(sessionId) : NEW_CHAT_ROUTE
+  }
+}
+
 /** The redesign centres its 30px chrome buttons in its 60px band; native controls are centred
- *  there too, so the pre-Tahoe optical nudge stands down. The leading cluster also starts past
- *  the 60px rail column (Figma's 20px breadcrumb inset), still clearing macOS traffic lights.
+ *  there too, so the pre-Tahoe optical nudge stands down. The leading cluster starts at
+ *  `--portal-band-start` (portalBandLeadingInset: past macOS traffic lights, else on the content inset).
  *  Classic keeps the stylesheet's placement. */
 function usePortalClusterStyles(portal: boolean): { clusterStyle?: CSSProperties; leftClusterStyle?: CSSProperties } {
   const titlebarHeight = useTitlebarHeight()
@@ -212,7 +237,7 @@ function usePortalClusterStyles(portal: boolean): { clusterStyle?: CSSProperties
     '--titlebar-controls-y-nudge': '0px'
   } as CSSProperties
 
-  return { clusterStyle, leftClusterStyle: { ...clusterStyle, left: 'max(5rem, var(--titlebar-controls-left))' } }
+  return { clusterStyle, leftClusterStyle: { ...clusterStyle, left: 'var(--portal-band-start)' } }
 }
 
 export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }: TitlebarControlsProps) {
@@ -248,6 +273,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const leftLabel = leftEdge.open ? t.titlebar.hideSidebar : t.titlebar.showSidebar
   const rightLabel = rightEdge.open ? t.titlebar.hideRightSidebar : t.titlebar.showRightSidebar
   const sidebarToolHidden = useBandSidebarToolHidden(portal, leftEdge.open)
+  const pageBackTool = usePortalPageBack(portal)
 
   const sidebarTool: TitlebarTool = {
     ...TITLEBAR_FIXED_TOOLS.sidebar,
@@ -396,7 +422,9 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   }
 
   const visibleLeftTools = (
-    appActionsSide === 'left' ? [sidebarTool, ...systemTools, ...leftTools] : [sidebarTool, ...leftTools]
+    appActionsSide === 'left'
+      ? [pageBackTool, sidebarTool, ...systemTools, ...leftTools]
+      : [pageBackTool, sidebarTool, ...leftTools]
   ).filter(visibleTool)
 
   const visibleSystemTools = appActionsSide === 'right' ? systemTools.filter(visibleTool) : []

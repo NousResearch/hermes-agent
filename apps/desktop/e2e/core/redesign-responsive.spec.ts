@@ -98,11 +98,11 @@ test('redesigned web app stays usable on touch screens and restores the classic 
 
     const sidebarWidth = (await page.locator('.portal-sidebar').boundingBox())!.width
 
-    // Dark lets the wing show through the translucent sidebar; light's opaque panels hide it.
+    // Both modes let the wing show through the translucent sidebar as a trace.
     for (const colorScheme of ['dark', 'light'] as const) {
       await page.emulateMedia({ colorScheme })
       await expect(page.locator('html')).toHaveClass(colorScheme === 'dark' ? /\bdark\b/ : /^(?!.*\bdark\b)/)
-      await expectFaintWing(page, page.locator('.portal-sidebar'), colorScheme === 'dark')
+      await expectFaintWing(page, page.locator('.portal-sidebar'))
     }
 
     await go('/settings?tab=config:appearance&page=window-layout')
@@ -137,11 +137,11 @@ test('redesigned web app stays usable on touch screens and restores the classic 
     await page.screenshot({ path: test.info().outputPath('redesign-safety.png') })
     await page.emulateMedia({ colorScheme: 'dark' })
     await expect(page.locator('html')).toHaveClass(/dark/)
-    await expectFaintWing(page, settings, true)
+    await expectFaintWing(page, settings)
     await page.screenshot({ path: test.info().outputPath('redesign-safety-dark.png') })
     await page.emulateMedia({ colorScheme: 'light' })
     await expect(page.locator('html')).not.toHaveClass(/dark/)
-    await expectFaintWing(page, settings, false)
+    await expectFaintWing(page, settings)
     await go('/settings?tab=config:appearance')
     await page.getByRole('button', { name: 'Switch language', exact: true }).tap()
     await page.getByRole('combobox').fill('العربية')
@@ -288,13 +288,10 @@ async function wingPeak(page: Page, region: Locator): Promise<number> {
   )
 }
 
-async function expectFaintWing(page: Page, region: Locator, shows: boolean) {
+async function expectFaintWing(page: Page, region: Locator) {
   const peak = await wingPeak(page, region)
 
-  if (shows) {
-    expect(peak, 'the wing shows through').toBeGreaterThan(0)
-  }
-
+  expect(peak, 'the wing shows through').toBeGreaterThan(0)
   expect(peak, 'the wing stays a faint trace').toBeLessThanOrEqual(WING_FAINT_PEAK)
 }
 

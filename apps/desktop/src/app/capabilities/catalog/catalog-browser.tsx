@@ -73,6 +73,20 @@ interface CatalogBrowserProps {
 }
 
 const PAGE_SIZE = 60
+
+/** The deferred feed's first value: a distinct empty list, so the frame renders as loading. */
+const NO_ROWS: CatalogEntry[] = []
+
+/** Deriving the page from the ~100k-row feed is the costly render. Deferred, the page frame
+ *  commits in the click's own frame and the shelves follow in an interruptible render; until
+ *  then the page reads as loading (or keeps its previous rows on a refetch). */
+function useDeferredCatalog(kind: CatalogKind) {
+  const { data: fetched, isPending, error, refetch } = useCatalog(kind)
+  const data = useDeferredValue(fetched, NO_ROWS)
+
+  return { data, fetched, isPending: isPending || data !== fetched, error, refetch }
+}
+
 /** Related entries listed under a detail. */
 const RELATED_COUNT = 3
 // The skills hub carries ~10k distinct tags; the rail is for browsing, search covers the tail.
@@ -557,7 +571,7 @@ export const CatalogBrowser = memo(function CatalogBrowser({
   const { t } = useI18n()
   const c = t.catalog
   const cardView = useStore($catalogCardView)
-  const { data, isPending, error, refetch } = useCatalog(kind)
+  const { data, fetched, isPending, error, refetch } = useDeferredCatalog(kind)
   const deferredQuery = useDeferredValue((query ?? '').trim().toLowerCase())
   const [selectedId, setSelectedId] = useState<string | null>(selectedEntryId ?? null)
   const [detailOpen, setDetailOpen] = useState(false)
@@ -691,7 +705,7 @@ export const CatalogBrowser = memo(function CatalogBrowser({
         headerActions={headerActions}
         isInstalled={isInstalled}
         kind={kind}
-        libraryCount={data?.length}
+        libraryCount={fetched?.length}
         limit={limit}
         notice={notice}
         onClear={clearFilters}

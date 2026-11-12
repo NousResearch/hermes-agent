@@ -42,15 +42,30 @@ interface AgentCardProps extends Pick<PortalAgentGroupsProps, 'onToggle' | 'onOp
   selected: boolean
   open: boolean
   hidden: boolean
+  /** How many of the agent's chats the list holds: the card's second line when no description. */
+  chatCount: number
   children: ReactNode
 }
 
 const agentKey = (agent: SimplifiedAgent) =>
   agentSidebarKey({ connectionId: agent.connectionId, profile: agent.targetProfile || agent.profile })
 
-function AgentCard({ agent, selected, open, hidden, onToggle, onOpenAgent, pending, children }: AgentCardProps) {
+/** An agent block inside its machine (147:6279): colour tile, name over a second line, the
+ *  disclosure and menu as hover/focus affordances, then its chats under a guide line. */
+function AgentCard({
+  agent,
+  selected,
+  open,
+  hidden,
+  chatCount,
+  onToggle,
+  onOpenAgent,
+  pending,
+  children
+}: AgentCardProps) {
   const { t } = useI18n()
   const toggleLabel = `${open ? t.common.collapse : t.common.expand}: ${agent.label}`
+  const summary = chatCount ? t.simplifiedAgents.chatCount(chatCount) : t.simplifiedAgents.noChats
 
   return (
     <div
@@ -60,10 +75,7 @@ function AgentCard({ agent, selected, open, hidden, onToggle, onOpenAgent, pendi
       role="group"
     >
       <div data-active-agent={selected ? '' : undefined} data-slot="agent-heading">
-        <SimplifiedBotChatRow
-          agent={agent}
-          avatarColor={selected ? 'var(--portal-sidebar-agent-selected-ink)' : undefined}
-        />
+        <SimplifiedBotChatRow agent={agent} fallbackSummary={summary} />
         <Tip label={toggleLabel}>
           <Button
             aria-expanded={open}
@@ -151,6 +163,7 @@ export function PortalAgentGroups(props: PortalAgentGroupsProps) {
                   {group.map(agent => (
                     <AgentCard
                       agent={agent}
+                      chatCount={sessionsByAgent.get(agent.id)?.length ?? 0}
                       hidden={isHidden(agent)}
                       key={agent.id}
                       onOpenAgent={props.onOpenAgent}

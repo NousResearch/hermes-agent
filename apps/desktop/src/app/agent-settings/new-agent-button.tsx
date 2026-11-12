@@ -16,9 +16,11 @@ import type { AgentSettingsOwner } from './data'
 
 interface NewAgentButtonProps {
   owner?: AgentSettingsOwner
+  /** The Agents panel draws it as a 40px sidebar row (895:9447), not a 36px page button. */
+  row?: boolean
 }
 
-export function NewAgentButton({ owner }: NewAgentButtonProps) {
+export function NewAgentButton({ owner, row = false }: NewAgentButtonProps) {
   const { t } = useI18n()
   const [target, setTarget] = useState<{ owner: AgentSettingsOwner; profiles: ProfileInfo[] } | null>(null)
 
@@ -35,6 +37,7 @@ export function NewAgentButton({ owner }: NewAgentButtonProps) {
             profiles: $profiles.get()
           })
         }
+        size={row ? 'sm' : undefined}
         variant="secondary"
       >
         <Codicon name="add" />

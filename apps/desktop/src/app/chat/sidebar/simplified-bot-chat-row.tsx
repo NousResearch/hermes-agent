@@ -1,10 +1,11 @@
 import { useStore } from '@nanostores/react'
-import type { ReactNode } from 'react'
+import { type ReactNode, useId } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
 import { FigmaAgentIcon } from '@/components/ui/figma-agent-icon'
 import { RowButton } from '@/components/ui/row-button'
 import { OverflowTip, Tip } from '@/components/ui/tooltip'
+import { portalAgentSwatch } from '@/lib/portal-profile-color'
 import { resolveProfileColor } from '@/lib/profile-color'
 import { $openBotChat, $pendingBotOpen } from '@/plugins/hermes-bots/bot-state'
 import { CANONICAL_CHAT_TITLE } from '@/plugins/hermes-bots/canonical-chat'
@@ -23,8 +24,8 @@ interface SimplifiedBotChatRowProps {
   agent: SimplifiedAgent
   appearance?: 'card' | 'hidden'
   summary?: ReactNode
-  /** Overrides the profile colour where the row sits on a coloured selection fill. */
-  avatarColor?: string
+  /** The card's second line when the roster has no description for the agent. */
+  fallbackSummary?: ReactNode
   onOpen?: () => void
 }
 
@@ -32,7 +33,7 @@ export function SimplifiedBotChatRow({
   agent,
   appearance = 'card',
   summary,
-  avatarColor,
+  fallbackSummary,
   onOpen
 }: SimplifiedBotChatRowProps) {
   const opened = useStore($openBotChat)
@@ -41,6 +42,8 @@ export function SimplifiedBotChatRow({
   const tiles = useStore($sessionTiles)
   const colors = useStore($profileColors)
   const roster = useStore($lastRoster)
+  const nameId = useId()
+  const subtitleId = useId()
 
   const bot: RosterRow = {
     name: agent.profile,
@@ -53,6 +56,7 @@ export function SimplifiedBotChatRow({
 
   const key = botRosterKey(bot)
   const description = roster.find(row => botRosterKey(row) === key)?.description
+  const subtitle = summary || (appearance === 'card' ? description || fallbackSummary : undefined)
   const loading = pending?.key === key
 
   const tile = tiles.find(item => item.storedSessionId === focused)
@@ -69,6 +73,9 @@ export function SimplifiedBotChatRow({
       <RowButton
         aria-busy={loading || undefined}
         aria-current={selected ? 'page' : undefined}
+        // The name alone labels the row; its second line is a description.
+        aria-describedby={subtitle ? subtitleId : undefined}
+        aria-labelledby={nameId}
         className="portal-agent-chat"
         data-appearance={appearance}
         disabled={loading}
@@ -90,16 +97,19 @@ export function SimplifiedBotChatRow({
           ) : (
             <FigmaAgentIcon
               className="portal-agent-avatar"
-              color={avatarColor ?? resolveProfileColor(agent.profile, colors)}
-              variant="subtle"
+              color={portalAgentSwatch(resolveProfileColor(agent.profile, colors)).solid}
             />
           ))}
         <span className="portal-agent-text">
           <OverflowTip label={appearance === 'hidden' ? undefined : agent.label}>
-            <span className="portal-agent-name">{agent.label}</span>
+            <span className="portal-agent-name" id={nameId}>
+              {agent.label}
+            </span>
           </OverflowTip>
-          {(summary || (appearance === 'card' && description)) && (
-            <span className="portal-agent-subtitle">{summary || description}</span>
+          {subtitle && (
+            <span className="portal-agent-subtitle" id={subtitleId}>
+              {subtitle}
+            </span>
           )}
         </span>
       </RowButton>

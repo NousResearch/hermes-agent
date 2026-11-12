@@ -10,7 +10,7 @@ import { usePortalShell } from '@/store/shell-variant'
 
 import { ListRow, Pill, SectionHeading, SettingsContent } from './primitives'
 import { SettingsProfileScope } from './profile-scope'
-import { SettingsAddRow, SettingsCard, SettingsGroup, SettingsOverview } from './settings-card'
+import { SettingsAddRow, SettingsCard, SettingsEmptyRow, SettingsGroup, SettingsOverview } from './settings-card'
 import { useSettingsPagesCopy } from './settings-pages-copy'
 import type { VaultItem, VaultKind, VaultSource } from './vault-settings'
 
@@ -266,7 +266,7 @@ function RedesignVault({
             title={pages.vault.credentials}
           >
             <SettingsCard>
-              {itemCount === 0 && <p className="global-settings-empty-row">{v.emptyDesc}</p>}
+              {itemCount === 0 && <SettingsEmptyRow title={v.emptyDesc} />}
               {credentialRows}
               <SettingsAddRow onClick={onAdd}>{v.add}</SettingsAddRow>
             </SettingsCard>

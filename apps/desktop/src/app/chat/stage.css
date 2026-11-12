@@ -56,28 +56,44 @@
 
 /* Hero photo (906:19874, mask 906:19873). Figma: a 1084px square at
    (-174.22, -287.71) in the 840px stage, luminosity-blended at .6 under a .6
-   alpha mask that holds to stage y 180.5 and is gone by y 356.8. The square
-   keeps that crop when the stage is narrower and scales with it when wider,
-   so the hand never tiles or shows an edge. Offsets are fractions of the
-   image itself; the fade stays at the same absolute stage heights from the
-   panel's top edge. Opacity carries layer x mask alpha (.6 x .6). */
+   alpha mask that holds to stage y 180.5 and is gone by y 356.8. The photo
+   keeps Figma's size on every stage (Simple's wider stage, a collapsed
+   sidebar, a narrow window) so the hand reads the same everywhere; it stays
+   anchored on the stage centre and its side edges fade out, so a stage wider
+   than the crop never shows where the photo ends. Offsets are fractions of
+   the image itself; the fade stays at the same absolute stage heights from
+   the panel's top edge. Opacity carries layer x mask alpha (.6 x .6). */
 .chat-stage-art {
   --chat-stage-art-alpha: 0.04;
   --chat-stage-art-top: 26.542%;
+  /* The photo's paper border (1.5% each side) never shows; the side fades end where Figma's stage
+     edges cut the crop. */
+  --chat-stage-art-border: 2%;
+  --chat-stage-art-fade-start: 16.072%;
+  --chat-stage-art-fade-end: 93.505%;
   position: absolute;
   top: 0;
   left: 50%;
-  width: max(1084px, 129.05%);
+  width: 1084px;
   max-width: none;
   height: auto;
   translate: -54.817% calc(-1 * var(--chat-stage-art-top));
   opacity: var(--chat-stage-art-alpha);
   mix-blend-mode: luminosity;
-  mask-image: linear-gradient(
-    to bottom,
-    #000 calc(var(--chat-stage-art-top) + 180.5px),
-    transparent calc(var(--chat-stage-art-top) + 356.8px)
-  );
+  mask-image:
+    linear-gradient(
+      to bottom,
+      #000 calc(var(--chat-stage-art-top) + 180.5px),
+      transparent calc(var(--chat-stage-art-top) + 356.8px)
+    ),
+    linear-gradient(
+      to right,
+      transparent var(--chat-stage-art-border),
+      #000 var(--chat-stage-art-fade-start),
+      #000 var(--chat-stage-art-fade-end),
+      transparent calc(100% - var(--chat-stage-art-border))
+    );
+  mask-composite: intersect;
   pointer-events: none;
   transition: opacity 0.6s ease;
 }
@@ -91,7 +107,9 @@
 :root[data-shell='portal']:not(.dark) .chat-stage-art {
   --chat-stage-art-alpha: 0.09;
   --chat-stage-art-top: 22.573%;
-  width: max(1028.44px, 122.43%);
+  --chat-stage-art-fade-start: 9.15%;
+  --chat-stage-art-fade-end: 90.85%;
+  width: 1028.44px;
   translate: -50% calc(-1 * var(--chat-stage-art-top));
 }
 

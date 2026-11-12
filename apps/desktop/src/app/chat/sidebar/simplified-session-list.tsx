@@ -11,7 +11,7 @@ import { OverflowTip, Tooltip, TooltipContent, TooltipTrigger } from '@/componen
 import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
-import { MoreHorizontal, Pin } from '@/lib/icons'
+import { MoreHorizontal } from '@/lib/icons'
 import { coarseElapsed } from '@/lib/time'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { recordIaAction } from '@/store/ia-metrics'
@@ -56,12 +56,19 @@ const PIN_METRIC = {
   agent: 'ia.pin.agent_request'
 } as const
 
-/** Live status only: a settled row carries no mark, so the one that does reads as news. */
-function SessionRowMark({ row }: { row: SessionInfo }) {
+/** Live status marks the row. Pinned rows keep a quiet leading dot even when settled (Figma
+ *  147:7470), so their titles share one inset; agent chats carry a mark only for news. */
+function SessionRowMark({ row, always }: { row: SessionInfo; always: boolean }) {
   const state = useStoreSelector($sessionDotStateById, states => states[row.id] ?? 'idle')
 
   if (state === 'idle') {
-    return null
+    return always ? (
+      <span aria-hidden className="portal-row-mark" data-slot="session-status" data-state="idle">
+        <span>
+          <span />
+        </span>
+      </span>
+    ) : null
   }
 
   return (
@@ -140,7 +147,7 @@ function SessionRow({ row, selected, surface, meta, ...props }: SessionRowProps)
         }
       }}
     >
-      <SessionRowMark row={row} />
+      <SessionRowMark always={surface === 'pinned'} row={row} />
       <OverflowTip label={title}>
         <span className="portal-session-title" data-slot="session-title">
           {title}
@@ -242,12 +249,12 @@ export function SimplifiedSessionList({ sessions, activeSessionId, ...props }: S
       return <span aria-label={`${t.simplifiedAgents.agents}: ${profile}`}>{profile}</span>
     }
 
+    // Figma 147:7470 draws no pin glyph in an agent's list; the pinned-first order is still named
+    // for assistive tech.
     return (
       <>
         {props.pinnedIds.has(sessionRowKey(row)) && (
-          <span aria-label={t.sidebar.pinned} className="portal-session-pin" role="img" title={t.sidebar.pinned}>
-            <Pin aria-hidden />
-          </span>
+          <span aria-label={t.sidebar.pinned} className="sr-only" role="img" />
         )}
         <SessionAge now={now} row={row} />
       </>

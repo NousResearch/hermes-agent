@@ -2,34 +2,49 @@
    renders it, so element selectors stay ungated; body-portalled surfaces gate on the root. */
 :root[data-shell='portal'] {
   --sessions-pane-width: 20rem;
-  /* Rows bleed past the 20px text inset so hover and selection fills hold the leading dot. */
+  /* The brand block, New session and search sit on the 20px inset; below them the list follows
+     Figma 147:7470: sections padded 12px (the gutter), rows bleeding 8px past the caption. */
   --portal-sidebar-inset: 1.25rem;
   --portal-sidebar-bleed: 0.5rem;
+  --portal-sidebar-gutter: calc(var(--portal-sidebar-inset) - var(--portal-sidebar-bleed));
   --portal-sidebar-row: 2rem;
-  /* Row + gap = Figma's 38px pitch; label-to-row spacing keeps its 20px gap between 18px text lines. */
-  --portal-sidebar-row-gap: 0.375rem;
-  --portal-sidebar-section-gap: 0.8125rem;
+  --portal-sidebar-pin-row: 1.875rem;
+  --portal-sidebar-machine-row: 2.5rem;
+  --portal-sidebar-chat-row: 1.9375rem;
+  --portal-sidebar-row-gap: 1px;
+  /* Section to section: 12px bottom pad, a 1px slot, 12px top pad (143:6237 → 143:6256). */
+  --portal-sidebar-section-gap: 1.5625rem;
+  /* Captions, meta, tags and ages: Figma's 10px. */
+  --portal-sidebar-caption: 0.625rem;
   --portal-sidebar-hover: color-mix(in srgb, var(--ui-base) 4%, transparent);
   --portal-sidebar-press: color-mix(in srgb, var(--ui-base) 7%, transparent);
+  --portal-sidebar-selected: color-mix(in srgb, var(--ui-base) 2%, transparent);
   --portal-sidebar-card: color-mix(in srgb, var(--ui-base) 5%, transparent);
-  --portal-sidebar-label: var(--ui-text-tertiary);
+  /* The primary action (New session): Var1 draws it at light/20 with keycaps a step lighter; Brand
+     rev light at dark/2 with dark/2 keycaps on a dark/5 rim. */
+  --portal-sidebar-action: color-mix(in srgb, var(--ui-base) 2%, transparent);
+  --portal-sidebar-action-key: color-mix(in srgb, var(--ui-base) 2%, transparent);
+  --portal-sidebar-machine-fill: color-mix(in srgb, var(--ui-base) 5%, transparent);
+  --portal-sidebar-machine-head: color-mix(in srgb, var(--ui-base) 7%, transparent);
+  --portal-sidebar-guide: color-mix(in srgb, var(--ui-base) 20%, transparent);
+  /* A settled pinned row's dot wears the row's own ink (Var1 147:7470). */
+  --portal-sidebar-dot: var(--ui-text-secondary);
+  /* Captions at Var1's ~.65 (light: Brand rev's .6, the ladder's floor); tags, subtitles and ages
+     take the floor where Figma's .3-.5 fail AA at 10px; machine names keep Figma's .8. */
+  --portal-sidebar-label: var(--ui-text-quaternary);
   --portal-sidebar-meta: var(--ui-text-quaternary);
-  /* The shared focus ring, recoloured where it would vanish into Light's solid-blue selection. */
-  --portal-sidebar-agent-selected-ring: var(--portal-on-brand);
-  /* secondary/green and secondary/orange, darkened on light canvases for 4.5:1 labels. */
-  --portal-sidebar-green: color-mix(in srgb, #00f279 50%, #000);
-  --portal-sidebar-orange: color-mix(in srgb, #f27900 70%, #000);
-  --portal-sidebar-agent-selected: var(--portal-brand-fill);
-  --portal-sidebar-agent-selected-ink: var(--portal-on-brand);
+  /* On the expanded machine's 12% header bar the floor needs .55 to hold 4.5:1. */
+  --portal-sidebar-head-meta: color-mix(in srgb, var(--ui-base) 70%, transparent);
+  --portal-sidebar-machine-ink: color-mix(in srgb, var(--ui-base) 80%, transparent);
+  --portal-sidebar-green: var(--portal-status-online);
+  --portal-sidebar-orange: var(--portal-status-pending);
 }
 
 :root.dark[data-shell='portal'] {
-  --portal-sidebar-label: var(--ui-text-quaternary);
-  --portal-sidebar-green: color-mix(in srgb, #00f279 75%, transparent);
-  --portal-sidebar-orange: color-mix(in srgb, #f27900 85%, transparent);
-  --portal-sidebar-agent-selected: color-mix(in srgb, var(--portal-brand-fill) 10%, transparent);
-  --portal-sidebar-agent-selected-ink: var(--ui-text-primary);
-  --portal-sidebar-agent-selected-ring: var(--portal-focus-ring-color);
+  --portal-sidebar-action: color-mix(in srgb, var(--ui-base) 20%, transparent);
+  --portal-sidebar-action-key: color-mix(in srgb, var(--ui-base) 20%, transparent);
+  --portal-sidebar-label: color-mix(in srgb, var(--ui-base) 65%, transparent);
+  --portal-sidebar-head-meta: color-mix(in srgb, var(--ui-base) 55%, transparent);
 }
 
 .portal-sidebar {
@@ -127,7 +142,7 @@
 .portal-sidebar-content {
   min-width: 0;
   gap: 0.625rem;
-  padding: 0.625rem calc(var(--portal-sidebar-inset) - var(--portal-sidebar-bleed)) 0;
+  padding: 0.625rem var(--portal-sidebar-gutter) 0;
   overflow: hidden;
 }
 
@@ -144,7 +159,11 @@
   min-height: 12rem;
   flex-direction: column;
   gap: var(--portal-sidebar-section-gap);
-  padding-top: var(--portal-sidebar-row-gap);
+  padding-top: 0.5rem;
+}
+
+.portal-sidebar-sections[hidden] {
+  display: none;
 }
 
 .portal-sidebar-empty {
@@ -167,7 +186,7 @@
   min-height: 2.5rem;
   overflow: hidden;
   border-radius: 6px;
-  background: var(--portal-sidebar-card);
+  background: var(--portal-sidebar-action);
   container-type: inline-size;
 }
 
@@ -219,9 +238,9 @@
   min-width: 1.25rem;
   height: 1.25rem;
   padding-inline: 0.25rem;
-  border: 0.5px solid color-mix(in srgb, var(--ui-base) 10%, transparent);
+  border: 0.5px solid color-mix(in srgb, var(--ui-base) 5%, transparent);
   border-radius: 3px;
-  background: var(--portal-sidebar-card);
+  background: var(--portal-sidebar-action-key);
   box-shadow: none;
   color: var(--ui-text-secondary);
   font-family: inherit;
@@ -238,7 +257,7 @@
 .portal-sidebar .portal-new-session-picker {
   gap: 0.25rem;
   padding-inline: 0.625rem 0.5rem;
-  border-inline-start: 1px solid var(--portal-sidebar-card);
+  border-inline-start: 1px solid var(--portal-sidebar-action);
 }
 
 .portal-new-session-picker .portal-section-chevron {
@@ -373,13 +392,15 @@
   box-shadow: inset 0 0 0 var(--portal-focus-ring-width) var(--portal-focus-ring-color);
 }
 
-/* ── Sections: 28px label, chevron, trailing action ─────────────────────────────────────────── */
+/* ── Sections (Figma 147:7470, "Variation 1: Flattened gateway/host") ──────────────────────────
+   Each section is a block under an uppercase caption, separated from the next by whitespace only
+   (its 12px bottom pad + the next one's 12px top pad). Rows bleed 8px past the caption's 20px inset
+   so their fills hold the leading dot; their text starts 10px inside the fill. */
 
 .portal-section {
   display: flex;
   min-height: 0;
   flex-direction: column;
-  gap: var(--portal-sidebar-section-gap);
 }
 
 .portal-sidebar [data-slot='pinned-section'][data-open='true'] {
@@ -403,57 +424,82 @@
   display: none;
 }
 
+/* Caption row: the label on the 20px inset, then count badge, chevron and action at the end. */
 .portal-section-header {
   display: flex;
   flex-shrink: 0;
-  align-items: flex-end;
+  align-items: center;
   gap: 0.25rem;
-  min-height: 1.75rem;
-  padding-inline: calc(var(--portal-sidebar-bleed) + 0.625rem) var(--portal-sidebar-bleed);
+  padding-block-end: 0.5rem;
+  padding-inline: var(--portal-sidebar-bleed) 0.25rem;
 }
 
 .portal-section-title {
-  display: inline-flex;
+  display: flex;
   min-width: 0;
-  min-height: 1.75rem;
-  align-items: flex-end;
+  flex: 1;
+  min-height: 1.125rem;
+  align-items: center;
   gap: 0.25rem;
-  margin-inline-end: auto;
   border-radius: 3px;
   color: var(--portal-sidebar-label);
-  letter-spacing: 0.01em;
-  line-height: 1.4;
 }
 
 button.portal-section-title:hover {
   color: var(--ui-text-secondary);
 }
 
-.portal-section-chevron {
-  width: 1rem;
-  height: 1rem;
-  flex-shrink: 0;
-  margin-bottom: 0.0625rem;
+.portal-section-label {
+  min-width: 0;
+  margin-inline-end: auto;
+  overflow: hidden;
+  font-size: var(--portal-sidebar-caption);
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
 }
 
-.portal-section-title[aria-expanded='false'] .portal-section-chevron {
-  transform: rotate(-90deg);
+/* 147:6260: a brand-tinted pill, bold brand ink. */
+.portal-section-count {
+  min-width: 1.4375rem;
+  padding: 0.1875rem 0.5rem;
+  border-radius: 10px;
+  background: var(--portal-selection-background);
+  color: var(--portal-brand-ink);
+  font-size: var(--portal-sidebar-caption);
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  line-height: 1.2;
+  text-align: center;
+}
+
+.portal-section-chevron {
+  width: 0.75rem;
+  height: 0.75rem;
+  flex-shrink: 0;
+}
+
+.portal-section-title[aria-expanded='true'] .portal-section-chevron {
+  transform: rotate(180deg);
 }
 
 .portal-section-title[aria-expanded='false']:dir(rtl) .portal-section-chevron {
-  transform: rotate(90deg);
+  transform: none;
 }
 
 .portal-sidebar .portal-section-action {
-  width: 1.25rem;
-  height: 1.25rem;
+  width: 1.125rem;
+  height: 1.125rem;
   border-radius: 3px;
   color: var(--portal-sidebar-label);
 }
 
 .portal-section-action svg {
-  width: 1rem;
-  height: 1rem;
+  width: 0.875rem;
+  height: 0.875rem;
 }
 
 .portal-sidebar .portal-section-action:hover {
@@ -475,7 +521,7 @@ button.portal-section-title:hover {
   padding-bottom: 1.25rem;
 }
 
-/* ── Rows: sessions, group chats and machines share one geometry ───────────────────────────── */
+/* ── Rows: pinned chats, group chats and machines (143:6240 / 143:6263) ─────────────────────── */
 
 .portal-session-list {
   display: flex;
@@ -495,12 +541,12 @@ button.portal-section-title:hover {
   display: flex;
   width: 100%;
   min-width: 0;
-  min-height: var(--portal-sidebar-row);
+  min-height: var(--portal-sidebar-pin-row);
   align-items: center;
-  gap: 0.375rem;
-  padding-inline: calc(var(--portal-sidebar-bleed) + 0.6875rem) calc(var(--portal-sidebar-bleed) + 0.625rem);
+  gap: 0.5rem;
+  padding-inline: 0.625rem;
   border-radius: 6px;
-  color: var(--ui-text-primary);
+  color: var(--ui-text-secondary);
   text-align: start;
 }
 
@@ -511,9 +557,9 @@ button.portal-section-title:hover {
 }
 
 .portal-session-row:hover,
-.portal-machine-row:hover,
 .portal-session-item:is([data-state='open'], :has(.portal-row-action[data-state='open'])) > .portal-session-row {
   background: var(--portal-sidebar-hover);
+  color: var(--ui-text-primary);
 }
 
 .portal-session-row:active,
@@ -522,18 +568,21 @@ button.portal-section-title:hover {
 }
 
 .portal-session-row[aria-current='page'] {
-  background: var(--portal-neutral-selection-background);
-  box-shadow: inset 0 0 0 0.5px var(--portal-neutral-selection-stroke);
+  background: var(--portal-sidebar-selected);
   color: var(--ui-text-primary);
 }
 
 .portal-session-title,
 .portal-machine-name {
-  flex: 1;
   min-width: 0;
   overflow: hidden;
+  font-weight: 500;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.portal-session-title {
+  flex: 1;
 }
 
 .portal-session-meta,
@@ -543,27 +592,19 @@ button.portal-section-title:hover {
   max-width: 40%;
   align-items: center;
   gap: 0.25rem;
+  margin-inline-start: auto;
   overflow: hidden;
   color: var(--portal-sidebar-meta);
-  font-size: 0.75rem;
-  letter-spacing: 0.01em;
+  font-size: var(--portal-sidebar-caption);
   font-variant-numeric: tabular-nums;
+  line-height: 1.2;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.portal-session-meta > span:not(.portal-session-pin) {
+.portal-session-meta > span {
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.portal-session-pin {
-  display: inline-flex;
-}
-
-.portal-session-pin svg {
-  width: 0.6875rem;
-  height: 0.6875rem;
 }
 
 .portal-group-icon {
@@ -571,46 +612,31 @@ button.portal-section-title:hover {
   color: var(--ui-text-tertiary);
 }
 
-/* The leading 5px "notif" slot (906:19732): chamfered pixel dot, painted only for live status. */
-.portal-row-mark,
-.portal-status-dot {
-  position: absolute;
-  inset-inline-start: var(--portal-sidebar-bleed);
-  top: 50%;
+/* The 7px leading dot (143:6242): quiet when settled, brand for the open chat and unread news,
+   the live tones while a turn runs or waits. */
+.portal-row-mark {
   display: grid;
-  width: 0.3125rem;
-  height: 0.3125rem;
+  flex-shrink: 0;
+  width: 0.4375rem;
+  height: 0.4375rem;
   place-items: center;
-  transform: translateY(-50%);
 }
 
 .portal-row-mark > span,
 .portal-row-mark > span > span {
+  display: block;
   width: 100%;
   height: 100%;
+  border-radius: 50%;
 }
 
-.portal-row-mark > span > span,
-.portal-status-dot {
-  clip-path: polygon(
-    20% 0,
-    80% 0,
-    80% 20%,
-    100% 20%,
-    100% 80%,
-    80% 80%,
-    80% 100%,
-    20% 100%,
-    20% 80%,
-    0 80%,
-    0 20%,
-    20% 20%
-  );
-  border-radius: 0;
+.portal-row-mark[data-state='idle'] > span > span {
+  background: var(--portal-sidebar-dot);
 }
 
+[aria-current='page'] > .portal-row-mark[data-state='idle'] > span > span,
 .portal-row-mark[data-state='unread'] > span > span {
-  background: var(--portal-brand-ink);
+  background: var(--portal-brand-fill);
 }
 
 .portal-row-mark[data-state='working'] > span > span {
@@ -624,10 +650,10 @@ button.portal-section-title:hover {
 /* Trailing actions take the meta label's place on hover, keyboard focus or an open menu. */
 .portal-sidebar .portal-row-action {
   position: absolute;
-  inset-inline-end: calc(var(--portal-sidebar-bleed) + 0.375rem);
+  inset-inline-end: 0.375rem;
   top: 50%;
-  width: 1.5rem;
-  height: 1.5rem;
+  width: 1.375rem;
+  height: 1.375rem;
   border-radius: 3px;
   color: var(--ui-text-tertiary);
   opacity: 0;
@@ -635,8 +661,8 @@ button.portal-section-title:hover {
 }
 
 .portal-row-action svg {
-  width: 1rem;
-  height: 1rem;
+  width: 0.875rem;
+  height: 0.875rem;
 }
 
 .portal-sidebar .portal-row-action:hover,
@@ -666,7 +692,7 @@ button.portal-section-title:hover {
   }
 
   .portal-session-item[data-actions] .portal-session-row {
-    padding-inline-end: calc(var(--portal-sidebar-bleed) + 2.25rem);
+    padding-inline-end: 2.25rem;
   }
 
   .portal-session-item[data-actions] .portal-session-meta {
@@ -674,7 +700,7 @@ button.portal-section-title:hover {
   }
 }
 
-/* ── Machines (906:19769): flat rows; expanded ones draw the status guide line ─────────────── */
+/* ── Machines: a 40px row; an open machine becomes one container card (143:6270) ──────────── */
 
 .portal-sidebar [data-slot='gateway-group'] {
   --portal-machine-tone: var(--portal-sidebar-meta);
@@ -694,70 +720,95 @@ button.portal-section-title:hover {
   --portal-machine-tone: var(--portal-sidebar-orange);
 }
 
-.portal-status-dot {
-  background: var(--portal-machine-tone);
-  opacity: 0.8;
+.portal-machine-row {
+  min-height: var(--portal-sidebar-machine-row);
+  gap: 0.375rem;
+  color: var(--portal-sidebar-machine-ink);
 }
 
-[data-tone='offline'] .portal-status-dot {
-  background: var(--ui-text-quaternary);
+.portal-machine-row:hover {
+  background: var(--portal-sidebar-hover);
+}
+
+[data-tone='offline'] > .portal-machine-row {
+  color: var(--ui-text-secondary);
+}
+
+.portal-machine-tag {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--portal-sidebar-meta);
+  font-size: var(--portal-sidebar-caption);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .portal-machine-status {
   color: var(--portal-machine-tone);
 }
 
-/* Guide line (491:42009): from the status dot down the nested agents, fading in toward the end. */
-.portal-sidebar [data-slot='gateway-group'][data-open='true']::before {
-  position: absolute;
-  inset-inline-start: calc(var(--portal-sidebar-bleed) + 2px);
-  top: calc(var(--portal-sidebar-row) / 2);
-  bottom: 0;
-  width: 1px;
-  background: linear-gradient(
-    to bottom,
-    transparent,
-    color-mix(in srgb, var(--portal-machine-tone) 15%, transparent) 13%,
-    color-mix(in srgb, var(--portal-machine-tone) 30%, transparent)
-  );
-  content: '';
+.portal-status-dot {
+  width: 0.375rem;
+  height: 0.375rem;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+[data-tone='offline'] .portal-machine-status {
+  color: var(--portal-sidebar-meta);
+}
+
+.portal-sidebar [data-slot='gateway-group'][data-open='true'] {
+  padding-bottom: 0.625rem;
+  border-radius: 6px;
+  background: var(--portal-sidebar-machine-fill);
+}
+
+.portal-sidebar [data-slot='gateway-group'][data-open='true'] > [data-slot='gateway-heading'] > .portal-machine-row {
+  border-radius: 6px 6px 0 0;
+  background: var(--portal-sidebar-machine-head);
+  color: var(--ui-text-primary);
+}
+
+.portal-sidebar
+  [data-slot='gateway-group'][data-open='true']
+  > [data-slot='gateway-heading']
+  > .portal-machine-row:hover {
+  background: color-mix(in srgb, var(--ui-base) 10%, transparent);
+}
+
+.portal-sidebar [data-slot='gateway-group'][data-open='true'] .portal-machine-name {
+  font-weight: 600;
+}
+
+.portal-sidebar [data-slot='gateway-group'][data-open='true'] > [data-slot='gateway-heading'] .portal-machine-tag,
+.portal-sidebar
+  [data-slot='gateway-group'][data-open='true']
+  > [data-slot='gateway-heading'][data-tone='offline']
+  .portal-machine-status {
+  color: var(--portal-sidebar-head-meta);
 }
 
 .portal-machine-agents {
   display: flex;
   flex-direction: column;
-  gap: 1rem;
-  margin-block: 0.1875rem 0.5rem;
-  margin-inline: calc(var(--portal-sidebar-bleed) + 0.625rem) var(--portal-sidebar-bleed);
+  margin-top: 0.4375rem;
 }
 
-/* ── Agent cards (491:42009 › Project card): 32px tile, name + subtitle, kebab ────────────── */
+/* ── Agent blocks (143:6279): 20px colour tile, name over a 10px second line ──────────────── */
 
 .portal-sidebar [data-slot='agent-heading'] {
   display: flex;
-  min-height: 3.1875rem;
+  min-height: 2.8125rem;
   align-items: center;
   gap: 0.125rem;
   padding: 0.5rem 0.625rem;
   border-radius: 6px;
-  background: var(--portal-sidebar-card);
 }
 
 .portal-sidebar [data-slot='agent-heading']:hover {
-  background: var(--portal-sidebar-press);
-}
-
-.portal-sidebar [data-slot='agent-heading'][data-active-agent] {
-  --portal-focus-ring-color: var(--portal-sidebar-agent-selected-ring);
-
-  background: var(--portal-sidebar-agent-selected);
-  color: var(--portal-sidebar-agent-selected-ink);
-}
-
-/* Hover darkens/lightens the selection fill with an overlay, so it reads on solid Light blue too. */
-.portal-sidebar [data-slot='agent-heading'][data-active-agent]:hover {
-  background:
-    linear-gradient(color-mix(in srgb, var(--ui-base) 10%, transparent)), var(--portal-sidebar-agent-selected);
+  background: var(--portal-sidebar-selected);
 }
 
 .portal-sidebar [data-slot='agent-heading']:has(.portal-agent-chat:focus-visible) {
@@ -774,22 +825,22 @@ button.portal-section-title:hover {
   flex: 1;
   min-width: 0;
   align-items: center;
-  gap: 0.625rem;
-  color: inherit;
+  gap: 0.5rem;
+  color: var(--ui-text-primary);
   text-align: start;
 }
 
 .portal-agent-avatar {
   display: grid;
-  width: 2rem;
-  height: 2rem;
+  width: 1.25rem;
+  height: 1.25rem;
   flex-shrink: 0;
   place-items: center;
-  border-radius: 3px;
+  border-radius: 4px;
 }
 
 .portal-agent-avatar img {
-  padding: 0.375rem;
+  padding: 0.0625rem;
 }
 
 .portal-agent-text {
@@ -797,6 +848,8 @@ button.portal-section-title:hover {
   min-width: 0;
   flex: 1;
   flex-direction: column;
+  gap: 1px;
+  line-height: 1.2;
 }
 
 .portal-agent-name,
@@ -806,57 +859,42 @@ button.portal-section-title:hover {
   white-space: nowrap;
 }
 
+.portal-agent-name {
+  font-weight: 500;
+}
+
 .portal-agent-subtitle {
-  color: var(--ui-text-tertiary);
-  font-size: 0.75rem;
-  letter-spacing: 0.01em;
+  color: var(--portal-sidebar-meta);
+  font-size: var(--portal-sidebar-caption);
 }
 
-/* On the selection fill the robot follows the card ink (white on Light's solid brand card). */
-[data-active-agent] .portal-agent-avatar img {
-  filter: brightness(0) invert(1);
-}
-
-:root.dark[data-shell='portal'] [data-active-agent] .portal-agent-avatar img {
-  filter: none;
-}
-
-[data-active-agent] .portal-agent-subtitle {
-  color: color-mix(in srgb, currentColor 60%, transparent);
-}
-
+/* Disclosure and menu: hover/focus affordances in Figma's 12px end slot; a collapsed agent keeps
+   its caret so the state reads at rest. */
 .portal-sidebar :is(.portal-agent-collapse, .portal-agent-menu-trigger) {
   width: 1.25rem;
   height: 1.25rem;
   flex-shrink: 0;
   border-radius: 3px;
-  color: color-mix(in srgb, currentColor 55%, transparent);
-}
-
-.portal-sidebar [data-slot='agent-heading'] :is(.portal-agent-collapse, .portal-agent-menu-trigger) {
-  color: inherit;
-  opacity: 0.55;
+  color: var(--ui-text-tertiary);
+  opacity: 0;
 }
 
 .portal-sidebar
-  [data-slot='agent-heading']
-  :is(.portal-agent-collapse, .portal-agent-menu-trigger):is(:hover, [data-state='open'], :focus-visible) {
-  background: var(--portal-sidebar-press);
+  [data-slot='agent-heading']:is(:hover, :focus-within)
+  :is(.portal-agent-collapse, .portal-agent-menu-trigger),
+.portal-sidebar :is(.portal-agent-collapse, .portal-agent-menu-trigger):is([data-state='open'], :focus-visible),
+.portal-sidebar .portal-agent-collapse[aria-expanded='false'] {
   opacity: 1;
+}
+
+.portal-sidebar :is(.portal-agent-collapse, .portal-agent-menu-trigger):is(:hover, [data-state='open']) {
+  background: transparent;
+  color: var(--ui-text-primary);
 }
 
 :is(.portal-agent-collapse, .portal-agent-menu-trigger) svg {
   width: 0.875rem;
   height: 0.875rem;
-}
-
-/* The disclosure is quiet while open and stays visible once collapsed. */
-.portal-sidebar [data-slot='agent-heading'] .portal-agent-collapse[aria-expanded='true'] {
-  opacity: 0;
-}
-
-.portal-sidebar [data-slot='agent-heading']:is(:hover, :focus-within) .portal-agent-collapse[aria-expanded='true'] {
-  opacity: 0.55;
 }
 
 .portal-agent-collapse[aria-expanded='false'] svg {
@@ -868,23 +906,16 @@ button.portal-section-title:hover {
 }
 
 @media (hover: none) {
-  .portal-sidebar [data-slot='agent-heading'] .portal-agent-collapse[aria-expanded='true'] {
-    opacity: 0.55;
+  .portal-sidebar :is(.portal-agent-collapse, .portal-agent-menu-trigger) {
+    opacity: 1;
   }
 }
 
-/* 0.8 keeps the selected card's icon buttons at >= 3:1 against Light's solid brand fill. */
-.portal-sidebar [data-slot='agent-heading'][data-active-agent] .portal-agent-menu-trigger,
-.portal-sidebar [data-slot='agent-heading'][data-active-agent] .portal-agent-collapse[aria-expanded='false'],
-.portal-sidebar
-  [data-slot='agent-heading'][data-active-agent]:is(:hover, :focus-within)
-  .portal-agent-collapse[aria-expanded='true'] {
-  opacity: 0.8;
-}
-
-/* Nested chats (28px pitch): secondary ink, the selected one primary. */
+/* Nested chats (143:6287): a 1px guide down the tile's centre, 12px titles on a 31px pitch, the
+   open chat in primary ink, ages at the end with an unread dot after them. */
 .portal-agent-sessions {
-  margin-top: 0.375rem;
+  margin-inline-start: 1.25rem;
+  border-inline-start: 1px solid var(--portal-sidebar-guide);
 }
 
 .portal-agent-sessions:not(:has([data-session-key])) {
@@ -892,27 +923,38 @@ button.portal-section-title:hover {
 }
 
 .portal-agent-sessions .portal-session-list {
-  gap: 0.125rem;
+  gap: 0;
 }
 
 .portal-agent-sessions .portal-session-row {
-  min-height: 1.625rem;
-  padding-inline: 0.75rem 0.625rem;
-  color: var(--ui-text-secondary);
+  min-height: var(--portal-sidebar-chat-row);
+  gap: 0.25rem;
+  padding-inline: 1.375rem 0.625rem;
+  font-size: 0.75rem;
 }
 
-.portal-agent-sessions .portal-session-row:is(:hover, [aria-current='page'], :focus-visible) {
-  color: var(--ui-text-primary);
+.portal-agent-sessions .portal-session-title {
+  font-weight: 400;
+}
+
+.portal-agent-sessions .portal-session-row[aria-current='page'] {
+  background: transparent;
+}
+
+.portal-agent-sessions .portal-session-row[aria-current='page'] .portal-session-title {
+  font-weight: 500;
+}
+
+.portal-agent-sessions .portal-session-row:hover {
+  background: var(--portal-sidebar-hover);
+}
+
+.portal-agent-sessions .portal-session-meta {
+  margin-inline-start: 1rem;
 }
 
 .portal-agent-sessions .portal-row-mark {
-  inset-inline-start: 0.1875rem;
-}
-
-.portal-agent-sessions .portal-row-action {
-  inset-inline-end: 0.25rem;
-  width: 1.375rem;
-  height: 1.375rem;
+  order: 1;
 }
 
 @media (hover: none) {
@@ -931,6 +973,7 @@ button.portal-section-title:hover {
       .portal-session-meta,
       .portal-section-chevron,
       .portal-agent-collapse,
+      .portal-agent-menu-trigger,
       .portal-agent-collapse svg,
       .portal-new-session > button
     ) {
@@ -952,7 +995,7 @@ button.portal-section-title:hover {
 }
 
 .portal-machine-state[data-connected='true'] {
-  background: var(--ui-success);
+  background: var(--portal-status-online);
 }
 
 /* ── Agent menu (body-portalled) ────────────────────────────────────────────────────────────── */
@@ -1022,7 +1065,7 @@ button.portal-section-title:hover {
   flex-shrink: 0;
   width: 1rem;
   height: 1rem;
-  color: var(--ui-success);
+  color: var(--portal-status-online);
 }
 
 .portal-hidden-restore {

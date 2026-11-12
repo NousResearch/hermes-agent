@@ -3,6 +3,7 @@ import './global-overviews.css'
 import { type ComponentProps, type ReactNode, type Ref, useLayoutEffect, useRef, useState } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
+import { EmptyState } from '@/components/ui/empty-state'
 import { cn } from '@/lib/utils'
 import { usePortalShell } from '@/store/shell-variant'
 
@@ -91,6 +92,43 @@ export function SettingsCard({ className, classicClassName = 'contents', ...prop
   const redesign = usePortalShell()
 
   return <div className={redesign ? cn('global-settings-card', className) : classicClassName || undefined} {...props} />
+}
+
+/** A list card with nothing in it yet. The redesign uses the one empty block (877:3596) as the card's
+ *  flush row; classic keeps the quiet line it always showed. */
+export function SettingsEmptyRow({ title }: { title: string }) {
+  return usePortalShell() ? <EmptyState title={title} /> : <p className="global-settings-empty-row">{title}</p>
+}
+
+interface SettingsLinkRowProps {
+  title: ReactNode
+  description?: ReactNode
+  /** Quiet trailing note before the chevron (a source, a count). */
+  meta?: ReactNode
+  onClick: () => void
+}
+
+/** A list card row that opens something (a blueprint, a sub-page): label, help line, chevron. */
+export function SettingsLinkRow({ description, meta, onClick, title }: SettingsLinkRowProps) {
+  return (
+    <button className="global-settings-link-row" onClick={onClick} type="button">
+      <span className="global-settings-link-row-text">
+        <span className="global-settings-link-row-title">{title}</span>
+        {description && <span className="global-settings-link-row-description">{description}</span>}
+      </span>
+      {meta && <span className="global-settings-link-row-meta">{meta}</span>}
+      <Codicon aria-hidden name="chevron-right" />
+    </button>
+  )
+}
+
+interface SettingsFooterProps {
+  children: ReactNode
+}
+
+/** The page's closing hairline and right-aligned quiet action (856:3477 "Reset appearance to defaults"). */
+export function SettingsFooter({ children }: SettingsFooterProps) {
+  return <div className="global-settings-footer">{children}</div>
 }
 
 interface SettingsDisclosureProps {

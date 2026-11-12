@@ -1,82 +1,102 @@
-.portal-safety-mode,
-.portal-safety-card,
-.portal-safety-advanced {
-  border: 1px solid color-mix(in srgb, var(--ui-base) 10%, transparent);
-  border-radius: 4px;
-  background: color-mix(in srgb, var(--ui-base) 3%, transparent);
-}
-
-.portal-safety-mode:has(input:checked) {
-  border-color: transparent;
-  box-shadow: inset 0 0 0 0.5px var(--portal-brand-ink);
-  background: color-mix(in srgb, var(--portal-brand-fill) 10%, transparent);
-}
-
-.portal-safety-card > div + div,
-.portal-safety-advanced > div {
-  border-top: 1px solid color-mix(in srgb, var(--ui-base) 8%, transparent);
-}
-
-.portal-safety-card [data-slot='settings-row'] > div {
-  min-height: 64px;
-  column-gap: 24px;
-}
-
-.agent-settings-body [data-slot='portal-safety-settings'] {
-  gap: 32px;
-}
-
-.agent-settings-body .portal-safety-options,
-.agent-settings-body .portal-safety-card,
-.agent-settings-body .portal-safety-advanced {
-  border: 1px solid var(--ui-stroke-tertiary);
-  border-radius: 4px;
-  background: color-mix(in srgb, var(--ui-base) 2%, transparent);
-}
-
-.agent-settings-body .portal-safety-options {
-  display: block;
-}
-
-.agent-settings-body .portal-safety-mode,
-.agent-settings-body .portal-safety-mode:has(input:checked) {
+/* Safety & Approvals (895:20036): the approval modes are radio rows on a list card. The selected
+   mode takes the brand selection and a brand icon tile; the others keep a neutral tile. */
+.portal-safety-options {
   display: grid;
-  grid-template-columns: 32px minmax(0, 1fr) 16px;
-  column-gap: 20px;
-  row-gap: 2px;
-  min-height: 64px;
-  align-items: center;
-  padding: 12px 16px;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  box-shadow: none;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
 }
 
-.agent-settings-body .portal-safety-mode + .portal-safety-mode {
+.portal-safety-mode {
+  display: grid;
+  min-height: 4rem;
+  grid-template-columns: 2rem minmax(0, 1fr) 1rem;
+  align-items: center;
+  gap: 2px 1.25rem;
+  padding: 0.75rem 1rem;
+  cursor: pointer;
+}
+
+.portal-safety-mode + .portal-safety-mode {
   border-top: 1px solid var(--ui-stroke-tertiary);
 }
 
-.agent-settings-body .portal-safety-mode input {
-  position: static;
+.portal-safety-mode:hover:not(:has(:checked)) {
+  background: color-mix(in srgb, var(--ui-base) 2%, transparent);
+}
+
+.portal-safety-mode:has(:checked) {
+  background: color-mix(in srgb, var(--portal-brand-fill) 10%, transparent);
+}
+
+.portal-safety-mode:has(:focus-visible) {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-inset);
+}
+
+.portal-safety-icon {
+  grid-row: 1 / 3;
+  padding: 0.5rem;
+  border-radius: var(--portal-control-radius);
+  background: var(--portal-control-fill);
+  box-shadow: inset 0 0 0 1px var(--portal-control-stroke);
+  color: var(--ui-text-secondary);
+}
+
+.portal-safety-mode:has(:checked) .portal-safety-icon {
+  background: color-mix(in srgb, var(--portal-brand-fill) 25%, transparent);
+  box-shadow: inset 0 0 0 0.5px var(--portal-brand-ink);
+  color: var(--ui-text-primary);
+}
+
+.portal-safety-mode-title {
+  grid-column: 2;
+  font-size: 0.875rem;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.portal-safety-mode-description {
+  grid-column: 2;
+  color: var(--ui-text-tertiary);
+  font-size: 0.8125rem;
+  line-height: 1.4;
+}
+
+/* Radio (pages.md §4): 16px, 2% fill under a 28% stroke; checked is a brand disc with a 6px dot. */
+.portal-safety-radio {
+  display: grid;
+  width: 1rem;
+  height: 1rem;
   grid-column: 3;
   grid-row: 1 / 3;
-  width: 16px;
-  height: 16px;
   margin: 0;
-  overflow: visible;
-  clip: auto;
-  accent-color: var(--portal-brand-fill);
+  place-items: center;
+  border: 1px solid var(--portal-select-stroke);
+  border-radius: 50%;
+  appearance: none;
+  background: color-mix(in srgb, var(--ui-base) 2%, transparent);
+  cursor: pointer;
 }
 
-.agent-settings-body .portal-safety-icon {
-  grid-column: 1;
-  grid-row: 1 / 3;
-  padding: 8px;
-  border-radius: 3px;
-  background: color-mix(in srgb, var(--portal-brand-fill) 25%, transparent);
+.portal-safety-radio::after {
+  width: 0.375rem;
+  height: 0.375rem;
+  border-radius: 50%;
+  background: var(--portal-on-brand);
+  content: '';
+  opacity: 0;
 }
 
-.agent-settings-body .portal-safety-mode > span:not(.portal-safety-icon) {
-  grid-column: 2;
+.portal-safety-radio:checked {
+  border-color: var(--portal-brand-fill);
+  background: var(--portal-brand-fill);
+}
+
+.portal-safety-radio:checked::after {
+  opacity: 1;
+}
+
+.portal-safety-radio:focus-visible {
+  outline: none;
 }

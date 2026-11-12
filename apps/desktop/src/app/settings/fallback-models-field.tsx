@@ -13,7 +13,7 @@ import { $customModels, withCustomModels } from '@/store/custom-models'
 import { CONTROL_TEXT } from './constants'
 import { ModelSelect } from './model-select'
 import { useSettingsOwner } from './profile-scope'
-import { SettingsAddRow, SettingsCard } from './settings-card'
+import { SettingsAddRow, SettingsCard, SettingsEmptyRow } from './settings-card'
 
 // An entry is `{provider, model}` plus whatever routing the user hand-wrote
 // (`base_url`, `api_key`, `key_env`, `api_mode`, ...). The editor only edits
@@ -170,7 +170,7 @@ export function FallbackModelsField({
   if (variant === 'card') {
     return (
       <SettingsCard className="fallback-models-card">
-        {rows.length === 0 && <p className="global-settings-empty-row">{m.fallbackEmpty}</p>}
+        {rows.length === 0 && <SettingsEmptyRow title={m.fallbackEmpty} />}
         {rows.map(renderRow)}
         <SettingsAddRow onClick={addRow}>{m.fallbackAdd}</SettingsAddRow>
       </SettingsCard>

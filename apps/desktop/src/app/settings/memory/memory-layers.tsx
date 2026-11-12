@@ -11,6 +11,7 @@ import type { MemoryProviderStatus, MemoryStatusResponse } from '@/types/hermes'
 import { isExternalMemoryProvider } from '../helpers'
 import { ListRow, Pill } from '../primitives'
 import { useSettingsOwner } from '../profile-scope'
+import { SettingsCard } from '../settings-card'
 
 const STATUS_TONE: Record<MemoryProviderStatus, 'destructive' | 'success' | 'warn'> = {
   missing: 'destructive',
@@ -123,7 +124,7 @@ export function MemoryLayersSummary({ builtin, onRetry, provider, status, status
   const { active, selected } = memoryProviderRows(status, provider)
 
   return (
-    <div className="grid gap-1" data-testid="memory-layers">
+    <SettingsCard classicClassName="grid gap-1" data-testid="memory-layers">
       {selected !== undefined ? (
         <ListRow
           action={<ProviderName m={m} row={selected} />}
@@ -152,7 +153,7 @@ export function MemoryLayersSummary({ builtin, onRetry, provider, status, status
         />
       ) : null}
       <ListRow action={builtinPill(m, builtin)} description={m.builtinDesc} title={m.builtinLayer} />
-    </div>
+    </SettingsCard>
   )
 }
 

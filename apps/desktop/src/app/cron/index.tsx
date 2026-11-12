@@ -52,6 +52,7 @@ import { $cronFocusJobId, $cronJobs, invalidateCronJobsRequests, setCronFocusJob
 import { $changeEventsAvailable, $cronChangeTick } from '@/store/live-sync'
 import { notify, notifyError } from '@/store/notifications'
 import { $profileScope, ALL_PROFILES } from '@/store/profile'
+import { usePortalShell } from '@/store/shell-variant'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import {
@@ -62,7 +63,6 @@ import {
   PanelBody,
   PanelDetail,
   PanelEmpty,
-  PanelHeader,
   PanelList,
   PanelListRow,
   type PanelMenuItem,
@@ -87,6 +87,7 @@ import {
   toggleCronDeliveryTarget,
   validateCronEditor
 } from './cron-job-model'
+import { CronEmptyPage, CronListEmpty, CronPageHeader } from './empty-page'
 import { jobState, jobTitle, nextRunOverdueMs, STATE_DOT, truncateText } from './job-state'
 import { isCronRunRow, openCronRun, reconcileCronRunVerdicts } from './open-cron-run'
 import { catchUpChoice, catchUpValue, jobLastCancelReason, jobRunLive } from './run-control'
@@ -314,6 +315,7 @@ interface CronViewProps extends React.ComponentProps<'section'> {
 export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setStatusbarItemGroup }: CronViewProps) {
   const { t } = useI18n()
   const c = t.cron
+  const redesign = usePortalShell()
   // Source of truth is the shared atom (also fed by the controller poll), so the
   // sidebar and this overlay never drift — a delete here clears the sidebar row
   // immediately. `loading` only gates the first paint before the atom is filled.
@@ -712,10 +714,16 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
 
   return (
     <Panel closeLabel={c.close} onClose={onClose}>
-      <PanelHeader subtitle={c.count(totalCount)} title={c.title} />
+      <CronPageHeader totalCount={totalCount} />
 
       {loading && jobs.length === 0 ? (
         <PageLoader label={c.loading} />
+      ) : redesign && totalCount === 0 ? (
+        <CronEmptyPage
+          blueprints={visibleBlueprints}
+          onCreate={() => setEditor({ mode: 'create' })}
+          onStartFrom={blueprintKey => setEditor({ blueprintKey, mode: 'create' })}
+        />
       ) : totalCount === 0 && visibleBlueprints.length === 0 ? (
         <PanelEmpty
           action={
@@ -753,11 +761,7 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
                 onSelect={() => setSelectedJobId(job.id)}
               />
             ))}
-            {visibleJobs.length === 0 && (
-              <p className="px-2 py-4 text-center text-xs text-muted-foreground">
-                {query.trim() ? c.emptyTitleSearch : c.emptyTitleNew}
-              </p>
-            )}
+            {visibleJobs.length === 0 && <CronListEmpty searching={Boolean(query.trim())} />}
             <PanelAddButton label={c.newCron} onClick={() => setEditor({ mode: 'create' })} />
             {visibleBlueprints.length > 0 && (
               <>

@@ -1,14 +1,36 @@
 /* V2 page density. Classic cards retain their existing utility styles. */
+/* Management pages (Schedules, Spawn tree, Agents, Webhooks) share the page column the searchable
+   pages use, so their H1 and content line up with Library and Capabilities. */
 [data-page-surface] .management-panel {
   --page-title-size: 1.875rem;
-  padding: 1rem 1.5rem 1.5rem;
+  width: 100%;
+  max-width: var(--page-content-max-width);
+  margin-inline: auto;
+  padding: 1.125rem var(--page-content-inset) 1.5rem;
 }
 
+/* The page heading (856:3405): H1, 6px to its description, 36px to the content. */
 [data-page-surface] .panel-header {
   flex-wrap: wrap;
-  align-items: center;
-  margin-bottom: 1.5rem;
+  align-items: flex-end;
+  margin-bottom: 2.25rem;
   padding-right: 0;
+}
+
+[data-page-surface] .panel-header-meta {
+  margin-left: auto;
+  color: var(--ui-text-tertiary);
+  font-size: 0.8125rem;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+}
+
+[data-page-surface] .panel-header h1 + p {
+  margin-top: 0.375rem;
+  color: var(--ui-text-tertiary);
+  font-size: 0.8125rem;
+  line-height: 1.4;
+  white-space: normal;
 }
 
 [data-page-surface] .panel-row {
@@ -17,10 +39,24 @@
   font-size: 0.875rem;
 }
 
-[data-page-surface] .panel-row-meta,
-[data-page-surface] .panel-section-label {
+[data-page-surface] .panel-row-meta {
   color: var(--ui-text-tertiary);
   font-size: 0.75rem;
+}
+
+/* Group labels take the page's one 10px label style (895:9593 "AGENT", "BEHAVIOR"). */
+[data-page-surface] .panel-section-label {
+  color: var(--ui-text-tertiary);
+  font-size: 0.625rem;
+  font-weight: 400;
+  letter-spacing: 0.06em;
+  line-height: 1.4;
+}
+
+/* An empty panel's card sits at the top of its column and spans it. */
+[data-page-surface] .panel-empty {
+  min-width: 0;
+  flex: 1;
 }
 
 [data-page-surface] .panel-meta {

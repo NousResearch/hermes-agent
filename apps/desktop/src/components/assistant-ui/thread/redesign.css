@@ -15,6 +15,8 @@
   --portal-conversation-turn-gap: 1.875rem;
   --portal-conversation-prompt-clearance: 0.75rem;
   --portal-conversation-fill: color-mix(in srgb, var(--ui-base) 5%, transparent);
+  /* The tool-steps row is its own, quieter fill (Var1 147:7470: light/3). */
+  --portal-conversation-tool-fill: color-mix(in srgb, var(--ui-base) 3%, transparent);
   --portal-conversation-dash: color-mix(in srgb, var(--ui-base) 10%, transparent);
   --portal-conversation-done: color-mix(in srgb, #00f279 50%, transparent);
   --dt-user-bubble: var(--portal-conversation-fill);
@@ -34,6 +36,7 @@
 
 :root[data-shell='portal']:not(.dark) [data-slot='aui_thread-content'] {
   --portal-conversation-fill: color-mix(in srgb, var(--ui-base) 2%, transparent);
+  --portal-conversation-tool-fill: color-mix(in srgb, var(--ui-base) 2%, transparent);
   --portal-conversation-dash: color-mix(in srgb, var(--ui-base) 5%, transparent);
 }
 
@@ -246,7 +249,7 @@
     var(--dash-x) bottom / 100% 1px no-repeat,
     var(--dash-y) left / 1px 100% no-repeat,
     var(--dash-y) right / 1px 100% no-repeat,
-    var(--portal-conversation-fill);
+    var(--portal-conversation-tool-fill);
   color: var(--ui-text-tertiary);
   letter-spacing: 0.01em;
   opacity: 1;

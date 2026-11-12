@@ -1,8 +1,9 @@
-import { lazy, Suspense, useRef, useState } from 'react'
+import { Suspense, useRef, useState } from 'react'
 import { useLocation } from 'react-router'
 
 import { resolveOwnerNow } from '@/api/client'
 import { PageLoader } from '@/components/page-loader'
+import { lazyView } from '@/lib/lazy-view'
 import { $activeConnectionId } from '@/store/connections'
 import { usePortalShell } from '@/store/shell-variant'
 
@@ -12,7 +13,10 @@ import type { SettingsPageProps } from '../settings/types'
 
 import { AgentInstructionsDraftContext, EMPTY_AGENT_INSTRUCTIONS_DRAFT } from './settings-general'
 
-const AgentSettingsView = lazy(async () => ({ default: (await import('./index')).AgentSettingsView }))
+const AgentSettingsView = lazyView(async () => (await import('./index')).AgentSettingsView)
+
+/** The rail warms this chunk too, so an agent page paints without a second Suspense wait. */
+export const preloadAgentSettingsView = AgentSettingsView.preload
 
 /** An explicit agent route always opens the owner-pinned settings surface. */
 export function SettingsView(props: SettingsPageProps) {

@@ -26,9 +26,9 @@ const KIND_ICONS: Record<DesktopConnectionKind, typeof Globe> = {
 
 export type ConnectionKindMeta = Record<DesktopConnectionKind, { label: string; desc: string }>
 
-/** An empty saved-connections list: a quiet line in the redesign's card, classic's empty state. */
+/** An empty saved-connections list: the shared empty block (a flush row inside the redesign's card). */
 export function ConnectionsEmpty({ title }: { title: string }) {
-  return usePortalShell() ? <p className="global-settings-empty-row">{title}</p> : <EmptyState title={title} />
+  return <EmptyState title={title} />
 }
 
 interface ConnectionActions {

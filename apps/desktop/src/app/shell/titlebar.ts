@@ -132,3 +132,27 @@ export function titlebarControlsPosition(
 
 /** Rebind panel measurements after titlebar nodes or their positions change. */
 export const TITLEBAR_CHROME_CHANGED_EVENT = 'hermes:titlebar-chrome-changed'
+
+/** Width of the redesign's left rail column (Figma 906:19409). */
+export const PORTAL_RAIL_WIDTH = 60
+/** Band controls clear macOS traffic lights (906:19415, in the rail column): Figma's header pads
+ *  them 70px past the rail (906:19463, x = 130). */
+export const PORTAL_BAND_LEAD_MAC = PORTAL_RAIL_WIDTH + 70
+/** With no native lights on the left (Windows/Linux and the browser report no position, macOS
+ *  fullscreen hides them), controls align with the sidebar and page-nav text inset (x = 80). */
+export const PORTAL_BAND_LEAD_PLAIN = PORTAL_RAIL_WIDTH + 20
+
+/** Where the redesign band's left control cluster starts, in window px. Every left-cluster control
+ *  (page Back, sidebar toggle, …) starts here via `--portal-band-start`; nothing positions itself
+ *  per page. A connection not yet reported falls back by platform, as titlebarControlsPosition does. */
+export function portalBandLeadingInset(
+  windowButtonPosition: HermesConnection['windowButtonPosition'] | undefined,
+  isFullscreen = false,
+  isMac = typeof navigator !== 'undefined' && /mac/i.test(navigator.platform)
+): number {
+  if (isFullscreen || windowButtonPosition === null) {
+    return PORTAL_BAND_LEAD_PLAIN
+  }
+
+  return windowButtonPosition || isMac ? PORTAL_BAND_LEAD_MAC : PORTAL_BAND_LEAD_PLAIN
+}

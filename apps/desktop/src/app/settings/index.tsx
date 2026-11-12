@@ -150,6 +150,7 @@ function SettingsSearchPill() {
         paletteOpen && 'pointer-events-none scale-110 opacity-0'
       )}
       data-glass-opaque=""
+      data-slot="settings-search-pill"
       onClick={() => {
         triggerHaptic('open')
         openCommandPalettePage('settings')

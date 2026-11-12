@@ -9,7 +9,7 @@ import { useI18n } from '@/i18n'
 
 import { jobState } from '../cron/job-state'
 import { ListRow, Pill } from '../settings/primitives'
-import { SettingsAddRow, SettingsCard, SettingsGroup } from '../settings/settings-card'
+import { SettingsAddRow, SettingsCard, SettingsEmptyRow, SettingsGroup } from '../settings/settings-card'
 import { useSettingsPagesCopy } from '../settings/settings-pages-copy'
 
 import { agentSettingsKey, type AgentSettingsOwner, getAgentRoutines } from './data'
@@ -52,7 +52,7 @@ export function AgentSchedulesSettings({ owner }: { owner: AgentSettingsOwner })
         title={pages.schedules.scheduled}
       >
         <SettingsCard>
-          {jobs.data.length === 0 && <p className="global-settings-empty-row">{t.cron.emptyTitleNew}</p>}
+          {jobs.data.length === 0 && <SettingsEmptyRow title={t.cron.emptyTitleNew} />}
           {jobs.data.map(job => {
             const state = jobState(job)
 

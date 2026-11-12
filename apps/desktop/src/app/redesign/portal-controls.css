@@ -163,6 +163,51 @@
   gap: 0.5rem;
 }
 
+/* A list card's row action ("Change plan" 856:1835, "Manage"/"Reconnect" 895:17703), an empty
+   page's call to action ("Start a chat" 877:4300) and the Capabilities owner bar's button beside its
+   36px select are the same 36px button: shared components ask for a compact size, which the
+   redesign's 64px rows and page frame outgrow. */
+:root[data-shell='portal']
+  [data-page-surface]
+  :is(
+    .global-settings-card,
+    .global-settings-disclosure-body,
+    .agent-settings-card,
+    [data-slot='empty-state-action'],
+    [data-slot='capability-scope']
+  )
+  :is(button, a)[data-size][data-variant]:is([data-size='sm'], [data-size='xs']):not(
+    [data-variant='link'],
+    [data-variant='text'],
+    [data-variant='textStrong'],
+    [data-variant='ghost']
+  ) {
+  min-height: 2.25rem;
+  gap: 0.5rem;
+  padding-block: 0;
+  padding-inline: 1rem;
+  font-size: 0.875rem;
+  line-height: 1.4;
+}
+
+:root[data-shell='portal']
+  [data-page-surface]
+  :is(
+    .global-settings-card,
+    .global-settings-disclosure-body,
+    .agent-settings-card,
+    [data-slot='empty-state-action'],
+    [data-slot='capability-scope']
+  )
+  :is(button, a)[data-size][data-variant]:is([data-size='sm'], [data-size='xs']):has(> svg, > .codicon):not(
+    [data-variant='link'],
+    [data-variant='text'],
+    [data-variant='textStrong'],
+    [data-variant='ghost']
+  ) {
+  padding-inline: 0.75rem 1rem;
+}
+
 :root[data-shell='portal']
   :is([data-page-surface], [data-slot='dialog-content'])
   :is(button, a)[data-size][data-variant][data-size='icon'] {
@@ -281,6 +326,41 @@
   outline-offset: var(--portal-focus-ring-offset);
 }
 
+/* ── Profile scope chips ("Applies to"): the segmented control's selection on separate keys, since a
+   roster of profiles wraps where one segmented strip cannot. ───────────────── */
+
+:root[data-shell='portal'] [data-slot='scope-chip'] {
+  min-height: 1.75rem;
+  padding: 0 0.75rem;
+  border-color: var(--portal-control-stroke);
+  border-radius: var(--portal-control-radius);
+  background-color: var(--portal-control-fill);
+  color: var(--ui-text-secondary);
+  font-size: 0.8125rem;
+  line-height: 1.4;
+}
+
+:root[data-shell='portal'] [data-slot='scope-chip']:hover:not([aria-pressed='true']) {
+  background-color: var(--portal-control-fill-hover);
+  color: var(--ui-text-primary);
+}
+
+:root[data-shell='portal'] [data-slot='scope-chip'][aria-pressed='true'] {
+  border-color: transparent;
+  background-color: color-mix(in srgb, var(--portal-brand-fill) 25%, transparent);
+  box-shadow: inset 0 0 0 0.5px var(--portal-brand-ink);
+  color: var(--ui-text-primary);
+}
+
+:root[data-shell='portal']:not(.dark) [data-slot='scope-chip'][aria-pressed='true'] {
+  background-color: color-mix(in srgb, var(--portal-brand-fill) 12%, transparent);
+}
+
+:root[data-shell='portal'] [data-slot='scope-chip']:focus-visible {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-offset);
+}
+
 /* ── Switch (856:3465): 36×20 brand track, 16px light knob ────────────────── */
 
 :root[data-shell='portal'] [data-slot='switch'] {
@@ -364,6 +444,8 @@
 :root[data-shell='portal']
   :is([data-page-surface], [data-slot='dialog-content'])
   [data-slot='search-field'][data-variant='box'] {
+  /* Callers size the classic pill (Capabilities' h-10); the page field is always 36px. */
+  height: auto;
   min-height: 2.25rem;
   padding-block: 0;
   padding-inline: 0.75rem;

@@ -112,7 +112,7 @@
   padding-inline: 16px;
 }
 .agent-settings-main-model > .grid,
-.agent-settings-body [data-slot='settings-content'] > div > .grid:not([data-slot='portal-safety-settings']) {
+.agent-settings-body [data-slot='settings-content'] > div > .grid {
   padding: 12px 16px;
   border: 1px solid var(--ui-stroke-tertiary);
   border-radius: 4px;
@@ -122,6 +122,10 @@
   margin-bottom: 8px;
   font-size: 15px;
   font-weight: 500;
+}
+/* Agent forms space their sections 32px apart (895:9662), a step under global settings. */
+.agent-settings-body .global-settings-overview {
+  --settings-section-gap: 2rem;
 }
 /* Agent pages draw r4 cards (895:9666); the shared list cards follow them here. */
 .agent-settings-body .global-settings-card {

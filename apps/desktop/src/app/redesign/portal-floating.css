@@ -137,7 +137,7 @@
 /* ── Dialogs ──────────────────────────────────────────────────────────────── */
 
 :root[data-shell='portal'] [data-slot='dialog-overlay'] {
-  background-color: rgb(0 0 0 / 0.45);
+  background-color: rgb(0 0 0 / 0.5);
   backdrop-filter: none;
 }
 
@@ -160,6 +160,18 @@
 :root[data-shell='portal'] [data-slot='dialog-footer'] {
   gap: 0.5rem;
   padding-top: 0.5rem;
+}
+
+/* A dialog taller than the window scrolls its body; the actions stay pinned to the bottom edge
+   instead of scrolling away with the form (the body box owns the scroll and its padding). A flush
+   body (the model picker's p-0) lays its own footer out and is left alone. */
+:root[data-shell='portal'] [data-slot='dialog-content'] > div:not([class~='p-0']) > [data-slot='dialog-footer'] {
+  position: sticky;
+  z-index: 1;
+  bottom: 0;
+  margin-bottom: calc(-1 * var(--dialog-body-padding, 1rem));
+  padding-bottom: var(--dialog-body-padding, 1rem);
+  background-color: var(--portal-floating-surface);
 }
 
 :root[data-shell='portal'] [data-slot='popover-arrow'] {

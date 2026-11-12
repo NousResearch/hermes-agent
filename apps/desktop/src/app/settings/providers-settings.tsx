@@ -37,7 +37,7 @@ import { providerGroup, providerMeta, providerPriority } from './helpers'
 import { LocalModelsSettings } from './local-models-settings'
 import { SettingsContent, SettingsSkeleton } from './primitives'
 import { SettingsProfileScope, useSettingsOwner } from './profile-scope'
-import { SettingsAddRow, SettingsCard, SettingsOverview } from './settings-card'
+import { SettingsAddRow, SettingsCard, SettingsEmptyRow, SettingsOverview } from './settings-card'
 import { useSettingsPagesCopy } from './settings-pages-copy'
 import { useDeepLinkHighlight } from './use-deep-link-highlight'
 
@@ -691,7 +691,7 @@ function RedesignProviderKeys({
       <SettingsProfileScope className="mb-5" />
       <SettingsOverview>
         <SettingsCard className="provider-keys-card">
-          {set.length === 0 && <p className="global-settings-empty-row">{t.settings.providers.noProviderKeys}</p>}
+          {set.length === 0 && <SettingsEmptyRow title={t.settings.providers.noProviderKeys} />}
           {rows(set)}
           <SettingsAddRow aria-expanded={showOthers} onClick={() => setAdding(!showOthers)}>
             {pages.providers.addKey}
@@ -708,11 +708,7 @@ function RedesignProviderKeys({
             />
             <SettingsCard className="provider-keys-card">
               <LocalEndpointRow onOpen={onLocalEndpoint} />
-              {others.length > 0 ? (
-                rows(others)
-              ) : (
-                <p className="global-settings-empty-row">{t.settings.providers.noKeysMatch}</p>
-              )}
+              {others.length > 0 ? rows(others) : <SettingsEmptyRow title={t.settings.providers.noKeysMatch} />}
             </SettingsCard>
           </div>
         )}

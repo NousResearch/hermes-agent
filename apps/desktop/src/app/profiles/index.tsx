@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import type * as React from 'react'
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation } from 'react-router'
 
 import { CodeEditor } from '@/components/chat/code-editor'
@@ -11,6 +11,7 @@ import { getProfileSoul, type ProfileInfo, updateProfileSoul } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { displayPath } from '@/lib/display-path'
 import { AlertTriangle, Save } from '@/lib/icons'
+import { lazyView } from '@/lib/lazy-view'
 import { resolveProfileColor } from '@/lib/profile-color'
 import { normalize } from '@/lib/text'
 import { notify, notifyError } from '@/store/notifications'
@@ -41,7 +42,10 @@ interface ProfilesViewProps {
   onClose: () => void
 }
 
-const AgentDirectory = lazy(async () => ({ default: (await import('../agent-settings/directory')).AgentDirectory }))
+const AgentDirectory = lazyView(async () => (await import('../agent-settings/directory')).AgentDirectory)
+
+/** The rail warms this chunk too, so Agents paints without a second Suspense wait. */
+export const preloadAgentDirectory = AgentDirectory.preload
 
 export function ProfilesView({ onClose }: ProfilesViewProps) {
   const simplified = usePortalShell()

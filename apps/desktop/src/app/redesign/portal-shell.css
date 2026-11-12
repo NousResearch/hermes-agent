@@ -41,6 +41,14 @@
   background-color: transparent;
 }
 
+/* Side tool panels (Files, Review) are the sidebar's kind of panel (Brand rev 491:40755's right
+   panel): the same translucent fill, so the wing reads through them as through the sidebar. */
+:root[data-shell='portal']
+  [data-tree-group][data-window-top]:is([data-zone-pane='files'], [data-zone-pane='review'])
+  > [data-panel-header]::before {
+  background-color: var(--portal-sidebar-panel-background);
+}
+
 /* The outer edge of the row needs no hairline: the rail's canvas is the edge. A workspace page is
    framed like every other page instead: square and full bleed (919:9263). */
 :root[data-shell='portal']
@@ -109,12 +117,29 @@
 
 :root[data-shell='portal'] .portal-chrome-button:is([aria-current='page'], [aria-pressed='true']) {
   background-color: var(--portal-selection-background);
-  box-shadow: inset 0 0 0 1px var(--portal-brand-fill);
+  /* 895:17703 draws the ring at ~.6 of the brand fill. */
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--portal-brand-fill) 60%, transparent);
   color: var(--ui-text-primary);
 }
 
 :root[data-shell='portal'] .portal-chrome-button:disabled {
   opacity: 0.4;
+}
+
+/* The rail's account square (906:19409): a brand fill that darkens a step on hover and press. */
+:root[data-shell='portal'] .portal-chrome-button.portal-chrome-button-brand {
+  background-color: var(--portal-brand-fill);
+  color: var(--portal-on-brand);
+}
+
+:root[data-shell='portal'] .portal-chrome-button.portal-chrome-button-brand:hover:not(:disabled) {
+  background-color: color-mix(in srgb, var(--portal-brand-fill) 85%, #000);
+  color: var(--portal-on-brand);
+}
+
+:root[data-shell='portal'] .portal-chrome-button.portal-chrome-button-brand:active:not(:disabled) {
+  background-color: color-mix(in srgb, var(--portal-brand-fill) 70%, #000);
+  color: var(--portal-on-brand);
 }
 
 /* ── Rails ────────────────────────────────────────────────────────────────────────────────── */
@@ -131,6 +156,12 @@
   padding-block: 1.0625rem 1.25rem;
 }
 
+/* Rail destinations rest at .8 ink (895/856 draw them at full ink, 906 at .4: .8 keeps the open
+   destination leading). */
+:root[data-shell='portal'] .portal-rail .portal-chrome-button:not([aria-current='page'], [aria-pressed='true']) {
+  color: color-mix(in srgb, var(--ui-base) 80%, transparent);
+}
+
 :root[data-shell='portal'] .portal-rail-group {
   display: flex;
   flex-direction: column;
@@ -144,6 +175,13 @@
 
 /* ── Developer panes (files, review, terminal) ───────────────────────────────────────────── */
 
+/* Inside a panel, "background" is the panel: pane chrome painted bg-background (the Browser's blank
+   page and toolbar, editors' masks) takes the zone's surface instead of the skin's page navy. Kept-
+   alive pane hosts float outside their zone, over the stage-coloured panel. */
+:root[data-shell='portal'] :is([data-pane-host], [data-tree-group][data-window-top] > [data-zone-body]) {
+  --color-background: var(--ui-editor-surface-background);
+}
+
 /* The panes sit on their zone's panel: no fill or edge of their own (Figma's right panel,
    491:41172, draws no border; the panel hairline is the zone's). */
 :root[data-shell='portal'] :is([data-slot='files-pane'], [data-slot='review-pane']) {
@@ -154,7 +192,7 @@
 
 /* Header: a display-type title with the full path under it ("Project/Session Files", 491:41183),
    actions at the end as quiet 24px buttons. */
-:root[data-shell='portal'] [data-slot='files-pane'] [data-slot='pane-section-header'] {
+:root[data-shell='portal'] :is([data-slot='files-pane'], [data-slot='review-pane']) [data-slot='pane-section-header'] {
   block-size: auto;
   align-items: flex-start;
   gap: 0.375rem;
@@ -165,7 +203,20 @@
   gap: 0.375rem;
 }
 
-:root[data-shell='portal'] [data-slot='pane-title'] [data-slot='panel-label'] {
+/* Review's actions share its title row; a narrow pane drops them under the whole title rather than
+   cutting the title short. */
+:root[data-shell='portal'] [data-slot='review-pane'] [data-slot='pane-section-header'] {
+  flex-wrap: wrap;
+  row-gap: 0.5rem;
+}
+
+:root[data-shell='portal'] [data-slot='review-pane'] [data-slot='pane-section-header'] > :first-child {
+  flex: 1 0 auto;
+}
+
+:root[data-shell='portal']
+  :is([data-slot='pane-title'], [data-slot='review-pane'] [data-slot='pane-section-header'])
+  [data-slot='panel-label'] {
   padding-inline-start: 0;
   color: var(--ui-text-primary);
   font: 300 2rem / 1.1 var(--portal-font-display);
@@ -173,7 +224,10 @@
   text-transform: none;
 }
 
-:root[data-shell='portal'] [data-slot='pane-title'] [data-slot='panel-label'] > [aria-hidden='true'] {
+:root[data-shell='portal']
+  :is([data-slot='files-pane'], [data-slot='review-pane'])
+  [data-slot='panel-label']
+  > [aria-hidden='true'] {
   display: none;
 }
 
@@ -185,9 +239,24 @@
   line-height: 1.4;
 }
 
-:root[data-shell='portal'] [data-slot='files-pane'] [data-slot='pane-section-header'] [data-slot='button'] {
+:root[data-shell='portal']
+  :is([data-slot='files-pane'], [data-slot='review-pane'])
+  [data-slot='pane-section-header']
+  [data-slot='button'] {
   margin-block-start: 0.25rem;
   border-radius: 3px;
+}
+
+/* A pane's one-line empty state ("No diffs") reads as a quiet sentence, not a tracked label. */
+:root[data-shell='portal']
+  :is([data-slot='files-pane'], [data-slot='review-pane'])
+  :not([data-slot='pane-section-header'] *)
+  > [data-slot='panel-label'] {
+  color: var(--ui-text-tertiary);
+  font-size: 0.8125rem;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
 }
 
 /* Rows: 13px labels with their glyph at op .6 (491:41172 list). Selection is neutral. */
@@ -261,31 +330,55 @@
 
 /* ── Titlebar band ────────────────────────────────────────────────────────────────────────── */
 
-/* The session tab rides the stage's leading edge (Figma 906:19481 at x 380), never under the
-   leading cluster. */
+/* The session tab rides the stage's leading edge (Figma 906:19481 at x 380). It is anchored to the
+   workspace pane itself (CSS anchor positioning), so it tracks a sash drag, a sidebar collapse or a
+   window resize in the same frame as the panels, with no script in the path; the measured
+   --workspace-* edges are only the fallback where the anchor is absent. The cluster spans the
+   stage's width in the band, clamped clear of the leading cluster (macOS lights included, via
+   --portal-band-start) and of the trailing controls; the pill truncates inside it before the "+"
+   gives way. RTL mirrors through the flex direction: the same span, content from its start. */
+:root[data-shell='portal'] [data-session-anchor='workspace'] {
+  anchor-name: --portal-workspace;
+}
+
 :root[data-shell='portal'] .portal-session-tab-cluster {
-  left: max(
-    var(--workspace-left, 0px),
-    calc(max(5rem, var(--titlebar-controls-left)) + var(--titlebar-controls-width, 0px))
+  --portal-session-tab-lead: calc(var(--portal-band-start) + var(--titlebar-controls-width, 0px));
+  --portal-session-tab-trail: calc(
+    var(--titlebar-tools-right, 0px) + var(--titlebar-tools-width, 0px) + var(--titlebar-control-gap)
   );
+
+  position-anchor: --portal-workspace;
+  left: max(anchor(left, var(--workspace-left, 0px)), var(--portal-session-tab-lead));
+  right: max(anchor(right, var(--workspace-right, 0px)), var(--portal-session-tab-trail));
+  min-width: 0;
+  /* The span is band, not control: it drags the window and passes the pointer through; only the
+     pill (a drag handle itself) and "+" take it. */
+  pointer-events: none;
+  -webkit-app-region: drag;
 }
 
 :root[data-shell='portal'] .portal-session-tab {
   display: flex;
+  min-width: 0;
+  max-width: 100%;
   align-items: center;
   gap: var(--titlebar-control-gap);
+}
+
+:root[data-shell='portal'] .portal-session-tab > * {
+  pointer-events: auto;
+}
+
+:root[data-shell='portal'] .portal-session-tab [data-slot='button'] {
+  flex-shrink: 0;
+  -webkit-app-region: no-drag;
 }
 
 /* 30px pill, 6px padding, 2% ink, r3, 13px label. */
 :root[data-shell='portal'] .portal-session-tab-title {
   display: block;
-  /* Gives way before the trailing cluster on narrow windows (room for "+" and gaps). */
-  max-inline-size: min(
-    18rem,
-    calc(
-      100vw - var(--workspace-left, 0px) - var(--titlebar-tools-right, 0px) - var(--titlebar-tools-width, 0px) - 4rem
-    )
-  );
+  min-width: 0;
+  max-inline-size: 18rem;
   block-size: var(--portal-chrome-button-size);
   overflow: hidden;
   padding: 0 0.625rem;
@@ -296,6 +389,17 @@
   line-height: var(--portal-chrome-button-size);
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Too narrow for a readable title: the pill steps aside and "+" stays. */
+@container portal-session-tab (max-width: 6rem) {
+  :root[data-shell='portal'] .portal-session-tab-title {
+    display: none;
+  }
+}
+
+:root[data-shell='portal'] .portal-session-tab-cluster {
+  container: portal-session-tab / inline-size;
 }
 
 /* A seam between window-top panels already has the panel hairline (below the band); the sash's

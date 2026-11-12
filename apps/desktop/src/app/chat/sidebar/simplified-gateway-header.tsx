@@ -28,7 +28,8 @@ interface SimplifiedGatewayHeaderProps {
   onToggle: () => void
 }
 
-/** A flat machine row (status dot, name, status) that discloses the machine's agents. */
+/** A machine row (Figma 147:7470): name with its organisation as a quiet inline tag, the status at
+ *  the end behind its dot; it discloses the machine's agents. */
 export function SimplifiedGatewayHeader({
   connectionId,
   label,
@@ -76,10 +77,11 @@ export function SimplifiedGatewayHeader({
         onClick={onToggle}
         title={address ? `${label} · ${address}` : label}
       >
-        <span aria-hidden className="portal-status-dot" />
         <span className="portal-machine-name">{label}</span>
+        {registered?.org && <span className="portal-machine-tag">{registered.org}</span>}
         <span className="portal-machine-status" id={statusId}>
-          {state === 'open' ? registered?.org || status : status}
+          <span aria-hidden className="portal-status-dot" />
+          {status}
         </span>
       </RowButton>
     </div>

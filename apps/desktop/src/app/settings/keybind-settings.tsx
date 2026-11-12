@@ -34,7 +34,7 @@ import { usePortalShell } from '@/store/shell-variant'
 import { HudModifierSettings } from './hud-modifier-settings'
 import { SettingsBreadcrumbContext, SettingsContent } from './primitives'
 import { ScreenshotSettings } from './screenshot-settings'
-import { SettingsCard, SettingsDisclosure, SettingsGroup, SettingsOverview } from './settings-card'
+import { SettingsCard, SettingsDisclosure, SettingsFooter, SettingsGroup, SettingsOverview } from './settings-card'
 import { forHost, useSettingsPagesCopy } from './settings-pages-copy'
 import { useSettingDeepLink } from './use-setting-deep-link'
 
@@ -239,11 +239,11 @@ function ShortcutSettings({ includeScreenshot }: { includeScreenshot: boolean })
         )}
         {/* Figma 856:4318 puts the reset under the bindings, as a quiet footer link. */}
         {redesign && (
-          <div className="global-settings-footer">
+          <SettingsFooter>
             <Button onClick={resetAllBindings} size="inline" variant="textStrong">
               {pages.keybinds.reset}
             </Button>
-          </div>
+          </SettingsFooter>
         )}
       </SettingsOverview>
     </SettingsContent>

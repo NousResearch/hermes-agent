@@ -31,6 +31,11 @@ export function PortalGroupChats({ query }: { query: string }) {
   const names = groupChatNames(meta, rooms).filter(name => name.toLocaleLowerCase().includes(needle))
   const visibleGatewayRooms = gatewayRooms.filter(room => room.name.toLocaleLowerCase().includes(needle))
 
+  // A search shows only sections that answer it.
+  if (needle && visibleGatewayRooms.length + names.length === 0) {
+    return null
+  }
+
   return (
     <section aria-label={b.roster.groupChats} className="portal-section" data-slot="group-chats-section">
       <PortalSectionHeader

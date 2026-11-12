@@ -69,7 +69,7 @@ import { PortalSafetySettings } from './portal-safety-fields'
 import { EmptyState, ListRow, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
 import { SettingsProfileScope, useSettingsOwner } from './profile-scope'
 import { QuickEntrySettings } from './quick-entry-settings'
-import { SettingsCard, SettingsGroup } from './settings-card'
+import { SettingsCard, SettingsGroup, SettingsOverview } from './settings-card'
 import { SETTING_IDS, settingElementId } from './settings-manifest'
 import { useSettingsPagesCopy } from './settings-pages-copy'
 import { SharedMetricsSettings } from './shared-metrics-settings'
@@ -550,7 +550,9 @@ function ConfigSettingsInner({
           />
         </div>
       )}
-      {!agentModel && children}
+      {/* Untitled blocks (device prefs, memory layers, the fields card) keep the page rhythm; an
+          agent page lays its blocks out itself (settings-editor.css). */}
+      {!agentModel && (compactAgent ? children : <SettingsOverview>{children}</SettingsOverview>)}
       <input
         accept=".json,application/json"
         className="hidden"
@@ -671,7 +673,11 @@ function ConfigSettingsInner({
       {/* Device-local attach/preview byte cap (main-process IPC guard). Chat is
           where image-attachment behavior already lives, so this sits above the
           schema fields for that section. */}
-      {showAttachments ? <AttachmentSizeSetting /> : null}
+      {showAttachments ? (
+        <SettingsCard>
+          <AttachmentSizeSetting />
+        </SettingsCard>
+      ) : null}
       {/* Shared metrics are two coupled opt-ins with a consent side effect, so they
           go through their own RPC rather than the generic field autosave. */}
       {showSharedMetrics ? <SharedMetricsSettings /> : null}
@@ -685,7 +691,9 @@ function ConfigSettingsInner({
         writeScope={writeScope}
       />
       {activeSectionId === 'voice' && !compactAgent ? (
-        <ListRow description={c.voiceShortcutHintDesc} title={c.voiceShortcutHintTitle} />
+        <SettingsCard>
+          <ListRow description={c.voiceShortcutHintDesc} title={c.voiceShortcutHintTitle} />
+        </SettingsCard>
       ) : null}
       {showEmptyState ? (
         <EmptyState description={c.emptyDesc} title={c.emptyTitle} />

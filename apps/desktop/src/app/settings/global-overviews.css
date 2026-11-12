@@ -1,8 +1,15 @@
 /* Redesigned global settings pages (Figma 856:*). Every class here is rendered only by the redesign's
    SettingsOverview / SettingsCard / SettingsDisclosure (settings-card.tsx), so no root gate is needed. */
 .global-settings-overview {
+  --settings-section-gap: 2.25rem;
   display: grid;
-  gap: 2.25rem;
+  gap: var(--settings-section-gap);
+}
+
+/* Untitled cards in a run belong to one section (Desktop & startup's device card over its config
+   card): they sit the section's 12px apart, not a whole section break. */
+.global-settings-overview > .global-settings-card + .global-settings-card {
+  margin-top: calc(0.75rem - var(--settings-section-gap));
 }
 
 /* ── Grouped rows card (856:3439): 5% fill, 5% stroke, r8, 64px rows with hairline dividers ── */
@@ -206,6 +213,11 @@
   border-top: 1px solid var(--ui-stroke-tertiary);
 }
 
+/* Outside an overview grid the footer brings its own section break. */
+:not(.global-settings-overview) > * + .global-settings-footer {
+  margin-top: 2.25rem;
+}
+
 /* ── Page-specific ─────────────────────────────────────────────────────────── */
 
 .global-shortcut-primary > div {
@@ -275,6 +287,56 @@
   color: var(--ui-text-tertiary);
   font-size: 0.8125rem;
   line-height: 1.4;
+}
+
+/* A list card row that opens something: 64px, 14 Medium label over a 13px tertiary line, chevron. */
+.global-settings-link-row {
+  display: flex;
+  width: 100%;
+  min-height: 4rem;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.75rem 1rem;
+  color: var(--ui-text-primary);
+  text-align: start;
+}
+
+.global-settings-card > * + .global-settings-link-row {
+  border-top: 1px solid var(--ui-stroke-tertiary);
+}
+
+.global-settings-link-row:hover {
+  background: color-mix(in srgb, var(--ui-base) 3%, transparent);
+}
+
+.global-settings-link-row:focus-visible {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-inset);
+}
+
+.global-settings-link-row-text {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 2px;
+}
+
+.global-settings-link-row-title {
+  font-size: 0.875rem;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.global-settings-link-row-description,
+.global-settings-link-row-meta {
+  color: var(--ui-text-tertiary);
+  font-size: 0.8125rem;
+  line-height: 1.4;
+}
+
+.global-settings-link-row > .codicon {
+  flex-shrink: 0;
+  color: var(--ui-text-quaternary);
 }
 
 /* "+ Add …" closing row of a list card (856:5142): 48px, 14px label, hover tint, hairline above. */

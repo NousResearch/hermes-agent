@@ -8,9 +8,22 @@ import { Codicon } from '@/components/ui/codicon'
 import { useI18n } from '@/i18n'
 import type { ConfigFieldSchema, HermesConfigRecord } from '@/types/hermes'
 
+import { useAgentSettingsLayoutCopy } from '../agent-settings/settings-layout-copy'
+
 import { ConfigField } from './config-field'
 import { configFieldValue, enumOptionsFor, setConfigField } from './helpers'
+import { ListRow } from './primitives'
+import { SettingsCard, SettingsDisclosure, SettingsGroup, SettingsOverview } from './settings-card'
+import { useSettingsPagesCopy } from './settings-pages-copy'
 import { SharedMetricsSettings } from './shared-metrics-settings'
+
+const APPROVAL_MODES = ['smart', 'manual', 'off'] as const
+
+const MODE_ICONS: Record<(typeof APPROVAL_MODES)[number], string> = {
+  smart: 'shield',
+  manual: 'checklist',
+  off: 'circle-slash'
+}
 
 interface PortalSafetyFieldsProps {
   config: HermesConfigRecord
@@ -40,11 +53,13 @@ export function PortalSafetyFields({
   const approval = fields.find(([key]) => key === 'approvals.mode')
   const privacy = fields.filter(([key]) => key === 'security.redact_secrets')
   const advanced = fields.filter(([key]) => key !== 'approvals.mode' && key !== 'security.redact_secrets')
-  const modes = ['smart', 'manual', 'off'] as const
+  const pages = useSettingsPagesCopy()
+  const layout = useAgentSettingsLayoutCopy()
+  const [vaultTitle, vaultDescription] = layout.rows.vault
   const descriptions = { smart: copy.smartDescription, manual: copy.manualDescription, off: copy.offDescription }
 
   const renderField = ([key, schema]: [string, ConfigFieldSchema]) => (
-    <div className="scroll-mt-6 rounded-lg" id={`setting-field-${key}`} key={key}>
+    <div className="scroll-mt-6" id={`setting-field-${key}`} key={key}>
       <ConfigField
         enumOptions={enumOptionsFor(key, configFieldValue(config, key), config)}
         onChange={value => onChange(setConfigField(config, key, value))}
@@ -56,58 +71,57 @@ export function PortalSafetyFields({
   )
 
   return (
-    <div className="@container/safety grid gap-9" data-slot="portal-safety-settings">
+    <SettingsOverview>
       {approval && (
-        <fieldset id="setting-field-approvals.mode">
-          <legend className="mb-3 text-[15px] font-medium leading-[1.1]">{copy.title}</legend>
-          <div className="portal-safety-options grid grid-cols-1 gap-3 @min-[32rem]/safety:grid-cols-3">
-            {modes.map(mode => (
-              <label
-                className="portal-safety-mode relative flex cursor-pointer flex-col gap-2 p-3 has-focus-visible:outline-2 has-focus-visible:outline-ring"
-                key={mode}
-              >
+        <SettingsGroup title={copy.title}>
+          <fieldset className="portal-safety-options global-settings-card" id="setting-field-approvals.mode">
+            <legend className="sr-only">{copy.title}</legend>
+            {APPROVAL_MODES.map(mode => (
+              <label className="portal-safety-mode" key={mode}>
                 <input
                   checked={configFieldValue(config, 'approvals.mode') === mode}
-                  className="sr-only"
+                  className="portal-safety-radio"
                   name={groupName}
                   onChange={() => onChange(setConfigField(config, 'approvals.mode', mode))}
                   type="radio"
                   value={mode}
                 />
-                <Codicon
-                  className="portal-safety-icon text-(--ui-text-tertiary)"
-                  name={mode === 'smart' ? 'shield' : mode === 'manual' ? 'checklist' : 'circle-slash'}
-                />
-                <span className="text-sm font-medium">{copy[mode]}</span>
-                <span className="text-[13px] leading-[1.4] text-(--ui-text-tertiary)">{descriptions[mode]}</span>
+                <Codicon className="portal-safety-icon" name={MODE_ICONS[mode]} />
+                <span className="portal-safety-mode-title">{copy[mode]}</span>
+                <span className="portal-safety-mode-description">{descriptions[mode]}</span>
               </label>
             ))}
-          </div>
-        </fieldset>
+          </fieldset>
+        </SettingsGroup>
       )}
-      <section aria-label={t.settings.subpages.safetyPrivacy}>
-        <h3 className="mb-3 text-[15px] font-medium leading-[1.1]">{t.settings.subpages.safetyPrivacy}</h3>
-        <div className="portal-safety-card px-4">
+      <SettingsGroup title={t.settings.subpages.safetyPrivacy}>
+        <SettingsCard>
           {privacy.map(renderField)}
-          <div className="flex min-h-16 flex-wrap items-center justify-between gap-6 py-3 text-sm">
-            <span>{t.settings.nav.vault}</span>
-            <Button onClick={onManagePasswords} size="sm" variant="outline">
-              {t.settings.nav.vault}
-              <Codicon name="arrow-right" />
-            </Button>
-          </div>
-        </div>
-      </section>
+          <ListRow
+            action={
+              <Button
+                aria-label={`${pages.gateway.manage}: ${vaultTitle}`}
+                onClick={onManagePasswords}
+                variant="secondary"
+              >
+                {pages.gateway.manage}
+              </Button>
+            }
+            description={vaultDescription}
+            title={vaultTitle}
+          />
+        </SettingsCard>
+      </SettingsGroup>
       {advanced.length > 0 && (
-        <details className="portal-safety-advanced group" ref={advancedRef}>
-          <summary className="flex min-h-[68px] cursor-pointer list-none items-center justify-between gap-3 px-4 py-3.5 text-sm font-semibold focus-visible:outline-2 focus-visible:outline-ring [&::-webkit-details-marker]:hidden">
-            {t.settings.sections.advanced}
-            <Codicon className="group-open:rotate-180" name="chevron-down" />
-          </summary>
-          <div className="px-4">{advanced.map(renderField)}</div>
-        </details>
+        <SettingsDisclosure
+          description={layout.summaries.safety}
+          ref={advancedRef}
+          title={t.settings.sections.advanced}
+        >
+          <SettingsCard>{advanced.map(renderField)}</SettingsCard>
+        </SettingsDisclosure>
       )}
-    </div>
+    </SettingsOverview>
   )
 }
 

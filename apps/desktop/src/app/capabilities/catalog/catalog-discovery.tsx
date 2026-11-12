@@ -20,7 +20,25 @@ const MIN_SHELF = 3
 
 
 /** A shelf ranks by its most-starred entry, so the strongest categories lead. */
-const topStars = (items: CatalogEntry[]) => Math.max(-1, ...items.map(entry => entry.stars ?? -1))
+const topStars = (items: CatalogEntry[]) => items.reduce((top, entry) => Math.max(top, entry.stars ?? -1), -1)
+
+/** Skill shelves in one pass over the feed: it is ~100k rows, and a filter per category froze the
+ *  Capabilities page for seconds on every visit. */
+function skillSections(entries: CatalogEntry[]): [string, string, CatalogEntry[]][] {
+  const buckets = new Map<string, CatalogEntry[]>()
+
+  for (const entry of entries) {
+    const bucket = buckets.get(entry.category)
+
+    if (bucket) {
+      bucket.push(entry)
+    } else {
+      buckets.set(entry.category, [entry])
+    }
+  }
+
+  return catalogCategories(entries).map(([key, meta]) => [key, meta.label, buckets.get(key) ?? []])
+}
 
 /** Plugin tiers in page order; community keeps its category shelves. */
 const PLUGIN_TIERS: Exclude<PluginTier, 'community'>[] = ['official', 'verified']
@@ -58,7 +76,8 @@ export function CatalogDiscovery({ entries, kind, card, onCategory, actions, nar
   }))
 
   // A slide leaves its shelf, as the single hero always did.
-  const others = entries.filter(entry => !featured.includes(entry))
+  const slides = new Set(featured)
+  const others = entries.filter(entry => !slides.has(entry))
   const tiered = kind === 'plugins' && !byCategory ? PLUGIN_TIERS.map(tier => ({ tier, ...t.catalog.tiers[tier], items: others.filter(entry => pluginTier(entry) === tier) })).filter(({ items }) => items.length) : []
   const remaining = kind === 'plugins' && !byCategory ? others.filter(entry => pluginTier(entry) === 'community') : others
 
@@ -66,7 +85,7 @@ export function CatalogDiscovery({ entries, kind, card, onCategory, actions, nar
   const sections: [string, string, CatalogEntry[]][] = (
     kind === 'plugins'
       ? groupCatalogPlugins(remaining).map(([key, items]) => [key, PLUGIN_CATEGORIES[key].label, items] as [string, string, CatalogEntry[]])
-      : catalogCategories(remaining).map(([key, meta]) => [key, meta.label, remaining.filter(entry => entry.category === key)] as [string, string, CatalogEntry[]])
+      : skillSections(remaining)
   ).sort((a, b) => topStars(b[2]) - topStars(a[2]))
 
   // A category too small to fill a row reads as a stray full-width strip; those

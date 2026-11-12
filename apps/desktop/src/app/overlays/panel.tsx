@@ -5,6 +5,7 @@ import type { ReactNode } from 'react'
 import { ActionsContextMenu, ActionsMenu, type MenuKit, renderActionItem } from '@/components/ui/actions-menu'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import { EmptyState } from '@/components/ui/empty-state'
 import { RowButton } from '@/components/ui/row-button'
 import { SearchField } from '@/components/ui/search-field'
 import { Tip } from '@/components/ui/tooltip'
@@ -52,7 +53,11 @@ export function Panel({
       closeLabel={closeLabel}
       // Header title rides up next to the floating close button — see
       // OVERLAY_TOP_CLEARANCE, the shared clearance every overlay column uses.
-      contentClassName={cn('management-panel flex h-full min-h-0 flex-col px-4 pb-4 sm:px-5', OVERLAY_TOP_CLEARANCE, contentClassName)}
+      contentClassName={cn(
+        'management-panel flex h-full min-h-0 flex-col px-4 pb-4 sm:px-5',
+        OVERLAY_TOP_CLEARANCE,
+        contentClassName
+      )}
       onClose={onClose}
       rootClassName={cn('flex h-full w-full flex-col', className)}
     >
@@ -69,24 +74,33 @@ interface PanelHeaderProps {
   simplifiedTitle?: ReactNode
   /** Classic empty states omit chrome; V2 pages keep their heading. */
   hideInClassic?: boolean
+  /** A quiet count or status at the heading row's end ("3 schedules"), never jammed under the H1. */
+  meta?: ReactNode
 }
 
-export function PanelHeader({ actions, subtitle, title, simplifiedTitle, hideInClassic }: PanelHeaderProps) {
+export function PanelHeader({ actions, meta, subtitle, title, simplifiedTitle, hideInClassic }: PanelHeaderProps) {
   const simplified = usePortalShell()
   const Heading = simplified ? 'h1' : 'h2'
 
-  if (hideInClassic && !simplified) {return null}
+  if (hideInClassic && !simplified) {
+    return null
+  }
 
   return (
     // The overlay's close (X) is absolutely positioned at right-3 and costs no
     // layout space, so header actions would otherwise slide right up against it.
     // Reserve clearance (button footprint from the card edge + a small gap) on
     // the right whenever actions are present.
-    <header className={cn('panel-header mb-3 flex shrink-0 items-start justify-between gap-3', actions ? 'pr-8' : undefined)}>
+    <header
+      className={cn('panel-header mb-3 flex shrink-0 items-start justify-between gap-3', actions ? 'pr-8' : undefined)}
+    >
       <div className="min-w-0">
-        <Heading className="text-[length:var(--page-title-size,0.875rem)] leading-tight font-semibold text-foreground">{simplified ? simplifiedTitle ?? title : title}</Heading>
+        <Heading className="text-[length:var(--page-title-size,0.875rem)] leading-tight font-semibold text-foreground">
+          {simplified ? (simplifiedTitle ?? title) : title}
+        </Heading>
         {subtitle ? <p className="truncate text-xs text-muted-foreground/80">{subtitle}</p> : null}
       </div>
+      {meta ? <span className="panel-header-meta">{meta}</span> : null}
       {actions ? <div className="flex shrink-0 items-center gap-1.5">{actions}</div> : null}
     </header>
   )
@@ -133,10 +147,14 @@ export function PanelList({
   searchHints,
   searchValue
 }: PanelListProps) {
+  const redesign = usePortalShell()
+
   return (
     // Full-width and height-capped when stacked (narrow); a fixed 13rem rail
     // beside the detail when wide.
-    <div className={cn('panel-list flex w-full shrink-0 flex-col max-[47.5rem]:max-h-[40%] min-[47.5rem]:w-52', className)}>
+    <div
+      className={cn('panel-list flex w-full shrink-0 flex-col max-[47.5rem]:max-h-[40%] min-[47.5rem]:w-52', className)}
+    >
       {onSearchChange ? (
         <SearchField
           aria-label={searchLabel ?? searchPlaceholder ?? ''}
@@ -145,6 +163,8 @@ export function PanelList({
           onChange={onSearchChange}
           placeholder={searchPlaceholder ?? ''}
           value={searchValue ?? ''}
+          // The redesign's page search is the 36px boxed field (877:5952), as on Library and Capabilities.
+          variant={redesign ? 'box' : undefined}
         />
       ) : null}
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain">{children}</div>
@@ -212,7 +232,11 @@ export function PanelListRow({
           ) : null)}
         <span className="min-w-0 flex-1 truncate font-medium text-foreground/85">{title}</span>
       </RowButton>
-      {meta ? <span className="panel-row-meta shrink-0 pr-2 text-[0.62rem] tabular-nums text-muted-foreground/45">{meta}</span> : null}
+      {meta ? (
+        <span className="panel-row-meta shrink-0 pr-2 text-[0.62rem] tabular-nums text-muted-foreground/45">
+          {meta}
+        </span>
+      ) : null}
       {menuItems ? (
         <div className="shrink-0 pr-1">
           <PanelRowMenu items={menuItems} label={menuLabel} />
@@ -305,6 +329,17 @@ interface PanelEmptyProps {
 }
 
 export function PanelEmpty({ action, description, icon = 'inbox', title }: PanelEmptyProps) {
+  const redesign = usePortalShell()
+
+  // The redesign's one empty card, at the top of the content instead of floating mid-page.
+  if (redesign) {
+    return (
+      <div className="panel-empty">
+        <EmptyState action={action} description={description} title={title} />
+      </div>
+    )
+  }
+
   return (
     <div className="grid flex-1 place-items-center px-6 py-10 text-center">
       <div className="flex flex-col items-center gap-2">
@@ -321,7 +356,12 @@ export function PanelEmpty({ action, description, icon = 'inbox', title }: Panel
 
 export function PanelSectionLabel({ children, className }: { children: ReactNode; className?: string }) {
   return (
-    <div className={cn('panel-section-label text-[0.6rem] font-medium uppercase tracking-wider text-muted-foreground/50', className)}>
+    <div
+      className={cn(
+        'panel-section-label text-[0.6rem] font-medium uppercase tracking-wider text-muted-foreground/50',
+        className
+      )}
+    >
       {children}
     </div>
   )

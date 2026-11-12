@@ -64,9 +64,10 @@ export const portalTheme: DesktopTheme = {
   },
   // Palette surfaces only; brand marks and the flat-overlay look belong to the redesigned shell
   // (app/redesign/portal-colors.css), so they follow the shell rather than this skin.
-  // `--portal-skin-window` is the redesigned shell's chat canvas in Figma's composite (906:19397:
-  // dark #0d0d16, light #ededed); pages keep the navy background above (856:2809). Nothing
-  // outside the redesign reads it.
+  // `--portal-skin-window` is the redesigned shell's window canvas (rails and band): dark is the pages'
+  // and Variation 1's navy #0a0a1a (895/856, 147:7470), light Brand rev's #ededed. The panels are
+  // derived from it and from the background above (#07071a, the stage). Nothing outside the
+  // redesign reads it.
   customCSS: `
     :root {
       --ui-bg-chrome: var(--theme-background-seed);
@@ -74,7 +75,7 @@ export const portalTheme: DesktopTheme = {
       --portal-skin-window: #ededed;
     }
     :root.dark {
-      --portal-skin-window: #0d0d16;
+      --portal-skin-window: #0a0a1a;
     }
   `
 }

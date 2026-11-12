@@ -7,6 +7,7 @@ import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
 import { CopyButton } from '@/components/ui/copy-button'
+import { EmptyState } from '@/components/ui/empty-state'
 import {
   Pagination,
   PaginationButton,
@@ -35,6 +36,7 @@ import { normalize } from '@/lib/text'
 import { fmtDayTime } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
+import { usePortalShell } from '@/store/shell-variant'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
@@ -114,6 +116,7 @@ interface ArtifactsViewProps extends React.ComponentProps<'section'> {
 export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...props }: ArtifactsViewProps) {
   const { t } = useI18n()
   const a = t.artifacts
+  const redesign = usePortalShell()
   const navigate = useNavigate()
   const [artifacts, setArtifacts] = useState<ArtifactRecord[] | null>(null)
   const [query, setQuery] = useState('')
@@ -351,6 +354,10 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     >
       {!artifacts ? (
         <PageLoader label={a.indexing} />
+      ) : visibleArtifacts.length === 0 && redesign ? (
+        <div className="page-search-empty">
+          <EmptyState description={counts.all === 0 ? a.noArtifactsDesc : undefined} title={a.noArtifactsTitle} />
+        </div>
       ) : visibleArtifacts.length === 0 ? (
         <div className="grid h-full place-items-center px-6 text-center">
           <div>

@@ -50,6 +50,7 @@ import {
 } from './data'
 import { AgentNavigation } from './directory'
 import { AgentHistory } from './history'
+import { rememberViewedAgent } from './landing'
 import { AgentOverviewActions } from './overview-actions'
 import { RoutineDialog } from './routine-dialog'
 import { agentCapabilityCounts } from './settings-counts'
@@ -215,7 +216,7 @@ function AgentManagementHeader({ gateway, onOpenChat, owner, profile }: AgentMan
     <header className="agent-management-header">
       <FigmaAgentIcon
         className="agent-management-avatar [&>img]:brightness-0 dark:[&>img]:brightness-100"
-        color={profileColorSoft(resolveProfileColor(owner.profile, colors) ?? 'var(--portal-brand-fill)', 12)}
+        color={profileColorSoft(resolveProfileColor(owner.profile, colors) ?? 'var(--portal-brand-fill)', 30)}
       />
       <div className="agent-management-identity">
         <h1>{label}</h1>
@@ -330,6 +331,8 @@ function AgentSettingsContent({
 
   const connectionId = owner.connectionId ?? apiScope.connectionId ?? activeConnectionId ?? 'local'
   const editorOwner = useMemo(() => ({ connectionId, profile: owner.profile }), [connectionId, owner.profile])
+  // The Agents destination reopens the agent this window last showed.
+  useEffect(() => rememberViewedAgent({ connectionId, profile: owner.profile }), [connectionId, owner.profile])
   const failed = [config, skills, tools, jobs, messaging, recent, soul].some(query => query.isError)
 
   // The endpoint backfills pinned sessions on each page; render each session once.

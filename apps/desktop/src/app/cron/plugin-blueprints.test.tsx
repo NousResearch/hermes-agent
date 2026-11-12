@@ -92,11 +92,11 @@ describe('plugin-registered automation blueprints', () => {
     renderView()
 
     const title = await screen.findByText('Team standup digest')
+    // With no schedules yet, each blueprint is one link row that names its plugin.
     const row = title.closest('button') as HTMLElement
-    // PanelListRow renders `meta` (the plugin name) beside the row's button.
-    expect(within(row.parentElement as HTMLElement).getByText('teamtools')).toBeTruthy()
+    expect(within(row).getByText('teamtools')).toBeTruthy()
     const builtinRow = screen.getByText('Morning briefing').closest('button') as HTMLElement
-    expect(within(builtinRow.parentElement as HTMLElement).queryByText('teamtools')).toBeNull()
+    expect(within(builtinRow).queryByText('teamtools')).toBeNull()
     // The catalog is per profile (plugins load per profile): fetched for the job's target profile.
     expect(hermes.getAutomationBlueprints).toHaveBeenCalledWith('work')
 

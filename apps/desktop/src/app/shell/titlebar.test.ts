@@ -1,11 +1,14 @@
 import { act, renderHook } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import type { HermesConnection } from '@/global'
+import { $connection } from '@/store/session'
 import { $shellChoice } from '@/store/shell-variant'
 
 import {
   MACOS_TAHOE_DARWIN_MAJOR,
   PORTAL_TITLEBAR_HEIGHT,
+  portalBandLeadingInset,
   TITLEBAR_CONTROL_OFFSET_X,
   TITLEBAR_EDGE_INSET,
   TITLEBAR_HEIGHT,
@@ -103,5 +106,40 @@ describe('titlebarBandHeight', () => {
     $shellChoice.set(null)
     expect(band()).toBe(`${PORTAL_TITLEBAR_HEIGHT}px`)
     stop()
+  })
+})
+
+describe('portalBandLeadingInset', () => {
+  it('starts at x=130 past macOS traffic lights', () => {
+    expect(portalBandLeadingInset({ x: 23, y: 23 }, false, true)).toBe(130)
+  })
+
+  it('assumes lights on a mac before native state arrives', () => {
+    expect(portalBandLeadingInset(undefined, false, true)).toBe(130)
+  })
+
+  it('aligns with the content inset (x=80) on Windows/Linux/web', () => {
+    expect(portalBandLeadingInset(null, false, false)).toBe(80)
+    expect(portalBandLeadingInset(undefined, false, false)).toBe(80)
+  })
+
+  it('aligns with the content inset in macOS fullscreen', () => {
+    expect(portalBandLeadingInset({ x: 23, y: 23 }, true, true)).toBe(80)
+    expect(portalBandLeadingInset(null, true, true)).toBe(80)
+  })
+
+  it('publishes the live start on the root for the band clusters and page toolbars', () => {
+    const root = document.createElement('html')
+    const start = () => root.style.getPropertyValue('--portal-band-start')
+    const stop = installTitlebarBandProperty(root)
+
+    $connection.set({ isFullscreen: false, windowButtonPosition: { x: 23, y: 23 } } as HermesConnection)
+    expect(start()).toBe('130px')
+    $connection.set({ isFullscreen: true, windowButtonPosition: { x: 23, y: 23 } } as HermesConnection)
+    expect(start()).toBe('80px')
+    $connection.set({ isFullscreen: false, windowButtonPosition: null } as HermesConnection)
+    expect(start()).toBe('80px')
+    stop()
+    $connection.set(null)
   })
 })

@@ -10,6 +10,7 @@ import { cn } from '@/lib/utils'
 import { PAGE_MAX_W } from '../layout-constants'
 
 import { OVERLAY_TOP_CLEARANCE } from './overlay-view'
+import { PageSidebarHead, usePageSidebarOpen } from './page-sidebar'
 
 // The wide rail and the narrow dropdown swap at exactly the width where
 // OverlaySplitLayout drops to a single column, so the rail never stacks.
@@ -223,10 +224,13 @@ export function OverlayNav({ footer, groups, related, title }: OverlayNavProps) 
     })
   }, [activeGroupId, activeChildId])
 
+  // Only the redesign titles its column, and there the column is the shared page sidebar panel.
+  const panelOpen = usePageSidebarOpen()
+
   return (
     <>
-      <OverlaySidebar className={RAIL_HIDDEN}>
-        {title && <h2 className="page-nav-title">{title}</h2>}
+      <OverlaySidebar className={cn(RAIL_HIDDEN, title && !panelOpen && 'hidden')}>
+        {title && <PageSidebarHead title={title} />}
         {groups.map(group => {
           const hasChildren = Boolean(group.children?.length)
           const expanded = disclosures[group.id] ?? group.active

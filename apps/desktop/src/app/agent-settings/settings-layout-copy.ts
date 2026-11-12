@@ -48,7 +48,8 @@ const COPY: Record<BundledLocale, AgentSettingsLayoutCopy> = {
       'terminal.cwd': ['Working directory', 'Default folder for this agent’s tool and terminal work.'],
       'code_execution.mode': ['Code execution mode', 'How strictly code stays inside the current project.'],
       'terminal.backend': ['Execution backend', 'Where terminal commands run.'],
-      'agent.max_turns': ['Max agent steps', 'Most tool-calling turns before a run stops.']
+      'agent.max_turns': ['Max agent steps', 'Most tool-calling turns before a run stops.'],
+      vault: ['Passwords & logins', 'Credentials the browser agent can use.']
     }
   },
   fr: {
@@ -93,7 +94,8 @@ const COPY: Record<BundledLocale, AgentSettingsLayoutCopy> = {
       'terminal.cwd': ['Dossier de travail', 'Dossier par défaut pour les outils et le terminal de cet agent.'],
       'code_execution.mode': ['Mode d’exécution du code', 'À quel point le code reste dans le projet actuel.'],
       'terminal.backend': ['Environnement d’exécution', 'Où les commandes du terminal s’exécutent.'],
-      'agent.max_turns': ['Étapes maximales', 'Nombre maximal de tours d’outils avant l’arrêt d’une exécution.']
+      'agent.max_turns': ['Étapes maximales', 'Nombre maximal de tours d’outils avant l’arrêt d’une exécution.'],
+      vault: ['Mots de passe et identifiants', 'Les identifiants que l’agent de navigation peut utiliser.']
     }
   },
   de: {
@@ -132,7 +134,8 @@ const COPY: Record<BundledLocale, AgentSettingsLayoutCopy> = {
       'terminal.cwd': ['Arbeitsverzeichnis', 'Standardordner für die Tool- und Terminalarbeit dieses Agenten.'],
       'code_execution.mode': ['Codeausführungsmodus', 'Wie streng Code im aktuellen Projekt bleibt.'],
       'terminal.backend': ['Ausführungsumgebung', 'Wo Terminalbefehle laufen.'],
-      'agent.max_turns': ['Maximale Agentenschritte', 'Höchstzahl an Tool-Runden, bevor ein Lauf stoppt.']
+      'agent.max_turns': ['Maximale Agentenschritte', 'Höchstzahl an Tool-Runden, bevor ein Lauf stoppt.'],
+      vault: ['Passwörter & Anmeldungen', 'Zugangsdaten, die der Browser-Agent verwenden kann.']
     }
   },
   es: {
@@ -180,7 +183,8 @@ const COPY: Record<BundledLocale, AgentSettingsLayoutCopy> = {
       'agent.max_turns': [
         'Pasos máximos del agente',
         'Máximo de turnos con herramientas antes de detener una ejecución.'
-      ]
+      ],
+      vault: ['Contraseñas e inicios de sesión', 'Credenciales que puede usar el agente del navegador.']
     }
   },
   ja: {
@@ -216,7 +220,8 @@ const COPY: Record<BundledLocale, AgentSettingsLayoutCopy> = {
       'terminal.cwd': ['作業ディレクトリ', 'このエージェントのツールとターミナルの既定フォルダーです。'],
       'code_execution.mode': ['コード実行モード', 'コードを現在のプロジェクト内にどれだけ厳しく留めるかです。'],
       'terminal.backend': ['実行環境', 'ターミナルのコマンドを実行する場所です。'],
-      'agent.max_turns': ['最大ステップ数', '実行を止めるまでのツール呼び出しの最大回数です。']
+      'agent.max_turns': ['最大ステップ数', '実行を止めるまでのツール呼び出しの最大回数です。'],
+      vault: ['パスワードとログイン', 'ブラウザエージェントが使える認証情報です。']
     }
   },
   zh: {
@@ -246,7 +251,8 @@ const COPY: Record<BundledLocale, AgentSettingsLayoutCopy> = {
       'terminal.cwd': ['工作目录', '此智能体工具和终端工作的默认文件夹。'],
       'code_execution.mode': ['代码执行模式', '代码限制在当前项目内的严格程度。'],
       'terminal.backend': ['执行后端', '终端命令运行的位置。'],
-      'agent.max_turns': ['最大步数', '一次运行停止前的最多工具调用轮数。']
+      'agent.max_turns': ['最大步数', '一次运行停止前的最多工具调用轮数。'],
+      vault: ['密码与登录', '浏览器智能体可以使用的凭据。']
     }
   },
   'zh-hant': {
@@ -276,7 +282,8 @@ const COPY: Record<BundledLocale, AgentSettingsLayoutCopy> = {
       'terminal.cwd': ['工作目錄', '此智慧體工具與終端機工作的預設資料夾。'],
       'code_execution.mode': ['程式碼執行模式', '程式碼限制在目前專案內的嚴格程度。'],
       'terminal.backend': ['執行後端', '終端機指令執行的位置。'],
-      'agent.max_turns': ['最大步數', '一次執行停止前的最多工具呼叫輪數。']
+      'agent.max_turns': ['最大步數', '一次執行停止前的最多工具呼叫輪數。'],
+      vault: ['密碼與登入', '瀏覽器代理可以使用的憑證。']
     }
   },
   ru: {
@@ -315,7 +322,8 @@ const COPY: Record<BundledLocale, AgentSettingsLayoutCopy> = {
       'terminal.cwd': ['Рабочая папка', 'Папка по умолчанию для инструментов и терминала этого агента.'],
       'code_execution.mode': ['Режим выполнения кода', 'Насколько строго код остаётся внутри текущего проекта.'],
       'terminal.backend': ['Среда выполнения', 'Где выполняются команды терминала.'],
-      'agent.max_turns': ['Максимум шагов', 'Сколько раундов с инструментами до остановки запуска.']
+      'agent.max_turns': ['Максимум шагов', 'Сколько раундов с инструментами до остановки запуска.'],
+      vault: ['Пароли и входы', 'Учётные данные, которые может использовать браузерный агент.']
     }
   },
   ar: {
@@ -351,7 +359,8 @@ const COPY: Record<BundledLocale, AgentSettingsLayoutCopy> = {
       'terminal.cwd': ['مجلد العمل', 'المجلد الافتراضي لأدوات هذا الوكيل والطرفية.'],
       'code_execution.mode': ['وضع تنفيذ الشيفرة', 'مدى صرامة بقاء الشيفرة داخل المشروع الحالي.'],
       'terminal.backend': ['بيئة التنفيذ', 'مكان تشغيل أوامر الطرفية.'],
-      'agent.max_turns': ['أقصى خطوات للوكيل', 'أقصى عدد لجولات الأدوات قبل توقف التشغيل.']
+      'agent.max_turns': ['أقصى خطوات للوكيل', 'أقصى عدد لجولات الأدوات قبل توقف التشغيل.'],
+      vault: ['كلمات المرور وتسجيلات الدخول', 'بيانات الاعتماد التي يمكن لوكيل المتصفح استخدامها.']
     }
   }
 }

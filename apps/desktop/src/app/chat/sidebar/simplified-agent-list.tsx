@@ -184,6 +184,7 @@ export function SimplifiedAgentList(props: SimplifiedAgentListProps) {
       data-slot="agent-section"
     >
       <PortalSectionHeader
+        count={props.agents.agents.length}
         label={t.simplifiedAgents.agents}
         onToggle={() => $portalAgentsSectionOpen.set(!open)}
         open={open}

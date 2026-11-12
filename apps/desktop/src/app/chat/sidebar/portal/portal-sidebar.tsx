@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button'
 import { SearchField } from '@/components/ui/search-field'
 import { Sidebar, SidebarContent } from '@/components/ui/sidebar'
 import { Tip } from '@/components/ui/tooltip'
+import { useI18n } from '@/i18n'
 import { recordIaAction } from '@/store/ia-metrics'
 import { SESSION_SEARCH_FOCUS_EVENT, toggleSidebarOpen } from '@/store/layout'
 import { $newChatProfile } from '@/store/profile'
@@ -52,6 +53,39 @@ function moveRowFocus(event: KeyboardEvent<HTMLElement>) {
   }
 }
 
+interface PortalSidebarListStatesProps {
+  empty: boolean
+  error: boolean
+  hasMore: boolean
+  loadMore: () => void
+  loading: boolean
+  loadingMore: boolean
+  onRetry: () => void
+  pendingSearch: boolean
+  showSkeletons: boolean
+}
+
+/** What sits under the sections: skeletons while loading, the no-sessions note, paging and errors. */
+function PortalSidebarListStates(props: PortalSidebarListStatesProps) {
+  const { t } = useI18n()
+
+  return (
+    <>
+      {props.showSkeletons && <SidebarSessionSkeletons />}
+      {props.pendingSearch && (
+        <p className="sr-only" role="status">
+          {t.common.loading}
+        </p>
+      )}
+      {props.empty && <p className="portal-sidebar-empty">{t.sidebar.noSessions}</p>}
+      {props.hasMore && (
+        <SidebarLoadMoreRow loading={props.loading || props.loadingMore} onClick={props.loadMore} step={0} />
+      )}
+      {props.error && <SidebarLoadErrorState onRetry={props.onRetry} />}
+    </>
+  )
+}
+
 export function PortalSidebar(props: ComponentProps<typeof ChatSidebar>) {
   const {
     t,
@@ -75,6 +109,10 @@ export function PortalSidebar(props: ComponentProps<typeof ChatSidebar>) {
   } = useAgentSidebar(props)
 
   const searchInputRef = useRef<HTMLInputElement>(null)
+  const searching = Boolean(query.trim())
+  // Nothing in flight: a settled list may show its empty notes.
+  const quiet = !loading && !search.pending && !search.failed
+  const settled = quiet && rows.length === 0
 
   useEffect(() => {
     const onFocus = () => searchInputRef.current?.focus({ preventScroll: true })
@@ -135,15 +173,21 @@ export function PortalSidebar(props: ComponentProps<typeof ChatSidebar>) {
             {t.errors.genericFailure}
           </p>
         )}
-        <div className="portal-sidebar-sections" onKeyDown={moveRowFocus}>
-          <SimplifiedPinnedSessions
-            {...shared}
-            emptyState={
-              !loading && !error && !search.pending && !search.failed && !query.trim() && <PortalPinnedEmpty />
-            }
-            onResumeSession={resumePinned}
-            sessions={pinned}
-          />
+        {/* A search with no hits answers right under the field; the empty sections stand down. */}
+        {searching && settled && (
+          <p className="portal-sidebar-empty" role="status">
+            {t.sidebar.noMatch(query)}
+          </p>
+        )}
+        <div className="portal-sidebar-sections" hidden={searching && settled} onKeyDown={moveRowFocus}>
+          {(!searching || pinned.length > 0) && (
+            <SimplifiedPinnedSessions
+              {...shared}
+              emptyState={!searching && quiet && !error && <PortalPinnedEmpty />}
+              onResumeSession={resumePinned}
+              sessions={pinned}
+            />
+          )}
           <PortalGroupChats query={query} />
           <SimplifiedAgentList
             agents={agents}
@@ -160,17 +204,17 @@ export function PortalSidebar(props: ComponentProps<typeof ChatSidebar>) {
             revealSession={revealSession}
           />
         </div>
-        {loading && rows.length === 0 && <SidebarSessionSkeletons />}
-        {query.trim() && search.pending && (
-          <p className="sr-only" role="status">
-            {t.common.loading}
-          </p>
-        )}
-        {!loading && !search.pending && !search.failed && rows.length === 0 && (
-          <p className="portal-sidebar-empty">{query ? t.sidebar.noMatch(query) : t.sidebar.noSessions}</p>
-        )}
-        {hasMore && <SidebarLoadMoreRow loading={loading || loadingMore} onClick={() => void loadMore()} step={0} />}
-        {error && <SidebarLoadErrorState onRetry={() => void props.onRetrySessions()} />}
+        <PortalSidebarListStates
+          empty={!searching && settled}
+          error={Boolean(error)}
+          hasMore={hasMore}
+          loading={loading}
+          loadingMore={loadingMore}
+          loadMore={() => void loadMore()}
+          onRetry={() => void props.onRetrySessions()}
+          pendingSearch={searching && search.pending}
+          showSkeletons={loading && rows.length === 0}
+        />
       </SidebarContent>
     </Sidebar>
   )

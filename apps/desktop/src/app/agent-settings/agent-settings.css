@@ -31,8 +31,7 @@
   width: var(--page-nav-width);
   flex-direction: column;
   gap: 1.5rem;
-  padding: 1.5rem 1.25rem;
-  background: var(--ui-sidebar-surface-background);
+  padding: 1.34375rem 1.25rem 1.5rem;
 }
 
 /* New agent (895:9447): a 40px secondary row, 13px label, leading plus. */
@@ -45,8 +44,9 @@
   font-weight: 400;
 }
 
-.agent-management-nav .page-nav-title {
-  margin-bottom: 0;
+.agent-management-nav .page-sidebar-head {
+  /* With the column's 24px gap: Figma's title-to-New-agent spacing (895:8991). */
+  margin-bottom: 0.4375rem;
 }
 
 /* Group label (895:9473): 10px uppercase, +0.6px tracking. */
@@ -154,16 +154,16 @@
   color: var(--ui-text-secondary);
 }
 
-/* Warning banner (877:4212): red tint, 40% red hairline, r4. */
+/* Warning banner (877:4212, 878:7066): #a22a20 at 8% with a 40% hairline, r4, orange warn glyph. */
 .agent-channel-warning {
   display: flex;
   align-items: center;
   gap: 0.75rem;
   margin-bottom: 2rem;
   padding: 0.75rem 0.75rem 0.75rem 1rem;
-  border: 1px solid color-mix(in srgb, var(--color-destructive) 40%, transparent);
+  border: 1px solid color-mix(in srgb, var(--portal-control-danger-fill) 40%, transparent);
   border-radius: 4px;
-  background: color-mix(in srgb, var(--color-destructive) 8%, transparent);
+  background: color-mix(in srgb, var(--portal-control-danger-fill) 8%, transparent);
   font-size: 0.875rem;
   font-weight: 500;
   line-height: 1.4;
@@ -173,7 +173,7 @@
   flex-shrink: 0;
   width: 1rem;
   height: 1rem;
-  color: var(--color-destructive);
+  color: var(--portal-pages-warning-ink);
 }
 
 .agent-channel-warning p + p {
@@ -200,11 +200,16 @@
 }
 
 .agent-channel-status[data-tone='connected'] {
-  color: var(--ui-green);
+  color: var(--portal-status-online, var(--ui-green));
 }
 
+/* 877:4307: a #a22a20 dot beside softer #cc8a84 text (the dot alone carries the alarm colour). */
 .agent-channel-status[data-tone='disconnected'] {
-  color: var(--color-destructive);
+  color: var(--portal-pages-offline-ink);
+}
+
+.agent-channel-status[data-tone='disconnected']::before {
+  background: var(--portal-control-danger-fill);
 }
 
 .agent-management-actions {
@@ -226,17 +231,19 @@
   font-size: 0.875rem;
 }
 
-/* Tabs (877:4200): 24px apart, 2px brand underline on the active label, a 3% rule under the row. */
+/* Tabs (877:4200): 24px apart, 2px #0000f2 underline on the active label, a light/5 rule under the row. */
 .agent-management-tabs {
   display: flex;
   flex-shrink: 0;
   gap: 24px;
   margin-bottom: 24px;
-  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--ui-base) 5%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--ui-base) 5%, transparent);
 }
 
+/* The active underline overlaps the row's rule rather than sitting on top of it. */
 .agent-management-tabs button {
   min-height: 2rem;
+  margin-bottom: -1px;
   padding-bottom: 0.5rem;
   border-bottom: 2px solid transparent;
   color: var(--ui-text-tertiary);
@@ -252,10 +259,6 @@
 
 .agent-management-tabs button[aria-current] {
   border-bottom-color: var(--portal-brand-fill);
-}
-
-:root.dark .agent-management-tabs button[aria-current] {
-  border-bottom-color: var(--portal-brand-ink);
 }
 
 .agent-management-tabs button:focus-visible {

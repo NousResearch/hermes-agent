@@ -37,6 +37,7 @@ import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { runGatewayRestart } from '@/store/system-actions'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
+import { usePageFrameCopy } from '../overlays/page-frame-copy'
 import {
   Panel,
   PanelAddButton,
@@ -95,6 +96,7 @@ export function WebhooksView({ onClose }: WebhooksViewProps) {
 function ProfileOwnedWebhooksView({ backendProfile, onClose }: ProfileOwnedWebhooksViewProps) {
   const { t } = useI18n()
   const w = t.webhooks
+  const frame = usePageFrameCopy()
   const queryClient = useQueryClient()
   const queryKey = useMemo(() => ['webhooks', backendProfile] as const, [backendProfile])
   const ownerActive = useRef(true)
@@ -425,7 +427,13 @@ function ProfileOwnedWebhooksView({ backendProfile, onClose }: ProfileOwnedWebho
 
   return (
     <Panel onClose={onClose}>
-      <PanelHeader hideInClassic={loading || !subscriptions.length} subtitle={w.hint} title={w.subscriptions(subscriptions.length)} />
+      <PanelHeader
+        hideInClassic={loading || !subscriptions.length}
+        // The redesign names the page, not a count ("Subscriptions (0)"); the list shows what exists.
+        simplifiedTitle={frame.webhooksTitle}
+        subtitle={w.hint}
+        title={w.subscriptions(subscriptions.length)}
+      />
       {loading ? (
         <PageLoader label={w.loading} />
       ) : subscriptions.length === 0 ? (

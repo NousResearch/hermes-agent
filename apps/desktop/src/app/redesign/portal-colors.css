@@ -31,7 +31,8 @@
   --ui-text-secondary: color-mix(in srgb, var(--ui-base) 80%, transparent);
   --ui-text-tertiary: color-mix(in srgb, var(--ui-base) 72%, transparent);
   --ui-text-quaternary: color-mix(in srgb, var(--ui-base) 64%, transparent);
-  --sidebar-edge-border: var(--ui-stroke-quaternary);
+  /* The sidebar's edge and header rule (Var1 147:7470: light/10). */
+  --sidebar-edge-border: color-mix(in srgb, var(--ui-base) 10%, transparent);
   --portal-selection-background: color-mix(in srgb, var(--portal-brand-fill) 10%, transparent);
   --portal-neutral-selection-background: color-mix(in srgb, var(--ui-base) 5%, transparent);
   --portal-neutral-selection-stroke: color-mix(in srgb, var(--ui-base) 5%, transparent);
@@ -47,15 +48,18 @@
 
 /* Shell surfaces (Figma `Background` › `Content`): rails and the titlebar band show the window
    canvas; the sidebar and stage are panels laid over it. Every value derives from the skin's
-   chrome and ink, so each skin keeps its character while the redesign keeps Figma's stack:
-   dark panels are black .90 / .96 + ink .05 over the canvas, light panels lift toward white.
-   Window glass owns these surfaces itself (styles.css), so the stack stands down there. */
-:root[data-shell='portal']:not([data-hermes-glass]) {
+   canvas and chrome, so each skin keeps its character while the redesign keeps Figma's stack. Dark
+   is one navy family (Variation 1 147:7470, pages 895/856): the canvas, the sidebar panels at .90 of
+   it (the wing reads through them), the stage at .96 of the chrome; light panels lift toward white.
+   These rules are unlayered on purpose: they hold under window Glass too (styles.css `@layer base`),
+   where only the canvas yields to the native material (below). */
+:root[data-shell='portal'] {
   /* A skin may name its own canvas (themes/portal.ts); otherwise chrome with 5% ink. */
   --portal-window-background: var(--portal-skin-window, color-mix(in srgb, var(--ui-base) 5%, var(--ui-bg-chrome)));
   --portal-sidebar-background: color-mix(in srgb, #fff 30%, var(--portal-window-background));
-  /* The sidebar panel itself: translucent where the design lets the wing show through it. */
-  --portal-sidebar-panel-background: var(--portal-sidebar-background);
+  /* The sidebar panel itself: the same white lift as one translucent layer, so the canvas wing
+     reads through it as a trace (Light draws it barely there, 491:46161). */
+  --portal-sidebar-panel-background: color-mix(in srgb, #fff 30%, transparent);
   --portal-stage-background: color-mix(in srgb, #fff 90%, var(--portal-window-background));
   --portal-panel-divider: var(--ui-stroke-tertiary);
   /* Settings / agent / capability pages sit on the canvas itself (Overview 856:2809). */
@@ -67,44 +71,57 @@
   --ui-editor-surface-background: var(--portal-stage-background);
 }
 
-:root.dark[data-shell='portal']:not([data-hermes-glass]) {
+:root.dark[data-shell='portal'] {
   --portal-window-background: var(--portal-skin-window, var(--ui-bg-chrome));
-  --portal-sidebar-background: color-mix(
-    in srgb,
-    var(--ui-base) 5%,
-    color-mix(in srgb, #000 90%, var(--portal-window-background))
-  );
-  /* Same composite as one translucent fill: black .90 then ink .05 = (ink 5.5% on black) @ .905. */
-  --portal-sidebar-panel-background: color-mix(
-    in srgb,
-    color-mix(in srgb, var(--ui-base) 5.5%, #000) 90.5%,
-    transparent
-  );
-  --portal-stage-background: color-mix(
-    in srgb,
-    var(--ui-base) 5%,
-    color-mix(in srgb, #000 96%, var(--portal-window-background))
-  );
+  /* #0A0A1A@.90 over the canvas (856:2740): the panel's own colour, with a tenth of the art. */
+  --portal-sidebar-panel-background: color-mix(in srgb, var(--portal-window-background) 90%, transparent);
+  --portal-sidebar-background: var(--portal-window-background);
+  /* #07071A@.96 over the canvas (856:2809, Var1 147:7470): the skin's chrome. */
+  --portal-stage-background: color-mix(in srgb, var(--ui-bg-chrome) 96%, var(--portal-window-background));
   --portal-page-canvas: var(--ui-bg-chrome);
   --portal-page-background: var(--portal-page-canvas);
-  --portal-page-sidebar-background: color-mix(in srgb, var(--ui-base) 1.5%, transparent);
+  --portal-page-sidebar-background: var(--portal-sidebar-panel-background);
 }
 
 /* Pages — overlays (Settings, Agents, …) and the workspace's own pages (Capabilities, Library, …)
    — share one frame: square, full bleed beside the rail, nav and body laid on the page canvas
    (Overview 856:2740 / 856:2809 / 919:9263) rather than on chat panels. */
-:root[data-shell='portal']:not([data-hermes-glass])
-  :is([data-overlay-surface][data-page-surface], [data-tree-group][data-zone-page]) {
+:root[data-shell='portal'] :is([data-overlay-surface][data-page-surface], [data-tree-group][data-zone-page]) {
   --ui-chat-surface-background: var(--portal-page-background);
   --ui-editor-surface-background: var(--portal-page-background);
   --ui-sidebar-surface-background: var(--portal-page-sidebar-background);
 }
 
-:root[data-shell='portal']:not([data-hermes-glass]) [data-overlay-surface][data-page-surface] {
+:root[data-shell='portal'] [data-overlay-surface][data-page-surface] {
   background-color: var(--portal-page-canvas);
 }
 
-:root[data-shell='portal']:not([data-hermes-glass])
-  :is([data-slot='page-toolbar'], [data-tree-group][data-zone-page] > [data-panel-header]) {
+:root[data-shell='portal'] :is([data-slot='page-toolbar'], [data-tree-group][data-zone-page] > [data-panel-header]) {
   background-color: var(--portal-page-canvas);
+}
+
+/* Window Glass (macOS default): the native material shows only on the canvas — the rails and the
+   band — tinted with the portal canvas at the user's Glass intensity (0 = solid). styles.css clears
+   the shell's own canvas paint for Glass; <body> is the canvas's one painter. Panels, cards and the
+   wing above it render exactly as without Glass. */
+:root[data-shell='portal'][data-hermes-glass] body {
+  background: color-mix(in srgb, var(--portal-window-background) var(--translucency-glass-keep, 100%), transparent);
+}
+
+/* Status inks, one set for the whole redesign (sidebar machines, dots, chips, page status text):
+   online is the pages' spec green (877:4308), pending Figma's orange, offline and failed their
+   greys and reds; each passes 4.5:1 on its mode's panels. */
+:root[data-shell='portal'] {
+  --portal-status-online: #1f8a65;
+  --portal-status-pending: color-mix(in srgb, #f27900 70%, #000);
+  --portal-status-offline: var(--ui-text-quaternary);
+  --portal-status-error: #a22a20;
+  --portal-status-error-ink: #a22a20;
+}
+
+:root.dark[data-shell='portal'] {
+  --portal-status-online: #6df2a8;
+  --portal-status-pending: #f27900;
+  --portal-status-error-ink: #cc8a84;
+  --ui-green: var(--portal-status-online);
 }

@@ -1,4 +1,5 @@
 import { desktopTerms } from './desktop-terms'
+import { RU_NOUN } from './ru_plural'
 import type { BundledLocale } from './types'
 
 export interface SimplifiedAgentsCopy {
@@ -8,6 +9,9 @@ export interface SimplifiedAgentsCopy {
   agents: string
   settings: string
   library: string
+  /** An agent card's second line when nothing else describes it. */
+  noChats: string
+  chatCount: (count: number) => string
   feedbackTitle: string
   feedbackPlaceholder: string
   feedbackThanks: string
@@ -29,6 +33,8 @@ export const simplifiedAgentsCopy: Record<BundledLocale, SimplifiedAgentsCopy> =
     agents: desktopTerms.en.agents,
     settings: 'Agent settings',
     library: 'Library',
+    noChats: 'No chats yet',
+    chatCount: n => (n === 1 ? '1 chat' : `${n} chats`),
     feedbackTitle: 'Why switch back? (optional)',
     feedbackPlaceholder: 'Choose a reason',
     feedbackThanks: 'Thanks for the feedback.',
@@ -48,6 +54,8 @@ export const simplifiedAgentsCopy: Record<BundledLocale, SimplifiedAgentsCopy> =
     agents: desktopTerms.fr.agents,
     settings: 'Paramètres de l’agent',
     library: 'Bibliothèque',
+    noChats: 'Aucune discussion',
+    chatCount: n => (n === 1 ? '1 discussion' : `${n} discussions`),
     feedbackTitle: 'Pourquoi revenir en arrière ? (facultatif)',
     feedbackPlaceholder: 'Choisir une raison',
     feedbackThanks: 'Merci pour votre retour.',
@@ -67,6 +75,8 @@ export const simplifiedAgentsCopy: Record<BundledLocale, SimplifiedAgentsCopy> =
     agents: desktopTerms.de.agents,
     settings: 'Agenteneinstellungen',
     library: 'Bibliothek',
+    noChats: 'Noch keine Chats',
+    chatCount: n => (n === 1 ? '1 Chat' : `${n} Chats`),
     feedbackTitle: 'Warum zurückwechseln? (optional)',
     feedbackPlaceholder: 'Grund auswählen',
     feedbackThanks: 'Danke für dein Feedback.',
@@ -86,6 +96,8 @@ export const simplifiedAgentsCopy: Record<BundledLocale, SimplifiedAgentsCopy> =
     agents: desktopTerms.es.agents,
     settings: 'Ajustes del agente',
     library: 'Biblioteca',
+    noChats: 'Aún no hay chats',
+    chatCount: n => (n === 1 ? '1 chat' : `${n} chats`),
     feedbackTitle: '¿Por qué volver? (opcional)',
     feedbackPlaceholder: 'Elige un motivo',
     feedbackThanks: 'Gracias por tus comentarios.',
@@ -105,6 +117,8 @@ export const simplifiedAgentsCopy: Record<BundledLocale, SimplifiedAgentsCopy> =
     agents: desktopTerms.ja.agents,
     settings: 'エージェント設定',
     library: 'ライブラリ',
+    noChats: 'チャットはまだありません',
+    chatCount: n => `${n} 件のチャット`,
     feedbackTitle: '元に戻した理由は？（任意）',
     feedbackPlaceholder: '理由を選択',
     feedbackThanks: 'ご意見ありがとうございます。',
@@ -124,6 +138,8 @@ export const simplifiedAgentsCopy: Record<BundledLocale, SimplifiedAgentsCopy> =
     agents: desktopTerms.zh.agents,
     settings: '智能体设置',
     library: '资源库',
+    noChats: '还没有对话',
+    chatCount: n => `${n} 个对话`,
     feedbackTitle: '为什么切换回来？（可选）',
     feedbackPlaceholder: '选择原因',
     feedbackThanks: '感谢你的反馈。',
@@ -143,6 +159,8 @@ export const simplifiedAgentsCopy: Record<BundledLocale, SimplifiedAgentsCopy> =
     agents: desktopTerms['zh-hant'].agents,
     settings: '智慧體設定',
     library: '資料庫',
+    noChats: '尚無對話',
+    chatCount: n => `${n} 個對話`,
     feedbackTitle: '為什麼切換回來？（選填）',
     feedbackPlaceholder: '選擇原因',
     feedbackThanks: '感謝你的回饋。',
@@ -162,6 +180,8 @@ export const simplifiedAgentsCopy: Record<BundledLocale, SimplifiedAgentsCopy> =
     agents: desktopTerms.ru.agents,
     settings: 'Настройки агента',
     library: 'Библиотека',
+    noChats: 'Чатов пока нет',
+    chatCount: n => `${n} ${RU_NOUN(n, 'чат', 'чата', 'чатов')}`,
     feedbackTitle: 'Почему вернулись? (необязательно)',
     feedbackPlaceholder: 'Выберите причину',
     feedbackThanks: 'Спасибо за отзыв.',
@@ -181,6 +201,8 @@ export const simplifiedAgentsCopy: Record<BundledLocale, SimplifiedAgentsCopy> =
     agents: desktopTerms.ar.agents,
     settings: 'إعدادات الوكيل',
     library: 'المكتبة',
+    noChats: 'لا توجد محادثات بعد',
+    chatCount: n => (n === 1 ? 'محادثة واحدة' : `${n} محادثات`),
     feedbackTitle: 'لماذا عدت للوضع السابق؟ (اختياري)',
     feedbackPlaceholder: 'اختر سببًا',
     feedbackThanks: 'شكرًا على ملاحظاتك.',

@@ -35,6 +35,7 @@ import {
 } from '@/store/agent-plugins'
 import { notify, notifyError } from '@/store/notifications'
 import { $settingsRequestProfile, setSettingsScope } from '@/store/settings-scope'
+import { usePortalShell } from '@/store/shell-variant'
 
 import { desktopPackageName } from '../capabilities/plugins/plugin-packages'
 import type { OverlayNavLink } from '../overlays/overlay-split-layout'
@@ -43,6 +44,7 @@ import { CAPABILITIES_ROUTE } from '../routes'
 import { PluginSettingsForm } from './plugin-settings-form'
 import { EmptyState, ListRowSkeleton, SectionHeading, SettingsContent } from './primitives'
 import { SettingsProfileScope, useSettingsOwner } from './profile-scope'
+import { SettingsFooter, SettingsPageDescription } from './settings-card'
 import { useSettingsGatewayRequest } from './settings-owner-request'
 
 /** Opens Settings ▸ Plugins at a route; `null` = the overview. */
@@ -267,27 +269,37 @@ function PluginSettingsOverview({
 }) {
   const { t } = useI18n()
   const copy = t.settings.pluginPages
+  const redesign = usePortalShell()
+
+  const manageLabel = (
+    <>
+      {copy.manage}
+      <Codicon name="arrow-right" size="0.75rem" />
+    </>
+  )
 
   return (
     <SettingsContent>
+      <SettingsPageDescription>{copy.blurb}</SettingsPageDescription>
       {/* The agent half of this list is per profile: keep the selector here
           too, or a profile without the plugin strands the user (no way back). */}
       <SettingsProfileScope className="mb-5" />
-      <SectionHeading
-        aside={
-          // Page-level action on the heading row, like Passwords & Logins' Add.
-          <Button asChild className="gap-1.5" size="sm" variant="outline">
-            <a href={MANAGE_PLUGINS_HREF}>
-              {copy.manage}
-              <Codicon name="arrow-right" size="0.75rem" />
-            </a>
-          </Button>
-        }
-        icon={PLUGINS_NAV_ICON}
-        page
-        title={t.settings.nav.plugins}
-      />
-      <p className={BLURB_CLASS}>{copy.blurb}</p>
+      {!redesign && (
+        <>
+          <SectionHeading
+            aside={
+              // Page-level action on the heading row, like Passwords & Logins' Add.
+              <Button asChild className="gap-1.5" size="sm" variant="outline">
+                <a href={MANAGE_PLUGINS_HREF}>{manageLabel}</a>
+              </Button>
+            }
+            icon={PLUGINS_NAV_ICON}
+            page
+            title={t.settings.nav.plugins}
+          />
+          <p className={BLURB_CLASS}>{copy.blurb}</p>
+        </>
+      )}
       {missing && (
         <p
           className="mb-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-secondary)"
@@ -327,6 +339,14 @@ function PluginSettingsOverview({
             )
           })}
         </div>
+      )}
+      {redesign && (
+        // The redesign's page-level link closes the page (856:3477) instead of crowding the H1.
+        <SettingsFooter>
+          <Button asChild className="gap-1" size="inline" variant="textStrong">
+            <a href={MANAGE_PLUGINS_HREF}>{manageLabel}</a>
+          </Button>
+        </SettingsFooter>
       )}
     </SettingsContent>
   )

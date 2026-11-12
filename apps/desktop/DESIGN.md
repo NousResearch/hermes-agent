@@ -230,15 +230,19 @@ remain outside the drag region.
 
 The redesigned shell is a window canvas with panels laid on it
 (`app/redesign/portal-shell.css`, tokens in `portal-colors.css`). The titlebar
-band and the 60px rails show the canvas (the skin's chrome; light mixes 5% ink
-in). Zones touching the window top become panels starting below the band; only
-the row's outer top corners round at 9px, and neighbours share a 5% hairline.
-Dark panels are Figma's black .90 (sidebar) / .96 (stage) + 5% ink over the
-canvas; light panels lift toward white (30% / 90%). Pages (Settings, Agents)
-lay their nav and body on the canvas itself. The wing artwork is painted once,
-on the canvas, and reads only through translucent panels
-(`--portal-sidebar-panel-background`); a page card repaints it, registered to
-the viewport. Window glass keeps owning these surfaces. Titlebar, rail and pane
+band and the 60px rails show the canvas (the skin's `--portal-skin-window`; Hermes
+Portal dark `#0a0a1a`, light `#ededed`). Zones touching the window top become
+panels starting below the band; only the row's outer top corners round at 9px,
+and neighbours share a 5% hairline. Dark is one navy family (Variation 1 147:7470,
+pages 895/856): the chat sidebar, page navs and side tool panels are the canvas at
+.90 (translucent, so the wing reads through them at a tenth of its strength), the
+stage is the skin chrome at .96 (`#07071a`); light panels lift toward white (30% /
+90%). Pages lay their body on the canvas; their nav panel carries its own
+viewport-registered wing layer (`--portal-page-panel-fill`). The wing artwork is
+painted once, on the canvas, and reads only through translucent panels. Window Glass
+(macOS default) never switches the redesign off: its rules are unlayered and beat
+the `@layer base` Glass rules, and only the canvas (rails, band) takes the native
+material, tinted with the portal canvas at the user's Glass intensity. Titlebar, rail and pane
 header buttons are 30px r3 chrome buttons: 2% ink fill, quaternary glyph,
 hover 5%, pressed 10%, the open destination or shown pane in brand selection
 with a 1px brand ring. The titlebar band is a shell property: 60px in the
@@ -270,17 +274,30 @@ in both LTR and RTL layouts.
 Checked switches use the brand-blue track and light thumb across settings
 and the capability catalog; unchecked tracks are neutral 14% fills.
 
-Redesigned sidebar rows follow Figma's 38px pitch: a leading 5px pixel dot only
-for live status (unread, running, needs input), the title, and a right-aligned
-meta label. Hover uses a 4% neutral fill and the selected chat a 5% fill with a
-0.5px stroke, both 6px corners. The meta label yields to the action ellipsis on
-hover, keyboard focus, or an open menu; touch keeps both visible. Arrow keys,
-Home and End walk the visible rows; right-click opens the row menu.
+Below New session and search, the redesigned sidebar follows Figma 147:7470
+("Variation 1: Flattened gateway/host"): sections under 10px uppercase captions
+separated by whitespace (Agents carries a brand count badge), pinned rows of 30px
+with a 7px leading dot (row ink at rest, brand for the open chat or unread news, the
+status tones while a turn runs or waits), machines as 40px rows (name, inline
+organisation tag, status dot and label at the end), an expanded machine as one 5%
+container under a 7% header bar, agents as a 20px solid tile in the agent's snapped
+Figma primary (`lib/portal-profile-color.ts`) over a name and a second line (roster
+description, else the chat count), and an agent's chats on a 31px pitch under a 1px
+guide. Hover is a 4% fill (2% on agents), the open pinned chat a 2% fill. Row and
+agent actions (ellipsis, caret, kebab) are bare glyphs that appear on hover, keyboard
+focus or an open menu; touch keeps them visible. Arrow keys, Home and End walk the
+visible rows; right-click opens the row menu. Captions and meta keep the AA ladder
+where Figma's inks fail 4.5:1. The band's leading cluster starts at
+`--portal-band-start` (x 130 past macOS traffic lights, else 80) and the session pill
+is anchored to the stage's leading edge with CSS anchor positioning, so it tracks a
+sash drag in the same frame.
 The global Agents icon uses the Figma robot silhouette tinted by `currentColor`,
-sharing its peers' inactive, hover, and selected tones in both light and dark themes.
-The Hermes Portal theme uses the Figma pages' navy canvas (`#07071a`) and
-floating surface (`#0d0d1e`) without generic neutral blending; the chat panels
-over it follow the shell's neutral stack. Foreground-derived
+sharing its peers' inactive, hover, and selected tones in both light and dark themes;
+rail destinations rest at .8 ink and the open one wears the brand selection with a
+60% brand ring.
+The Hermes Portal theme uses the Figma pages' navy (`#0a0a1a` canvas, `#07071a` stage) and
+floating surface (`#0d0d1e`) without generic neutral blending; the shell's panels
+derive from those two colours. Foreground-derived
 card fills remain subtle; custom theme choices and classic styling stay available.
 
 The **Redesigned interface** preference gates the setup guide, catalog/agent

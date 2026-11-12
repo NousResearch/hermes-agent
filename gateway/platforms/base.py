@@ -4371,9 +4371,9 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             if result is not None:
                 delivery_attempted = True
                 delivery_succeeded = delivery_succeeded or bool(getattr(result, "success", False))
-        # Reuse the interrupt event handle_message() installed; new Event only if removed externally.
-        interrupt_event = self._active_sessions.get(session_key) or asyncio.Event()
-        self._active_sessions[session_key] = interrupt_event
+        from gateway.platforms.base_session_command import guard_under_commands  # the guard it was scheduled under
+        interrupt_event = guard_under_commands(self._active_sessions.get(session_key)) or asyncio.Event()
+        self._active_sessions.setdefault(session_key, interrupt_event)  # an in-flight command keeps its own
         _thread_metadata = _thread_metadata_for_event(event)
         _typing_metadata = typing_metadata_for_turn(  # fixed now: a later inbound must not move it
             self, event.source.chat_id, _reply_anchor_for_event(event), _thread_metadata)

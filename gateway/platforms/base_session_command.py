@@ -8,21 +8,32 @@ An adapter with no authorization check registered has no verdict to wait for and
 """
 import asyncio
 import logging
+import weakref
 
 logger = logging.getLogger(__name__)
 
-# Command guard -> the guard it stands in for, while that command is in flight. Overlapping commands
-# chain to the owner's guard, so a refusal never hands the session to another command's guard.
-_command_guard_owners: dict[asyncio.Event, asyncio.Event | None] = {}
+# Command guard -> the guard it replaced (kept while anything still refers to it), and the commands
+# still in flight. A refusal hands the session to the nearest earlier command still in flight, which
+# settles it itself, else to the owner's guard under the finished ones: never to a settled command's.
+_replaced_guard: "weakref.WeakKeyDictionary[asyncio.Event, asyncio.Event | None]" = weakref.WeakKeyDictionary()
+_in_flight: "weakref.WeakSet[asyncio.Event]" = weakref.WeakSet()
+
+
+def guard_under_commands(guard):
+    """The guard under any commands still in flight: a processing task that first runs while a command
+    is replying belongs to the guard it was scheduled under, which a refusal hands back."""
+    while guard in _in_flight:
+        guard = _replaced_guard[guard]
+    return guard
 
 
 async def dispatch_active_session_command(adapter, event, session_key: str, cmd: str) -> None:
     """Reply, then cancel + drain if accepted; refused, the owner's turn and held input stay."""
     logger.debug("[%s] Command '/%s' bypassing active-session guard for %s", adapter.name, cmd, session_key)
     current_guard = adapter._active_sessions.get(session_key)
-    current_guard = _command_guard_owners.get(current_guard, current_guard)
     command_guard = adapter._active_sessions[session_key] = asyncio.Event()
-    _command_guard_owners[command_guard] = current_guard
+    _replaced_guard[command_guard] = current_guard
+    _in_flight.add(command_guard)
     if (held := adapter._text_debounce_store().pop(session_key, None)) is not None:
         held.cancel_timer()
     cancelled = False
@@ -33,8 +44,10 @@ async def dispatch_active_session_command(adapter, event, session_key: str, cmd:
             await adapter.cancel_session_processing(session_key, release_guard=False, discard_pending=False)
             cancelled = True
     finally:
-        _command_guard_owners.pop(command_guard, None)
+        _in_flight.discard(command_guard)
         if not cancelled:
+            while current_guard in _replaced_guard and current_guard not in _in_flight:
+                current_guard = _replaced_guard[current_guard]
             await _restore_after_refused_command(adapter, session_key, command_guard, current_guard, held)
     if cancelled:
         await adapter._drain_pending_after_session_command(session_key, command_guard)

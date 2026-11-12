@@ -286,3 +286,71 @@ async def test_overlapping_refused_commands_hand_the_session_back_to_its_owner()
     assert adapter._active_sessions.get(key) is guards[0]
     finish.set()
     await async_wait_until(lambda: key not in adapter._active_sessions, timeout=5)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("commands, release", [
+    pytest.param([OWNER, MEMBER], [1, 0], id="refusal-during-an-accepted-stop"),
+    pytest.param([OWNER, MEMBER, MEMBER], [1, 2, 0], id="refusal-over-a-settled-refusal"),
+    pytest.param([MEMBER, MEMBER, MEMBER], [0, 1, 2], id="three-refusals"),
+])
+async def test_overlapping_commands_hand_the_session_to_whoever_still_settles_it(commands, release):
+    """Each refusal hands the session to the earliest command still in flight, else to the owner: an
+    accepted /stop's drain then releases it, and refusals alone leave the owner's guard."""
+    adapter, runner, key, task = await _busy_session()
+    gates = [asyncio.Event() for _ in commands]
+
+    async def handle(event):
+        if event.text == "/stop":
+            await gates[int(event.message_id)].wait()
+        return await runner.handle(event)
+    adapter.set_message_handler(handle)
+    guards, tasks = [adapter._active_sessions[key]], []
+    for index, user_id in enumerate(commands):
+        stop = _event(user_id, "/stop")
+        stop.message_id = str(index)
+        tasks.append(asyncio.create_task(adapter.handle_message(stop)))
+        await async_wait_until(lambda: adapter._active_sessions.get(key) is not guards[-1], timeout=5)
+        guards.append(adapter._active_sessions[key])
+    for index in release:
+        gates[index].set()
+        await asyncio.wait_for(tasks[index], 5)
+    if OWNER in commands:
+        assert runner.turn_cancelled.is_set()
+        await async_wait_until(lambda: key not in adapter._active_sessions, timeout=5)
+    else:
+        assert adapter._active_sessions.get(key) is guards[0]
+        task.cancel()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sender", [MEMBER, OWNER], ids=["refused", "accepted"])
+async def test_a_stop_before_the_owners_task_first_runs_leaves_no_stale_guard(sender):
+    """The owner's task is scheduled but has not run when a /stop installs its guard: the task still
+    takes the guard it was scheduled under, so a refusal hands that back and the owner's finish
+    releases it, and an accepted stop's drain releases its own."""
+    adapter, started, finish, gate = _Adapter(), asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def handle(event):
+        if event.text != "/stop":
+            started.set()
+            await finish.wait()
+            return "done"
+        await gate.wait()
+        if event.source.user_id != OWNER:
+            return "⛔ You can't run /stop here."
+        event.accept_interrupt()
+        return "ok /stop"
+
+    async def release_once_started():
+        await started.wait()
+        gate.set()
+    adapter.set_message_handler(handle)
+    adapter.set_authorization_check(lambda *_a, **_kw: True)
+    helper = asyncio.create_task(release_once_started())
+    await adapter.handle_message(_event(OWNER, "write the report"))
+    key = next(iter(adapter._session_tasks))
+    await asyncio.wait_for(adapter.handle_message(_event(sender, "/stop")), 5)  # before the task's first step
+    await helper
+    finish.set()
+    await async_wait_until(lambda: key not in adapter._active_sessions, timeout=5)

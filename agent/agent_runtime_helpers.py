@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from hermes_cli.timeouts import get_provider_request_timeout
 from agent.message_sanitization import (
-    _FULL_ARGS_LOG_BOUND, coalesce_tool_call_id, coerce_tool_name, tool_call_id_variants, tool_result_id_variants
+    _FULL_ARGS_LOG_BOUND, _disambiguate_duplicate_tool_call_ids, coalesce_tool_call_id, coerce_tool_name, tool_call_id_variants, tool_result_id_variants
 )
 from agent.message_metadata import (
     TOOL_CALL_UIDS, merge_tool_call_uids, per_occurrence_tool_call_uids, record_absorbed_message)
@@ -742,7 +742,7 @@ def _merge_consecutive_users(messages: list[dict]) -> tuple[list[dict], int]:
 
 _SEQUENCE_REPAIR_PASSES = (
     _merge_consecutive_assistants, _drop_stray_tool_results, _prune_unanswered_tool_calls,
-    _merge_consecutive_users,
+    _merge_consecutive_users, _disambiguate_duplicate_tool_call_ids,
 )
 
 def _normalize_sentinel_encoded_content(messages: list[dict]) -> None:

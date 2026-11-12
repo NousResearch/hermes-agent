@@ -5,11 +5,53 @@ import { describe, expect, it, vi } from 'vitest'
 
 import {
   applyPreviewGuestAttachPrefs,
+  applyPreviewGuestUserAgent,
   beginPreviewGuestActivity,
   endPreviewGuestActivity,
   executePreviewGuestScript
 } from './preview-guest-throttle'
 import { createStreamThrottle } from './stream-throttle'
+
+describe('applyPreviewGuestUserAgent', () => {
+  it('reports the actual Chromium engine instead of custom application product tokens', () => {
+    const session = {
+      getUserAgent: vi.fn(() => 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Hermes/0.0.0 Chrome/152.0.7977.167 Electron/44.9.3 Safari/537.36'),
+      setUserAgent: vi.fn()
+    }
+
+    applyPreviewGuestUserAgent(session, 'persist:hermes-preview')
+
+    expect(session.setUserAgent).toHaveBeenCalledExactlyOnceWith(
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.7977.167 Safari/537.36'
+    )
+  })
+
+  it('leaves sessions outside the preview partition untouched', () => {
+    const session = {
+      getUserAgent: vi.fn(),
+      setUserAgent: vi.fn()
+    }
+
+    applyPreviewGuestUserAgent(session, 'persist:other')
+
+    expect(session.getUserAgent).not.toHaveBeenCalled()
+    expect(session.setUserAgent).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['an already-normalized descriptor', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.7977.167 Safari/537.36'],
+    ['a descriptor without the expected Chromium engine', 'Mozilla/5.0 (compatible; Electron/44.9.3)']
+  ])('leaves %s unchanged', (_description, userAgent) => {
+    const session = {
+      getUserAgent: vi.fn(() => userAgent),
+      setUserAgent: vi.fn()
+    }
+
+    applyPreviewGuestUserAgent(session, 'persist:hermes-preview')
+
+    expect(session.setUserAgent).not.toHaveBeenCalled()
+  })
+})
 
 describe('applyPreviewGuestAttachPrefs', () => {
   it('leaves every other webview alone', () => {

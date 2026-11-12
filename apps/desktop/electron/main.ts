@@ -440,7 +440,11 @@ import { onPreviewWatchOwnerDestroyed, sendPreviewFileChangedToOwner } from './p
 import { hasClosePreviewFlag, previewGuestInputAction } from './preview-guest-escape'
 import { registerPreviewGuestIpc } from './preview-guest-ipc'
 import { commandFocusedGuest } from './preview-guest-offscreen'
-import { applyPreviewGuestAttachPrefs } from './preview-guest-throttle'
+import {
+  applyPreviewGuestAttachPrefs,
+  applyPreviewGuestUserAgent,
+  PREVIEW_GUEST_PARTITION
+} from './preview-guest-throttle'
 import { PreviewReachRegistry } from './preview-reach'
 import { previewHttpUrlTarget } from './preview-url-target'
 import { FirstRunSetupResetError, runPrimaryBackendStartup } from './primary-backend-startup'
@@ -12178,6 +12182,10 @@ function installPreviewGuestPreload() {
     }
 
     contents.on('will-attach-webview', (_attachEvent, webPreferences, params) => {
+      if (params.partition === PREVIEW_GUEST_PARTITION) {
+        applyPreviewGuestUserAgent(session.fromPartition(params.partition), params.partition)
+      }
+
       applyPreviewGuestAttachPrefs(webPreferences, params.partition, PREVIEW_GUEST_PRELOAD_PATH)
     })
   })

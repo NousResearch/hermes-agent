@@ -22,6 +22,27 @@ export function applyPreviewGuestAttachPrefs(
   webPreferences.backgroundThrottling = true
 }
 
+/**
+ * Present external browser checks with the preview's actual Chromium engine
+ * and unchanged platform version, rather than Electron/application wrappers.
+ */
+export function applyPreviewGuestUserAgent(
+  previewSession: Pick<Session, 'getUserAgent' | 'setUserAgent'>,
+  partition: string | undefined
+): void {
+  if (partition !== PREVIEW_GUEST_PARTITION) {
+    return
+  }
+
+  const current = previewSession.getUserAgent()
+
+  if (!/\sChrome\/\d+(?:\.\d+)+\s/.test(current) || !/\sElectron\/[^\s]+/.test(current)) {
+    return
+  }
+
+  previewSession.setUserAgent(current.replace(/\s+(?:Hermes|Electron)\/[^\s]+/g, ''))
+}
+
 let nextLease = 0
 
 const leases = new Map<

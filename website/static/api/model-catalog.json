@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-11-11T09:45:27Z",
+  "updated_at": "2026-11-12T02:09:19Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -254,6 +254,14 @@
           "description": ""
         },
         {
+          "id": "meta/muse-wonder",
+          "description": ""
+        },
+        {
+          "id": "meta/muse-spark-open",
+          "description": ""
+        },
+        {
           "id": "sakana/fugu-ultra",
           "description": ""
         },
@@ -493,6 +501,12 @@
         },
         {
           "id": "meta/muse-ember"
+        },
+        {
+          "id": "meta/muse-wonder"
+        },
+        {
+          "id": "meta/muse-spark-open"
         },
         {
           "id": "sakana/fugu-ultra"

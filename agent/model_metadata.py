@@ -321,8 +321,8 @@ DEFAULT_CONTEXT_LENGTHS = {
     "deepseek-reasoner": 1_000_000, "deepseek-flash": 1_000_000, "deepseek": 128000,
     # Meta; Muse Spark family (1.1/1.2/1.3, -contributor(-free), meta/ prefixed) is 1M per OpenRouter,
     # models.dev and api.commandcode.ai /models — keep the "muse-spark" prefix (bare "muse" would match
-    # muse-image/muse-voice). Muse Ember (2026-11-09) is 1M on OpenRouter and the Nous Portal. Thinking Machines inkling
-    "llama": 131072, "muse-spark-1.3": 1_048_576, "muse-spark": 1_048_576, "muse-ember": 1_048_576, "inkling": 1_048_576,
+    # muse-image/muse-voice). Muse Ember/Wonder: 1M on OpenRouter + Nous Portal. Thinking Machines inkling
+    "llama": 131072, "muse-spark-1.3": 1_048_576, "muse-spark": 1_048_576, "muse-ember": 1_048_576, "muse-wonder": 1_048_576, "inkling": 1_048_576,
     # Qwen — https://help.aliyun.com/zh/model-studio/developer-reference/ (3.8-max/flash
     # 1M verified on OpenRouter & Nous portal 2026-08; qwen3-max = 256K Coding Plan snapshot)
     "qwen3.8-max": 1_000_000, "qwen3.8-flash": 1_000_000, "qwen3.6-plus": 1048576, "qwen3.7-plus": 1048576,
@@ -1509,7 +1509,7 @@ def _model_name_suggests_minimax_m3(model: str) -> bool:
 # shorter matching key and the 256K fallback — the threshold is inferred from them.
 _PRE_CATALOG_STALE_KEYS = frozenset({
     "minimax-m3",  # 1M; "minimax" catch-all persisted 204,800
-    "muse-spark-1.3", "muse-spark", "muse-ember",  # 1M; pre-entry builds fell through to the 256K fallback
+    "muse-spark-1.3", "muse-spark", "muse-ember", "muse-wonder",  # 1M; pre-entry builds fell through to the 256K fallback
     "grok-4.3", "grok-4.6",  # 1M / 500K; "grok-4" catch-all persisted 256,000
     "grok-4-fast", "grok-4.20",  # 2M; fell through to the 256K fallback
     "qwen3.6-plus",  # 1M; "qwen" catch-all persisted 131,072

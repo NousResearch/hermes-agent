@@ -396,7 +396,8 @@ class TestWebhookEndpoints:
         from hermes_cli.webhook import _load_subscriptions
         assert _load_subscriptions()["todoist"]["enabled"] is False
 
-    def test_re_post_keeps_the_route_signature_pin(self):
+    @pytest.mark.parametrize("pin", ["github", False, ""])  # the gateway refuses an invalid pin; dropping it unpins
+    def test_re_post_keeps_the_route_signature_pin(self, pin):
         """A re-POST replaces the record; losing the pin would republish the route accepting body-only
         GitHub/Linear MACs again (#84265)."""
         from hermes_cli.config import load_config, save_config
@@ -407,11 +408,11 @@ class TestWebhookEndpoints:
         save_config(cfg)
         assert self.client.post("/api/webhooks", json={"name": "gh", "deliver": "log"}).status_code == 200
         assert "signature" not in _load_subscriptions()["gh"]  # dashboard routes stay unpinned by default
-        _mutate_subscriptions(lambda subs: subs["gh"].update(signature="github"))
+        _mutate_subscriptions(lambda subs: subs["gh"].update(signature=pin))
 
         assert self.client.post("/api/webhooks", json={"name": "gh", "deliver": "log"}).status_code == 200
 
-        assert _load_subscriptions()["gh"]["signature"] == "github"
+        assert _load_subscriptions()["gh"]["signature"] == pin
 
     def test_enable_platform_starts_gateway_restart(self, monkeypatch):
         from hermes_cli.config import load_config

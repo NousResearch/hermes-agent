@@ -1302,6 +1302,8 @@ def max_retries_exhausted_result(
         "failure_reason": classified.reason.value,
         # The classifier's own retry verdict — UI surfaces use this, not the reason string.
         "failure_retryable": bool(classified.retryable),
+        # A local endpoint refused every retry: nothing is listening (see turn_exit_code).
+        **({"failure_unreachable": True} if classified.local_connection_refused else {}),
         # True when the billing verdict rests on an ambiguous body.
         "billing_unverified": _billing_unverified,
         # Present only for billing walls: (provider, billing_url, is_nous, message).

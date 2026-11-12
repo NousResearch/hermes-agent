@@ -100,6 +100,14 @@ class ClassifiedError:
         """True when a ``billing`` verdict rests on an ambiguous body (#82154)."""
         return bool(self.error_context.get("billing_unverified"))
 
+    @property
+    def local_connection_refused(self) -> bool:
+        """True when a transport verdict is a refused connection to a local endpoint (loopback,
+        private network, ``*.local``): nothing is listening, e.g. a stopped local engine, rather
+        than a slow, throttled or briefly unreachable hosted provider. Kanban workers spend their
+        retry budget on it instead of requeueing forever."""
+        return bool(self.error_context.get("local_connection_refused"))
+
 
 # ── Pattern tables (lowercased substrings) ──────────────────────────────
 
@@ -1115,6 +1123,27 @@ _STAGES: Sequence[Callable[[_Ctx], Optional[Verdict]]] = (
 )
 
 
+_REFUSED_CONNECTION_PATTERNS = ("connection refused", "econnrefused", "connect call failed")
+
+
+def _refused_connection(error: BaseException) -> bool:
+    """The error or anything in its cause chain is a refused TCP connect (SDKs wrap the OSError)."""
+    seen: set[int] = set()
+    while error is not None and id(error) not in seen:
+        seen.add(id(error))
+        if isinstance(error, ConnectionRefusedError) or any(p in str(error).lower() for p in _REFUSED_CONNECTION_PATTERNS):
+            return True
+        error = error.__cause__ or error.__context__
+    return False
+
+
+def _is_local_route(base_url: str) -> bool:
+    """A hosted load balancer can reset connections during an outage that clears on its own, so only a
+    local endpoint's refusal is treated as "down" (``agent.model_metadata.is_local_endpoint``)."""
+    from agent.model_metadata import is_local_endpoint
+    return bool(base_url) and is_local_endpoint(base_url)
+
+
 def classify_api_error(
     error: Exception, *, provider: str = "", model: str = "",
     approx_tokens: int = 0, context_length: int = 200000, num_messages: int = 0,
@@ -1141,6 +1170,8 @@ def classify_api_error(
     )
     stage, verdict = next(((s, v) for s in _STAGES if (v := s(c)) is not None), (None, _V_UNKNOWN))
     extra = _shape_context(c, verdict, hooked=stage in (_plugin_verdict, _profile_verdict))
+    if verdict["reason"] is _R.timeout and _refused_connection(error) and _is_local_route(c.base_url):
+        extra = {**(extra or {}), "local_connection_refused": True}
     if extra:
         verdict = {**verdict, "error_context": {**(verdict.get("error_context") or {}), **extra}}
     message = _extract_message(error, body)

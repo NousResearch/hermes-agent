@@ -135,3 +135,37 @@ def test_abort_recovery_restarts_a_sibling_without_the_updaters_token(homes, mon
     assert env.get("TELEGRAM_BOT_TOKEN") != _ROOT_TOKEN
     assert env.get("API_SERVER_ENABLED") == "true"
     assert env[recovery._RECOVERY_ENV] == "1"
+
+
+@pytest.mark.platforms("posix")
+def test_fresh_abort_recovery_withholds_what_the_updaters_secret_source_supplied(homes, monkeypatch, tmp_path):
+    """The abort recovery runs in a NEW interpreter: it inherits the updater's values but not which of
+    them a secret source supplied, so a source-only key reached the sibling as if the shell exported it.
+    Real fresh process; a ``sitecustomize`` shim records the ``gateway restart`` grandchild's env."""
+    import json
+    import sys
+    import textwrap
+    from hermes_cli import env_loader
+    from hermes_cli import update_abort_recovery as abort
+    monkeypatch.setattr(env_loader, "_SOURCE_SUPPLIED_NAMES", {"GITHUB_TOKEN"})
+    monkeypatch.setenv("GITHUB_TOKEN", "root-source-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "shell-key")
+    ledger, shim = tmp_path / "grandchild.jsonl", tmp_path / "shim"
+    shim.mkdir()
+    (shim / "sitecustomize.py").write_text(textwrap.dedent(f"""
+        import json, subprocess
+        _real = subprocess.run
+        def _run(argv, *a, **k):
+            if "hermes_cli.main" in list(argv):
+                with open({str(ledger)!r}, "a") as fh:
+                    fh.write(json.dumps(k.get("env")) + "\\n")
+                return subprocess.CompletedProcess(argv, 0, "", "")
+            return _real(argv, *a, **k)
+        subprocess.run = _run
+    """), encoding="utf-8")
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join([str(shim), *sys.path]))
+    result = abort._run_fresh_recovery_process(
+        ["api1"], {"api1": "launchd"}, gateway_mode=False, recover_serve=False, skip_units=[])
+    assert result is not None and result.returncode == 0, result and result.stderr
+    env, = (json.loads(line) for line in ledger.read_text().splitlines())
+    assert (env.get("GITHUB_TOKEN"), env.get("OPENAI_API_KEY")) == (None, "shell-key")

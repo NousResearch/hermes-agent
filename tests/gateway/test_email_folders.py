@@ -456,8 +456,8 @@ class TestFolderLifecycle(unittest.TestCase):
         move_calls = [c for c in mock_imap.uid.call_args_list if c.args[0] in ("MOVE", "COPY")]
         self.assertEqual(len(move_calls), 0, "No Working move without a Message-ID")
 
-    def test_fetch_rejected_uid_goes_to_done_without_body_fetch(self):
-        """A UID the pre-fetch gate rejects is moved INBOX → Done (UID still
+    def test_fetch_rejected_uid_goes_to_rejected_without_body_fetch(self):
+        """A UID the pre-fetch gate rejects is moved INBOX → Rejected (UID still
         valid there), never RFC822-fetched and never returned for dispatch;
         with done_folder='' it only gets \\Seen, as upstream does."""
         for done_folder, expect_move in (("Hermes_Done", True), ("", False)):
@@ -494,7 +494,7 @@ class TestFolderLifecycle(unittest.TestCase):
                 if expect_move:
                     self.assertEqual(len(move_calls), 1)
                     self.assertEqual(move_calls[0].args[1], b"15")
-                    self.assertEqual(move_calls[0].args[2], "Hermes_Done")
+                    self.assertEqual(move_calls[0].args[2], "Hermes_Rejected")
                 else:
                     self.assertEqual(move_calls, [], "No move when done_folder is empty")
 
@@ -560,7 +560,7 @@ class TestFolderLifecycle(unittest.TestCase):
 
         finalize_called = []
 
-        def fake_finalize(message_id, source_folder):
+        def fake_finalize(message_id, source_folder, target_folder=None):
             finalize_called.append((message_id, source_folder))
 
         adapter._finalize_message = fake_finalize
@@ -599,7 +599,7 @@ class TestFolderLifecycle(unittest.TestCase):
         self.assertEqual(finalize_called[0][1], "Hermes_Working")
 
     def test_finalize_moves_to_done_after_dispatch(self):
-        """Full dispatch flow: after handle_message returns, mail is moved to Done."""
+        """A handle_message that does not accept the event finalizes the mail at once."""
         import asyncio
         adapter = self._make_adapter({
             "working_folder": "Hermes_Working",
@@ -608,7 +608,7 @@ class TestFolderLifecycle(unittest.TestCase):
 
         finalize_calls = []
 
-        def fake_finalize(message_id, source_folder):
+        def fake_finalize(message_id, source_folder, target_folder=None):
             finalize_calls.append((message_id, source_folder))
 
         adapter._finalize_message = fake_finalize
@@ -652,7 +652,7 @@ class TestFolderLifecycle(unittest.TestCase):
 
         finalize_calls = []
 
-        def fake_finalize(message_id, source_folder):
+        def fake_finalize(message_id, source_folder, target_folder=None):
             finalize_calls.append(source_folder)
 
         adapter._finalize_message = fake_finalize
@@ -697,7 +697,7 @@ class TestFolderLifecycle(unittest.TestCase):
         async def recording_handler(event):
             adapter._handled.append(event)
 
-        def recording_finalize(message_id, source_folder):
+        def recording_finalize(message_id, source_folder, target_folder=None):
             adapter._finalized.append((message_id, source_folder))
 
         adapter.handle_message = recording_handler
@@ -767,6 +767,558 @@ class TestFolderLifecycle(unittest.TestCase):
 
         self.assertEqual(len(adapter._handled), 1)
         self.assertEqual(adapter._finalized, [("<drop@test.com>", "Hermes_Working")])
+
+
+class TestDeferredFinalize(unittest.TestCase):
+    """The Done move waits for on_processing_complete when the gateway accepted the event."""
+
+    _make_adapter = TestFolderLifecycle._make_adapter
+
+    def _lifecycle_adapter(self, extra=None):
+        adapter = self._make_adapter(extra or {"working_folder": "Hermes_Working", "done_folder": "Hermes_Done"})
+        adapter._finalized = []
+        adapter._targets = []
+        adapter._handled = []
+        adapter._finalize_message = lambda mid, folder, target=None: (
+            adapter._finalized.append((mid, folder)), adapter._targets.append(target))
+
+        async def accepting_handler(event):
+            adapter._handled.append(event)
+            event._gateway_accepted = True
+
+        adapter.handle_message = accepting_handler
+        return adapter
+
+    def _msg(self, message_id="<m1@test.com>", sender="user@test.com", folder="Hermes_Working"):
+        return {
+            "uid": b"90", "sender_addr": sender, "sender_name": "User", "subject": "Hi",
+            "message_id": message_id, "in_reply_to": "", "body": "body", "attachments": [], "date": "",
+            "sender_authenticated": True, "auth_reason": "dmarc=pass",
+            "source_folder": folder,
+        }
+
+    def _dispatch(self, adapter, msg):
+        import asyncio
+        with patch.dict(os.environ, {"EMAIL_ALLOW_ALL_USERS": "true"}):
+            asyncio.run(adapter._dispatch_message(msg))
+
+    def test_accepted_event_is_not_finalized_by_dispatch(self):
+        adapter = self._lifecycle_adapter()
+        self._dispatch(adapter, self._msg())
+        self.assertEqual(adapter._finalized, [])
+        self.assertIn("<m1@test.com>", adapter._open_mails)
+
+    def _complete(self, adapter, outcome):
+        import asyncio
+        asyncio.run(adapter.on_processing_complete(adapter._handled[0], outcome))
+
+    def test_success_moves_to_done(self):
+        from gateway.platforms.event import ProcessingOutcome
+        adapter = self._lifecycle_adapter()
+        self._dispatch(adapter, self._msg())
+        self._complete(adapter, ProcessingOutcome.SUCCESS)
+        self.assertEqual(adapter._finalized, [("<m1@test.com>", "Hermes_Working")])
+        self.assertEqual(len(adapter._open_mails), 0)
+
+    def test_failure_moves_to_done(self):
+        from gateway.platforms.event import ProcessingOutcome
+        adapter = self._lifecycle_adapter()
+        self._dispatch(adapter, self._msg())
+        self._complete(adapter, ProcessingOutcome.FAILURE)
+        self.assertEqual(adapter._finalized, [("<m1@test.com>", "Hermes_Working")])
+
+    def test_cancelled_leaves_mail_in_working(self):
+        from gateway.platforms.event import ProcessingOutcome
+        adapter = self._lifecycle_adapter()
+        self._dispatch(adapter, self._msg())
+        self._complete(adapter, ProcessingOutcome.CANCELLED)
+        self.assertEqual(adapter._finalized, [])
+        self.assertEqual(len(adapter._open_mails), 0)
+
+    def test_second_completion_does_not_move_again(self):
+        from gateway.platforms.event import ProcessingOutcome
+        adapter = self._lifecycle_adapter()
+        self._dispatch(adapter, self._msg())
+        self._complete(adapter, ProcessingOutcome.SUCCESS)
+        self._complete(adapter, ProcessingOutcome.SUCCESS)
+        self.assertEqual(len(adapter._finalized), 1)
+
+    def test_working_folder_empty_moves_from_inbox_after_completion(self):
+        from gateway.platforms.event import ProcessingOutcome
+        adapter = self._lifecycle_adapter({"working_folder": "", "done_folder": "Hermes_Done"})
+        self._dispatch(adapter, self._msg(folder="INBOX"))
+        self.assertEqual(adapter._finalized, [])
+        self._complete(adapter, ProcessingOutcome.SUCCESS)
+        self.assertEqual(adapter._finalized, [("<m1@test.com>", "INBOX")])
+
+    def test_completion_swallows_finalize_errors(self):
+        from gateway.platforms.event import ProcessingOutcome
+        adapter = self._lifecycle_adapter()
+        self._dispatch(adapter, self._msg())
+
+        def boom(mid, folder, target=None):
+            raise RuntimeError("imap down")
+
+        adapter._finalize_message = boom
+        self._complete(adapter, ProcessingOutcome.SUCCESS)
+
+    def test_completion_calls_base_hook(self):
+        from gateway.platforms.base import BasePlatformAdapter
+        from gateway.platforms.event import ProcessingOutcome
+        adapter = self._lifecycle_adapter()
+        self._dispatch(adapter, self._msg())
+        with patch.object(BasePlatformAdapter, "on_processing_complete", side_effect=RuntimeError("x")) as base:
+            self._complete(adapter, ProcessingOutcome.SUCCESS)
+        base.assert_called_once()
+        self.assertEqual(len(adapter._finalized), 1, "base hook failure must not block the move")
+
+    def test_completion_before_handle_message_returns_finalizes_once(self):
+        import asyncio
+        from gateway.platforms.event import ProcessingOutcome
+        adapter = self._lifecycle_adapter()
+
+        async def fast_handler(event):
+            event._gateway_accepted = True
+            await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+
+        adapter.handle_message = fast_handler
+        self._dispatch(adapter, self._msg())
+        self.assertEqual(adapter._finalized, [("<m1@test.com>", "Hermes_Working")])
+
+    def test_handler_exception_finalizes_immediately(self):
+        adapter = self._lifecycle_adapter()
+
+        async def raising(event):
+            event._gateway_accepted = True
+            raise RuntimeError("boom")
+
+        adapter.handle_message = raising
+        with self.assertRaises(RuntimeError):
+            self._dispatch(adapter, self._msg())
+        self.assertEqual(adapter._finalized, [("<m1@test.com>", "Hermes_Working")])
+        self.assertEqual(len(adapter._open_mails), 0)
+
+    def test_rejected_sender_finalizes_immediately(self):
+        adapter = self._lifecycle_adapter()
+        self._dispatch(adapter, self._msg(sender="hermes@test.com"))
+        self.assertEqual(adapter._handled, [])
+        self.assertEqual(adapter._finalized, [("<m1@test.com>", "Hermes_Working")])
+
+    def test_done_folder_empty_never_tracks_or_moves(self):
+        adapter = self._lifecycle_adapter({"working_folder": "Hermes_Working", "done_folder": ""})
+        self._dispatch(adapter, self._msg())
+        self.assertEqual(len(adapter._open_mails), 0)
+
+    def test_open_mail_map_is_bounded(self):
+        import plugins.platforms.email.adapter as mod
+        adapter = self._lifecycle_adapter()
+        with patch.object(mod, "_OPEN_MAILS_MAX", 2):
+            for i in range(3):
+                adapter._track_open_mail(f"<{i}@t>", "Hermes_Working", MagicMock())
+        self.assertEqual(list(adapter._open_mails), ["<1@t>", "<2@t>"])
+
+    def test_absorbed_ids_finalize_with_the_turn_without_the_reaper(self):
+        from gateway.platforms.event import ProcessingOutcome
+        adapter = self._lifecycle_adapter()
+        self._dispatch(adapter, self._msg("<a@test.com>"))
+        self._dispatch(adapter, self._msg("<b@test.com>"))
+        self._dispatch(adapter, self._msg("<c@test.com>"))
+        head, second, third = adapter._handled
+        second.absorb_reply_expected(third)
+        head.absorb_reply_expected(second)
+        import asyncio
+        asyncio.run(adapter.on_processing_complete(head, ProcessingOutcome.SUCCESS))
+        self.assertEqual(sorted(m for m, _ in adapter._finalized), ["<a@test.com>", "<b@test.com>", "<c@test.com>"])
+        self.assertEqual(len(adapter._open_mails), 0)
+
+    def test_overwritten_head_id_is_still_finalized(self):
+        """The text debounce rewrites the head's message_id; the original must still move."""
+        import asyncio
+        from gateway.platforms.event import ProcessingOutcome
+        adapter = self._lifecycle_adapter()
+        self._dispatch(adapter, self._msg("<a@test.com>"))
+        self._dispatch(adapter, self._msg("<b@test.com>"))
+        head, second = adapter._handled
+        head.absorb_reply_expected(second)
+        head.message_id = "<b@test.com>"
+        asyncio.run(adapter.on_processing_complete(head, ProcessingOutcome.SUCCESS))
+        self.assertEqual(sorted(m for m, _ in adapter._finalized), ["<a@test.com>", "<b@test.com>"])
+
+    def test_cancelled_drops_own_and_absorbed_but_not_other_mails(self):
+        import asyncio
+        from gateway.platforms.event import ProcessingOutcome
+        adapter = self._lifecycle_adapter()
+        for mid in ("<a@test.com>", "<b@test.com>", "<c@test.com>"):
+            self._dispatch(adapter, self._msg(mid))
+        head, second, _third = adapter._handled
+        head.absorb_reply_expected(second)
+        asyncio.run(adapter.on_processing_complete(head, ProcessingOutcome.CANCELLED))
+        self.assertEqual(adapter._finalized, [])
+        self.assertEqual(list(adapter._open_mails), ["<c@test.com>"])
+
+    def test_on_processing_start_is_overridden(self):
+        from gateway.platforms.base import BasePlatformAdapter
+        from plugins.platforms.email.adapter import EmailAdapter
+        self.assertIsNot(EmailAdapter.on_processing_start, BasePlatformAdapter.on_processing_start)
+
+    def _reap(self, adapter):
+        import asyncio
+        asyncio.run(adapter._reap_orphaned_mails())
+
+    def _age(self, adapter):
+        import plugins.platforms.email.adapter as mod
+        return patch.object(mod, "_ORPHAN_GRACE_SECONDS", 0.0)
+
+    def test_reaper_respects_grace_period(self):
+        adapter = self._lifecycle_adapter()
+        self._dispatch(adapter, self._msg())
+        self._reap(adapter)
+        self.assertEqual(adapter._finalized, [])
+
+    def test_reaper_skips_busy_sessions(self):
+        adapter = self._lifecycle_adapter()
+        self._dispatch(adapter, self._msg())
+        key = adapter._event_session_key(adapter._handled[0])
+        with self._age(adapter):
+            for holder in (adapter._active_sessions, adapter._pending_messages, adapter._text_debounce_store()):
+                holder[key] = object()
+                self._reap(adapter)
+                del holder[key]
+            self.assertEqual(adapter._finalized, [])
+            runner = MagicMock()
+            runner._is_session_running.return_value = True
+            adapter.gateway_runner = runner
+            self._reap(adapter)
+            self.assertEqual(adapter._finalized, [])
+            runner._is_session_running.return_value = False
+            runner._peek_session_state.return_value.conversation.queued_events = [object()]
+            self._reap(adapter)
+            self.assertEqual(adapter._finalized, [])
+
+    def test_reaper_treats_idle_check_errors_as_not_idle(self):
+        adapter = self._lifecycle_adapter()
+        self._dispatch(adapter, self._msg())
+        runner = MagicMock()
+        runner._is_session_running.side_effect = RuntimeError("x")
+        adapter.gateway_runner = runner
+        with self._age(adapter):
+            self._reap(adapter)
+        self.assertEqual(adapter._finalized, [])
+        self.assertEqual(len(adapter._open_mails), 1)
+
+    def test_reaper_finalizes_idle_orphan(self):
+        adapter = self._lifecycle_adapter()
+        self._dispatch(adapter, self._msg())
+        runner = MagicMock()
+        runner._is_session_running.return_value = False
+        runner._peek_session_state.return_value = None
+        adapter.gateway_runner = runner
+        with self._age(adapter):
+            self._reap(adapter)
+        self.assertEqual(adapter._finalized, [("<m1@test.com>", "Hermes_Working")])
+
+    def _refusing_adapter(self):
+        adapter = self._lifecycle_adapter()
+
+        async def refusing(event):
+            adapter._handled.append(event)
+
+        adapter.handle_message = refusing
+        return adapter
+
+    def _busy(self, adapter, event=None, busy=True):
+        key = adapter._event_session_key(event or adapter._handled[0])
+        if busy:
+            adapter._active_sessions[key] = object()
+        else:
+            adapter._active_sessions.pop(key, None)
+
+    def _dispatch_busy(self, adapter, message_id="<m1@test.com>"):
+        import asyncio
+        from gateway.config import Platform
+        from gateway.platforms.event import MessageEvent
+        from gateway.session import SessionSource
+        probe = MessageEvent(text="x", source=SessionSource(platform=Platform.EMAIL, chat_id="user@test.com", chat_type="dm", user_id="user@test.com"))
+        adapter._active_sessions[adapter._event_session_key(probe)] = object()
+        self._dispatch(adapter, self._msg(message_id))
+        return probe
+
+    def test_busy_refusal_keeps_mail_in_working(self):
+        adapter = self._refusing_adapter()
+        self._dispatch_busy(adapter)
+        self.assertEqual(adapter._finalized, [])
+        self.assertIn("<m1@test.com>", adapter._retry)
+        self.assertNotIn("<m1@test.com>", adapter._open_mails)
+
+    def test_queue_full_notice_keeps_mail_and_is_not_sent(self):
+        import asyncio
+        from gateway.session_ingress import QUEUE_FULL_REPLY
+        adapter = self._refusing_adapter()
+
+        async def refusing_with_notice(event):
+            adapter._handled.append(event)
+            await adapter.send("user@test.com", QUEUE_FULL_REPLY)
+
+        adapter.handle_message = refusing_with_notice
+        with patch.object(adapter, "_send_email") as smtp:
+            self._dispatch(adapter, self._msg())
+        smtp.assert_not_called()
+        self.assertEqual(adapter._finalized, [])
+        self.assertIn("<m1@test.com>", adapter._retry)
+
+    def test_no_retry_while_busy_then_retry_after_idle_and_finalize_after_turn(self):
+        import asyncio
+        from gateway.platforms.event import ProcessingOutcome
+        adapter = self._refusing_adapter()
+        probe = self._dispatch_busy(adapter)
+        asyncio.run(adapter._retry_deferred())
+        self.assertEqual(len(adapter._handled), 1, "still busy: no re-dispatch")
+        self._busy(adapter, probe, busy=False)
+
+        async def accepting(event):
+            adapter._handled.append(event)
+            event._gateway_accepted = True
+
+        adapter.handle_message = accepting
+        with patch.dict(os.environ, {"EMAIL_ALLOW_ALL_USERS": "true"}):
+            asyncio.run(adapter._retry_deferred())
+        self.assertEqual(len(adapter._handled), 2)
+        self.assertEqual(adapter._retry, {})
+        self.assertEqual(adapter._finalized, [])
+        asyncio.run(adapter.on_processing_complete(adapter._handled[1], ProcessingOutcome.SUCCESS))
+        self.assertEqual(adapter._finalized, [("<m1@test.com>", "Hermes_Working")])
+
+    def test_reaper_skips_mails_in_retry_state(self):
+        adapter = self._refusing_adapter()
+        probe = self._dispatch_busy(adapter)
+        self._busy(adapter, probe, busy=False)
+        with self._age(adapter):
+            self._reap(adapter)
+        self.assertEqual(adapter._finalized, [])
+        self.assertIn("<m1@test.com>", adapter._retry)
+
+    def test_retry_bound_moves_mail_to_failed_with_warning(self):
+        import asyncio
+        import plugins.platforms.email.adapter as mod
+        adapter = self._refusing_adapter()
+        probe = self._dispatch_busy(adapter)
+        self._busy(adapter, probe, busy=False)
+        with patch.object(mod, "_RETRY_MAX_ATTEMPTS", 2), patch.dict(os.environ, {"EMAIL_ALLOW_ALL_USERS": "true"}):
+            async def always_busy_refusal(event):
+                adapter._handled.append(event)
+                adapter._queue_full_chats.add("user@test.com")
+
+            adapter.handle_message = always_busy_refusal
+            with self.assertLogs(mod.logger, level="WARNING") as logs:
+                for _ in range(4):
+                    asyncio.run(adapter._retry_deferred())
+        self.assertEqual(adapter._retry, {})
+        self.assertEqual(adapter._finalized, [("<m1@test.com>", "Hermes_Working")])
+        self.assertEqual(adapter._targets, ["Hermes_Failed"])
+        self.assertTrue(any("Giving up" in r for r in logs.output))
+
+    def test_retry_age_bound_moves_mail_to_failed(self):
+        import asyncio
+        import plugins.platforms.email.adapter as mod
+        adapter = self._refusing_adapter()
+        self._dispatch_busy(adapter)
+        with patch.object(mod, "_RETRY_MAX_AGE_SECONDS", -1.0), self.assertLogs(mod.logger, level="WARNING"):
+            asyncio.run(adapter._retry_deferred())
+        self.assertEqual(adapter._retry, {})
+        self.assertEqual(adapter._targets, ["Hermes_Failed"])
+
+    def test_missing_attachment_moves_mail_to_failed(self):
+        import asyncio
+        import plugins.platforms.email.adapter as mod
+        adapter = self._refusing_adapter()
+        probe = self._dispatch_busy(adapter)
+        adapter._retry["<m1@test.com>"][0]["attachments"] = [{"path": "/nonexistent/x.bin", "type": "document", "media_type": "x"}]
+        self._busy(adapter, probe, busy=False)
+        with self.assertLogs(mod.logger, level="WARNING"):
+            asyncio.run(adapter._retry_deferred())
+        self.assertEqual(adapter._retry, {})
+        self.assertEqual(len(adapter._handled), 1)
+        self.assertEqual(adapter._targets, ["Hermes_Failed"])
+
+    def test_debounced_and_pending_mails_are_left_to_the_hook(self):
+        for holder in ("debounce", "pending"):
+            adapter = self._refusing_adapter()
+            probe = self._busy_probe(adapter)
+            key = adapter._event_session_key(probe)
+            (adapter._text_debounce_store() if holder == "debounce" else adapter._pending_messages)[key] = object()
+            self._dispatch(adapter, self._msg())
+            self.assertEqual(adapter._retry, {}, holder)
+            self.assertEqual(adapter._finalized, [], holder)
+            self.assertIn("<m1@test.com>", adapter._open_mails, holder)
+
+    def _busy_probe(self, adapter):
+        from gateway.config import Platform
+        from gateway.platforms.event import MessageEvent
+        from gateway.session import SessionSource
+        probe = MessageEvent(text="x", source=SessionSource(platform=Platform.EMAIL, chat_id="user@test.com", chat_type="dm", user_id="user@test.com"))
+        adapter._active_sessions[adapter._event_session_key(probe)] = object()
+        return probe
+
+    def test_rejected_sender_is_done_even_when_session_busy(self):
+        adapter = self._refusing_adapter()
+        self._busy_probe(adapter)
+        self._dispatch(adapter, self._msg(sender="hermes@test.com"))
+        self.assertEqual(adapter._finalized, [("<m1@test.com>", "Hermes_Working")])
+        self.assertEqual(adapter._retry, {})
+
+    def test_command_is_not_deferred(self):
+        adapter = self._refusing_adapter()
+        self._busy_probe(adapter)
+        self._dispatch(adapter, dict(self._msg(), subject="", body="/stop"))
+        self.assertEqual(adapter._finalized, [("<m1@test.com>", "Hermes_Working")])
+
+    def test_idle_refusal_is_finalized_immediately(self):
+        adapter = self._refusing_adapter()
+        self._dispatch(adapter, self._msg())
+        self.assertEqual(adapter._finalized, [("<m1@test.com>", "Hermes_Working")])
+
+    # Routing targets
+
+    def _targets_after(self, extra, scenario):
+        adapter = self._lifecycle_adapter({"working_folder": "Hermes_Working", "done_folder": "Hermes_Done", **extra})
+        scenario(adapter)
+        return adapter._targets
+
+    def _complete_with(self, adapter, outcome):
+        import asyncio
+        asyncio.run(adapter.on_processing_complete(adapter._handled[0], outcome))
+
+    def test_success_goes_to_done_failure_to_failed(self):
+        from gateway.platforms.event import ProcessingOutcome
+
+        def run(outcome):
+            def scenario(adapter):
+                self._dispatch(adapter, self._msg())
+                self._complete_with(adapter, outcome)
+            return scenario
+
+        self.assertEqual(self._targets_after({}, run(ProcessingOutcome.SUCCESS)), [None])
+        self.assertEqual(self._targets_after({}, run(ProcessingOutcome.FAILURE)), ["Hermes_Failed"])
+        self.assertEqual(self._targets_after({"failed_folder": ""}, run(ProcessingOutcome.FAILURE)), ["Hermes_Done"])
+        self.assertEqual(self._targets_after({"failed_folder": "F"}, run(ProcessingOutcome.FAILURE)), ["F"])
+
+    def test_rejected_sender_goes_to_rejected(self):
+        def scenario(adapter):
+            self._dispatch(adapter, self._msg(sender="hermes@test.com"))
+
+        self.assertEqual(self._targets_after({}, scenario), ["Hermes_Rejected"])
+        self.assertEqual(self._targets_after({"rejected_folder": ""}, scenario), ["Hermes_Done"])
+        self.assertEqual(self._targets_after({"rejected_folder": "R"}, scenario), ["R"])
+
+    def test_unaccepted_event_and_exception_go_to_failed(self):
+        def refused(adapter):
+            async def refusing(event):
+                return None
+            adapter.handle_message = refusing
+            self._dispatch(adapter, self._msg())
+
+        def raising(adapter):
+            async def boom(event):
+                raise RuntimeError("x")
+            adapter.handle_message = boom
+            with self.assertRaises(RuntimeError):
+                self._dispatch(adapter, self._msg())
+
+        for scenario in (refused, raising):
+            self.assertEqual(self._targets_after({}, scenario), ["Hermes_Failed"])
+            self.assertEqual(self._targets_after({"failed_folder": ""}, scenario), ["Hermes_Done"])
+
+    def test_inline_command_goes_to_done(self):
+        def scenario(adapter):
+            async def refusing(event):
+                return None
+            adapter.handle_message = refusing
+            self._dispatch(adapter, dict(self._msg(), subject="", body="/stop"))
+
+        self.assertEqual(self._targets_after({}, scenario), ["Hermes_Done"])
+
+    def test_reaper_goes_to_done_with_warning(self):
+        import plugins.platforms.email.adapter as mod
+
+        def scenario(adapter):
+            self._dispatch(adapter, self._msg())
+            with patch.object(mod, "_ORPHAN_GRACE_SECONDS", 0.0), self.assertLogs(mod.logger, level="WARNING") as logs:
+                self._reap(adapter)
+            self.assertTrue(any("<m1@test.com>" in line for line in logs.output))
+
+        self.assertEqual(self._targets_after({}, scenario), [None])
+
+    def test_retry_bound_without_failed_folder_stays_in_working(self):
+        import asyncio
+        import plugins.platforms.email.adapter as mod
+        adapter = self._lifecycle_adapter({"working_folder": "Hermes_Working", "done_folder": "Hermes_Done", "failed_folder": ""})
+        adapter.handle_message = lambda event: asyncio.sleep(0)
+        self._dispatch_busy(adapter)
+        with patch.object(mod, "_RETRY_MAX_AGE_SECONDS", -1.0), self.assertLogs(mod.logger, level="WARNING"):
+            asyncio.run(adapter._retry_deferred())
+        self.assertEqual(adapter._retry, {})
+        self.assertEqual(adapter._finalized, [])
+
+    def test_done_folder_empty_disables_all_routing(self):
+        adapter = self._make_adapter({"done_folder": "", "working_folder": ""})
+        with patch.object(adapter, "_finalize_conn", None), patch.object(adapter, "_finalize_imap") as imap:
+            adapter._finalize_message("<m@t>", "INBOX", "Hermes_Failed")
+        imap.assert_not_called()
+
+    def test_finalize_message_moves_to_given_target(self):
+        adapter = self._make_adapter({"working_folder": "Hermes_Working", "done_folder": "Hermes_Done"})
+        imap = MagicMock()
+        with patch.object(adapter, "_finalize_imap", return_value=imap), \
+                patch.object(adapter, "_search_message_id", return_value=[b"3"]), \
+                patch.object(adapter, "_imap_move") as move:
+            adapter._finalize_message("<m@t>", "Hermes_Working", "Hermes_Failed")
+        move.assert_called_once_with(imap, b"3", "Hermes_Failed")
+
+    def test_probe_creates_failed_and_rejected_folders(self):
+        adapter = self._make_adapter({"working_folder": "W", "done_folder": "D"})
+        created = []
+        with patch.object(adapter, "_ensure_folder", side_effect=lambda imap, f: created.append(f)), \
+                patch.object(adapter, "_inbox") as inbox:
+            inbox.return_value.__enter__.return_value = MagicMock(uid=MagicMock(return_value=("OK", [b""])))
+            adapter._probe_imap(False)
+        self.assertEqual(created, ["W", "D", "Hermes_Failed", "Hermes_Rejected"])
+
+    def test_real_base_flow_finalizes_merged_follow_up_with_its_turn(self):
+        import asyncio
+        adapter = self._make_adapter({"working_folder": "Hermes_Working", "done_folder": "Hermes_Done"})
+        finalized = []
+        adapter._finalize_message = lambda mid, folder, target=None: finalized.append(mid)
+        release = asyncio.Event
+        seen = []
+
+        async def scenario():
+            gate = release()
+
+            async def handler(event):
+                seen.append(event.message_id)
+                if len(seen) == 1:
+                    await gate.wait()
+                return "ok"
+
+            adapter.set_message_handler(handler)
+
+            adapter.send = lambda *a, **k: asyncio.sleep(0)
+            await adapter._dispatch_message(self._msg("<a@test.com>"))
+            await asyncio.sleep(0.05)
+            self.assertEqual(finalized, [], "turn still running")
+            await adapter._dispatch_message(self._msg("<b@test.com>"))
+            await adapter._dispatch_message(self._msg("<c@test.com>"))
+            await asyncio.sleep(0.05)
+            self.assertEqual(finalized, [], "follow-ups are queued behind the running turn")
+            gate.set()
+            await asyncio.sleep(0.5)
+
+        with patch.dict(os.environ, {"EMAIL_ALLOW_ALL_USERS": "true"}):
+            asyncio.run(scenario())
+        self.assertEqual(seen, ["<a@test.com>", "<b@test.com>"], "the second follow-up merged into the first")
+        self.assertEqual(sorted(finalized), ["<a@test.com>", "<b@test.com>", "<c@test.com>"])
+        self.assertEqual(len(finalized), 3, "each mail finalized exactly once")
+        self.assertEqual(len(adapter._open_mails), 0)
 
 
 if __name__ == "__main__":

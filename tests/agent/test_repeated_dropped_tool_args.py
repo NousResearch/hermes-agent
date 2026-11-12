@@ -4,15 +4,14 @@ import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-import pytest
-
 from hermes_constants import PARTIAL_STREAM_STUB_ID
 from run_agent import AIAgent
 
 
-REPEATED_COMMAND = "cat >> /tmp/example.py <<'PYEOF'\n" + (
-    "# The model repeats this same rambling fragment instead of writing the script.\n" * 150
-) + "PYEOF"
+REPEATED_COMMAND = " && ".join(
+    f'grep -R --line-number --fixed-strings "repetition guard" {path}'
+    for path in ("agent", "tests", "tools", "gateway", "hermes_cli", "plugins", "website")
+)
 
 
 def _stream_response(monkeypatch, arguments, finish_reason=None):
@@ -47,11 +46,15 @@ def _stream_response(monkeypatch, arguments, finish_reason=None):
     return agent._interruptible_streaming_api_call({})
 
 
-@pytest.mark.parametrize("repair_needed", [False, True], ids=["valid-json", "repairable-json"])
-def test_dropped_repetitive_arguments_never_reach_dispatch(monkeypatch, repair_needed):
+def test_dropped_complete_repeated_search_arguments_are_preserved(monkeypatch):
     arguments = json.dumps({"command": REPEATED_COMMAND})
-    if repair_needed:
-        arguments = arguments[:-1]  # Missing closing object, repairable by the existing helper.
+    response = _stream_response(monkeypatch, arguments)
+    assert response.id != PARTIAL_STREAM_STUB_ID
+    assert response.choices[0].message.tool_calls[1].function.arguments == arguments
+
+
+def test_dropped_incomplete_arguments_never_reach_dispatch(monkeypatch):
+    arguments = json.dumps({"command": REPEATED_COMMAND})[:-1]
     response = _stream_response(monkeypatch, arguments)
     assert response.id == PARTIAL_STREAM_STUB_ID
     assert response.choices[0].message.tool_calls is None

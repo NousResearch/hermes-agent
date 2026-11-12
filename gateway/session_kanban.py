@@ -237,7 +237,7 @@ def run_worker_turns(agent, frame, history):
 
 @contextlib.contextmanager
 def _worker_workspace(frame):
-    """A managed worker's chat turn in its session's workspace, as the in-process turn runner binds it
+    """A managed worker's turn in its session's workspace, as the in-process turn runner binds it
     (#140665): the session id as the terminal task id, the route as the session key (persistent Docker
     keys the workspace container from it) and the frozen cwd as the session's mount. Yields the task
     id, or None for a frame with no session scope (nothing is bound then)."""
@@ -277,7 +277,10 @@ def _run_worker_turns(agent, frame, history):
     from hermes_cli.turn_exit import credential_failure_flags, turn_exit_code
     code, last_output = 1, ''
     try:
-        result = _run_task_turns(agent, frame, history, context)
+        # The kanban lane runs in the session's workspace too: unbound, a non-persistent Docker sandbox got a
+        # fresh tmpfs /workspace every turn and the card's work vanished with it (#91568).
+        with _worker_workspace(frame) as task_id:
+            result = _run_task_turns(agent, frame, history, context, task_id)
         code = turn_exit_code(result, kanban_worker=True)
         last_output = str(result.get('final_response') or '')[-500:] if isinstance(result, dict) else ''
         return result
@@ -381,20 +384,21 @@ def worker_exit_code(path, params):
 KANBAN_TURN_AUTHOR = {'id': 'kanban:dispatcher', 'name': 'Kanban dispatcher', 'is_bot': True}
 
 
-def _run_task_turns(agent, frame, history, context):
+def _run_task_turns(agent, frame, history, context, task_id):
     from agent.skill_commands import build_preloaded_skills_prompt
     skills, loaded, missing = build_preloaded_skills_prompt(context['skills'], task_id=agent.session_id)
     if missing and not loaded:
         raise ValueError('kanban_skills_unavailable')
     prompt = '\n\n'.join(p for p in (skills, context['context'], frame['text']) if p)
-    result = agent.run_conversation(prompt, conversation_history=history, turn_author=KANBAN_TURN_AUTHOR)
+    bound = {'task_id': task_id} if task_id else {}
+    result = agent.run_conversation(prompt, conversation_history=history, turn_author=KANBAN_TURN_AUTHOR, **bound)
 
     def recover(nudge):
         nonlocal result
         prior = result.get('messages') if isinstance(result, dict) else None
         result = agent.run_conversation(nudge, conversation_history=prior or
                                         agent._session_db.get_messages_as_conversation(agent.session_id),
-                                        turn_author=KANBAN_TURN_AUTHOR)
+                                        turn_author=KANBAN_TURN_AUTHOR, **bound)
     # Same in-place retry as the one-shot CLI worker (agent/kanban_turn_recovery.py), but the
     # carrier is this frame's bound claim, never the owner process's environment.
     from agent.kanban_turn_recovery import recover_failed_kanban_turns
@@ -417,7 +421,7 @@ def _run_task_turns(agent, frame, history, context):
     def turn(prompt):
         nonlocal result
         result = agent.run_conversation(prompt, conversation_history=agent._session_db.get_messages_as_conversation(agent.session_id),
-                                        turn_author=KANBAN_TURN_AUTHOR)
+                                        turn_author=KANBAN_TURN_AUTHOR, **bound)
         return result.get('final_response', '')
     run_kanban_goal_loop(task_id=context['task_id'], goal_text=context['goal_text'], run_turn=turn,
         task_status_fn=status, block_fn=block, max_turns=context['goal_max_turns'] or DEFAULT_MAX_TURNS,

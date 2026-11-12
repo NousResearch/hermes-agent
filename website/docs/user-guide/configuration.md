@@ -2045,6 +2045,26 @@ The key matching is **spelling-tolerant** — any reasonable spelling will match
 - A key prefixed with a named custom provider (`ollama-local/qwen3.6:27b-q4_k_m`) also applies when the request carries only the bare model id (`qwen3.6:27b-q4_k_m`), which is what fallback entries and `providers:` routes send
 - Exact matches take precedence over variants
 
+#### MiniMax reasoning effort
+
+On MiniMax's own Anthropic-compatible endpoint (`https://api.minimax.io/anthropic`, and the
+China-region `https://api.minimaxi.com/anthropic`), the `MiniMax-M3.1` line takes thinking depth
+from `output_config.effort` (`low`, `medium`, `high`, `xhigh`, `max`) — not from
+`thinking.budget_tokens`, which MiniMax parses but never enforces. Hermes sends the adaptive
+thinking block plus the requested level on that route, so `/reasoning` and the effort picker
+change how much the model thinks.
+
+Two things differ from other providers on that route:
+
+- Thinking **cannot** be switched off: MiniMax answers a disable with `400 ... requires adaptive
+  thinking`. A `none` / off request therefore goes out at the cheapest level (`low`) rather than
+  failing.
+- The ladder stops at `max`. Hermes' `ultra` is sent as `max`, and `minimal` as `low`; the picker
+  and `/reasoning` label that clamp (`ultra (sends max on this route)`) instead of implying the
+  level was sent verbatim.
+
+`MiniMax-M3` and the M2.x line are unchanged — they keep the manual thinking path.
+
 #### Custom reasoning tier names
 
 Some OpenAI-compatible endpoints expose thinking tiers outside the standard ladder (a relay serving `fast`/`thinking` instead of `low`…`max`). A bare string outside the ladder is rejected with `Unknown reasoning_effort '<value>', using default (medium)` so a typo can never reach the wire. To request a provider's own tier name, use the explicit dict form — the `effort` value is sent verbatim as the top-level `reasoning_effort` field:

@@ -20,8 +20,8 @@ from agent.anthropic_credentials import _is_oauth_token, anthropic_route_is_oaut
 from agent.anthropic_endpoints import (
     _base_url_needs_context_1m_beta, _is_azure_anthropic_endpoint, _is_kimi_coding_endpoint,
     _is_minimax_anthropic_endpoint, _is_nous_portal_endpoint, _is_opencode_endpoint,
-    _is_third_party_anthropic_endpoint, _model_name_is_kimi_family, _normalize_base_url_text,
-    _requires_bearer_auth,
+    _is_third_party_anthropic_endpoint, _model_name_is_kimi_family,
+    _model_name_is_minimax_adaptive, _normalize_base_url_text, _requires_bearer_auth,
 )
 from agent.anthropic_message_convert import (
     convert_messages_to_anthropic, convert_tools_to_anthropic, normalize_model_name,
@@ -205,6 +205,50 @@ def _is_pre_thinking_haiku(model: str) -> bool:
         return False
     parsed = claude_family_version(model)
     return parsed is None or parsed[0] != "haiku" or parsed[1] < (5, 5)
+
+
+# MiniMax's own ladder for ``output_config.effort``: low..max. ``ultra`` is a Hermes-internal
+# step with no MiniMax counterpart; ``minimal`` is a legacy alias for low on every model.
+MINIMAX_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+MINIMAX_EFFORT_OVERRIDES = {"ultra": "max", "minimal": "low"}
+
+
+def _minimax_thinking_kwargs(
+    reasoning_config: dict[str, Any], effective_max_tokens: int,
+) -> dict[str, Any]:
+    """Thinking kwargs for MiniMax's Anthropic-compatible endpoints (the M3.1 line).
+
+    MiniMax ignores ``thinking.budget_tokens`` — the field is parsed but never enforced (measured
+    live: budget 300 / 8000 / 32000 all produced the same thinking volume), so Hermes' effort
+    ladder had no effect on these routes and every request ran at MiniMax's default depth
+    (``max``). The documented depth knob is ``output_config.effort`` (low/medium/high/xhigh/max),
+    which does change thinking volume ~4x between ``low`` and ``max``.
+
+    M3.1 always thinks (``thinking.type="disabled"`` 400s), so thinking is requested as
+    ``adaptive``; an explicit off request lands on the cheapest level instead.
+    """
+    from agent.reasoning_effort import clamp_effort
+
+    enabled = reasoning_config.get("enabled") is not False
+    effort = str(reasoning_config.get("effort", "medium") or "medium").lower()
+    if not enabled:
+        # Thinking cannot be switched off on this route (a disable 400s), and omitting the block
+        # would apply the server's own default — ``max``, the most expensive level. The
+        # documented levels start at ``low``, so "off" lands there.
+        effort = "low"
+    # "none" is not a MiniMax level; the floor keeps thinking on at the cheapest depth.
+    requested = "low" if effort == "none" else effort
+    clamped = clamp_effort(requested, MINIMAX_EFFORTS, MINIMAX_EFFORT_OVERRIDES) or "medium"
+    return {
+        "thinking": {"type": "adaptive", "display": "summarized"},
+        "output_config": {"effort": clamped},
+        # MiniMax forces temperature=1 and rejects sampling params it does not know.
+        "temperature": 1,
+        # Thinking tokens count against ``max_tokens`` on MiniMax too, so the cap needs room for
+        # a full-depth reasoning pass plus the answer; a small cap yields a thinking-only reply
+        # (stop_reason=max_tokens, no text).
+        "max_tokens": max(effective_max_tokens, 32768),
+    }
 
 
 def _forbids_sampling_params(model: str) -> bool:
@@ -614,12 +658,20 @@ def _apply_claude_code_identity(system, anthropic_tools, anthropic_messages, to_
     return system
 
 
-def _thinking_kwargs(reasoning_config: dict[str, Any], model: str, effective_max_tokens: int) -> dict[str, Any]:
+def _thinking_kwargs(
+    reasoning_config: dict[str, Any], model: str, effective_max_tokens: int, base_url: str | None = None,
+) -> dict[str, Any]:
     """Map ``reasoning_config`` to Anthropic thinking kwargs. Adaptive models (Claude 4.6+,
-    Kimi/Moonshot) get ``thinking.type=adaptive`` + ``output_config.effort``; older models and
-    manual-only compat endpoints (MiniMax) get budget_tokens. Haiku through 4.5 gets none. On
+    Kimi/Moonshot, MiniMax M3.1) get ``thinking.type=adaptive`` + ``output_config.effort``; older
+    models and manual-only compat endpoints get budget_tokens. Haiku through 4.5 gets none. On
     4.7+ ``thinking.display`` defaults to "omitted", hiding the reasoning Hermes shows in its CLI,
-    so "summarized" is requested to keep the activity feed populated."""
+    so "summarized" is requested to keep the activity feed populated.
+
+    MiniMax's Anthropic-compatible endpoints are their own contract (see
+    ``_minimax_thinking_kwargs``): they ignore ``budget_tokens`` and drive thinking depth
+    through ``output_config.effort``."""
+    if _model_name_is_minimax_adaptive(model) and _is_minimax_anthropic_endpoint(base_url):
+        return _minimax_thinking_kwargs(reasoning_config, effective_max_tokens)
     if reasoning_config.get("enabled") is False:
         # Adaptive models think by DEFAULT, so omitting the parameter is not a disable — the user
         # silently keeps paying. Mandatory-thinking models 400 on the disable, so they keep the
@@ -699,7 +751,7 @@ def build_anthropic_kwargs(
     # reasoning blocks stay populated — matching 4.6 behavior and preserving the activity-feed UX during
     # long tool runs.
     if reasoning_config and isinstance(reasoning_config, dict):
-        kwargs.update(_thinking_kwargs(reasoning_config, model, effective_max_tokens))
+        kwargs.update(_thinking_kwargs(reasoning_config, model, effective_max_tokens, base_url=base_url))
     # Safety net so upstream 4.6 -> 4.7 migrations don't need coordinated edits everywhere callers
     # (auxiliary_client, ...) set sampling params.
     if _forbids_sampling_params(model):

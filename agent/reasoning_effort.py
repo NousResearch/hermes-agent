@@ -86,6 +86,15 @@ DEEPSEEK_V4_OVERRIDES: dict[str, str] = {"xhigh": "max"}
 OLLAMA_CLOUD_EFFORTS: tuple[str, ...] = ("none", "low", "medium", "high", "max")
 OLLAMA_CLOUD_OVERRIDES: dict[str, str] = {"xhigh": "max"}
 
+#: MiniMax M3.1 on MiniMax's own Anthropic-compatible endpoints: the depth knob is
+#: ``output_config.effort``, whose ladder stops at ``max`` — ``ultra`` is a Hermes-internal step
+#: with no MiniMax counterpart, and ``minimal`` is a legacy alias for low. ``none`` is absent
+#: because thinking cannot be switched off on this route.
+MINIMAX_M31_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
+#: Providers that speak MiniMax's own Anthropic-compatible contract. Scoped to these names so a
+#: relay serving the same model slug (OpenRouter's ``minimax/minimax-m3``) keeps its own ladder.
+_MINIMAX_PROVIDERS = frozenset({"minimax", "minimax-cn", "minimax-oauth"})
+
 #: Meta Model API (Muse): rejects ``none``.
 META_AI_EFFORTS: tuple[str, ...] = ("minimal", "low", "medium", "high", "xhigh")
 
@@ -164,11 +173,23 @@ def route_supported_efforts(
     model generation, else the widest OpenAI-compatible vocabulary (narrower providers clamp again
     downstream, never upward). On the Codex app-server runtime ``ultra`` is codex's own harness mode,
     accepted wherever the model's ladder reaches ``max`` (codex runs it at ``max``; a model without
-    ``max`` rejects it), so it is sent verbatim there."""
+    ``max`` rejects it), so it is sent verbatim there.
+
+    MiniMax's own Anthropic-compatible endpoints publish their own ladder (``low``..``max``) for
+    ``output_config.effort``; declaring it here makes the Desktop's picker show the honest clamp
+    ("ultra sends max on this route") instead of pretending ``ultra``/``minimal`` are verbatim."""
     if (provider or "").strip().lower() == "openai-codex":
         supported = codex_supported_efforts(model)
         return (*supported, "ultra") if api_mode == "codex_app_server" and "max" in supported else supported
+    if (provider or "").strip().lower() in _MINIMAX_PROVIDERS and _is_minimax_adaptive_model(model):
+        return MINIMAX_M31_EFFORTS
     return OPENAI_COMPAT_WIRE_EFFORTS
+
+
+def _is_minimax_adaptive_model(model: Optional[str]) -> bool:
+    """True for a MiniMax M3.1-family slug (the models that take ``output_config.effort``)."""
+    slug = (model or "").strip().lower().rsplit("/", 1)[-1]
+    return slug.startswith("minimax-m3.1") or slug.startswith("minimax-m3-1")
 
 
 def effort_display_label(

@@ -9,8 +9,8 @@ applyTo:
   - "data/.env"
   - "data/config.yaml"
   - "INSTALL.md"
-  - "gateway/platforms/weixin.py"
   - "gateway/platforms/weixin_qr_session.py"
+  - "plugins/platforms/weixin/adapter.py"
 ---
 
 # Fork Sync Update & Fix
@@ -111,6 +111,56 @@ Or via CLI:
 docker compose -f docker-compose.upstream.yml run --rm hermes-gateway hermes gateway setup
 ```
 Pick **Weixin / WeChat** (item 13).
+
+## Step 7 — Validate that every configured model actually exists
+
+`data/config.yaml` is gitignored, so a model can be configured and then never
+pulled. Ollama answers with `model '<name>' not found`, and because the
+**auxiliary** models (compression, vision) run on their own schedule, the agent
+shows inference errors even when the main model works.
+
+```bash
+# every model the config names
+grep -E '^\s*(default|model):' data/config.yaml | sed 's/.*: *//' | sort -u
+```
+
+```bash
+# what is actually pulled
+curl -s http://127.0.0.1:11434/api/tags | python3 -c "import json,sys;print('\n'.join(m['name'] for m in json.load(sys.stdin)['models']))"
+```
+
+Any name in the first list that is missing from the second is a live bug. Confirm
+a candidate really generates before switching to it — `200` on `/v1/models` proves
+the endpoint, not that the tag exists:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:11434/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"<tag>","messages":[{"role":"user","content":"hi"}],"max_tokens":4}'
+```
+
+## Step 8 — Make sure no host process is shadowing the dashboard port
+
+`compose` binds the dashboard to `127.0.0.1:9119`. A host-native
+`hermes dashboard` (for example one started from the repo `.venv`) takes that
+address first, so the browser reaches the **old** code while the container is
+healthy and unreachable. The symptom is a dashboard reporting a stale
+`version`/`config_version` — e.g. `0.21.5` / `40` when the container serves
+`53`.
+
+```bash
+# who owns the port? Docker's proxy, or a stray python?
+curl -s http://127.0.0.1:9119/api/status | python3 -c "import json,sys;d=json.load(sys.stdin);print(d['version'], d['config_version'], d['latest_config_version'])"
+```
+
+If `version` is `unknown` you are on the container (fine — the image reports the
+git stamp). If it names an old release, a host process owns the port: stop it and
+then `docker compose ... up -d --force-recreate hermes-web` so Docker rebinds.
+
+> A gateway reporting `DEGRADED` with `weixin: WEIXIN_TOKEN is required` is not a
+> broken upgrade: weixin has no credentials. Either scan the QR code or set
+> `platforms.weixin.enabled: false`; the dashboard QR apply handler re-enables it
+> on its own.
 
 ## What the fixes cover
 

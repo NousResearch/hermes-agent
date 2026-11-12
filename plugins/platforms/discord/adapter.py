@@ -6002,6 +6002,29 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                     logger.warning("[Discord] Failed to cache document %s: %s", att.filename, e, exc_info=True)
         return media_urls, media_types, media_text_inlined, pending_text_injection
 
+    def _classify_reply_media(self, own_attachments: list, referenced_attachments: list,
+                              bot_referenced_attachments: list, content: str) -> tuple:
+        """Classify a message's media into event type + per-attachment media buckets.
+
+        Returns ``(msg_type, user_media, context_media)`` where ``user_media`` are
+        attachments that belong to this message's author (own or replied-to-human),
+        and ``context_media`` are attachments quoted from the bot's own messages
+        (#150824). Bot-quoted media never decides the message type and never enters
+        the user STT pipeline: the bot's own voice note replayed as "user speech" is
+        exactly the #150824 failure. They still ride along as context for the agent.
+        """
+        user_media = list(own_attachments) + [
+            att for att in referenced_attachments if att not in bot_referenced_attachments
+        ]
+        context_media = list(bot_referenced_attachments)
+        if (content or "").startswith("/"):
+            msg_type = MessageType.COMMAND
+        elif user_media:
+            msg_type = self._attachment_message_type(user_media[0])
+        else:
+            msg_type = MessageType.TEXT
+        return msg_type, user_media, context_media
+
     def _attachment_message_type(self, att: Any) -> MessageType:
         """MessageType from the first attachment's MIME. Any non-media (or untyped) attachment
         is a DOCUMENT regardless of extension — authorization is the gate, not the file type."""
@@ -6147,13 +6170,17 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         resolved_reference = getattr(reference, "resolved", None) if reference else None
         if resolved_reference is not None:
             referenced_attachments = list(getattr(resolved_reference, "attachments", []) or [])
-        all_attachments = list(message.attachments) + snapshot_attachments + referenced_attachments
-        if normalized_content.startswith("/"):
-            msg_type = MessageType.COMMAND
-        elif all_attachments:
-            msg_type = self._attachment_message_type(all_attachments[0])
-        else:
-            msg_type = MessageType.TEXT
+        # Media quoted from the BOT's own message is context, not user input: it must
+        # not decide the event type or enter the user STT pipeline (#150824).
+        bot_referenced_attachments = [
+            att for att in referenced_attachments
+            if getattr(getattr(resolved_reference, "author", None), "bot", False)
+        ] if resolved_reference is not None else []
+        msg_type, user_attachments, bot_context_attachments = self._classify_reply_media(
+            list(message.attachments) + snapshot_attachments, referenced_attachments,
+            bot_referenced_attachments, normalized_content,
+        )
+        all_attachments = user_attachments + bot_context_attachments
         effective_channel = auto_threaded_channel or message.channel
         if isinstance(message.channel, discord.DMChannel):
             chat_type = "dm"
@@ -6227,15 +6254,24 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         _channel_prompt = self._resolve_channel_prompt(_chan_id, _parent_id or None)
         reply_to_id = None
         reply_to_text = None
+        reply_to_is_own = False
         if message.reference:
             reply_to_id = str(message.reference.message_id)
             if message.reference.resolved:
                 reply_to_text = getattr(message.reference.resolved, "content", None) or None
+                # Own-message semantics: the replied-to author is THIS bot (not just any
+                # bot in the room). Feeds the reply-context note ("your previous message")
+                # and the gateway STT guard for bot-quoted media (#150824).
+                _ref_author = getattr(message.reference.resolved, "author", None)
+                _own_id = str(getattr(getattr(self._client, "user", None), "id", "") or "")
+                _ref_author_id = str(getattr(_ref_author, "id", "") or "")
+                reply_to_is_own = bool(_own_id and _ref_author_id and _ref_author_id == _own_id)
         event = MessageEvent(
             text=event_text, message_type=msg_type, source=source, raw_message=message,
             message_id=str(message.id), media_urls=media_urls, media_types=media_types,
             media_text_inlined=media_text_inlined,
             reply_to_message_id=reply_to_id, reply_to_text=reply_to_text,
+            reply_to_is_own_message=reply_to_is_own,
             timestamp=message.created_at, auto_skill=_skills, channel_prompt=_channel_prompt,
             channel_context=_channel_context,
         )

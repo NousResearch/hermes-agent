@@ -256,8 +256,10 @@ class CLITuiRuntimeMixin:
         from hermes_cli.cli_shutdown import _is_gateway_viewer
         if _is_gateway_viewer(self):
             # A lost terminal (SIGHUP, or the emulator's SIGTERM) is a disconnect, not /exit: the
-            # gateway keeps the turn and its background subagents, as for a dropped socket.
-            self._viewer_disconnected = self._detach_on_exit = True
+            # gateway keeps the turn and its background subagents, as for a dropped socket. A signal
+            # landing after /exit or Ctrl+D already asked to close keeps that close (and --delete).
+            if not self._should_exit:
+                self._viewer_disconnected = self._detach_on_exit = True
         elif self._agent_running:
             _interrupt_agent_for_signal(self.agent, signum)
         # Prefer app.exit() over raising KeyboardInterrupt: a KBI from a signal handler

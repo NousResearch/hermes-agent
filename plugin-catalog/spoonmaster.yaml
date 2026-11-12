@@ -2,7 +2,7 @@ name: spoonmaster
 title: Spoonmaster
 repo: https://github.com/gueysito/spoonmaster
 sha: 20d0b1178321f4ef357b514f2ec757a6e6962dec
-description: Compare restaurants using local recommendations, venue facts, and optional private tastes.
+description: "Compare restaurants using local recommendations, venue facts, and optional private tastes. Disclosure — Spoonmaster runs restaurant research through your enabled Hermes search/extract tools (search providers and venue sites see the queries), observes your own native `browser_exec` calls in its named `spoon-<request>` browser session to keep their printed page text as evidence, adds about 2 KB of dining guidance to every turn, and stores optional tastes and saved companion groups, including other people's dietary needs, in a local 0600 SQLite file in this profile's plugin data; viewing them puts them in your transcript and model provider."
 maintainer: gueysito
 tier: community
 category: tools

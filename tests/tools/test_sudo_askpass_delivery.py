@@ -493,7 +493,7 @@ def test_live_prologue_ignores_aliases_and_functions_for_its_commands(tmp_path):
     body = askpass.build_prologue(count, "20") + command
     shadow = ("shopt -s expand_aliases\n"
               "alias command=false builtin=false exec=false test=false printf=false mktemp=false\n"
-              "mkfifo() { return 1; }\nexec() { return 1; }\n")
+              "mkfifo() { return 1; }\nmktemp() { return 1; }\nchmod() { return 1; }\n")
     escaped = body.replace("'", "'\\''")
     proc = _bash(shadow + f"eval '{escaped}'", stdin=PW + "\n", env_vars={"TMPDIR": str(tmp_path)})
     assert proc.returncode == 0, proc.stderr

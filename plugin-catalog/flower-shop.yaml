@@ -2,7 +2,7 @@
 
 name: flower-shop
 repo: https://github.com/k-reeeee/hermes-flower-shop
-sha: "8eb1764d4434770c3bd031a4dc982560582f6d69"
+sha: "4649a56fa3168c93902f0b7dc6bd426de1358a68"
 title: Flower Shop
 description: >-
   An AI business operating workspace inside Hermes Desktop for a small flower
@@ -10,8 +10,8 @@ description: >-
   logistics agents work from one SQLite record of orders, stock, production,
   deliveries, and money. Agents propose, the owner approves - order confirmation,
   stock receipts, adjustments, wastage, payments, and expenses create a pending
-  approval decided from an inline chat card, the Approvals inbox, or an explicit
-  chat relay. Includes Overview, Orders, Inventory and recipes, Production board,
+  approval decided by the owner from an inline chat card or the Approvals inbox (an
+  opt-in chat relay, off by default, still confirmed through Hermes' approval prompt). Includes Overview, Orders, Inventory and recipes, Production board,
   a read-only low-poly 3D Shop Floor fed by live production state, Delivery,
   Finance estimates labelled as estimates, an AI Team page, and a guided setup
   with removable demo data. The repo also ships an optional matching Hermes
@@ -33,12 +33,12 @@ docs_url: https://github.com/k-reeeee/hermes-flower-shop#readme
 version: "0.1.0"
 screenshots:
 
-  - https://raw.githubusercontent.com/k-reeeee/hermes-flower-shop/8eb1764d4434770c3bd031a4dc982560582f6d69/docs/screenshots/overview.png
-  - https://raw.githubusercontent.com/k-reeeee/hermes-flower-shop/8eb1764d4434770c3bd031a4dc982560582f6d69/docs/screenshots/orders.png
-  - https://raw.githubusercontent.com/k-reeeee/hermes-flower-shop/8eb1764d4434770c3bd031a4dc982560582f6d69/docs/screenshots/inventory.png
-  - https://raw.githubusercontent.com/k-reeeee/hermes-flower-shop/8eb1764d4434770c3bd031a4dc982560582f6d69/docs/screenshots/production.png
-  - https://raw.githubusercontent.com/k-reeeee/hermes-flower-shop/8eb1764d4434770c3bd031a4dc982560582f6d69/docs/screenshots/shop-floor-3d.png
-  - https://raw.githubusercontent.com/k-reeeee/hermes-flower-shop/8eb1764d4434770c3bd031a4dc982560582f6d69/docs/screenshots/approval-card.png
+  - https://raw.githubusercontent.com/k-reeeee/hermes-flower-shop/4649a56fa3168c93902f0b7dc6bd426de1358a68/docs/screenshots/overview.png
+  - https://raw.githubusercontent.com/k-reeeee/hermes-flower-shop/4649a56fa3168c93902f0b7dc6bd426de1358a68/docs/screenshots/orders.png
+  - https://raw.githubusercontent.com/k-reeeee/hermes-flower-shop/4649a56fa3168c93902f0b7dc6bd426de1358a68/docs/screenshots/inventory.png
+  - https://raw.githubusercontent.com/k-reeeee/hermes-flower-shop/4649a56fa3168c93902f0b7dc6bd426de1358a68/docs/screenshots/production.png
+  - https://raw.githubusercontent.com/k-reeeee/hermes-flower-shop/4649a56fa3168c93902f0b7dc6bd426de1358a68/docs/screenshots/shop-floor-3d.png
+  - https://raw.githubusercontent.com/k-reeeee/hermes-flower-shop/4649a56fa3168c93902f0b7dc6bd426de1358a68/docs/screenshots/approval-card.png
 readme: true
 platforms: []
 onboarding: false
@@ -88,6 +88,7 @@ capabilities:
     - flowershop_list_approvals
     - flowershop_decide_approval
     - flowershop_attach_design_reference
-  provides_hooks: []
+  provides_hooks:
+    - pre_tool_call
   provides_middleware: []
   requires_env: []

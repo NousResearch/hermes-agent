@@ -1,19 +1,19 @@
 name: rom-studio
 repo: "https://github.com/erosika/rom-studio"
-sha: "6e79ef8a61cd6fe14be440af0895b0d8d9fe4412"
-version: "0.1.0"
+sha: "ed04b3ce35d6c942c4e25a7285f6c46dc911b9d6"
+version: "0.2.0"
 title: ROM Studio
-description: "Make your own small game by talking with your agent, one scene at a time, from a decomp (the community-made source of an original handheld game) that you supply. A pane in the desktop app shows each change as a sentence with a picture from the running game, plus a play link, scenes, gallery, maps, music, dialogue, source search and the agent's questions. Ships a command-line kit the agent runs, a browser player with an always-on flash guard and the make-your-game skill; starts one local page on 127.0.0.1 once a game folder is set. No agent tools, hooks, middleware or env vars. Linux only."
+description: "Make your own small game by talking with your agent, one scene at a time, from a decomp (the community-made source of an original handheld game) that you supply. A pane in the desktop app shows each change as a sentence with a picture from the running game, plus a play link, scenes, gallery, maps, music, dialogue, source search and the agent's questions. Ships a command-line kit the agent runs, a browser player with an always-on flash guard and the make-your-game skill; starts one local page on 127.0.0.1 once a game folder is set. kit agent-play, started by hand, can send game pictures to a model API you name. No agent tools, hooks, middleware or env vars. Linux only."
 maintainer: erosika
 tier: community
 category: desktop
 requires_hermes: ">=0.21.6"
-docs_url: "https://github.com/erosika/rom-studio/blob/6e79ef8a61cd6fe14be440af0895b0d8d9fe4412/README.md"
-image: "https://raw.githubusercontent.com/erosika/rom-studio/6e79ef8a61cd6fe14be440af0895b0d8d9fe4412/docs/images/banner.png"
+docs_url: "https://github.com/erosika/rom-studio/blob/ed04b3ce35d6c942c4e25a7285f6c46dc911b9d6/README.md"
+image: "https://raw.githubusercontent.com/erosika/rom-studio/ed04b3ce35d6c942c4e25a7285f6c46dc911b9d6/docs/images/banner.png"
 screenshots:
-  - "https://raw.githubusercontent.com/erosika/rom-studio/6e79ef8a61cd6fe14be440af0895b0d8d9fe4412/docs/images/tour-host.jpg"
-  - "https://raw.githubusercontent.com/erosika/rom-studio/6e79ef8a61cd6fe14be440af0895b0d8d9fe4412/docs/images/tour-gallery.jpg"
-  - "https://raw.githubusercontent.com/erosika/rom-studio/6e79ef8a61cd6fe14be440af0895b0d8d9fe4412/docs/images/tour-decisions.jpg"
+  - "https://raw.githubusercontent.com/erosika/rom-studio/ed04b3ce35d6c942c4e25a7285f6c46dc911b9d6/docs/images/tour-host.jpg"
+  - "https://raw.githubusercontent.com/erosika/rom-studio/ed04b3ce35d6c942c4e25a7285f6c46dc911b9d6/docs/images/tour-gallery.jpg"
+  - "https://raw.githubusercontent.com/erosika/rom-studio/ed04b3ce35d6c942c4e25a7285f6c46dc911b9d6/docs/images/tour-decisions.jpg"
 readme: true
 platforms: [linux]
 capabilities:

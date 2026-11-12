@@ -45,6 +45,7 @@ def _close_client(client):
 @pytest.fixture
 def forced_files_client(monkeypatch, tmp_path):
     root = tmp_path / "data"
+    root.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("HERMES_DASHBOARD_FILES_ROOT", str(root))
 
     client, prev_auth_required, prev_bound_host = _client_with_app_state()

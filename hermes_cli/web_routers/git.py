@@ -123,8 +123,12 @@ async def git_base_branches_route(path: str):
 
 
 @router.get("/api/git/review/list")
-async def git_review_list_route(path: str, scope: str = "uncommitted", base: Optional[str] = None):
-    return await _git_op(_web_git.review_list, _git_path(path), scope, base)
+async def git_review_list_route(
+    path: str, request: Request, scope: str = "uncommitted", base: Optional[str] = None
+):
+    cwd = _git_path(path)
+    _hosted_fs_read_guard(Path(cwd), request)
+    return await _git_op(_web_git.review_list, cwd, scope, base)
 
 
 @router.get("/api/git/review/diff")

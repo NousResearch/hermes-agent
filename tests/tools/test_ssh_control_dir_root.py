@@ -218,3 +218,19 @@ def test_trailing_component_does_not_trust_symlinked_xdg_runtime_dir(monkeypatch
             assert not (private / "hermes-ssh").exists()
         finally:
             env.cleanup()
+
+
+@pytest.mark.platforms("posix")
+def test_xdg_runtime_dir_owned_by_another_user_is_not_trusted(shared_root, tmp_path, monkeypatch, make_env):
+    """``sudo -E`` keeps the invoking user's ``$XDG_RUNTIME_DIR``: 0700, but its owner is not us and can
+    swap a ``hermes-ssh`` leaf we create there."""
+    xdg = tmp_path / "run-user"
+    xdg.mkdir(mode=0o700)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(xdg))
+    real_uid = os.getuid()  # windows-footgun: ok — posix-only test
+    monkeypatch.setattr(os, "getuid", lambda: real_uid + 1)
+
+    control_dir = make_env().control_dir
+
+    assert not (xdg / "hermes-ssh").exists()
+    assert control_dir.parent == shared_root

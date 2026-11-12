@@ -104,7 +104,7 @@ Hermes 包含相关逻辑，以避免在存在多个 provider 密钥时（例如
 
 - `OPENROUTER_API_KEY` 仅发送至 `openrouter.ai` 端点
 - `AI_GATEWAY_API_KEY` 仅发送至 `ai-gateway.vercel.sh` 端点
-- `OPENAI_API_KEY` 用于自定义端点及作为回退
+- `OPENAI_API_KEY` 仅发送至 OpenAI 主机（`*.openai.com`、`*.openai.azure.com`）或与之精确配对的 `OPENAI_BASE_URL`
 
 Hermes 还区分以下两种情况：
 

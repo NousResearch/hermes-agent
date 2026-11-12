@@ -651,8 +651,6 @@ gateway:
     media_delivery_failed_with_name: "⚠️ Couldn't deliver the {kind} attachment ({file_name})."
     delivery_failed_retry: "⚠️ Message delivery failed after multiple attempts. Please try again — your request was processed but the response could not be sent."
     plain_fallback_prefix: "(Response formatting failed, plain text:)\n\n{content}"
-    turn_error_no_details: "no details available"
-    turn_error_detailed: "Sorry, I encountered an error ({error_type}).\n{error_detail}\nTry again or use /reset to start a fresh session."
     turn_error: "Sorry, I encountered an error."
     context_injection_refused: "Context injection refused."
     no_home_channel: "📬 No home channel is set for {platform}. A home channel is where Hermes delivers cron job results and cross-platform messages.\n\nType {sethome_cmd} to make this chat your home channel, or ignore to skip."

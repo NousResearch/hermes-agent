@@ -750,11 +750,6 @@ gateway:
       (Échec du formatage de la réponse, texte brut :)
 
       {content}
-    turn_error_no_details: "aucun détail disponible"
-    turn_error_detailed: |-
-      Désolé, j'ai rencontré une erreur ({error_type}).
-      {error_detail}
-      Réessayez ou utilisez /reset pour démarrer une nouvelle session.
     turn_error: "Désolé, j'ai rencontré une erreur."
     context_injection_refused: "Injection de contexte refusée."
     no_home_channel: |-

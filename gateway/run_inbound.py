@@ -670,6 +670,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             if _denied is not None:
                 return True, _denied
             if _cmd_def_inner.name in ("stop", "new"):
+                self._hm_drop_held_input(event)  # before the fence: a burst flushing later would pass it
                 await self._hm_stop_owner_turn(_quick_key)
             # Any recognized slash command dispatches per its declared busy_policy (dispatch /
             # interrupt_then_dispatch / reject). Unrecognized commands and plain text fall through.
@@ -684,7 +685,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         return False, None
 
     def _hm_drop_held_input(self, event: MessageEvent) -> None:
-        """An idle /stop, /new or /reset past the slash-access gate and command hooks: the text or media
+        """A /stop, /new or /reset past the slash-access gate (and idle, command hooks): the text or media
         burst the receiving adapter still holds is the old chat's, so it never becomes a turn after
         the command (#81370). A refused or hook-denied command leaves the caller's input alone."""
         if (adapter := self._intake_adapter_for(event.source)) is not None:

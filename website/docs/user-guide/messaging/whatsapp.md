@@ -258,6 +258,7 @@ The Baileys bridge saves its session under `~/.hermes/platforms/whatsapp/session
 - **Sessions survive restarts** — you don't need to re-scan the QR code every time
 - The session data includes encryption keys and device credentials
 - **Do not share or commit this session directory** — it grants full access to the WhatsApp account
+- Hermes keeps the directory owner-only (`0700`) and has the bridge write its key files and `bridge.log` (which carries the QR pairing payloads) as `0600`. Managed (NixOS/systemd) installs and containers keep the modes their service umask or mount sets, so restrict those yourself
 
 ---
 

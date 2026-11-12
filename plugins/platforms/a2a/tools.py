@@ -102,11 +102,11 @@ def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> t
         card = _fetch_card(base_url, headers, min(timeout, 30))  # best-effort, to learn the rpc URL
     except Exception:
         card = None
-    if card is not None:
-        trusted, reason = security.verify_peer_card(card)
-        if not trusted:
-            # A forged card must not steer the call: refuse rather than fall back to its rpc URL.
-            raise ValueError(f"Peer '{agent_label}' Agent Card rejected: {reason}")
+    # A required signature must also block calls when fetching the Agent Card fails:
+    # the configured base URL is not an authenticated fallback.
+    trusted, reason = security.verify_peer_card(card if card is not None else {})
+    if not trusted:
+        raise ValueError(f"Peer '{agent_label}' Agent Card rejected: {reason}")
     ctx = context_id or protocol.new_context_id()
     safe_message = security.redact_outbound(message)
     # v1.0: contextId lives inside the Message, not at the params top level.

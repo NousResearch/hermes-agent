@@ -140,6 +140,12 @@ class StreamFallbackMixin:
                 logger.debug("Fragment preview delete failed (%s)", message_id, exc_info=True)
         return False
 
+    def _turn_reset(self) -> bool:
+        """True once /stop or /new invalidated this turn; checked after every awaited call that
+        precedes a send, since the reset can land while the adapter I/O is in flight."""
+        still_current = getattr(self, "_run_still_current", None)
+        return still_current is not None and not still_current()
+
     def _fragment_can_be_replaced(self) -> bool:
         """True when the preview can be deleted after a whole-answer resend."""
         if self._message_id in (None, "__no_edit__") or self._fallback_preserve_partial_messages:
@@ -207,6 +213,8 @@ class StreamFallbackMixin:
                 "declined this destination for this run"
             )
             return
+        if self._turn_reset():
+            return  # the refused final edit before this was awaited; /stop or /new may have landed
         # Balance fences BEFORE computing the continuation so the closing fence
         # reaches the user even when only the tail is delivered.
         final_text = ensure_closed_code_fences(self._clean_for_display(text))
@@ -220,6 +228,8 @@ class StreamFallbackMixin:
                 stale_message_id = None
             else:
                 continuation = final_text[self._fragment_cut:].lstrip()
+            if self._turn_reset():
+                return  # /stop or /new landed during the delete: the dead turn sends nothing
         self._fallback_final_send = False
         if not continuation.strip():
             continuation = await self._fallback_when_nothing_unseen(final_text)
@@ -238,6 +248,8 @@ class StreamFallbackMixin:
         # keeps its existing unthreaded delivery on every platform.
         anchor = self._initial_reply_to_id if continuation == final_text else None
         for chunk in chunks:
+            if self._turn_reset():
+                return  # each send awaits the network; a reset in between ends the dead turn here
             try:
                 result = await self._send_with_flood_retry(
                     content=chunk, reply_to=None if sent_any_chunk else anchor,

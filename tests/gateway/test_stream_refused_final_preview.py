@@ -206,3 +206,39 @@ async def test_a_fragment_whose_delete_is_refused_is_continued_not_repeated():
 
     shown = list(adapter.messages.values())
     assert len(shown) == 2 and shown[0].removesuffix(CURSOR) + shown[1] == answer, shown
+
+
+class _ResetDuringDeleteAdapter(_NoDeleteAdapter):
+    """Can delete; ``/new`` lands while the fragment delete is in flight."""
+
+    def __init__(self):
+        super().__init__()
+        self.current = True
+        self.sends_after_reset: list[str] = []
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None):
+        if not self.current:
+            self.sends_after_reset.append(content)
+        return await super().send(chat_id, content, reply_to, metadata)
+
+    async def delete_message(self, chat_id, message_id):
+        self.current = False
+        self.messages.pop(message_id, None)
+        return True
+
+
+@pytest.mark.asyncio
+async def test_a_reset_during_the_fragment_delete_sends_nothing_for_the_dead_turn():
+    answer = "<<" + "x" * 60 + ">> q000 q001 q002 <<end>>"
+    adapter = _ResetDuringDeleteAdapter()
+    consumer = GatewayStreamConsumer(
+        adapter, "-100123", run_still_current=lambda: adapter.current,
+        config=StreamConsumerConfig(cursor=CURSOR, edit_interval=0.01, buffer_threshold=1))
+    task = asyncio.create_task(consumer.run())
+    for piece in _pieces(answer, 12):
+        consumer.on_delta(piece)
+        await asyncio.sleep(0.03)  # health: allow HX013 -- stream pacing: lets edit ticks fire between deltas
+    consumer.finish()
+    await asyncio.wait_for(task, 10)
+
+    assert adapter.sends_after_reset == []

@@ -27,7 +27,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 
-from agent.file_safety import get_write_denied_error, is_write_approval_required
+from agent.file_safety import get_nt_namespace_error, get_write_denied_error, is_write_approval_required
 from hermes_cli import web_server_file_tickets as file_tickets
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.home_data_layout import SECRET_CACHE_STORES
@@ -1141,6 +1141,9 @@ async def fs_write_text(payload: FsWriteText, profile: Optional[str] = None):
     sensitive-file denylist and a locked managed-files root (#95306).
     """
     text = payload.content or ""
+    # Refuse NT namespace paths on raw input: resolving them can initiate SMB auth.
+    if get_nt_namespace_error(payload.path, verb="Write"):
+        raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
     session = await _fs_owned_session(payload.session_id, profile)
     # Save where read-text read: a staged paste or pick on this host, all else on the SSH machine.
     backend = await asyncio.to_thread(_remote_fs_backend, payload.path, profile)

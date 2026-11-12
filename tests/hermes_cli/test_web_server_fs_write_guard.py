@@ -176,3 +176,19 @@ def test_write_text_refuses_the_approval_gated_ssh_config(client, tmp_path, monk
 
     assert _save(client, config, "Host *\n  ProxyCommand sh -c id\n").status_code == 403
     assert not config.exists()
+
+
+@pytest.mark.parametrize("path", [
+    r"\??\UNC\example.invalid\share\notes.txt",
+    r"\\?\UNC\example.invalid\share\notes.txt",
+    r"\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy1\notes.txt",
+    r"\\.\PhysicalDrive0",
+])
+def test_write_text_refuses_nt_namespaces_before_any_path_resolution(client, monkeypatch, path):
+    """Raw NT namespace input must be rejected before a Windows filesystem path is touched."""
+    def unexpected_fs_access(*_args, **_kwargs):
+        raise AssertionError("NT namespace input reached filesystem path inspection")
+
+    monkeypatch.setattr(file_routes, "_remote_fs_backend", unexpected_fs_access)
+    response = _save(client, path)
+    assert response.status_code == 403, response.text

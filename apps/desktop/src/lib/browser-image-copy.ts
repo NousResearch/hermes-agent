@@ -84,7 +84,7 @@ export async function copyImageFromUrl(url: string): Promise<boolean> {
   if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') {
     notifyError(
       new Error('Copying images to the clipboard requires a secure context (HTTPS)'),
-      translateNow('fileMenu.copyFailed')
+      translateNow('common.copyFailed')
     )
 
     return false
@@ -104,7 +104,7 @@ export async function copyImageFromUrl(url: string): Promise<boolean> {
 
     return true
   } catch (error) {
-    notifyError(error, translateNow('fileMenu.copyFailed'))
+    notifyError(error, translateNow('common.copyFailed'))
 
     return false
   }

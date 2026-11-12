@@ -1,0 +1,20 @@
+name: remoet
+title: Remoet
+repo: https://github.com/remoet-labs/agent-skills
+sha: 3e153fdadc552265f6281d80c319e7e959287bfb
+subdir: hermes-plugin
+description: "Tech job search: search the public board of open tech roles, find companies by the stack they hire for, star the ones that fit and pull new roles from your shortlist, through Remoet's hosted MCP server (Streamable HTTP; OAuth 2.1 with dynamic client registration and PKCE). Portable Agent Plugins v1 package (plugin.json + mcp.json). Disclosure — hosted-only connector with no local code; every tool call goes to Remoet's MCP server at api.remoet.dev with the search terms and the profile, job and application details the user asks for, which also reach the user's model provider through the session. search_jobs, search_listings and get_listing work without an account. Write tools change the user's Remoet account, and apply_to_job submits an application to an employer; profiles and saved work, project and education entries are public. The package marks the server untrusted, so write tools ask first, but the sign-in step (`hermes mcp add remoet`) writes a config.yaml entry that replaces the package's own, trust included, unless the user adds `trust: untrusted` to it. Hermes stores and refreshes the OAuth tokens. The tool list comes from Remoet's server at run time, so the pinned commit doesn't cover it."
+maintainer: Remoet
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/remoet-labs/agent-skills/blob/3e153fdadc552265f6281d80c319e7e959287bfb/hermes-plugin/README.md
+version: "1.0.0"
+platforms: []
+known_issues:
+  - 'Sign in once for the personal tools: hermes mcp add remoet --url https://api.remoet.dev/mcp/oauth --auth oauth --connect-timeout 300, then add `trust: untrusted` under `mcp_servers.remoet` in config.yaml to keep the approval prompt'
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

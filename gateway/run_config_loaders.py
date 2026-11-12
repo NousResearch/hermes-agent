@@ -37,9 +37,45 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
 
+
+def _profile_channel_overrides(home: Path, platform: Platform):
+    """A config holding only *platform*'s ``channel_overrides`` from *home*'s config.yaml, read the
+    way the loader does: merge every nested platform block, then the block ``platform_section``
+    picks (a top-level ``<platform>:`` block first) wins. ``GatewayConfig.from_dict(raw)`` alone
+    reads only the nested ``platforms`` form."""
+    from gateway.config import GatewayConfig
+    from gateway.config_loader import merge_platform_sections, platform_section
+    from gateway.run import _load_gateway_config
+    raw = _load_gateway_config(home / "config.yaml")
+    name, gateway_section = str(platform.value), raw.get("gateway")
+    overrides = (merge_platform_sections(raw, gateway_section, {}).get(name) or {}).get("channel_overrides")
+    section, _ = platform_section(raw, name, (
+        gateway_section.get("platforms") if isinstance(gateway_section, dict) else None))
+    if isinstance(section, dict) and isinstance(section.get("channel_overrides"), dict):
+        overrides = section["channel_overrides"]
+    return GatewayConfig.from_dict({"platforms": {name: {
+        "channel_overrides": overrides if isinstance(overrides, dict) else {}}}})
+
 DEFAULT_HUMAN_DELAY_RANGE_MS: tuple[int, int] = (800, 2500)
 
 _BUSY_INPUT_MODES = {"interrupt", "queue", "steer"}
+
+
+def streaming_config_for_source(runner, source):
+    """The ``StreamingConfig`` of the profile that runs ``source``'s turn. Under ``multiplex_profiles``
+    ``runner.config`` is the launch profile's alone, so a served profile's own ``streaming`` block was
+    ignored (#136972). A served profile reads the GatewayConfig the multiplexer loaded for it (the
+    same loader as the launch one: ``gateway.streaming`` and gateway.json fallbacks included); the
+    launch profile, and a profile whose config is not cached, keep ``runner.config``."""
+    from gateway.config import StreamingConfig
+    from gateway.session_identity import identity_of
+    config = getattr(runner, "config", None)
+    if getattr(config, "multiplex_profiles", False) is True and source is not None:
+        identity = identity_of(source)
+        runtime = identity.runtime_profile if identity is not None else (getattr(source, "profile", None) or None)
+        if runtime and runtime != (getattr(runner, "_primary_profile_name", None) or "default"):
+            config = (getattr(runner, "_profile_configs", None) or {}).get(runtime, config)
+    return getattr(config, "streaming", None) or StreamingConfig()
 
 
 class GatewayConfigLoadersMixin:
@@ -100,13 +136,32 @@ class GatewayConfigLoadersMixin:
             return prompt
         return resolve_ephemeral_system_prompt_from_config(_load_gateway_config())
 
-    def _channel_override(self, platform: Platform, chat_id: str, thread_id, parent_id):
-        """``channel_overrides`` entry for this channel/thread, or None (also when no config is bound)."""
+    def _channel_override(self, platform: Platform, chat_id: str, thread_id, parent_id, source=None):
+        """``channel_overrides`` entry for this channel/thread in *source*'s serving profile (the
+        launch config without a source), or None (also when no config is bound)."""
         from gateway.run import _get_channel_override
-        config = getattr(self, "config", None)
+        config = self._serving_channel_config(source) if source is not None else getattr(self, "config", None)
         if not config:
             return None
         return _get_channel_override(config, platform, chat_id, thread_id=thread_id, parent_id=parent_id)
+
+    def _serving_channel_config(self, source: SessionSource, *, unbound_reads_home: bool = False):
+        """The config whose ``channel_overrides`` serve *source*.
+
+        ``self.config`` (a ``gateway --config`` file included) belongs to the primary profile only.
+        A turn another multiplexed profile serves reads that profile's own config.yaml: chat ids
+        repeat across profiles' bots (a Telegram DM's id is the user's id), so the launch
+        profile's override would otherwise steer every routed bot in the same chat (#136198).
+        ``unbound_reads_home``: with no config bound, read the source's home too (the room policy).
+        """
+        from gateway.session_identity import identity_of
+        config = getattr(self, "config", None)
+        identity = identity_of(source)
+        runtime = identity.runtime_profile if identity is not None else (source.profile or None)
+        routed = bool(runtime) and runtime != (getattr(self, "_primary_profile_name", None) or "default")
+        if routed or (config is None and unbound_reads_home):
+            return _profile_channel_overrides(self._resolve_profile_home_for_source(source), source.platform)
+        return config
 
     def _silence_allowed_for_source(self, source, display_kind, reply_expected, agent_result) -> bool:
         """Evaluate existing exemptions before consulting the optional room permission."""
@@ -117,32 +172,10 @@ class GatewayConfigLoadersMixin:
 
     def _room_allow_silence(self, source: SessionSource) -> Optional[bool]:
         """Resolve the room policy in the serving profile, never the launch snapshot for a route."""
-        from gateway.config import GatewayConfig
-        from gateway.config_loader import merge_platform_sections, platform_section
-        from gateway.run import _get_channel_override, _load_gateway_config
-        from gateway.session_identity import identity_of
-        config = getattr(self, "config", None)
-        identity = identity_of(source)
-        runtime = identity.runtime_profile if identity is not None else (source.profile or None)
-        # ``self.config`` (including a ``gateway --config`` file) serves the primary profile; only a
-        # turn routed to another profile reads that profile's config.yaml.
-        routed = bool(runtime) and runtime != (getattr(self, "_primary_profile_name", None) or "default")
+        from gateway.run import _get_channel_override
         try:
-            if config is None or routed:
-                raw = _load_gateway_config(self._resolve_profile_home_for_source(source) / "config.yaml")
-                # The loader's own two steps: merge every nested platform block, then the overrides of
-                # the block platform_section picks (a top-level ``<platform>:`` block first) win.
-                # ``GatewayConfig.from_dict(raw)`` alone reads only the nested ``platforms`` form.
-                name, gateway_section = str(source.platform.value), raw.get("gateway")
-                overrides = (merge_platform_sections(raw, gateway_section, {}).get(name) or {}).get("channel_overrides")
-                section, _ = platform_section(raw, name, (
-                    gateway_section.get("platforms") if isinstance(gateway_section, dict) else None))
-                if isinstance(section, dict) and isinstance(section.get("channel_overrides"), dict):
-                    overrides = section["channel_overrides"]
-                config = GatewayConfig.from_dict({"platforms": {name: {
-                    "channel_overrides": overrides if isinstance(overrides, dict) else {}}}})
             override = _get_channel_override(
-                config, source.platform, source.chat_id,
+                self._serving_channel_config(source, unbound_reads_home=True), source.platform, source.chat_id,
                 thread_id=source.thread_id, parent_id=source.parent_chat_id)
         except Exception:
             # No permission means the default reply rule; a lookup failure must not become an error reply.
@@ -154,6 +187,7 @@ class GatewayConfigLoadersMixin:
     def _resolve_model_for_channel(
         self, platform: Platform, chat_id: str, *, user_config: Optional[dict] = None,
         thread_id: Optional[str] = None, parent_id: Optional[str] = None,
+        source: Optional[SessionSource] = None,
     ) -> str:
         """Resolve model for this channel: channel_overrides else global default.
 
@@ -165,13 +199,13 @@ class GatewayConfigLoadersMixin:
         from hermes_cli.model_switch import resolve_effective_model
         return resolve_effective_model(
             None,  # session tier applied downstream (_apply_session_model_override)
-            self._channel_override(platform, chat_id, thread_id, parent_id),
+            self._channel_override(platform, chat_id, thread_id, parent_id, source),
             _resolve_gateway_model(user_config),
         )
 
     def _get_system_prompt_for_channel(
         self, platform: Platform, chat_id: str, *, thread_id: Optional[str] = None,
-        parent_id: Optional[str] = None,
+        parent_id: Optional[str] = None, source: Optional[SessionSource] = None,
     ) -> str:
         """Ephemeral system prompt for this channel/thread.
 
@@ -185,7 +219,7 @@ class GatewayConfigLoadersMixin:
         boot-time snapshot of the launch profile's (#89161); ``/personality`` edits take effect on the next
         turn for the same reason.
         """
-        override = self._channel_override(platform, chat_id, thread_id, parent_id)
+        override = self._channel_override(platform, chat_id, thread_id, parent_id, source)
         if override and override.system_prompt:
             return (override.system_prompt or "").strip()
         return self._load_ephemeral_system_prompt()
@@ -280,13 +314,11 @@ class GatewayConfigLoadersMixin:
 
         return _parse_service_tier_config(cls._cfg_str("agent", "service_tier"))
 
-    def _load_daybreak(self, source) -> bool:
-        """``agent.daybreak`` (off unless explicitly true) for a turn from ``source``. Read per turn so the
-        Desktop switch reaches the next turn of a running chat without rebuilding its cached agent. Only the
-        owner's own chats carry it: Daybreak is the approved account's own access (OpenAI: no third-party
-        or downstream use), and a messaging platform's chats, a hosted room or an A2A peer can be other people.
-        LOCAL is the canonical transport, not the owner, so the route's frozen launch policy decides."""
-        from gateway.run import _load_gateway_config
+    def _daybreak_surface(self, source) -> bool:
+        """Whether a turn from ``source`` is the owner's own chat, the only place Daybreak may run: it is the
+        approved account's own access (OpenAI: no third-party or downstream use), and a messaging platform's
+        chats, a hosted room or an A2A peer can be other people. LOCAL is the canonical transport, not the
+        owner, so the route's frozen launch policy decides."""
         from gateway.session_policy import DAYBREAK_LABELS, policy_for_source
         if getattr(source, "platform", None) != Platform.LOCAL:
             return False
@@ -294,9 +326,14 @@ class GatewayConfigLoadersMixin:
             policy = policy_for_source(self, source)
         except Exception:  # health: allow BLE001 -- an unreadable policy fails closed to standard requests
             return False
-        if getattr(policy, "source", None) not in DAYBREAK_LABELS:
-            return False
-        return cfg_get(_load_gateway_config(), "agent", "daybreak") is True
+        return getattr(policy, "source", None) in DAYBREAK_LABELS
+
+    def _load_daybreak(self, source) -> bool:
+        """``agent.daybreak`` (off unless explicitly true) for a turn from ``source``, on the owner's own chats
+        only. Read per turn so the Desktop switch reaches the next turn of a running chat without rebuilding
+        its cached agent."""
+        from gateway.run import _load_gateway_config
+        return self._daybreak_surface(source) and cfg_get(_load_gateway_config(), "agent", "daybreak") is True
 
     @staticmethod
     def _load_show_reasoning() -> bool:

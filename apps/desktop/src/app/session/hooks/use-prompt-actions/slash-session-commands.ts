@@ -42,7 +42,7 @@ interface RewindReceipt {
   derivedRowId?: number
   rewound_count?: number
   status?: string
-  target_message?: { content?: unknown; id?: unknown } | null
+  target_message?: { content?: unknown; id?: unknown; timestamp?: unknown } | null
 }
 
 interface SlashOutput {
@@ -166,7 +166,7 @@ export function sessionCommandHandlers<C extends { arg: string }>(env: SessionCo
     out: SlashOutput,
     turnsBack: number,
     intent: 'retry' | 'undo'
-  ): Promise<undefined | { count: number; content: unknown }> {
+  ): Promise<undefined | { count: number; content: unknown; id?: unknown; timestamp?: unknown }> {
     const { render, sessionId, storedSessionId } = out
     const nothing = intent === 'retry' ? copy().retryNothing : copy().undoNothing
 
@@ -207,7 +207,9 @@ export function sessionCommandHandlers<C extends { arg: string }>(env: SessionCo
       )
     }
 
-    return { count, content: receipt?.target_message?.content }
+    const target = receipt?.target_message
+
+    return { count, content: target?.content, id: target?.id, timestamp: target?.timestamp }
   }
 
   // Derive the Nth newest user turn from the owner's snapshot and rewind it. Resolves undefined after
@@ -250,6 +252,22 @@ export function sessionCommandHandlers<C extends { arg: string }>(env: SessionCo
     })
 
     return { ...receipt, derivedRowId: target.row_id as number }
+  }
+
+  // Main's /undo never touches files: the owner names the files the undone turns changed and points at /rollback.
+  // The rewound row's id pins the span to the rewind's own boundary: a turn started since cannot move it.
+  async function undoRollbackHint(out: SlashOutput, target: { id?: unknown; timestamp?: unknown }): Promise<string> {
+    if (typeof target.timestamp !== 'number') {
+      return ''
+    }
+
+    const listed = await requestGateway<{ undo_hint?: { text?: string } | null }>('rollback.list', {
+      session_id: out.sessionId,
+      undo_since: target.timestamp,
+      ...(typeof target.id === 'number' ? { undo_message_id: target.id } : {})
+    }).catch(() => undefined) // advisory: an older owner refuses `undo_since`, and main printed nothing
+
+    return listed?.undo_hint?.text ?? ''
   }
 
   // The next-turn queue the composer uses while busy: the owner's durable FIFO for a canonical
@@ -298,7 +316,9 @@ export function sessionCommandHandlers<C extends { arg: string }>(env: SessionCo
           setComposerDraft(text)
         }
 
-        out.render(rewound.count === 1 ? copy().undidOne('1') : copy().undidOther(String(rewound.count)))
+        const undid = rewound.count === 1 ? copy().undidOne('1') : copy().undidOther(String(rewound.count))
+        const hint = await undoRollbackHint(out, rewound)
+        out.render(hint ? `${undid}\n${hint}` : undid)
       } catch (err) {
         out.render(rewindErrorText(err, 'undo'))
       }

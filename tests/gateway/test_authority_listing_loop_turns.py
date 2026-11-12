@@ -62,10 +62,11 @@ def _count_reads_by_thread(monkeypatch, db):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('method', ['session.list', 'session.active_list'])
-async def test_a_live_listing_reads_the_store_off_the_loop_in_batches(owner, monkeypatch, method):
+@pytest.mark.parametrize('method, params', [('session.list', {}), ('session.list', {'picker': True}),
+                                            ('session.active_list', {})])
+async def test_a_live_listing_reads_the_store_off_the_loop_in_batches(owner, monkeypatch, method, params):
     reads = _count_reads_by_thread(monkeypatch, owner.db)
-    rows = await owner.listing(method)
+    rows = await owner.listing(method, **params)
     assert len(rows) == (200 if method == 'session.list' else SESSION_COUNT)
     assert reads['loop'] == 0, reads
     # One worker read per batch, never one per session.

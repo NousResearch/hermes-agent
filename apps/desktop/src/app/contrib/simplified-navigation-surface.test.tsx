@@ -62,16 +62,17 @@ afterEach(() => {
   setSidebarOpen(true)
 })
 
-it('keeps global navigation while the sidebar is closed and preserves that choice across pages', () => {
+it('keeps global navigation while the sidebar is closed, and picking Chats from a page shows it whole', () => {
   mount()
   act(() => setSidebarOpen(false))
   expect(screen.getByRole('navigation', { name: 'Hermes' })).toBeTruthy()
+  // A destination with no panel leaves the folded sidebar alone.
   fireEvent.click(screen.getByRole('button', { name: 'Capabilities' }))
   expect($routeCollapsedPanes.get().has('sessions')).toBe(true)
   expect($sidebarOpen.get()).toBe(false)
   fireEvent.click(screen.getByRole('button', { name: 'Chats' }))
   expect($routeCollapsedPanes.get().has('sessions')).toBe(false)
-  expect($sidebarOpen.get()).toBe(false)
+  expect($sidebarOpen.get()).toBe(true)
 })
 
 it('collapses sessions on global pages without hiding them, so an attempted reveal cannot show them', () => {

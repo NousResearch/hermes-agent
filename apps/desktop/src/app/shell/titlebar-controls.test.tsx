@@ -9,9 +9,11 @@ import { $narrowOverlayPaneIds } from '@/components/pane-shell/narrow-overlay-st
 import { $narrowViewport } from '@/components/pane-shell/tree/store'
 import { registry } from '@/contrib/registry'
 import { I18nProvider } from '@/i18n'
+import { $interfaceMode } from '@/store/interface-mode'
 import {
   $fileBrowserOpen,
   $leftSideOpen,
+  $sidebarOpen,
   CHAT_SIDEBAR_PANE_ID,
   FILE_BROWSER_PANE_ID,
   setSidebarOpen
@@ -343,17 +345,46 @@ it('keeps settings only in the global rail when simplified mode is enabled', () 
   $shellChoice.set(null)
 })
 
-it('offers the redesign band only the way back to a hidden sidebar, which carries its own collapse', () => {
+it('offers the Advanced band only the way back to a hidden sidebar: the open Chats destination folds it', () => {
   $shellChoice.set(null)
   setSidebarOpen(true)
   renderControls('/')
   expect(screen.queryByRole('button', { name: 'Hide sidebar' })).toBeNull()
 
   act(() => setSidebarOpen(false))
+  expect(screen.queryByRole('button', { name: 'Show chats' })).toBeNull()
   fireEvent.click(screen.getByRole('button', { name: 'Show sidebar' }))
   expect($leftSideOpen.get()).toBe(true)
   expect(screen.queryByRole('button', { name: 'Hide sidebar' })).toBeNull()
   cleanup()
+})
+
+it('brings a hidden sidebar back in Simple mode from one floating button at the stage, not the band', () => {
+  const previousMode = $interfaceMode.get()
+  $shellChoice.set(null)
+  $interfaceMode.set('simple')
+  setSidebarOpen(false)
+  renderControls('/')
+
+  expect(screen.queryByRole('button', { name: 'Show sidebar' })).toBeNull()
+  const reveal = screen.getByRole('button', { name: 'Show chats' })
+  expect(reveal.getAttribute('data-slot')).toBe('panel-reveal')
+  fireEvent.click(reveal)
+  expect($sidebarOpen.get()).toBe(true)
+  expect(screen.queryByRole('button', { name: 'Show chats' })).toBeNull()
+
+  // Below wide the band's button is the sheet's menu in every mode, and no floating button shows.
+  act(() => {
+    setSidebarOpen(false)
+    $narrowViewport.set(true)
+  })
+  expect(screen.queryByRole('button', { name: 'Show chats' })).toBeNull()
+  expect(screen.getByRole('button', { name: 'Show sidebar' })).toBeTruthy()
+
+  act(() => $narrowViewport.set(false))
+  cleanup()
+  setSidebarOpen(true)
+  $interfaceMode.set(previousMode)
 })
 
 describe('the redesigned band on a compact window', () => {

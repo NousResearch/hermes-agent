@@ -145,8 +145,9 @@
 
 /* ── Rails ────────────────────────────────────────────────────────────────────────────────── */
 
-/* 60px columns on the canvas (906:19409 / 906:19875): the top group starts 17px below the panel
-   edge and the bottom group sits 20px off the window floor, both with 15px between buttons. */
+/* 60px columns on the canvas (906:19409 / 906:19875). The developer rail starts under the band, its
+   top group 17px below the panel edge and the bottom group 20px off the window floor, 30px buttons
+   15px apart. */
 :root[data-shell='portal'] .portal-rail {
   display: flex;
   min-block-size: 0;
@@ -155,6 +156,50 @@
   justify-content: space-between;
   gap: 0.9375rem;
   padding-block: 1.0625rem 1.25rem;
+}
+
+/* The global rail runs from the window top: the brand badge at --portal-rail-top (20px, or under the
+   band where native window controls sit in the column), the destinations 20px under it, 40px buttons
+   15px apart. It reads the same on every destination and in every sidebar state: nothing in it moves. */
+:root[data-shell='portal'] [data-slot='global-nav'].portal-rail {
+  justify-content: flex-start;
+  gap: var(--portal-rail-gap);
+  padding-block-start: var(--portal-rail-top);
+}
+
+:root[data-shell='portal'] .portal-rail-badge {
+  display: grid;
+  flex-shrink: 0;
+  place-items: center;
+  inline-size: var(--portal-rail-badge-width);
+  block-size: var(--portal-rail-badge-height);
+  margin-block-end: calc(var(--portal-rail-badge-gap) - var(--portal-rail-gap));
+  overflow: hidden;
+  border-radius: var(--portal-radius-surface);
+  background: var(--portal-brand-fill);
+  -webkit-app-region: drag;
+}
+
+/* The wing at Figma's crop (906:19688): 60% of the badge's width, tilted 15°. */
+:root[data-shell='portal'] .portal-rail-badge img {
+  inline-size: 60%;
+  block-size: auto;
+  transform: rotate(15deg);
+}
+
+:root[data-shell='portal'] [data-slot='global-nav'] .portal-chrome-button {
+  inline-size: var(--portal-rail-button);
+  block-size: var(--portal-rail-button);
+}
+
+:root[data-shell='portal'] [data-slot='global-nav'] .portal-chrome-button .codicon[class*='codicon-'] {
+  font-size: var(--portal-rail-glyph);
+}
+
+/* Figma's robot fills more of its box than the codicons do (906:19430). */
+:root[data-shell='portal'] .portal-rail-robot {
+  inline-size: calc(var(--portal-rail-glyph) * 1.125);
+  block-size: calc(var(--portal-rail-glyph) * 1.125);
 }
 
 /* Rail destinations rest at .8 ink (895/856 draw them at full ink, 906 at .4: .8 keeps the open
@@ -186,11 +231,47 @@
     scrollbar-width: none;
   }
 
+  :root[data-shell='portal'] [data-slot='global-nav'].portal-rail {
+    gap: var(--portal-space-tight);
+    padding-block-start: max(var(--portal-rail-top), var(--portal-space-compact));
+  }
+
   :root[data-shell='portal'] .portal-rail-group {
     flex: none;
     gap: var(--portal-space-tight);
     overflow: visible;
   }
+}
+
+/* ── Panel reveal (Simple mode, 1061:7816) ─────────────────────────────────────────────────────
+   The way back to a folded chat sidebar or page panel: a floating 44×40 button at the stage's
+   top-leading corner, under the band and clear of its controls, on the floating surface. It sits
+   over the stage, under menus, popovers and dialogs. */
+:root[data-shell='portal'] .portal-panel-reveal {
+  position: fixed;
+  z-index: var(--portal-layer-stage-overlay);
+  inset-block-start: calc(var(--titlebar-band-height) + var(--portal-panel-reveal-inset));
+  inset-inline-start: calc(var(--portal-rail-reserve) + var(--portal-panel-reveal-inset));
+  inline-size: var(--portal-panel-reveal-width);
+  block-size: var(--portal-panel-reveal-height);
+  border: 1px solid var(--portal-stroke-floating);
+  border-radius: var(--portal-radius-surface);
+  background-color: var(--portal-surface-elevated);
+  box-shadow: var(--portal-floating-shadow);
+  color: var(--ui-text-secondary);
+}
+
+:root[data-shell='portal'] .portal-panel-reveal .codicon[class*='codicon-'] {
+  font-size: var(--portal-panel-reveal-glyph);
+}
+
+:root[data-shell='portal'] .portal-panel-reveal:is(:hover, :focus-visible) {
+  background-image: linear-gradient(var(--portal-surface-floating-hover) 0 0);
+  color: var(--ui-text-primary);
+}
+
+:root[data-shell='portal'] .portal-panel-reveal:active {
+  background-image: linear-gradient(var(--portal-surface-chrome-pressed) 0 0);
 }
 
 /* ── Developer panes (files, review, terminal) ───────────────────────────────────────────── */
@@ -582,9 +663,6 @@
     inset-inline-start: 0;
     display: flex;
     width: var(--portal-rail-width);
-    margin-top: 0;
-    padding-top: calc(var(--titlebar-height) + 1.0625rem);
-    padding-bottom: 1.25rem;
     background-color: var(--portal-surface-canvas);
     overscroll-behavior: contain;
   }

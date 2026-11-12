@@ -62,6 +62,28 @@ function groupIdOf(node: LayoutNode): null | string {
   return ids.size === 1 ? [...ids][0] : null
 }
 
+/** A zone that folds away on a deep sash drag: every pane it shows declares `dragCollapseBelow`
+ *  (the chat sidebar). `below` is the size under which the drag folds it; `collapse` hides its panes
+ *  through their own toggles. Null when any pane opts out or the length resolves to nothing (the
+ *  classic shell defines no fold width). */
+function dragFoldOf(
+  paneIds: readonly string[],
+  ctx: TrackContext,
+  container: HTMLElement,
+  horizontal: boolean
+): null | { below: number; collapse: () => void } {
+  const chromes = paneIds.map(id => paneChrome(ctx.paneFor(id)))
+
+  if (!horizontal || chromes.length === 0 || chromes.some(c => !c.dragCollapseBelow || !c.onDragCollapse)) {
+    return null
+  }
+
+  const below = Math.max(...chromes.map(c => resolveCssPx(container, c.dragCollapseBelow!, true) ?? 0))
+  const collapses = new Set(chromes.map(c => c.onDragCollapse!))
+
+  return below > 0 ? { below, collapse: () => collapses.forEach(collapse => collapse()) } : null
+}
+
 /**
  * The size overrides for a fixed set of panes, referentially stable until one
  * of THEM changes. Sash drags churn `$paneStates` every frame; subscribing the
@@ -244,13 +266,15 @@ export function TreeSplit({
         // release minimizes the zone instead of leaving a useless sliver.
         const toolZone = allPaneIds(child).length > 0 && allPaneIds(child).every(isCollapsePane)
         const floor = toolZone ? COLLAPSED_ZONE_PX : MIN_PANE_PX
+        const paneIds = zone ? shownPaneIds(zone, trackCtx) : []
 
         return {
           // EVERY shown pane of the zone: the zone's track is the max() of its
           // panes' sizes, so the sash writes the same px to all of them —
           // writing only the active pane would leave the zone pinned at a
           // larger sibling's width.
-          paneIds: zone ? shownPaneIds(zone, trackCtx) : [],
+          paneIds,
+          fold: dragFoldOf(paneIds, trackCtx, container, horizontal),
           fixed: Boolean(zone),
           size: sizeOf(zoneEl ?? wrapper),
           min: toolZone ? floor : Math.max(floor, computedPx(horizontal ? cs.minWidth : cs.minHeight, 0)),
@@ -355,6 +379,29 @@ export function TreeSplit({
         return { cascaded, moved: Math.sign(requestedShift) * transferred, sizes: next }
       }
 
+      // A side that folds on a deep drag (the chat sidebar) folds once the pointer asks it to be
+      // narrower than its fold length: the seam's leading side follows the pointer, the trailing
+      // side mirrors it. Folded, its whole size goes to the other side of the seam.
+      const foldSides = [
+        { index: aIndex, other: bIndex, sign: 1 },
+        { index: bIndex, other: aIndex, sign: -1 }
+      ]
+
+      const foldFor = (shift: number) =>
+        foldSides.find(({ index, sign }) => {
+          const { fold, initial, visible, minimized } = sashTracks[index]
+
+          return fold && visible && !minimized && initial + sign * shift < fold.below
+        }) ?? null
+
+      const foldPlan = ({ index, other }: (typeof foldSides)[number]): ReturnType<typeof planFor> => {
+        const sizes = sashTracks.map(track => track.initial)
+        sizes[other] += sizes[index]
+        sizes[index] = 0
+
+        return { cascaded: false, moved: sashTracks[index].initial, sizes }
+      }
+
       // One store commit on release: fixed zones get their px override
       // (sidebar semantics), the flex run gets weights. Clamped px → weights
       // so persisted weights match what's on screen.
@@ -453,19 +500,54 @@ export function TreeSplit({
       // each one restyles the whole document; they republish on release).
       beginSashDrag()
 
+      // A folding side previews at nothing: its clamp (the wrapper's min size) stands down so the
+      // other side takes the whole run. Unfolding restores the captured styles first, so the
+      // ordinary preview starts from React's own clamps again.
+      let previewedFold: null | (typeof foldSides)[number] = null
+
+      const previewFrame = ({
+        fold,
+        plan
+      }: {
+        fold: null | (typeof foldSides)[number]
+        plan: ReturnType<typeof planFor>
+      }) => {
+        if (fold !== previewedFold) {
+          restoreStyles()
+          previewedFold = fold
+        }
+
+        previewPlan(plan)
+
+        if (fold) {
+          const { element, zoneItem } = sashTracks[fold.index]
+          element.style.minWidth = '0px'
+          zoneItem.style.minWidth = '0px'
+        }
+      }
+
       // pointermove outpaces 60fps and each write relayouts the whole pane tree,
       // so coalesce to one apply per frame (rafCoalesce commits on cleanup).
-      const resize = rafCoalesce(previewPlan)
+      const resize = rafCoalesce(previewFrame)
       // A return drag stays local only after this gesture has actually crossed
       // a second donor. A one-pixel opposite wobble must not poison the real
       // forward movement that follows.
       let cascadeDirection: -1 | 1 | null = null
       let lastPlan: null | ReturnType<typeof planFor> = null
+      let lastFold: null | (typeof foldSides)[number] = null
       let done = false
 
       const onMove = (ev: PointerEvent) => {
         const shift = (horizontal ? ev.clientX : ev.clientY) - start
         const direction = Math.sign(shift) as -1 | 0 | 1
+
+        lastFold = foldFor(shift)
+
+        if (lastFold) {
+          resize.push({ fold: lastFold, plan: foldPlan(lastFold) })
+
+          return
+        }
 
         const allowCascade = cascadeDirection === null || direction === cascadeDirection
         lastPlan = planFor(shift, allowCascade)
@@ -474,7 +556,7 @@ export function TreeSplit({
           cascadeDirection = direction
         }
 
-        resize.push(lastPlan)
+        resize.push({ fold: null, plan: lastPlan })
       }
 
       // Ends through several racing paths (pointerup, pointercancel, window
@@ -494,7 +576,11 @@ export function TreeSplit({
             restoreStyles()
           }
 
-          if (lastPlan && lastPlan.moved !== 0) {
+          if (lastFold) {
+            // Released folded: hide the side through its own toggle and write no size, so it
+            // returns at the width it had before this drag.
+            sashTracks[lastFold.index].fold!.collapse()
+          } else if (lastPlan && lastPlan.moved !== 0) {
             // Dragged a tool panel down to its collapsed header? Fold the zone
             // to its rail instead of persisting a sliver — and DON'T write the
             // sliver size, so restoring brings back the size it had before.

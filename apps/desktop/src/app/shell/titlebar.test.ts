@@ -19,7 +19,8 @@ import {
   titlebarControlsPosition,
   titlebarControlsYNudge,
   titlebarToolsRightCss,
-  TOUCH_TITLEBAR_HEIGHT
+  TOUCH_TITLEBAR_HEIGHT,
+  windowLightsInRail
 } from './titlebar'
 import { installTitlebarBandProperty, useTitlebarHeight } from './use-touch-titlebar'
 
@@ -163,5 +164,34 @@ describe('portalBandLeadingInset', () => {
     expect(start()).toBe('80px')
     stop()
     $connection.set(null)
+  })
+
+  // The rail's brand badge sits at the window top (906:19409) unless native controls are there.
+  it('marks the root while native window controls sit in the rail column', () => {
+    const root = document.createElement('html')
+    const lights = () => root.hasAttribute('data-portal-window-lights')
+    const stop = installTitlebarBandProperty(root)
+
+    $connection.set({ isFullscreen: false, windowButtonPosition: { x: 23, y: 23 } } as HermesConnection)
+    expect(lights()).toBe(true)
+    $connection.set({ isFullscreen: true, windowButtonPosition: { x: 23, y: 23 } } as HermesConnection)
+    expect(lights()).toBe(false)
+    $connection.set({ isFullscreen: false, windowButtonPosition: null } as HermesConnection)
+    expect(lights()).toBe(false)
+    stop()
+    $connection.set(null)
+  })
+})
+
+describe('windowLightsInRail', () => {
+  it('holds for macOS traffic lights, reported or assumed before native state arrives', () => {
+    expect(windowLightsInRail({ x: 23, y: 23 }, false, true)).toBe(true)
+    expect(windowLightsInRail(undefined, false, true)).toBe(true)
+  })
+
+  it('is false in fullscreen, on Windows/Linux and in the browser', () => {
+    expect(windowLightsInRail({ x: 23, y: 23 }, true, true)).toBe(false)
+    expect(windowLightsInRail(null, false, true)).toBe(false)
+    expect(windowLightsInRail(undefined, false, false)).toBe(false)
   })
 })

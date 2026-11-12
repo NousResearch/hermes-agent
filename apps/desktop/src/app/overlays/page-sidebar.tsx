@@ -2,21 +2,19 @@ import { useStore } from '@nanostores/react'
 import { atom, computed } from 'nanostores'
 import { type ComponentProps, type KeyboardEvent, type ReactNode, useEffect } from 'react'
 
-import { Button } from '@/components/ui/button'
 import { RowButton } from '@/components/ui/row-button'
-import { Tip } from '@/components/ui/tooltip'
-import { useI18n } from '@/i18n'
-import { ArrowBarToLeft as IconArrowBarToLeft } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { $sidebarOpen, toggleSidebarOpen } from '@/store/layout'
 
 import { $widthClass, BELOW_WIDE_QUERY } from '../redesign/breakpoints'
 import { $shellSheet, toggleShellSheet } from '../shell/shell-sheet'
 
-/** A page's sidebar panel follows the chat sidebar's open state on a wide window: one ⌘B, one
- *  collapse button, and switching between Chats, Agents and Settings never re-opens a panel the user
- *  folded away. Below wide it is a sheet the band's menu opens (app/shell/shell-sheet.ts), and the
- *  docked preference is left alone for when the window widens again. */
+/** A page's sidebar panel follows the chat sidebar's open state on a wide window: one ⌘B, and one
+ *  place that folds it — the open destination's rail button, as Chats folds the chat sidebar.
+ *  Switching between Agents, Schedules and Settings on the band or by link never re-opens a panel the
+ *  user folded away; picking one from the rail shows it whole. Below wide it is a sheet the band's menu
+ *  opens (app/shell/shell-sheet.ts), and the docked preference is left alone for when the window
+ *  widens again. */
 export function usePageSidebarOpen() {
   // Mounting a page that owns a panel tells the band (PageToolbar) to offer "show sidebar" while
   // the panel is folded away, as the chat band does, and below wide to open it as a sheet.
@@ -33,7 +31,7 @@ export function usePageSidebarOpen() {
   return wide ? docked : sheet
 }
 
-/** The panel's own collapse button and the band's menu: fold the docked panel, or close its sheet. */
+/** The open destination's rail button and the band's menu: fold the docked panel, or toggle its sheet. */
 export function togglePageSidebar(): void {
   if ($widthClass.get() === 'wide') {
     toggleSidebarOpen()
@@ -52,24 +50,11 @@ export const PAGE_SIDEBAR_NARROW = BELOW_WIDE_QUERY
 export const $pageHasSidebar = computed($pagePanels, count => count > 0)
 
 /** The panel's title row (895:8991 "Agents", 856:2741 "Settings"): the display title at the
- *  panel's 20px inset and the chat sidebar's 30px collapse button at its end. */
+ *  panel's 20px inset. The panel folds from its rail destination, never from a button of its own. */
 export function PageSidebarHead({ title }: { title: string }) {
-  const { t } = useI18n()
-
   return (
     <div className="page-sidebar-head">
       <h2 className="page-nav-title">{title}</h2>
-      <Tip label={t.titlebar.hideSidebar}>
-        <Button
-          aria-label={t.titlebar.hideSidebar}
-          className="page-sidebar-collapse"
-          onClick={togglePageSidebar}
-          size="icon"
-          variant="ghost"
-        >
-          <IconArrowBarToLeft aria-hidden />
-        </Button>
-      </Tip>
     </div>
   )
 }

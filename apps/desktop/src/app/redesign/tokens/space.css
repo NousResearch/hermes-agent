@@ -6,11 +6,29 @@
   --portal-rail-width: 3.75rem;
   /* What the rail takes from the layout: its width, none on compact, where it rides the sheet. */
   --portal-rail-reserve: var(--portal-rail-width);
+  /* The global rail (906:19409): the brand badge at its top (40×56, 906:19687), 20px over the
+     destinations, then 40px buttons with 20px glyphs on a 55px pitch (15px apart). A touch target never
+     shrinks under the coarse pointer's floor. Where native window controls sit in the rail column
+     (macOS traffic lights, `data-portal-window-lights`), the rail starts below the band instead of at
+     Figma's 20px, so the badge never sits under them. */
+  --portal-rail-top: 1.25rem;
+  --portal-rail-badge-width: 2.5rem;
+  --portal-rail-badge-height: 3.5rem;
+  --portal-rail-badge-gap: 1.25rem;
+  --portal-rail-button: max(2.5rem, var(--portal-row-chrome));
+  --portal-rail-glyph: 1.25rem;
+  --portal-rail-gap: 0.9375rem;
   /* A rail menu or popover opens one tight gap past the rail's edge, whatever the rail button's size
-     (30px, 44px on touch): the distance from the button's end to the rail's, plus that gap. */
+     (40px, 44px on touch): the distance from the button's end to the rail's, plus that gap. */
   --portal-rail-popover-offset: calc(
-    (var(--portal-rail-width) - var(--portal-row-chrome)) / 2 + var(--portal-space-tight)
+    (var(--portal-rail-width) - var(--portal-rail-button)) / 2 + var(--portal-space-tight)
   );
+  /* The way back to a folded sidebar or page panel in Simple mode (1061:7816): a 44×40 floating button
+     at the stage's top-leading corner, clear of the band. Advanced keeps it in the band. */
+  --portal-panel-reveal-width: 2.75rem;
+  --portal-panel-reveal-height: 2.5rem;
+  --portal-panel-reveal-inset: 1rem;
+  --portal-panel-reveal-glyph: 1.125rem;
 
   /* The responsive model (app/redesign/breakpoints.ts, DESIGN.md › Responsive): compact below the
      medium breakpoint, medium below the wide one, wide from there. A custom property cannot feed a
@@ -92,6 +110,10 @@
   --page-form-max-width: var(--portal-column-form);
   --page-catalog-max-width: var(--portal-column-catalog);
   --portal-chrome-button-size: var(--portal-row-chrome);
+}
+
+:root[data-shell='portal'][data-portal-window-lights] {
+  --portal-rail-top: var(--titlebar-band-height);
 }
 
 /* Medium (breakpoints.ts: max-width 1023.98px): one column beside no panel, so a page's column starts

@@ -20,16 +20,17 @@ afterEach(() => {
   noteActiveTreeGroup(null)
 })
 
+// Each destination is picked from another one: the open destination's button folds its panel instead.
 it.each([
-  [en.simplifiedAgents.chats, '/'],
-  [en.profiles.title, '/profiles'],
-  [en.sidebar.nav.capabilities, '/capabilities'],
-  [en.simplifiedAgents.library, '/artifacts'],
-  [en.cron.title, '/cron']
-])('navigates from the core %s destination to %s without plugin pages', (label, route) => {
+  [en.simplifiedAgents.chats, '/', '/artifacts'],
+  [en.profiles.title, '/profiles', '/'],
+  [en.sidebar.nav.capabilities, '/capabilities', '/'],
+  [en.simplifiedAgents.library, '/artifacts', '/'],
+  [en.cron.title, '/cron', '/']
+])('navigates from the core %s destination to %s without plugin pages', (label, route, from) => {
   const onNavigate = vi.fn()
   render(
-    <MemoryRouter>
+    <MemoryRouter initialEntries={[from]}>
       <RootTooltipProvider>
         <SimplifiedGlobalNav onNavigate={onNavigate} />
       </RootTooltipProvider>

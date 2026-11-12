@@ -93,7 +93,7 @@
 /* ── Page sidebar panel (856:2740 Settings, 895:8991 Agents) ──
    The chat sidebar's panel on every page that has secondary navigation: the same translucent panel
    fill (the wing reads through), the same 9px outer top corner, a hairline to the stage, and a title
-   row with the chat sidebar's 30px collapse button. */
+   row. It folds from its rail destination, as the chat sidebar does. */
 :root[data-shell='portal'] [data-page-surface] :is([data-tour='overlay-nav'], .page-sidebar-panel) {
   border-start-start-radius: var(--portal-panel-radius);
   background: var(--portal-page-panel-fill);
@@ -107,40 +107,12 @@
 .page-sidebar-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
   margin-bottom: 1.875rem;
 }
 
 .page-sidebar-head .page-nav-title {
   min-width: 0;
   margin: 0;
-}
-
-:root[data-shell='portal']
-  [data-page-surface]
-  .page-sidebar-head
-  button.page-sidebar-collapse[data-size][data-variant] {
-  width: var(--portal-chrome-button-size);
-  height: var(--portal-chrome-button-size);
-  flex-shrink: 0;
-  border-radius: var(--portal-radius-control);
-  background: var(--portal-surface-chrome);
-  box-shadow: none;
-  color: var(--ui-text-tertiary);
-}
-
-:root[data-shell='portal']
-  [data-page-surface]
-  .page-sidebar-head
-  button.page-sidebar-collapse[data-size][data-variant]:hover {
-  background: var(--portal-surface-chrome-hover);
-  color: var(--ui-text-primary);
-}
-
-.page-sidebar-collapse svg {
-  width: 1rem;
-  height: 1rem;
 }
 
 /* ── List panel (Agents 895:8991, Schedules) ──

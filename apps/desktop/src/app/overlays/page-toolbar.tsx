@@ -3,12 +3,14 @@ import type { ReactNode } from 'react'
 
 import { $widthClass } from '@/app/redesign/breakpoints'
 import { $historyPosition, canGoBack, canGoForward, historyBack, historyForward } from '@/app/shell/history-position'
+import { PanelRevealButton } from '@/app/shell/panel-reveal'
 import { $openSheet, toggleShellSheet } from '@/app/shell/shell-sheet'
 import { ShellSheetScrim } from '@/app/shell/shell-sheet-view'
 import { TitlebarIcon } from '@/app/shell/titlebar-icon'
 import { Button } from '@/components/ui/button'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
+import { $interfaceMode } from '@/store/interface-mode'
 import { $sidebarOpen, toggleSidebarOpen } from '@/store/layout'
 
 import { $pageHasSidebar } from './page-sidebar'
@@ -38,11 +40,14 @@ export function PageToolbar({
   const position = useStore($historyPosition)
   const width = useStore($widthClass)
   const sheet = useStore($openSheet)
+  const simple = useStore($interfaceMode) === 'simple'
   const compact = width === 'compact'
   const menuSheet = hasSidebar ? 'page' : 'nav'
-  // Wide: a folded panel comes back the way the chat sidebar does (the band's toggle, ⌘B). Below
-  // wide the panel is a sheet; a compact page without one still needs its destinations.
-  const menu = width === 'wide' ? hasSidebar && !sidebarOpen : hasSidebar || compact
+  // Wide: a folded panel comes back the way the chat sidebar does: Simple's floating button at the
+  // stage corner, Advanced's band toggle, ⌘B in both. Below wide the panel is a sheet; a compact page
+  // without one still needs its destinations.
+  const folded = width === 'wide' && hasSidebar && !sidebarOpen
+  const menu = width === 'wide' ? folded && !simple : hasSidebar || compact
 
   return (
     <header className="flex h-full min-h-0 shrink-0 items-center gap-(--titlebar-control-gap) ps-[calc(var(--portal-band-start)-var(--global-nav-width))] pe-5 rtl:ps-5">
@@ -94,6 +99,7 @@ export function PageToolbar({
         {children}
       </div>
       {actions && <div className="flex shrink-0 items-center gap-1.5 [-webkit-app-region:no-drag]">{actions}</div>}
+      {folded && simple && <PanelRevealButton label={t.simplifiedAgents.showPanel} onReveal={toggleSidebarOpen} />}
       <ShellSheetScrim />
     </header>
   )

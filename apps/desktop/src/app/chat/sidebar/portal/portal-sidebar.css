@@ -18,85 +18,19 @@
   line-height: 1.4;
 }
 
-/* ── Brand block: 60px badge, wordmark column, 30px collapse button ─────────────────────────── */
-
-.portal-sidebar-brand {
-  display: flex;
-  flex-shrink: 0;
-  align-items: flex-start;
-  gap: 0.8125rem;
-  padding: 1.375rem var(--portal-sidebar-inset) 1.25rem;
-}
-
-.portal-sidebar-badge {
-  display: grid;
-  place-items: center;
-  width: 2.6875rem;
-  height: 3.75rem;
-  flex-shrink: 0;
-  overflow: hidden;
-  border-radius: var(--portal-radius-surface);
-  background: var(--portal-brand-fill);
-}
-
-.portal-sidebar-badge img {
-  width: 1.625rem;
-  height: 3.25rem;
-  transform: rotate(15deg);
-}
-
-.portal-sidebar-identity {
-  display: flex;
-  flex: 1;
-  min-width: 0;
-  flex-direction: column;
-  gap: 0.375rem;
-  padding-block: 0.3125rem;
-}
-
-/* Oswald stands in for Rules Compressed Medium 36: Light with tight tracking is the closest
-   mass it allows at Figma's 28px cap height. */
-.portal-sidebar-wordmark {
-  font-family: var(--portal-font-display);
-  font-size: 2.1875rem;
-  font-weight: 300;
-  line-height: 1.2;
-  letter-spacing: -0.03em;
-  text-box: trim-both cap alphabetic;
-}
-
-.portal-sidebar-byline {
-  color: var(--ui-text-secondary);
-  font-size: var(--portal-type-ui-size);
-  letter-spacing: var(--portal-tracking-ui);
-  white-space: nowrap;
-}
-
-.portal-sidebar .portal-sidebar-collapse {
-  width: 1.875rem;
-  height: 1.875rem;
-  border-radius: var(--portal-radius-control);
-  background: var(--portal-raw-ink-2);
-  color: var(--ui-text-tertiary);
-}
-
-.portal-sidebar-collapse svg {
-  width: 1rem;
-  height: 1rem;
-}
-
-.portal-sidebar .portal-sidebar-collapse:hover {
-  background: var(--portal-sidebar-hover);
-  color: var(--ui-text-primary);
-}
-
 /* ── Content column ─────────────────────────────────────────────────────────────────────────── */
 
+/* The session actions open the column (1056:7628): New session and Search, 8px apart, then 20px to
+   the first section (the sections' own 8px top pad plus the column's 12px gap). */
 .portal-sidebar-content {
   min-width: 0;
-  gap: 0.625rem;
-  padding: 0.625rem var(--portal-sidebar-gutter) 0;
+  gap: 0.75rem;
+  padding: var(--portal-sidebar-top) var(--portal-sidebar-gutter) 0;
   overflow: hidden;
+}
+
+.portal-sidebar-content > [data-slot='new-session-split'] {
+  margin-block-end: calc(var(--portal-sidebar-actions-gap) - 0.75rem);
 }
 
 /* Blocks that are not rows sit on the 20px text inset. */
@@ -191,7 +125,7 @@
   min-width: 1.25rem;
   height: 1.25rem;
   padding-inline: 0.25rem;
-  border: 0.5px solid var(--portal-raw-ink-5);
+  border: 0.5px solid var(--portal-sidebar-action-rim);
   border-radius: var(--portal-radius-control);
   background: var(--portal-sidebar-action-key);
   box-shadow: none;
@@ -207,22 +141,10 @@
   }
 }
 
-/* A phone's narrowest sheet (a 320px window leaves the panel 204px): the wordmark steps down a display
-   size rather than run under the collapse button. Narrower than any docked sidebar. */
-:root[data-shell='portal'] .portal-sidebar {
-  container: portal-sidebar / inline-size;
-}
-
-@container portal-sidebar (max-width: 13.5rem) {
-  .portal-sidebar-wordmark {
-    font-size: var(--portal-type-display-lg-size);
-  }
-}
-
 .portal-sidebar .portal-new-session-picker {
   gap: 0.25rem;
   padding-inline: 0.625rem 0.5rem;
-  border-inline-start: 1px solid var(--portal-sidebar-action);
+  border-inline-start: 1px solid var(--portal-sidebar-action-rim);
 }
 
 .portal-new-session-picker .portal-section-chevron {
@@ -315,16 +237,17 @@
   background: color-mix(in srgb, var(--ui-base) 6%, transparent);
 }
 
-/* ── Search: a quiet row, not a form field ──────────────────────────────────────────────────── */
+/* ── Search (1056:7607): New session's 40px row on a rim instead of a fill, its keycaps at the end ── */
 
 .portal-sidebar .portal-sidebar-search {
-  min-height: var(--portal-sidebar-row);
-  gap: 0.5rem;
-  padding-inline: 0.625rem 0.25rem;
-  border: 0;
+  min-height: var(--portal-row-panel);
+  gap: 0.625rem;
+  padding-inline: 0.625rem;
+  border: 1px solid var(--portal-sidebar-action-rim);
   border-radius: var(--portal-radius-surface);
   color: var(--portal-sidebar-label);
   opacity: 1;
+  container-type: inline-size;
 }
 
 .portal-sidebar .portal-sidebar-search:hover {
@@ -337,6 +260,8 @@
 }
 
 .portal-sidebar .portal-sidebar-search > svg {
+  width: 1rem;
+  height: 1rem;
   color: inherit;
 }
 
@@ -526,20 +451,48 @@ button.portal-section-title:hover {
   gap: var(--portal-sidebar-row-gap);
 }
 
-.portal-session-row:hover,
-.portal-session-item:is([data-state='open'], :has(.portal-row-action[data-state='open'])) > .portal-session-row {
-  background: var(--portal-sidebar-hover);
-  color: var(--ui-text-primary);
+/* Session rows (1089:7972): square and full bleed. A state is a ramp from the row's leading edge,
+   where a 1px rule marks it, clearing toward the end so the age, status mark and row actions read on
+   the plain panel: grayscale under the pointer or keyboard focus (the title stays muted), brand for
+   the open chat (its title in full ink). The open chat keeps its ramp under the pointer. */
+.portal-session-row {
+  border-radius: 0;
+  background-image: linear-gradient(
+    to right,
+    var(--row-ramp-start, transparent),
+    var(--row-ramp-mid, transparent) 50%,
+    transparent
+  );
+  box-shadow: inset var(--portal-sidebar-row-rule-width) 0 0 var(--row-rule, transparent);
 }
 
-.portal-session-row:active,
-[data-slot='gateway-heading']:has(> :is(.portal-machine-row, .portal-machine-status):active) {
-  background: var(--portal-sidebar-press);
+.portal-session-row:dir(rtl) {
+  background-image: linear-gradient(
+    to left,
+    var(--row-ramp-start, transparent),
+    var(--row-ramp-mid, transparent) 50%,
+    transparent
+  );
+  box-shadow: inset calc(-1 * var(--portal-sidebar-row-rule-width)) 0 0 var(--row-rule, transparent);
+}
+
+.portal-session-row:is(:hover, :focus-visible),
+.portal-session-item:where([data-state='open'], :has(.portal-row-action[data-state='open'])) > .portal-session-row {
+  --row-ramp-start: var(--portal-sidebar-row-hover-start);
+  --row-ramp-mid: var(--portal-sidebar-row-hover-mid);
+  --row-rule: var(--portal-sidebar-row-hover-rule);
 }
 
 .portal-session-row[aria-current='page'] {
-  background: var(--portal-sidebar-selected);
-  color: var(--ui-text-primary);
+  --row-ramp-start: var(--portal-sidebar-row-selected-start);
+  --row-ramp-mid: var(--portal-sidebar-row-selected-mid);
+  --row-rule: var(--portal-sidebar-row-selected-rule);
+
+  color: var(--portal-sidebar-row-selected-ink);
+}
+
+[data-slot='gateway-heading']:has(> :is(.portal-machine-row, .portal-machine-status):active) {
+  background: var(--portal-sidebar-press);
 }
 
 .portal-session-title,
@@ -572,9 +525,17 @@ button.portal-section-title:hover {
   white-space: nowrap;
 }
 
-.portal-session-meta > span {
-  overflow: hidden;
-  text-overflow: ellipsis;
+/* A row's meta is one line of text (an age, an agent name) that ellipsizes as a whole. A trailing
+   status mark rides that line: `vertical-align: middle` centres it on the age's x-height, where a
+   flex row would centre it on the line box and leave it riding high of the lowercase "now", "3d". */
+.portal-session-meta {
+  display: block;
+}
+
+.portal-session-meta > .portal-row-mark {
+  display: inline-grid;
+  margin-inline-start: 0.25rem;
+  vertical-align: middle;
 }
 
 .portal-group-icon {
@@ -604,9 +565,13 @@ button.portal-section-title:hover {
   background: var(--portal-sidebar-dot);
 }
 
-[aria-current='page'] > .portal-row-mark[data-state='idle'] > span > span,
 .portal-row-mark[data-state='unread'] > span > span {
   background: var(--portal-brand-fill);
+}
+
+/* On the open chat's brand ramp a brand dot would sink: it takes the row's full ink instead. */
+[aria-current='page'] > .portal-row-mark[data-state='idle'] > span > span {
+  background: var(--portal-sidebar-row-selected-ink);
 }
 
 .portal-row-mark[data-state='working'] > span > span {
@@ -917,8 +882,9 @@ button.portal-section-title:hover {
   }
 }
 
-/* Nested chats (143:6287): a 1px guide down the tile's centre, 12px titles on a 31px pitch, the
-   open chat in primary ink, ages at the end with an unread dot after them. */
+/* Nested chats (143:6287, 1089:7972): a 1px guide down the tile's centre, 12px titles on a 34px pitch,
+   the open chat in primary ink, ages at the end with an unread dot after them. A row starts on the
+   guide, so its state's rule stands in for the guide beside it. */
 .portal-agent-sessions {
   margin-inline-start: 1.25rem;
   border-inline-start: 1px solid var(--portal-sidebar-guide);
@@ -932,10 +898,14 @@ button.portal-section-title:hover {
   gap: 0;
 }
 
+.portal-agent-sessions .portal-session-item {
+  margin-inline-start: calc(-1 * var(--portal-sidebar-row-rule-width));
+}
+
 .portal-agent-sessions .portal-session-row {
   min-height: var(--portal-sidebar-chat-row);
   gap: 0.25rem;
-  padding-inline: 1.375rem 0.625rem;
+  padding-inline: calc(1.375rem + var(--portal-sidebar-row-rule-width)) 0.625rem;
   font-size: var(--portal-type-meta-size);
 }
 
@@ -943,16 +913,8 @@ button.portal-section-title:hover {
   font-weight: 400;
 }
 
-.portal-agent-sessions .portal-session-row[aria-current='page'] {
-  background: transparent;
-}
-
 .portal-agent-sessions .portal-session-row[aria-current='page'] .portal-session-title {
   font-weight: 500;
-}
-
-.portal-agent-sessions .portal-session-row:hover {
-  background: var(--portal-sidebar-hover);
 }
 
 /* "Show all (15)" / "Show less" under an agent's most recent chats: a chat row's pitch and inset,
@@ -980,10 +942,6 @@ button.portal-section-title:hover {
 
 .portal-agent-sessions .portal-session-meta {
   margin-inline-start: 1rem;
-}
-
-.portal-agent-sessions .portal-row-mark {
-  order: 1;
 }
 
 @media (hover: none), (pointer: coarse) {
@@ -1276,20 +1234,6 @@ button.portal-section-title:hover {
   color: var(--ui-text-secondary);
 }
 
-@media (max-height: 40rem) {
-  .portal-sidebar-brand {
-    padding-block: 0.625rem;
-  }
-
-  .portal-sidebar-badge {
-    height: 2.5rem;
-  }
-
-  .portal-sidebar-badge img {
-    height: 2rem;
-  }
-}
-
 /* ── Touch (DESIGN.md › Responsive) ──────────────────────────────────────────────────────────────
    A coarse pointer on the browser host: every row and its actions take the 44px target. Rows grow;
    the end actions (already shown, above) become 44px squares at the row's end; section headings
@@ -1300,6 +1244,12 @@ button.portal-section-title:hover {
     --portal-sidebar-pin-row: var(--portal-touch-target);
     --portal-sidebar-machine-row: var(--portal-touch-target);
     --portal-sidebar-chat-row: var(--portal-touch-target);
+  }
+
+  /* The field's text is 16px on touch (no iOS zoom), and a shortcut is rarely typed there: the
+     placeholder keeps the row. */
+  html[data-hermes-desktop-host='browser'][data-shell='portal'] .portal-sidebar .portal-sidebar-search .portal-kbd {
+    display: none;
   }
 
   html[data-hermes-desktop-host='browser'][data-shell='portal'] .portal-sidebar .portal-row-action {
@@ -1317,7 +1267,7 @@ button.portal-section-title:hover {
 
   html[data-hermes-desktop-host='browser'][data-shell='portal']
     .portal-sidebar
-    :is(.portal-agent-collapse, .portal-agent-menu-trigger, .portal-section-action, .portal-sidebar-collapse) {
+    :is(.portal-agent-collapse, .portal-agent-menu-trigger, .portal-section-action) {
     width: var(--portal-touch-target);
     min-width: var(--portal-touch-target);
     height: var(--portal-touch-target);

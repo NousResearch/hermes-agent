@@ -123,6 +123,7 @@ import {
   WebhooksView
 } from '../page-views'
 import { PetGenerateOverlay } from '../pet-generate/pet-generate-overlay'
+import { $widthClass } from '../redesign/breakpoints'
 import { PortalFreeTierSignIn } from '../redesign/portal-free-tier-sign-in'
 import { PortalStatusMenu } from '../redesign/portal-status-menu'
 import { FileActionDialogs } from '../right-sidebar/file-actions'
@@ -1277,7 +1278,16 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const paneToolCount = rightTitlebarTools.filter(tool => !tool.hidden && shownTool(tool)).length
   const leftExtraCount = leftTitlebarTools.filter(tool => !tool.hidden && shownTool(tool)).length
 
-  const clusters = titlebarAppActionsClusterCounts(appActionsSide, leftExtraCount, 0, interfaceMode, usePortalShell())
+  const wide = useStore($widthClass) === 'wide'
+
+  const clusters = titlebarAppActionsClusterCounts(
+    appActionsSide,
+    leftExtraCount,
+    0,
+    interfaceMode,
+    usePortalShell(),
+    wide
+  )
 
   const systemToolsWidth = titlebarToolsWidthCss(clusters.right)
 

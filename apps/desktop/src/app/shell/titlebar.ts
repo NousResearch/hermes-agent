@@ -165,10 +165,25 @@ export const PORTAL_BAND_LEAD_MAC = PORTAL_RAIL_WIDTH + 70
  *  fullscreen hides them), controls align with the sidebar and page-nav text inset (x = 80). */
 export const PORTAL_BAND_LEAD_PLAIN = PORTAL_RAIL_WIDTH + 20
 
+/** Whether native window controls occupy the top of the rail column: macOS traffic lights, unless
+ *  fullscreen hides them. Windows/Linux (their caption buttons sit at the right) and the browser
+ *  report no position. A connection not yet reported falls back by platform, as
+ *  titlebarControlsPosition does. */
+export function windowLightsInRail(
+  windowButtonPosition: HermesConnection['windowButtonPosition'] | undefined,
+  isFullscreen = false,
+  isMac = typeof navigator !== 'undefined' && /mac/i.test(navigator.platform)
+): boolean {
+  if (isFullscreen || windowButtonPosition === null) {
+    return false
+  }
+
+  return Boolean(windowButtonPosition) || isMac
+}
+
 /** Where the redesign band's left control cluster starts, in window px. Every left-cluster control
  *  (page Back, sidebar toggle, …) starts here via `--portal-band-start`; nothing positions itself
- *  per page. A connection not yet reported falls back by platform, as titlebarControlsPosition does.
- *  A compact window has no rail column, so the cluster moves in by the rail's width. */
+ *  per page. A compact window has no rail column, so the cluster moves in by the rail's width. */
 export function portalBandLeadingInset(
   windowButtonPosition: HermesConnection['windowButtonPosition'] | undefined,
   isFullscreen = false,
@@ -177,9 +192,8 @@ export function portalBandLeadingInset(
 ): number {
   const rail = compact ? PORTAL_RAIL_WIDTH : 0
 
-  if (isFullscreen || windowButtonPosition === null) {
-    return PORTAL_BAND_LEAD_PLAIN - rail
-  }
-
-  return (windowButtonPosition || isMac ? PORTAL_BAND_LEAD_MAC : PORTAL_BAND_LEAD_PLAIN) - rail
+  return (
+    (windowLightsInRail(windowButtonPosition, isFullscreen, isMac) ? PORTAL_BAND_LEAD_MAC : PORTAL_BAND_LEAD_PLAIN) -
+    rail
+  )
 }

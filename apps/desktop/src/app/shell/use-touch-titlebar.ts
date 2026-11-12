@@ -6,7 +6,7 @@ import {
   COMPACT_QUERY as COMPACT_BAND_QUERY,
   SHORT_QUERY
 } from '@/app/redesign/breakpoints'
-import { portalBandLeadingInset, titlebarBandHeight } from '@/app/shell/titlebar'
+import { portalBandLeadingInset, titlebarBandHeight, windowLightsInRail } from '@/app/shell/titlebar'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { hostHas } from '@/lib/host-capabilities'
 import { isBrowserHostedDesktop } from '@/lib/platform'
@@ -57,11 +57,18 @@ export const $portalBandStart = computed([$connection, $widthClass, $portalShell
   )
 )
 
-/** Publishes the band on <html> as `--titlebar-band-height` and the redesign's leading cluster
- *  start as `--portal-band-start`. The shell scopes `--titlebar-height` (zero inside content, the
- *  band on its own chrome), so body-portalled surfaces — find bar, toast stack, palette HUDs, page
- *  toolbars — read these root values instead of guessing a classic fallback. Called at boot beside
- *  `installShellAttribute`, so they follow runtime shell flips and fullscreen changes. */
+/** Native window controls sit at the top of the rail column (windowLightsInRail): the rail's badge
+ *  starts below the band there instead of at Figma's 20px (tokens/space.css `--portal-rail-top`). */
+export const $windowLightsInRail = computed($connection, connection =>
+  windowLightsInRail(connection?.windowButtonPosition, Boolean(connection?.isFullscreen))
+)
+
+/** Publishes the band on <html> as `--titlebar-band-height`, the redesign's leading cluster start as
+ *  `--portal-band-start` and native controls in the rail column as `data-portal-window-lights`. The
+ *  shell scopes `--titlebar-height` (zero inside content, the band on its own chrome), so
+ *  body-portalled surfaces — find bar, toast stack, palette HUDs, page toolbars — read these root
+ *  values instead of guessing a classic fallback. Called at boot beside `installShellAttribute`, so
+ *  they follow runtime shell flips and fullscreen changes. */
 export function installTitlebarBandProperty(root: HTMLElement = document.documentElement): () => void {
   const stopHeight = $titlebarBandHeight.subscribe(height =>
     root.style.setProperty('--titlebar-band-height', `${height}px`)
@@ -69,8 +76,17 @@ export function installTitlebarBandProperty(root: HTMLElement = document.documen
 
   const stopStart = $portalBandStart.subscribe(start => root.style.setProperty('--portal-band-start', `${start}px`))
 
+  const stopLights = $windowLightsInRail.subscribe(lights => {
+    if (lights) {
+      root.dataset.portalWindowLights = ''
+    } else {
+      delete root.dataset.portalWindowLights
+    }
+  })
+
   return () => {
     stopHeight()
     stopStart()
+    stopLights()
   }
 }

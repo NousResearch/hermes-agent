@@ -25,6 +25,9 @@
   /* The composer's spectrum edge (906:19872). */
   --portal-raw-spectrum-red: #aa1515;
   --portal-raw-spectrum-yellow: #ddd61c;
+  /* The neutral of a hovered sidebar row's gradient (1089:8351): the selected row's brand ramp in
+     grayscale. */
+  --portal-raw-gray: #797979;
   /* Shadow inks. */
   --portal-raw-shadow-4: rgb(0 0 0 / 0.04);
   --portal-raw-shadow-8: rgb(0 0 0 / 0.08);

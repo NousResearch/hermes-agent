@@ -1,17 +1,16 @@
 import './portal-sidebar.css'
 
+import { useStore } from '@nanostores/react'
 import { type ComponentProps, type KeyboardEvent, useEffect, useRef } from 'react'
 
-import wing from '@/assets/catalog-wing.svg'
-import { Button } from '@/components/ui/button'
+import { KbdCombo } from '@/components/ui/kbd'
 import { SearchField } from '@/components/ui/search-field'
 import { Sidebar, SidebarContent } from '@/components/ui/sidebar'
-import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
-import { ArrowBarToLeft as IconArrowBarToLeft } from '@/lib/icons'
 import { agentSidebarKey } from '@/store/agent-sidebar-preferences'
 import { recordIaAction } from '@/store/ia-metrics'
-import { SESSION_SEARCH_FOCUS_EVENT, toggleSidebarOpen } from '@/store/layout'
+import { $bindings, bindingsFor } from '@/store/keybinds'
+import { SESSION_SEARCH_FOCUS_EVENT } from '@/store/layout'
 import { $newChatProfile } from '@/store/profile'
 
 import type { ChatSidebar } from '../index'
@@ -111,6 +110,9 @@ export function PortalSidebar(props: ComponentProps<typeof ChatSidebar>) {
   } = useAgentSidebar(props)
 
   const searchInputRef = useRef<HTMLInputElement>(null)
+  const bindings = useStore($bindings)
+  // The keycaps name the shortcut while the field rests; typing hands the end of the row to Clear.
+  const searchShortcut = query ? undefined : bindingsFor('session.focusSearch', bindings)[0]
   const searching = Boolean(query.trim())
   // Nothing in flight: a settled list may show its empty notes.
   const quiet = !loading && !search.pending && !search.failed
@@ -125,26 +127,6 @@ export function PortalSidebar(props: ComponentProps<typeof ChatSidebar>) {
 
   return (
     <Sidebar className="portal-sidebar" collapsible="none" data-tour="sessions-sidebar">
-      <header className="portal-sidebar-brand">
-        <span aria-hidden className="portal-sidebar-badge">
-          <img alt="" src={wing} />
-        </span>
-        <div className="portal-sidebar-identity">
-          <span className="portal-sidebar-wordmark">Hermes</span>
-          <span className="portal-sidebar-byline">// Nous Research</span>
-        </div>
-        <Tip label={t.titlebar.hideSidebar}>
-          <Button
-            aria-label={t.titlebar.hideSidebar}
-            className="portal-sidebar-collapse"
-            onClick={toggleSidebarOpen}
-            size="icon-xs"
-            variant="ghost"
-          >
-            <IconArrowBarToLeft aria-hidden />
-          </Button>
-        </Tip>
-      </header>
       <SidebarContent className="portal-sidebar-content">
         <SimplifiedNewSession
           onFallback={() => {
@@ -167,6 +149,11 @@ export function PortalSidebar(props: ComponentProps<typeof ChatSidebar>) {
           onChange={setQuery}
           onFocus={() => recordIaAction('ia.search.opened')}
           placeholder={t.sidebar.searchPlaceholder}
+          trailingAction={
+            searchShortcut && (
+              <KbdCombo aria-hidden className="portal-kbd" combo={searchShortcut} data-slot="session-search-shortcut" />
+            )
+          }
           value={query}
         />
         <SidebarStorageCorruptNotice />

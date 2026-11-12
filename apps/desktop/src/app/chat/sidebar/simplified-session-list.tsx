@@ -65,8 +65,8 @@ const PIN_METRIC = {
   agent: 'ia.pin.agent_request'
 } as const
 
-/** Live status marks the row. Pinned rows keep a quiet leading dot even when settled (Figma
- *  147:7470), so their titles share one inset; agent chats carry a mark only for news. */
+/** Live status marks the row. Pinned rows lead with a quiet dot even when settled (Figma 147:7470),
+ *  so their titles share one inset; agent chats carry a mark after their age only for news. */
 function SessionRowMark({ row, always }: { row: SessionInfo; always: boolean }) {
   const state = useStoreSelector($sessionDotStateById, states => states[row.id] ?? 'idle')
 
@@ -156,14 +156,16 @@ function SessionRow({ row, selected, surface, meta, ...props }: SessionRowProps)
         }
       }}
     >
-      <SessionRowMark always={surface === 'pinned'} row={row} />
+      {surface === 'pinned' && <SessionRowMark always row={row} />}
       <OverflowTip label={title}>
         <span className="portal-session-title" data-slot="session-title">
           {title}
         </span>
       </OverflowTip>
+      {/* An agent's chat carries its mark after its age, on the age's own line (147:7470). */}
       <span className="portal-session-meta" data-slot="session-meta">
         {meta}
+        {surface !== 'pinned' && <SessionRowMark always={false} row={row} />}
       </span>
     </RowButton>
   )

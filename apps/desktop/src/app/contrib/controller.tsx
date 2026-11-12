@@ -229,7 +229,11 @@ const sessionsPane = {
     width: `var(--sessions-pane-width, ${SIDEBAR_DEFAULT_WIDTH}px)`,
     // The redesign's rows and New-session split need more room (portal-sidebar.css).
     minWidth: `var(--sessions-pane-min-width, ${SIDEBAR_DEFAULT_WIDTH}px)`,
-    maxWidth: `${SIDEBAR_MAX_WIDTH}px`
+    maxWidth: `${SIDEBAR_MAX_WIDTH}px`,
+    // The redesign folds the sidebar when its sash is dragged well under the minimum (Figma
+    // 1054:22350), as ⌘B does; classic defines no fold width, so its sash stops at the minimum.
+    dragCollapseBelow: 'var(--sessions-pane-collapse-width, 0px)',
+    onDragCollapse: () => setSidebarOpen(false)
   },
   render: () => <WiredPane part="sidebar" />
 }

@@ -9,6 +9,12 @@ export interface SimplifiedAgentsCopy {
   agents: string
   settings: string
   library: string
+  /** The open Chats rail destination toggles the chat sidebar (Figma 1057:8047 / 1057:8049). */
+  hideChats: string
+  showChats: string
+  /** The open Agents, Schedules or Settings destination toggles its page panel the same way. */
+  hidePanel: string
+  showPanel: string
   /** An agent card's second line when nothing else describes it. */
   noChats: string
   chatCount: (count: number) => string
@@ -36,6 +42,10 @@ export const simplifiedAgentsCopy: Record<BundledLocale, SimplifiedAgentsCopy> =
     agents: desktopTerms.en.agents,
     settings: 'Agent settings',
     library: 'Library',
+    hideChats: 'Hide chats',
+    showChats: 'Show chats',
+    hidePanel: 'Hide panel',
+    showPanel: 'Show panel',
     noChats: 'No chats yet',
     chatCount: n => (n === 1 ? '1 chat' : `${n} chats`),
     showAllChats: n => `Show all (${n})`,
@@ -60,6 +70,10 @@ export const simplifiedAgentsCopy: Record<BundledLocale, SimplifiedAgentsCopy> =
     agents: desktopTerms.fr.agents,
     settings: 'Paramètres de l’agent',
     library: 'Bibliothèque',
+    hideChats: 'Masquer les discussions',
+    showChats: 'Afficher les discussions',
+    hidePanel: 'Masquer le panneau',
+    showPanel: 'Afficher le panneau',
     noChats: 'Aucune discussion',
     chatCount: n => (n === 1 ? '1 discussion' : `${n} discussions`),
     showAllChats: n => `Tout afficher (${n})`,
@@ -84,6 +98,10 @@ export const simplifiedAgentsCopy: Record<BundledLocale, SimplifiedAgentsCopy> =
     agents: desktopTerms.de.agents,
     settings: 'Agenteneinstellungen',
     library: 'Bibliothek',
+    hideChats: 'Chats ausblenden',
+    showChats: 'Chats einblenden',
+    hidePanel: 'Seitenleiste ausblenden',
+    showPanel: 'Seitenleiste einblenden',
     noChats: 'Noch keine Chats',
     chatCount: n => (n === 1 ? '1 Chat' : `${n} Chats`),
     showAllChats: n => `Alle anzeigen (${n})`,
@@ -108,6 +126,10 @@ export const simplifiedAgentsCopy: Record<BundledLocale, SimplifiedAgentsCopy> =
     agents: desktopTerms.es.agents,
     settings: 'Ajustes del agente',
     library: 'Biblioteca',
+    hideChats: 'Ocultar chats',
+    showChats: 'Mostrar chats',
+    hidePanel: 'Ocultar panel',
+    showPanel: 'Mostrar panel',
     noChats: 'Aún no hay chats',
     chatCount: n => (n === 1 ? '1 chat' : `${n} chats`),
     showAllChats: n => `Mostrar todo (${n})`,
@@ -132,6 +154,10 @@ export const simplifiedAgentsCopy: Record<BundledLocale, SimplifiedAgentsCopy> =
     agents: desktopTerms.ja.agents,
     settings: 'エージェント設定',
     library: 'ライブラリ',
+    hideChats: 'チャットを隠す',
+    showChats: 'チャットを表示',
+    hidePanel: 'パネルを隠す',
+    showPanel: 'パネルを表示',
     noChats: 'チャットはまだありません',
     chatCount: n => `${n} 件のチャット`,
     showAllChats: n => `すべて表示 (${n})`,
@@ -155,6 +181,10 @@ export const simplifiedAgentsCopy: Record<BundledLocale, SimplifiedAgentsCopy> =
     agents: desktopTerms.zh.agents,
     settings: '智能体设置',
     library: '资源库',
+    hideChats: '隐藏聊天',
+    showChats: '显示聊天',
+    hidePanel: '隐藏面板',
+    showPanel: '显示面板',
     noChats: '还没有对话',
     chatCount: n => `${n} 个对话`,
     showAllChats: n => `显示全部 (${n})`,
@@ -178,6 +208,10 @@ export const simplifiedAgentsCopy: Record<BundledLocale, SimplifiedAgentsCopy> =
     agents: desktopTerms['zh-hant'].agents,
     settings: '智慧體設定',
     library: '資料庫',
+    hideChats: '隱藏聊天',
+    showChats: '顯示聊天',
+    hidePanel: '隱藏面板',
+    showPanel: '顯示面板',
     noChats: '尚無對話',
     chatCount: n => `${n} 個對話`,
     showAllChats: n => `顯示全部 (${n})`,
@@ -201,6 +235,10 @@ export const simplifiedAgentsCopy: Record<BundledLocale, SimplifiedAgentsCopy> =
     agents: desktopTerms.ru.agents,
     settings: 'Настройки агента',
     library: 'Библиотека',
+    hideChats: 'Скрыть чаты',
+    showChats: 'Показать чаты',
+    hidePanel: 'Скрыть панель',
+    showPanel: 'Показать панель',
     noChats: 'Чатов пока нет',
     chatCount: n => `${n} ${RU_NOUN(n, 'чат', 'чата', 'чатов')}`,
     showAllChats: n => `Показать все (${n})`,
@@ -224,6 +262,10 @@ export const simplifiedAgentsCopy: Record<BundledLocale, SimplifiedAgentsCopy> =
     agents: desktopTerms.ar.agents,
     settings: 'إعدادات الوكيل',
     library: 'المكتبة',
+    hideChats: 'إخفاء المحادثات',
+    showChats: 'إظهار المحادثات',
+    hidePanel: 'إخفاء اللوحة',
+    showPanel: 'إظهار اللوحة',
     noChats: 'لا توجد محادثات بعد',
     chatCount: n => (n === 1 ? 'محادثة واحدة' : `${n} محادثات`),
     showAllChats: n => `عرض الكل (${n})`,

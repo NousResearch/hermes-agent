@@ -26,11 +26,13 @@ import {
   $fileBrowserOpen,
   $leftSideOpen,
   $panesFlipped,
+  $sidebarOpen,
   CHAT_SIDEBAR_PANE_ID,
   FILE_BROWSER_PANE_ID,
   toggleLeftSide,
   togglePanesFlipped,
-  toggleRightSide
+  toggleRightSide,
+  toggleSidebarOpen
 } from '@/store/layout'
 import { REVIEW_PANE_ID } from '@/store/review'
 import { $unreadSessionCount } from '@/store/session-dot-state'
@@ -56,6 +58,7 @@ import {
   useMouseHistoryButtons,
   useTrackHistoryPosition
 } from './history-position'
+import { PanelRevealButton } from './panel-reveal'
 import { PortalSessionTab } from './portal-session-tab'
 import { $openSheet, toggleShellSheet } from './shell-sheet'
 import { ShellSheetScrim } from './shell-sheet-view'
@@ -205,20 +208,50 @@ function useSidebarEdges(): { left: SidebarEdge; right: SidebarEdge } {
   }
 }
 
-/** The redesigned sidebar carries its own collapse button (Figma 906:19685), so a wide band offers
- *  only the way back while it is hidden; pages have no sidebar to bring back. Below wide the button is
- *  the band's menu: it opens the chat sidebar as a sheet, and on a compact page (no rail) the rail as
- *  one; a medium page keeps its rail and needs none. ⌘B works in every state. */
+/** Where a wide redesigned window offers the way back to a hidden chat sidebar: Advanced in the band,
+ *  Simple as the floating button at the stage's corner (PanelRevealButton). The open Chats rail button
+ *  folds it (Figma 1054:20985); pages have no sidebar to bring back. */
+function useSidebarRevealSurface(portal: boolean, leftSideOpen: boolean): 'band' | 'floating' | null {
+  const workspacePage = useStore($workspaceIsPage)
+  const narrow = useStore($narrowViewport)
+  const simple = useStore($interfaceMode) === 'simple'
+  const sidebarOpen = useStore($sidebarOpen)
+
+  if (!portal || narrow || workspacePage) {
+    return null
+  }
+
+  // The floating button names the chats, so it follows the sidebar itself; the band's is positional.
+  if (simple) {
+    return sidebarOpen ? null : 'floating'
+  }
+
+  return leftSideOpen ? null : 'band'
+}
+
+/** Simple mode's floating way back to the hidden chat sidebar, when that is the reveal surface. */
+function FloatingSidebarReveal({ leftSideOpen, portal }: { leftSideOpen: boolean; portal: boolean }) {
+  const { t } = useI18n()
+
+  return useSidebarRevealSurface(portal, leftSideOpen) === 'floating' ? (
+    <PanelRevealButton label={t.simplifiedAgents.showChats} onReveal={toggleSidebarOpen} />
+  ) : null
+}
+
+/** Below wide the band's sidebar button is its menu: it opens the chat sidebar as a sheet, and on a
+ *  compact page (no rail) the rail as one; a medium page keeps its rail and needs none. A wide band
+ *  carries it only where the reveal surface is the band. ⌘B works in every state. */
 function useBandSidebarToolHidden(portal: boolean, sidebarOpen: boolean): boolean {
   const workspacePage = useStore($workspaceIsPage)
   const narrow = useStore($narrowViewport)
   const compact = useStore($widthClass) === 'compact'
+  const reveal = useSidebarRevealSurface(portal, sidebarOpen)
 
   if (!portal) {
     return false
   }
 
-  return narrow ? workspacePage && !compact : sidebarOpen || workspacePage
+  return narrow ? workspacePage && !compact : reveal !== 'band'
 }
 
 /** The band's sidebar button: the docked toggle, below wide the menu that opens the chat sidebar
@@ -513,6 +546,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
       </div>
 
       {portal && <ShellSheetScrim />}
+      <FloatingSidebarReveal leftSideOpen={leftEdge.open} portal={portal} />
       {portal && (
         <div
           className={cn(titlebarToolClusterClass, 'portal-session-tab-cluster top-(--titlebar-controls-top)')}

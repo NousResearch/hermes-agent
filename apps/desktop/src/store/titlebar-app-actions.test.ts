@@ -37,8 +37,10 @@ describe('$titlebarAppActionsSide', () => {
 
 it('reserves Back, Forward and the sidebar toggle in Portal Simple, and keeps developer tools in Advanced', () => {
   for (const side of ['left', 'right'] as const) {
-    expect(titlebarAppActionsClusterCounts(side, 0, 0, 'simple', true)).toEqual({ left: 3, right: 0 })
+    // Below wide the toggle is the band's menu; wide, a folded sidebar comes back from the stage.
+    expect(titlebarAppActionsClusterCounts(side, 0, 0, 'simple', true, false)).toEqual({ left: 3, right: 0 })
+    expect(titlebarAppActionsClusterCounts(side, 0, 0, 'simple', true, true)).toEqual({ left: 2, right: 0 })
   }
 
-  expect(titlebarAppActionsClusterCounts('right', 0, 0, 'advanced', true)).toEqual({ left: 3, right: 4 })
+  expect(titlebarAppActionsClusterCounts('right', 0, 0, 'advanced', true, true)).toEqual({ left: 3, right: 4 })
 })

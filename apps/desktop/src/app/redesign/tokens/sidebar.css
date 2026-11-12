@@ -7,15 +7,21 @@
   --sessions-pane-width: 20rem;
   /* Below this the New-session split and the agents' two-line rows start to truncate (sash drags). */
   --sessions-pane-min-width: 16.25rem;
-  /* The brand block, New session and search sit on the 20px inset; below them the list follows
-     Figma 147:7470: sections padded 12px (the gutter), rows bleeding 8px past the caption. */
+  /* Dragging the sash this far under the minimum folds the sidebar away (1054:22350), as ⌘B does; a
+     drag that stops short of it rests at the minimum. Classic has no such width, so it never folds. */
+  --sessions-pane-collapse-width: calc(var(--sessions-pane-min-width) - 4.5rem);
+  /* The session actions (New session, Search: 1056:7628) and the list sit on the 20px inset, 22px
+     under the panel's top edge; below them the list follows Figma 147:7470: sections padded 12px (the
+     gutter), rows bleeding 8px past the caption. */
+  --portal-sidebar-top: 1.375rem;
+  --portal-sidebar-actions-gap: 0.5rem;
   --portal-sidebar-inset: 1.25rem;
   --portal-sidebar-bleed: 0.5rem;
   --portal-sidebar-gutter: calc(var(--portal-sidebar-inset) - var(--portal-sidebar-bleed));
   --portal-sidebar-row: 2rem;
   --portal-sidebar-pin-row: 1.875rem;
   --portal-sidebar-machine-row: 2.5rem;
-  --portal-sidebar-chat-row: 1.9375rem;
+  --portal-sidebar-chat-row: 2.125rem;
   --portal-sidebar-row-gap: 1px;
   /* Section to section: 12px bottom pad, a 1px slot, 12px top pad (143:6237 → 143:6256). */
   --portal-sidebar-section-gap: 1.5625rem;
@@ -24,13 +30,24 @@
   --portal-sidebar-hover: var(--portal-raw-ink-4);
   --portal-sidebar-press: color-mix(in srgb, var(--ui-base) 7%, transparent);
   --portal-sidebar-agent-hover: var(--portal-raw-ink-2);
-  /* Var1's soft pill: the open chat reads clearly stronger than a hovered row (4%). */
-  --portal-sidebar-selected: color-mix(in srgb, var(--ui-base) 7%, transparent);
+  /* Session rows (1089:7972): the open chat is a square, full-bleed brand ramp from a 1px brand rule at
+     its leading edge (32% → 14% at the middle → clear at the end) with its title in full ink; a row
+     under the pointer or keyboard focus wears the same ramp and rule in grayscale and keeps its muted
+     title. Ages stay muted in both. Light keeps the ramp's shape at strengths that read on #f2f2f2. */
+  --portal-sidebar-row-selected-start: color-mix(in srgb, var(--portal-raw-blue) 32%, transparent);
+  --portal-sidebar-row-selected-mid: color-mix(in srgb, var(--portal-raw-blue) 14%, transparent);
+  --portal-sidebar-row-selected-rule: var(--portal-raw-blue);
+  --portal-sidebar-row-selected-ink: var(--ui-text-primary);
+  --portal-sidebar-row-hover-start: color-mix(in srgb, var(--portal-raw-gray) 32%, transparent);
+  --portal-sidebar-row-hover-mid: color-mix(in srgb, var(--portal-raw-gray) 14%, transparent);
+  --portal-sidebar-row-hover-rule: var(--portal-raw-gray);
+  --portal-sidebar-row-rule-width: 1px;
   --portal-sidebar-card: var(--portal-raw-ink-5);
-  /* The primary action (New session): Var1 draws it at light/20 with keycaps a step lighter; Brand
-     rev light at dark/2 with dark/2 keycaps on a dark/5 rim. */
+  /* The session actions (1056:7628): New session on a light/5 fill, Search on a light/10 rim, both
+     with light/5 keycaps on a light/10 rim; Brand rev light draws dark/2 fills on a dark/5 rim. */
   --portal-sidebar-action: var(--portal-raw-ink-2);
   --portal-sidebar-action-key: var(--portal-raw-ink-2);
+  --portal-sidebar-action-rim: var(--portal-raw-ink-5);
   --portal-sidebar-machine-fill: var(--portal-raw-ink-5);
   --portal-sidebar-machine-head: color-mix(in srgb, var(--ui-base) 7%, transparent);
   --portal-sidebar-guide: color-mix(in srgb, var(--ui-base) 20%, transparent);
@@ -53,6 +70,11 @@
 }
 
 :root[data-shell='portal']:not(.dark) {
+  --portal-sidebar-row-selected-start: color-mix(in srgb, var(--portal-raw-blue) 16%, transparent);
+  --portal-sidebar-row-selected-mid: color-mix(in srgb, var(--portal-raw-blue) 7%, transparent);
+  --portal-sidebar-row-hover-start: var(--portal-raw-ink-10);
+  --portal-sidebar-row-hover-mid: var(--portal-raw-ink-4);
+  --portal-sidebar-row-hover-rule: var(--portal-raw-ink-40);
   /* Brand rev light steps the machine card in black 2% / 4%: a quiet card with a header a shade
      deeper, never a grey slab. */
   --portal-sidebar-machine-fill: var(--portal-raw-ink-2);
@@ -61,8 +83,9 @@
 }
 
 :root.dark[data-shell='portal'] {
-  --portal-sidebar-action: color-mix(in srgb, var(--ui-base) 20%, transparent);
-  --portal-sidebar-action-key: color-mix(in srgb, var(--ui-base) 20%, transparent);
+  --portal-sidebar-action: var(--portal-raw-ink-5);
+  --portal-sidebar-action-key: var(--portal-raw-ink-5);
+  --portal-sidebar-action-rim: var(--portal-raw-ink-10);
   --portal-sidebar-label: color-mix(in srgb, var(--ui-base) 65%, transparent);
   --portal-sidebar-head-meta: color-mix(in srgb, var(--ui-base) 55%, transparent);
 }

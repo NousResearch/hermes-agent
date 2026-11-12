@@ -1,18 +1,18 @@
 name: skysay
 title: Skysay
 repo: https://github.com/skysay-ai/skysay-mcp
-sha: 206e7fe68cfd73796523729618e9bb32aa080e01
+sha: 31b749085ada3c2d865782f9a06cc7c684388dab
 subdir: plugins/hermes/skysay
 description: >-
   Configure Skysay AI agents and numbers, place calls, send SMS and inspect results.
   Review OAuth consent: optional write/content permissions may be preselected.
-  The skill requires user authorization; MCP calls may run without a separate Hermes prompt and can spend Skysay funds.
+  Write-capable tools use Hermes native approval (trust: untrusted); calls, SMS and numbers can incur charges.
 maintainer: Skysay
 tier: community
 category: tools
 requires_hermes: ">=0.23.0"
-docs_url: https://github.com/skysay-ai/skysay-mcp/blob/206e7fe68cfd73796523729618e9bb32aa080e01/plugins/hermes/skysay/README.md
-version: "2.0.0"
+docs_url: https://github.com/skysay-ai/skysay-mcp/blob/31b749085ada3c2d865782f9a06cc7c684388dab/plugins/hermes/skysay/README.md
+version: "2.0.1"
 platforms: []
 capabilities:
   provides_tools: []

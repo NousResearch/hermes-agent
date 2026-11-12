@@ -231,3 +231,27 @@ def test_lock_lost_inside_fts_constructor_classifies_as_busy(tmp_path):
     assert "vtable constructor failed" in str(excinfo.value)
     assert is_transient_sqlite_error(excinfo.value)
     assert classify_persistence_error(excinfo.value) == "locked"
+
+
+def test_search_on_a_locked_store_raises_instead_of_reporting_no_matches(tmp_path, monkeypatch):
+    """A store held past the read budget is "could not search", never an empty result: session_search
+    and the Desktop sidebar both read ``[]`` as "nothing matches" and tell the user so."""
+    import hermes_state
+
+    _use_delete_journal_mode(monkeypatch, tmp_path)
+    monkeypatch.setattr(hermes_state, "_READ_BUSY_TIMEOUT_S", 0.2)
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("s", "cli")
+    db.append_message(session_id="s", role="user", content="deploy the nimbus cluster")
+    assert len(db.search_messages("nimbus")) == 1  # control: the hit exists
+
+    started = threading.Event()
+    holder = threading.Thread(target=_hold_exclusive, args=(tmp_path / "state.db", 3.0, started))
+    holder.start()
+    try:
+        assert started.wait(5.0)
+        with pytest.raises(sqlite3.OperationalError, match="locked"):
+            db.search_messages("nimbus")
+    finally:
+        holder.join(timeout=10.0)
+        db.close()

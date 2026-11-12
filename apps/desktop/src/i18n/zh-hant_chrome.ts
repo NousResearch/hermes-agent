@@ -93,6 +93,7 @@ export const zhHantChrome = {
     searchPlaceholder: '搜尋工作階段…',
     clearSearch: '清除搜尋',
     noMatch: query => `沒有工作階段符合「${query}」。`,
+    searchFailed: '目前無法搜尋，請稍後再試。',
     results: '結果',
     pinned: '已釘選',
     sessions: '工作階段',

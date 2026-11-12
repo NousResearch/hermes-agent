@@ -3671,6 +3671,7 @@ export const frOverrides = {
     searchPlaceholder: 'Rechercher des sessions…',
     clearSearch: 'Effacer la recherche',
     noMatch: query => `Aucune session ne correspond à « ${query} ».`,
+    searchFailed: 'La recherche est indisponible pour le moment. Réessayez dans un instant.',
     results: 'Résultats',
     pinned: 'Épinglées',
     sessions: 'Sessions',

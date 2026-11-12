@@ -2463,6 +2463,7 @@ export const ruOverrides = {
     searchPlaceholder: 'Поиск сеансов…',
     clearSearch: 'Очистить поиск',
     noMatch: query => `Нет сеансов по запросу «${query}».`,
+    searchFailed: 'Поиск сейчас недоступен. Попробуйте ещё раз чуть позже.',
     results: 'Результаты',
     pinned: 'Закреплённые',
     sessions: 'Сеансы',

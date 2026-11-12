@@ -3220,6 +3220,7 @@ export const en: Translations = {
     searchPlaceholder: 'Search sessions…',
     clearSearch: 'Clear search',
     noMatch: query => `No sessions match “${query}”.`,
+    searchFailed: 'Search is unavailable right now. Try again in a moment.',
     results: 'Results',
     pinned: 'Pinned',
     sessions: 'Sessions',

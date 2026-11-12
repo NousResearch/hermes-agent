@@ -3125,6 +3125,7 @@ export const zhOverrides = {
     searchPlaceholder: '搜索会话…',
     clearSearch: '清除搜索',
     noMatch: query => `没有会话匹配"${query}"。`,
+    searchFailed: '暂时无法搜索，请稍后再试。',
     results: '结果',
     pinned: '已置顶',
     sessions: '会话',

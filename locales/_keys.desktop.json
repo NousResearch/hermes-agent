@@ -4895,6 +4895,7 @@
     "sidebar.row.untitledPlaceholder",
     "sidebar.row.waitingForAnswer",
     "sidebar.searchAria",
+    "sidebar.searchFailed",
     "sidebar.searchPlaceholder",
     "sidebar.sessions",
     "sidebar.shiftClickHint",

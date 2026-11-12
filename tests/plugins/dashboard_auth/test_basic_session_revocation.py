@@ -110,6 +110,40 @@ def test_a_worker_sees_a_logout_whose_file_kept_the_old_mtime():
     assert worker_b.verify_session(access_token=s.access_token) is None
 
 
+def test_a_logout_keeps_the_revocations_other_workers_wrote_since_this_one_last_read():
+    worker_a = _provider()
+    worker_b = basic.BasicAuthProvider(username="admin", password_hash=worker_a._password_hash, secret=SECRET)
+    first = worker_a.complete_password_login(username="admin", password="old-pw")
+    second = worker_a.complete_password_login(username="admin", password="old-pw")
+    worker_b.revoke_session(refresh_token=first.refresh_token)
+    worker_a.revoke_session(refresh_token=second.refresh_token)  # A has not read the file since B wrote it
+
+    restarted = basic.BasicAuthProvider(username="admin", password_hash=worker_a._password_hash, secret=SECRET)
+    assert restarted.verify_session(access_token=first.access_token) is None
+    assert restarted.verify_session(access_token=second.access_token) is None
+
+
+def test_access_token_revocation_ends_its_login_and_ignores_other_tokens(monkeypatch):
+    """Past day 30 a long-TTL access token has outlived its refresh token (and cookie), so the
+    access token is all a logout can present; the configured lifetime is kept."""
+    now = [1_000_000_000.0]
+    monkeypatch.setattr(basic.time, "time", lambda: now[0])
+    day = 24 * 60 * 60
+    p = _provider(ttl_seconds=60 * day)
+    s = p.complete_password_login(username="admin", password="old-pw")
+    other = p.complete_password_login(username="admin", password="old-pw")
+    now[0] += 31 * day
+    assert p.verify_session(access_token=s.access_token) is not None  # the configured 60 days hold
+    p.revoke_access_session(access_token=s.refresh_token)  # a refresh token is not an access token
+    p.revoke_access_session(access_token="garbage")
+    assert p.verify_session(access_token=s.access_token) is not None
+
+    p.revoke_access_session(access_token=s.access_token)
+    now[0] += 28 * day
+    assert p.verify_session(access_token=s.access_token) is None
+    assert p.verify_session(access_token=other.access_token) is not None
+
+
 @pytest.fixture
 def gated_basic():
     from fastapi.testclient import TestClient
@@ -152,3 +186,45 @@ def test_logout_ends_a_refresh_the_gate_cached_just_before_it(gated_basic):
     assert out.status_code == 302, out.text
 
     assert me().status_code == 401
+
+
+def _cookie_request(client, cookies, method="get", path="/api/auth/me", **kw):
+    client.cookies.clear()
+    client.cookies.update({"hermes_session_provider": "basic", **cookies})
+    return getattr(client, method)(path, **kw)
+
+
+def _logout(client, cookies):
+    out = _cookie_request(client, cookies, "post", "/auth/logout",
+                          headers={"Origin": "https://fly-app.fly.dev"}, follow_redirects=False)
+    assert out.status_code == 302, out.text
+
+
+def test_logout_with_the_browsers_current_rt_ends_a_copied_rts_cached_replay(gated_basic):
+    """The browser rotated outside the replay window, so the copied RT's cached rotation shares no
+    token with the RT the logout presents; it shares only the login."""
+    provider, client = gated_basic
+    s = provider.complete_password_login(username="admin", password="old-pw")
+    browser_rt = provider.refresh_session(refresh_token=s.refresh_token).refresh_token
+    copied = {"hermes_session_at": "lapsed", "hermes_session_rt": s.refresh_token}
+
+    assert _cookie_request(client, copied).status_code == 200  # replayed just before logout
+    _logout(client, {"hermes_session_at": "lapsed", "hermes_session_rt": browser_rt})
+
+    assert _cookie_request(client, copied).status_code == 401
+
+
+def test_logout_after_the_refresh_cookie_expired_ends_a_long_lived_access_token(gated_basic, monkeypatch):
+    provider, client = gated_basic
+    now = [1_000_000_000.0]
+    monkeypatch.setattr(basic.time, "time", lambda: now[0])
+    day = 24 * 60 * 60
+    provider._ttl = 60 * day  # session_ttl_seconds above the 30-day refresh lifetime
+    s = provider.complete_password_login(username="admin", password="old-pw")
+    now[0] += 31 * day  # the refresh token and its 30-day cookie are gone; only the AT cookie is left
+    copied = {"hermes_session_at": s.access_token}
+    assert _cookie_request(client, copied).status_code == 200
+
+    _logout(client, copied)
+
+    assert _cookie_request(client, copied).status_code == 401

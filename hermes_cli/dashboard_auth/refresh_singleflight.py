@@ -99,7 +99,7 @@ def _refresh_provider(provider: DashboardAuthProvider, token: str) -> Session | 
             # ProviderError and unexpected execution failures are deliberately not cached.
             with _guard:
                 now = time.monotonic()
-                if generation == _generation:
+                if generation == _generation and (session is None or provider.refresh_reuse_detection):
                     _cache[key] = (now + (_SUCCESS_TTL if session is not None else _FAILURE_TTL), provider, session)
                 _prune(now)
             return session

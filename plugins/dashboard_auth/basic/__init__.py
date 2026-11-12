@@ -126,6 +126,9 @@ class BasicAuthProvider(NonInteractiveMixin, DashboardAuthProvider):
     name = "basic"
     display_name = "Username & Password"
     supports_password = True
+    # Used refresh tokens stay valid (stateless, no reuse detection), so the gate's replay cache
+    # would only let a cached rotation outlive a logout: every replay goes to the sid check.
+    refresh_reuse_detection = False
     _NOT_INTERACTIVE = "BasicAuthProvider is password-only; use complete_password_login."
     _NO_START_LOGIN = (
         "BasicAuthProvider is password-only; there is no OAuth redirect flow. "
@@ -182,7 +185,15 @@ class BasicAuthProvider(NonInteractiveMixin, DashboardAuthProvider):
     def revoke_session(self, *, refresh_token: str) -> None:
         # Ends this login and every token renewed from it (they share its ``sid``); other logins
         # stay. Must not raise: a failed write still revokes in this process.
-        payload = _unsign(refresh_token, self._secret, "refresh") if refresh_token else None
+        self._revoke(_unsign(refresh_token, self._secret, "refresh") if refresh_token else None)
+
+    def revoke_access_session(self, *, access_token: str) -> None:
+        # With ``session_ttl_seconds`` above the refresh TTL, the access token is all a late logout has.
+        self._revoke(_unsign(access_token, self._secret, "access") if access_token else None)
+
+    # ---- internals ---------------------------------------------------------
+
+    def _revoke(self, payload: Optional[dict]) -> None:
         if payload is None or not payload.get("sid"):
             return
         now = int(time.time())
@@ -196,8 +207,6 @@ class BasicAuthProvider(NonInteractiveMixin, DashboardAuthProvider):
         except OSError as exc:
             logger.warning("dashboard-auth-basic: could not persist the revoked session (%s); "
                            "it stays revoked until this process exits", exc)
-
-    # ---- internals ---------------------------------------------------------
 
     def _load_revoked(self) -> None:
         """Merge the revocation file (another process sharing the secret, or this one before a

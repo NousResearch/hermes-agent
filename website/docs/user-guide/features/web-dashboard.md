@@ -1170,6 +1170,8 @@ def register(ctx):
 
 The login page lists all registered providers; multiple providers can be stacked and the user picks one at `/login`.
 
+Two optional hooks cover logout for providers whose tokens are not revoked at the IdP: override `revoke_access_session(access_token=...)` when an access token can outlive its refresh token (logout passes the access-token cookie too), and set `refresh_reuse_detection = False` when a used refresh token stays valid, so the gate's 30-second refresh replay cache never serves a rotation that a logout has since revoked.
+
 ### Non-interactive (bearer-token) auth
 
 Alongside interactive human login (session cookies + refresh), the `DashboardAuthProvider` ABC supports a **non-interactive, service-to-service** capability via `supports_token = True` + `verify_token(token=...)`. When a provider opts in, an inbound `Authorization: Bearer <token>` is verified and, on success, a `TokenPrincipal` is attached to the request (`request.state.token_principal`) for the endpoints that provider marks token-authable — no cookie, no redirect, no refresh.

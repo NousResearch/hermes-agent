@@ -26,6 +26,7 @@ from gateway.status import (
 from gateway.status_served import local_liveness_pid
 from hermes_cli import __release_date__
 from hermes_cli.config import get_config_path, get_env_path
+from hermes_cli.isolated_scope import isolated_launch_profile, scope_to_launch_profile
 from hermes_cli.version_info import get_version_info
 from hermes_constants import get_process_hermes_home, profile_name_for_home
 from hermes_cli.web_models import CuratorPause, LearningNodeRef, LearningNodeEdit, DebugShareRequest
@@ -639,8 +640,11 @@ async def get_status(profile: Optional[str] = None,
         # Profile NAMES and ``gateway_mode`` are low-sensitivity product surface (Hermes Cloud
         # renders the profile list over a gated bind) so they survive the auth gate; the
         # per-gateway ``gateways[]`` carries host ports and stays gated below.
-        status["profiles"] = topology["profiles"]
-        status["parked_profiles"] = topology.get("parked_profiles", [])
+        # An operator's `-p <name> serve --isolated` lists only <name>: a listing choice, not a
+        # boundary (hermes_cli/isolated_scope.py).
+        status["profiles"] = scope_to_launch_profile(topology["profiles"])
+        status["parked_profiles"] = scope_to_launch_profile(topology.get("parked_profiles", []))
+        status["isolated_profile"] = isolated_launch_profile()
         status["gateway_mode"] = topology["gateway_mode"]
         status["multiplex_standalone_reason"] = topology.get("multiplex_standalone_reason")
 

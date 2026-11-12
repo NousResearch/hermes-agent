@@ -75,7 +75,7 @@ use them, and tool digests cover those files. `run-electron-builder.mjs`
 therefore starts the builder with `scripts/patch-electron-builder-copy.mjs`,
 which removes both omissions in memory. Before relocation, framework repair
 and signing change anything, `afterPack` fails the pack unless the packaged
-payload has the prepared payload's entries, types and file sizes.
+payload has the prepared payload's entries, types, file sizes and link targets.
 
 ## Local test build
 

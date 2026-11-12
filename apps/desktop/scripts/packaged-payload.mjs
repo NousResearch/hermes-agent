@@ -22,7 +22,7 @@ function entryKinds(root) {
         kinds.set(name, 'directory')
         visit(name)
       } else if (entry.isSymbolicLink()) {
-        kinds.set(name, 'symlink')
+        kinds.set(name, `symlink to ${fs.readlinkSync(path.join(root, name))}`)
       } else if (entry.isFile()) {
         kinds.set(name, `file of ${fs.lstatSync(path.join(root, name)).size} bytes`)
       } else {

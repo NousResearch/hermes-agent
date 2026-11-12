@@ -118,6 +118,25 @@ it('fails a bundled pack whose payload never arrived but leaves Hermes Light alo
   await expect(afterPack(light.context)).resolves.toBeUndefined()
 })
 
+// PM's tree digests hash link text, so a retargeted link is a lost payload entry too.
+it.skipIf(process.platform === 'win32')('fails a packaged symlink that points somewhere else', async () => {
+  const pack = () => {
+    const packed = packContext()
+    fs.symlinkSync('pnpm', path.join(packed.prepared, 'tools', 'pnpm', 'bin', 'pnpm-cli'))
+    fs.cpSync(packed.prepared, packed.packaged, { recursive: true, verbatimSymlinks: true })
+    return packed
+  }
+  await expect(afterPack(pack().context)).resolves.toBeUndefined()
+
+  const retargeted = pack()
+  const link = path.join(retargeted.packaged, 'tools', 'pnpm', 'bin', 'pnpm-cli')
+  fs.rmSync(link)
+  fs.symlinkSync('missing-pnpm', link)
+  const failure = await afterPack(retargeted.context).catch(error => error)
+  expect(failure).toBeInstanceOf(Error)
+  expect(failure.message).toContain('tools/pnpm/bin/pnpm-cli: symlink to pnpm became symlink to missing-pnpm')
+})
+
 it('checks the macOS copy before signing repairs a flattened Chromium framework', async () => {
   const chromium = path.join('tools', 'chromium-1208', 'Chromium.app')
   const framework = path.join(chromium, 'Contents', 'Frameworks', 'F.framework')

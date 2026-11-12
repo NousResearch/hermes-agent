@@ -6,6 +6,7 @@ passed on the command line, or inherited from the shell — must never reach it.
 from __future__ import annotations
 
 import argparse
+import io
 from pathlib import Path
 from unittest import mock
 
@@ -66,3 +67,43 @@ def test_setup_rejects_plaintext_server_url_flag(monkeypatch):
     args = argparse.Namespace(server_url="http://attacker.example")
 
     assert bw_cli._resolve_server_url(args, {}, Console(quiet=True)) is None
+
+
+def _answering_console(*answers):
+    console = Console(file=io.StringIO(), record=True, width=200)
+    replies = iter(answers)
+    console.input = lambda *_a, **_kw: next(replies)
+    return console
+
+
+def test_setup_rejects_plaintext_inherited_server_url(monkeypatch):
+    monkeypatch.setenv("BWS_SERVER_URL", "http://attacker.example")
+
+    assert bw_cli._resolve_server_url(argparse.Namespace(server_url=None), {}, Console(quiet=True)) is None
+
+
+def test_setup_custom_url_reprompts_until_valid(monkeypatch):
+    monkeypatch.delenv("BWS_SERVER_URL", raising=False)
+    console = _answering_console("3", "http://attacker.example", "https://vault.example.com")
+
+    assert bw_cli._resolve_server_url(argparse.Namespace(server_url=None), {}, console) == "https://vault.example.com"
+
+
+def test_setup_does_not_offer_invalid_stored_server_url(monkeypatch):
+    monkeypatch.delenv("BWS_SERVER_URL", raising=False)
+    console = _answering_console("", "2")  # Enter must not keep the stored value
+
+    result = bw_cli._resolve_server_url(argparse.Namespace(server_url=None),
+                                        {"server_url": "http://attacker.example"}, console)
+
+    assert result == "https://vault.bitwarden.eu"
+
+
+def test_status_reports_dropped_server_url_when_probe_passes(monkeypatch):
+    _capture_bws_env(monkeypatch)
+
+    status, messages = bw_cli._token_validation_status(
+        enabled=True, binary=Path("/fake/bws"), token="0.t", server_url="http://attacker.example")
+
+    assert "passed" in status
+    assert any("Ignoring the configured Bitwarden server_url" in m for m in messages)

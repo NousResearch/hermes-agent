@@ -490,3 +490,42 @@ async def test_a_later_part_that_never_left_is_resent_rich_after_the_parts_shown
     rows = re.findall(r"row \d+-\d+:", "\n".join(screen))
     assert sorted(rows) == sorted(re.findall(r"row \d+-\d+:", content))
 
+
+@pytest.mark.asyncio
+async def test_a_final_edit_continuation_accepted_before_its_receipt_timed_out_is_not_resent():
+    """The rich final edit lands part 1, Telegram accepts part 2 but the receipt times out: the
+    stream fallback sends only the parts after it, so no row shows twice and none is missing."""
+    import telegram.error as tg_error
+
+    from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+
+    adapter = _make_adapter()
+    content = _details_content(blocks=4, body_lines=400)
+    screen, sends = {"100": "preview"}, {"rich": 0}
+
+    async def do_api_request(method, api_kwargs=None):
+        if method == "editMessageText":
+            screen[str(api_kwargs["message_id"])] = api_kwargs["rich_message"]["markdown"]
+            return True
+        sends["rich"] += 1
+        screen[str(200 + sends["rich"])] = api_kwargs["rich_message"]["markdown"]
+        if sends["rich"] == 1:
+            raise tg_error.TimedOut("Timed out")
+        return SimpleNamespace(message_id=200 + sends["rich"])
+
+    async def send_message(text="", **_kw):
+        screen[mid := str(1000 + len(screen))] = text
+        return SimpleNamespace(message_id=mid)
+
+    adapter._bot.do_api_request = AsyncMock(side_effect=do_api_request)
+    adapter._bot.send_message = AsyncMock(side_effect=send_message)
+    consumer = GatewayStreamConsumer(adapter, "12345", StreamConsumerConfig())
+    consumer._message_id, consumer._last_sent_text = "100", "preview"
+    consumer._accumulated = consumer._stream_ledger = content
+
+    if not await consumer._edit_existing(content, finalize=True, is_turn_final=True):
+        await consumer._send_fallback_final(content)
+
+    rows = Counter(re.findall(r"row \d+-\d+:", "\n".join(screen.values()).replace("\\", "")))
+    assert [row for row in re.findall(r"row \d+-\d+:", content) if rows[row] != 1] == []
+    assert consumer.delivery_uncertain is True

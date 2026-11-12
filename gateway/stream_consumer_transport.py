@@ -613,6 +613,10 @@ class StreamTransportMixin:
             self._message_id = str(raw_response.get("last_message_id") or result.message_id
                                    or self._message_id)
             delivered_prefix = raw_response.get("delivered_prefix")
+            # A prefix that counts a timed-out part as shown is a guess: the ledger owns redelivery,
+            # and when that part was the last one nothing is resent (``_fallback_when_nothing_unseen``).
+            if raw_response.get("delivery_uncertain"):
+                self._delivery_uncertain = self._preview_uncertain = True
             if isinstance(delivered_prefix, str) and delivered_prefix:
                 self._last_sent_text = delivered_prefix
                 self._fallback_preserve_partial_messages = text.startswith(delivered_prefix)

@@ -1,13 +1,13 @@
 name: freebusy
 title: Freebusy
-repo: https://github.com/hmnvcb/freebusy
+repo: https://github.com/davidtsailabs/freebusy
 sha: "71998d63d430b80915482799168b90617222721d"
 description: "Books meetings by email from free or busy time only and never guesses a time zone: every slot is held before it is offered, a policy gate blocks any send or calendar write it should not make, and reminders go to the owner alone. Disclosure — Fixture mode by default: no network calls and bundled demo data only. Holds, settings and a redacted audit log stay in its plugin data folder, and a short scheduling context (owner zone, open holds, stated zones, items waiting on the owner) is added to each turn. Its pre_tool_call hook gates its own send, book, remind and resume actions, and other plugins' mail and calendar tools only if the owner turns on vet_other_tools. Reminders are one-time owner-only jobs through cronjob_manage, never created inside a cron run unless cron.allow_agent_scheduling is true. The Google Workspace adapter is inert in this version."
-maintainer: hmnvcb
+maintainer: davidtsailabs
 tier: community
 category: automation
 requires_hermes: ">=0.22.5"
-docs_url: https://github.com/hmnvcb/freebusy/blob/71998d63d430b80915482799168b90617222721d/README.md
+docs_url: https://github.com/davidtsailabs/freebusy/blob/71998d63d430b80915482799168b90617222721d/README.md
 version: "0.2.0"
 readme: true
 platforms: [linux, macos]

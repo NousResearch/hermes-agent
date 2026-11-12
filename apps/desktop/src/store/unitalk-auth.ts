@@ -3,7 +3,7 @@ import { atom } from 'nanostores'
 import { startLocalhostCallbackServer } from '@/store/unitalk-auth-localhost'
 
 const CLERK_TOKEN_KEY = 'unitalk-clerk-token'
-const CLERK_PUBLISHABLE_KEY = 'pk_live_YOUR_CLERK_PUBLISHABLE_KEY'
+const CLERK_PUBLISHABLE_KEY = 'pk_live_Y2xlcmsudW5pdGFsay5haSQ'
 
 const CLERK_SIGN_IN_BASE = 'https://unitalk.ai/home/inscription'
 

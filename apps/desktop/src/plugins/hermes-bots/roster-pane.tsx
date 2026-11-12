@@ -13,6 +13,7 @@ import {
   clearSelectedRosterKey,
   focusedRosterOwner,
   parseRosterKey,
+  reconcileSelectionToFocusedChat,
   saveSelectedRosterBot
 } from './bot-state'
 import { $canonicalRoomLive } from './canonical-group-details'
@@ -221,6 +222,10 @@ function useReconcileRosterOwner(
     $rosterHydrated.set(true)
 
     if (selectionHydrated) {
+      // Follow the chat on screen first: a selection left behind by an
+      // earlier click must not re-own the workspace over the bot the user is
+      // reading (#154651) — the publish below would aim "+" at it.
+      reconcileSelectionToFocusedChat()
       reconcileRosterSelection(roster, sourceSnapshot, allMeta)
       const selected = selectedRosterBot(roster, $selectedRosterKey.get())
 

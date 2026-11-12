@@ -130,6 +130,55 @@ def test_fetch_read_failure_becomes_warning(monkeypatch, tmp_path):
     assert "not signed in" in warnings[0]
 
 
+def test_shared_op_failure_stops_before_next_reference(monkeypatch, tmp_path):
+    """One unavailable op session must not make startup wait once per mapping."""
+    fake_op = tmp_path / "op"
+    fake_op.write_text("")
+    for failure in (
+        _err(1, "No accounts configured for use with 1Password CLI."),
+        subprocess.TimeoutExpired(cmd=["op", "read"], timeout=30),
+    ):
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            if isinstance(failure, Exception):
+                raise failure
+            return failure
+
+        monkeypatch.setattr(op.subprocess, "run", fake_run)
+        secrets, warnings = op.fetch_onepassword_secrets(
+            references={"A_TOKEN": "op://V/A/F", "B_TOKEN": "op://V/B/F"},
+            binary=fake_op, use_cache=False,
+        )
+
+        assert secrets == {}
+        assert len(calls) == 1
+        assert len(warnings) == 1
+
+
+def test_bad_reference_does_not_hide_other_secrets(monkeypatch, tmp_path):
+    """A missing item is local to that mapping, so another mapping still resolves."""
+    fake_op = tmp_path / "op"
+    fake_op.write_text(
+        "#!/bin/sh\n"
+        "case \"$3\" in\n"
+        "  op://V/A/F) echo '403: item access denied' >&2; exit 1;;\n"
+        "  op://V/B/F) echo 'value'; exit 0;;\n"
+        "  *) exit 2;;\n"
+        "esac\n"
+    )
+    fake_op.chmod(0o755)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    secrets, warnings = op.fetch_onepassword_secrets(
+        references={"A_TOKEN": "op://V/A/F", "B_TOKEN": "op://V/B/F"},
+        binary=fake_op, use_cache=False, home_path=tmp_path,
+    )
+
+    assert secrets == {"B_TOKEN": "value"}
+    assert len(warnings) == 1
+
+
 
 
 
@@ -306,7 +355,4 @@ def test_apply_never_overrides_token_var(monkeypatch, tmp_path):
     assert "OP_SERVICE_ACCOUNT_TOKEN" in result.skipped
     assert os.environ["OP_SERVICE_ACCOUNT_TOKEN"] == "original"
     assert calls["n"] == 0
-
-
-
 

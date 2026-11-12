@@ -70,7 +70,7 @@ _OP_ERROR_RULES = (
     (ErrorKind.TIMEOUT, ("timed out",)),
     (ErrorKind.BINARY_MISSING, ("not found on path", "not an executable", "failed to invoke")),
     (ErrorKind.AUTH_FAILED, ("unauthorized", "not signed in", "session expired",
-                             "authentication", "401", "403")),
+                             "no accounts configured", "authentication", "401", "403")),
     (ErrorKind.EMPTY_VALUE, ("empty value",)),
     (ErrorKind.NETWORK, ("network", "connection", "resolve host", "dns")),
 )
@@ -197,8 +197,20 @@ def fetch_onepassword_secrets(
         try:
             secrets[name] = _run_op_read(op, valid[name], account=account, token_value=token_value)
         except RuntimeError as exc:
-            warnings.append(str(exc))
+            message = str(exc)
+            warnings.append(message)
             read_errors += 1
+            # Every mapping uses the same op session and transport. A failure
+            # there cannot be repaired by trying the next reference. Generic
+            # 401/403 errors may be item-local permissions, so only explicit
+            # session messages short-circuit auth failures.
+            shared_session_error = any(phrase in message.lower() for phrase in (
+                "no accounts configured", "not signed in", "session expired",
+            ))
+            if shared_session_error or _classify_op_error(message) in {
+                ErrorKind.NETWORK, ErrorKind.TIMEOUT, ErrorKind.BINARY_MISSING,
+            }:
+                break
 
     if use_cache and not read_errors and secrets:
         _STORE.store(cache_key, CachedFetch(secrets=dict(secrets), fetched_at=time.time()),

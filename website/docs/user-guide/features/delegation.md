@@ -538,9 +538,11 @@ The parent agent orchestrates its own running children with the same `delegate_t
 {"action": "stop",  "subagent_id": "sa-0-1a2b3c4d"}
 ```
 
-- **`list`** returns the conversation's live children: `subagent_id`, goal, status, `running_seconds`, `accepting_steer`, and the live transcript path. Ids also come back in the spawn dispatch response as `subagent_ids`.
-- **`steer`** queues a course correction into a running child without stopping it (delivery semantics below).
-- **`stop`** ends a child early at its next iteration boundary; the partial result still re-enters the conversation as a normal completion message.
+- **`list`** returns the conversation's live spawn tree (children and, with `delegation.max_spawn_depth` above 1, their sub-helpers): `subagent_id`, `parent_id`, `depth`, goal, status, `running_seconds`, `accepting_steer`, the live transcript path, and `steers` — a receipt per recent steer with `queued_at`, `delivered_at`, `latency_s`, `status` (`queued` / `delivered` / `missed`) and `relayed_from`. Ids also come back in the spawn dispatch response as `subagent_ids`.
+- **`steer`** queues a course correction into a running child or any descendant without stopping it (delivery semantics below).
+- **`stop`** ends a child or descendant early at its next iteration boundary; the partial result still re-enters the conversation as a normal completion message.
+
+**Steering a helper that is waiting on its own sub-helpers.** Below the top level, a helper's own `delegate_task` call joins its sub-helpers inside the call, so its steer would otherwise wait until the whole sub-batch returns. The steer is therefore also queued, labelled as relayed, into each of that helper's live sub-helpers at once (`relayed_to` in the response); the helper keeps its own copy for when the join returns. A steer on a helper that is running tools also asks them to yield, the same way a mid-turn user message does: a foreground `terminal` command or a `process` wait hands off to the background (the yield does not kill it; the child's normal cleanup still applies when the child finishes), so the steer lands at the next boundary instead of when the command ends. Tools that do not yield keep their existing delivery timing. A child on the Codex app-server runtime runs its own turn loop and never reads that queue, so its steer goes straight into its active turn (native `turn/steer`, receipt `delivered` once Codex accepts it); with no active turn it stays queued and comes back as `missed_steer` if nothing reads it. Flat trees (`max_spawn_depth: 1`, the default) have no sub-helpers, so nothing is relayed.
 
 Control actions run synchronously in-turn (never backgrounded), are scoped to the caller's own spawn tree — a conversation can never see or control another session's children — and never consume the per-turn subagent spawn cap, so `stop` keeps working even after the cap is hit.
 

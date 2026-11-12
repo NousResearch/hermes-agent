@@ -476,6 +476,28 @@ def test_run_as_host_user_passes_uid_gid(monkeypatch):
     )
 
 
+@pytest.mark.parametrize("exe,euid,extra,want_keep_id", [
+    ("/usr/bin/podman", 1000, [], True),             # rootless podman: --user alone maps to a subuid
+    ("/usr/bin/podman", 0, [], False),               # rootful podman rejects keep-id
+    ("/usr/bin/docker", 1000, [], False),            # docker --user already is the host uid
+    ("/usr/bin/podman", 1000, ["--userns=auto"], False),  # the user's own --userns wins
+])
+def test_rootless_podman_keeps_host_uid(monkeypatch, exe, euid, extra, want_keep_id):
+    """Rootless Podman gets ``--userns keep-id`` beside ``--user`` (salvage of #72946)."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: exe)
+    monkeypatch.setattr(docker_env.os, "getuid", lambda: 1234, raising=False)
+    monkeypatch.setattr(docker_env.os, "getgid", lambda: 5678, raising=False)
+    monkeypatch.setattr(docker_env.os, "geteuid", lambda: euid, raising=False)
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env(run_as_host_user=True, extra_args=extra)
+
+    run_args = next(c[0] for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run")
+    keep_id = any(run_args[i:i + 4] == ["--userns", "keep-id", "--user", "1234:5678"] for i in range(len(run_args)))
+    assert keep_id is want_keep_id, run_args
+    assert run_args[run_args.index("--user") + 1] == "1234:5678"
+
+
 def test_run_as_host_user_drops_setuid_setgid_caps(monkeypatch):
     """When --user is passed, the container already starts unprivileged and
     never needs a privilege drop, so SETUID/SETGID caps are omitted for a

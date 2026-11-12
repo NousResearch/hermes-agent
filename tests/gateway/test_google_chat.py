@@ -718,6 +718,19 @@ class TestBuildMessageEvent:
         assert event.source.chat_type == "group"
         assert event.source.thread_id == "spaces/G/threads/T1"
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("verdict, fetched", [(True, 1), (False, 0), (None, 0)])
+    async def test_attachments_are_downloaded_only_for_authorized_senders(self, adapter, verdict, fetched):
+        adapter.set_authorization_check(None if verdict is None else (lambda *args, **kwargs: verdict))
+        adapter._download_attachment = AsyncMock(return_value=("/tmp/cached.pdf", "application/pdf"))
+        env = _make_chat_envelope(text="see attached", attachments=[{"contentName": "x.pdf"}])
+        msg = env["chat"]["messagePayload"]["message"]
+
+        event = await adapter._build_message_event(msg, env)
+
+        assert adapter._download_attachment.await_count == fetched
+        assert len(event.media_urls) == fetched  # still built so the runner can deny/pair
+
 
 # ===========================================================================
 # send() — text, patch-in-place, chunking, error handling

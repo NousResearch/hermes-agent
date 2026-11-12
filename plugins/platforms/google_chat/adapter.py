@@ -961,7 +961,12 @@ class GoogleChatAdapter(BasePlatformAdapter):
         media_urls: list[str] = []
         media_types: list[str] = []
         message_type = MessageType.TEXT
-        for att in msg.get("attachment") or []:
+        # The fetch spends the bot's credentials and disk on a sender-chosen file: only the gateway's explicit
+        # True permits it. The message still dispatches so the runner applies denial/pairing.
+        attachments = msg.get("attachment") or []
+        if attachments and self._is_sender_authorized(sender_email or sender_name, chat_type, space_name) is not True:
+            attachments = []
+        for att in attachments:
             try:
                 local_path, mime = await self._download_attachment(att)
             except Exception as exc:

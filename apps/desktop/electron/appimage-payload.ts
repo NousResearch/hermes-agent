@@ -14,6 +14,7 @@ import { promisify } from 'node:util'
 import { isFallbackCommit } from './bundle-skew'
 import { removeBundleCliLinks } from './cli-provision'
 import { INSTALL_STAMP, type InstallStamp } from './install-stamp'
+import { ownAppImage } from './relaunch-target'
 
 export type BootProgress = (phase: string, message: string, progress: number) => Promise<void> | void
 
@@ -48,6 +49,7 @@ export interface PayloadCopyHost {
 
 export interface RunnableResourcesHost extends Omit<PayloadCopyHost, 'plan'> {
   platform: NodeJS.Platform
+  execPath: string
   env: NodeJS.ProcessEnv
   home: string
   resourcesPath: string
@@ -421,7 +423,8 @@ export async function preparePayloadCopy(host: PayloadCopyHost): Promise<string 
 
 /** The resources directory this launch runs the agent payload from. */
 export async function runnablePayloadResources(host: RunnableResourcesHost): Promise<string> {
-  if (host.platform !== 'linux' || !host.env.APPIMAGE || host.stamp?.payload !== 'bundled') {
+  // An APPIMAGE inherited from a terminal or IDE AppImage is not ours to unpack.
+  if (host.platform !== 'linux' || !ownAppImage(host.execPath, host.env) || host.stamp?.payload !== 'bundled') {
     return host.resourcesPath
   }
 
@@ -477,6 +480,7 @@ export function createStablePayloadResources(
 
 export const stablePayloadResources: StablePayloadResources = createStablePayloadResources((log, progress) => ({
   platform: process.platform,
+  execPath: process.execPath,
   env: process.env,
   home: os.homedir(),
   resourcesPath: process.resourcesPath,

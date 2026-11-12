@@ -52,7 +52,8 @@ test('a gateway started from the AppImage payload copy gets no paths into the ap
       LD_LIBRARY_PATH: `${mount}/usr/lib`,
       XDG_DATA_DIRS: `${mount}/usr/share/:/usr/share/`,
       GSETTINGS_SCHEMA_DIR: `${mount}/usr/share/glib-2.0/schemas`
-    }
+    },
+    { execPath: `${mount}/hermes` }
   )
 
   expect(JSON.parse(result.stdout)).toEqual({

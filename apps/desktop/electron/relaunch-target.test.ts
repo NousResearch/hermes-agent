@@ -280,7 +280,36 @@ describe('mountFreeEnv', () => {
   }
 
   it('keeps the env whole for a command that still runs from the mount', () => {
-    expect(mountFreeEnv(env, '/tmp/.mount_HermesAb12/resources/agent-payload/bin/hermes')).toBe(env)
+    expect(
+      mountFreeEnv(env, '/tmp/.mount_HermesAb12/resources/agent-payload/bin/hermes', '/tmp/.mount_HermesAb12/hermes')
+    ).toBe(env)
+  })
+
+  it('drops this app mount from a command run from outside it', () => {
+    expect(
+      mountFreeEnv(
+        env,
+        '/home/x/.local/share/hermes/bundles/k/agent-payload/bin/hermes',
+        '/tmp/.mount_HermesAb12/hermes'
+      )
+    ).toEqual({
+      APPIMAGE: '/home/x/Hermes.AppImage',
+      PATH: '/usr/bin'
+    })
+  })
+
+  it('leaves a mount inherited from another AppImage alone', () => {
+    // A .deb Hermes started from a terminal AppImage inherits the terminal's APPIMAGE and APPDIR.
+    const terminal = {
+      APPIMAGE: '/home/x/Term.AppImage',
+      APPDIR: '/tmp/.mount_TermCd34',
+      PATH: '/tmp/.mount_TermCd34/usr/bin:/usr/bin',
+      EDITOR: '/tmp/.mount_TermCd34/usr/bin/nvim'
+    }
+
+    expect(mountFreeEnv(terminal, '/opt/Hermes/resources/agent-payload/bin/hermes', '/opt/Hermes/hermes')).toBe(
+      terminal
+    )
   })
 
   it('keeps the env whole outside an AppImage', () => {

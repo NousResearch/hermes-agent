@@ -437,7 +437,10 @@ def hermes_consumed_credentials(names: Iterable[str]) -> frozenset:
         str(entry.get("source"))[len("env:"):].strip()
         for entries in read_credential_pool().values() if isinstance(entries, list)
         for entry in entries if isinstance(entry, dict) and str(entry.get("source")).startswith("env:")}
-    declared = (pool_rows | _config_declared_key_envs(load_config_readonly())
+    # ``mcp_servers`` is skipped as in :func:`_config_credential_env_refs`: a server's own ``env:``
+    # entry named like a pointer (``api_key_env: VENDOR_TOKEN``) is not a Hermes credential.
+    effective = {k: v for k, v in load_config_readonly().items() if k != "mcp_servers"}
+    declared = (pool_rows | _config_declared_key_envs(effective)
                 | _config_credential_env_refs(_raw_config_behind_effective())
                 | _config_credential_env_refs(load_managed_config()))
     profile = _active_profile_name(get_hermes_home())

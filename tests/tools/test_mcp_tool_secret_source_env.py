@@ -270,3 +270,24 @@ def test_unreadable_backups_dir_does_not_stop_stdio_env_while_config_is_broken(m
         result = _build_safe_env(None)
 
     assert result["ALPACA_API_KEY"] == "MARKER-third-party"
+
+
+def test_secret_source_mcp_server_env_pointer_does_not_block_vendor_token(monkeypatch):
+    """An MCP server env entry is not a Hermes credential declaration, even if its
+    arbitrary name matches the *_key_env pointer convention elsewhere in config."""
+    from hermes_cli import env_loader
+    from tools.mcp_tool_config import _build_safe_env
+
+    (Path(os.environ["HERMES_HOME"]) / "config.yaml").write_text(
+        "model:\n  provider: custom\n  base_url: http://127.0.0.1:9/v1\n  key_env: MY_LLM_KEY\n"
+        "mcp_servers:\n  helper:\n    command: x\n    env:\n      api_key_env: VENDOR_TOKEN\n",
+        encoding="utf-8")
+    monkeypatch.setitem(env_loader._SECRET_SOURCES, "MY_LLM_KEY", "command")
+    monkeypatch.setitem(env_loader._SECRET_SOURCES, "VENDOR_TOKEN", "command")
+    fake_env = {"PATH": "/usr/bin", "MY_LLM_KEY": "MARKER-hermes",
+                "VENDOR_TOKEN": "MARKER-vendor", "HERMES_HOME": os.environ["HERMES_HOME"]}
+    with patch.dict("os.environ", fake_env, clear=True):
+        result = _build_safe_env(None)
+
+    assert "MY_LLM_KEY" not in result
+    assert result["VENDOR_TOKEN"] == "MARKER-vendor"

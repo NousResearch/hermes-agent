@@ -13,6 +13,7 @@ from aiohttp import web
 from aiohttp.abc import AbstractResolver
 
 from gateway.config import PlatformConfig
+from gateway.platforms.helpers import ssrf_checked_aiohttp_get
 from tools import url_safety
 
 PUBLIC_HOST = "redirector.test"
@@ -146,7 +147,7 @@ async def test_timeout_total_covers_the_whole_redirect_chain(monkeypatch):
     try:
         async with aiohttp.ClientSession() as session:
             with pytest.raises(asyncio.TimeoutError):  # each hop alone fits in 1 s, the chain does not
-                async with url_safety.ssrf_checked_aiohttp_get(
+                async with ssrf_checked_aiohttp_get(
                         session, f"http://127.0.0.1:{port}/first", timeout=aiohttp.ClientTimeout(total=1.0)) as resp:
                     await resp.read()
     finally:
@@ -185,7 +186,7 @@ async def test_redirect_does_not_forward_session_authorization_to_another_public
                 headers={"Authorization": "Bearer origin-secret"},
                 connector=aiohttp.TCPConnector(resolver=_LoopbackResolver())) as session:
             with pytest.raises(ValueError, match="credential-bearing cross-origin redirect"):
-                async with url_safety.ssrf_checked_aiohttp_get(
+                async with ssrf_checked_aiohttp_get(
                         session, f"http://{PUBLIC_HOST}:{port}/image.png") as response:
                     await response.read()
     finally:

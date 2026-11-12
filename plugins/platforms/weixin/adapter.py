@@ -354,7 +354,7 @@ async def _upload_ciphertext(session: aiohttp.ClientSession, *, ciphertext: byte
 
 async def _download_bytes(session: aiohttp.ClientSession, *, url: str, timeout_seconds: float = 60.0) -> bytes:
     from gateway.platforms.base import read_httpx_body_with_limit
-    from tools.url_safety import ssrf_checked_aiohttp_get
+    from gateway.platforms.helpers import ssrf_checked_aiohttp_get
 
     async def _do() -> bytes:
         # Every hop is re-checked: an allowlisted CDN URL or a pre-checked reply URL can 302 anywhere.

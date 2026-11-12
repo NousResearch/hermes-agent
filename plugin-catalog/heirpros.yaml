@@ -1,7 +1,7 @@
 name: heirpros
 title: HeirPros
 repo: https://github.com/nbandan/heirpros-mcp
-sha: 4ac21e550f48d30a2be279b3694f65cf930bf0ed
+sha: f6172afad3e769170e1704e678bca6b168ee61a8
 version: "1.0.0"
 description: "Estimate the research hours for a US probate heir search (locating missing and unknown heirs for an estate) through HeirPros' free MCP server (Streamable HTTP at https://heirpros.com/mcp, no sign-in, no keys in config): hours from the number of known and estimated unknown heirs (1.5 base hours + 1 per heir, the same formula as the heirpros.com calculator), plus general information about HeirPros' heir search service. Hours only, no pricing. Bundles the heir-search-estimate skill. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure: hosted-only connector with no local code; every tool call goes to heirpros.com, run by HeirPros, which does not store or email what is sent. Both tools are annotated read-only and the package marks the server untrusted, so Hermes would ask before any tool that is not. The tool set is served by the remote server at runtime and is not covered by the pinned sha."
 maintainer: HeirPros

@@ -454,6 +454,11 @@ DEFAULT_CONFIG = {
         # agent the wrong identity. A pin naming a missing directory never falls back to another
         # profile: the session gets a fresh browser without the user's logins.
         "real_profile_pin": "",
+        # Which browser family real-profile browsing drives, instead of the OS default (e.g. "chrome").
+        # Empty = detect the default Chromium; a host whose default is not Chromium (Safari, Firefox)
+        # then cannot use real-profile browsing at all. Same family names detection accepts:
+        # chrome, edge, brave, brave-origin, chromium.
+        "real_profile_browser": "",
         # CDP supervisor: dialog + frame detection over a persistent WebSocket; active only with a
         # CDP-capable backend (Browserbase, or local Chrome via /browser connect). See
         # website/docs/developer-guide/browser-supervisor.md.

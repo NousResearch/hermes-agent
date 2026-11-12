@@ -223,9 +223,9 @@ browser:
 
 快照浏览器以**无头**方式在后台运行，不抢占焦点；设置 `browser.headed: true` 可显示窗口。在无显示器的主机上始终为无头模式。如需固定快照来源，可设置 `browser.real_profile_pin: "Profile 2"`（浏览器 user-data 目录下的 profile 目录名）；指向不存在目录的固定值不会回退到其他 profile。关闭开关后，Hermes 会在下一次使用浏览器时删除快照存储（`~/.hermes/browser-profile/`）。
 
-如果无法复制您的 profile（例如 Windows 上运行中的浏览器以独占锁持有 Cookie 数据库、默认浏览器不是受支持的 Chromium，或 Cookie 数据库损坏），Agent 会获得一个**不带登录状态**的全新浏览器，且第一个浏览器结果会说明原因（`real_profile_unavailable`）。设置 `browser.real_profile_autoclose: true` 后，Hermes 会在需要时**询问**是否替您关闭浏览器，获得批准后才运行 `hermes browser close-profile`。
+如果无法复制您的 profile（例如 Windows 上运行中的浏览器以独占锁持有 Cookie 数据库、默认浏览器不是受支持的 Chromium，或 Cookie 数据库损坏），Agent 会获得一个**不带登录状态**的全新浏览器，且第一个浏览器结果会说明原因（`real_profile_unavailable`）。系统默认浏览器不是 Chromium 系（例如 Safari、Firefox）时，用 `browser.real_profile_browser` 指定家族（chrome / edge / brave / brave-origin / chromium），指定的浏览器需要已安装，不要求是系统默认。设置 `browser.real_profile_autoclose: true` 后，Hermes 会在需要时**询问**是否替您关闭浏览器，获得批准后才运行 `hermes browser close-profile`。
 
-- **支持的浏览器：** Chrome、Edge、Brave、Brave Origin、Chromium（以系统默认为准）。
+- **支持的浏览器：** Chrome、Edge、Brave、Brave Origin、Chromium（默认跟随系统默认浏览器，可用 `browser.real_profile_browser` 指定）。
 - **适用于任何浏览器来源。** 本地浏览时开启即生效。使用**云端**提供商时，Agent 仍可通过 `browser_exec` 工具的 `local` 参数按需打开真实 profile 的本地会话（仅在开启此开关时提供该参数）。
 - **安全说明：** 这是基于授权的便利功能，而非隔离边界。默认关闭。
 - **桌面应用：** 在 **Capabilities → Tools → Browser → Use My Real Browser Profile** 中切换。

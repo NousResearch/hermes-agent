@@ -1,7 +1,7 @@
 name: pioneer
 repo: https://github.com/acadine-intelligence/hermes-pioneer
 sha: 5aa55141db765138a5ce1cf96db1295d7f3442d7
-description: An inverted search for your own work. Pioneer reads your project folder, Hermes memory and recent chats, then looks for what does not exist yet and should. Your own model writes the gaps. Code checks every citation, runs an absence check against existing tools, and scores need, originality, counterfactual value, value and durability. When an existing tool already does the job, the board says so and names it. Rounds expand into a trail, shown on a Desktop page and pane.
+description: "An inverted search for your own work. Pioneer reads your project folder, Hermes memory and recent chats, then looks for what does not exist yet and should. Your own model writes the gaps. Code checks every citation, runs an absence check against existing tools, and scores need, originality, counterfactual value, value and durability. When an existing tool already does the job, the board says so and names it. Rounds expand into a trail, shown on a Desktop page and pane. Disclosure — reads your project folder (README, agent rules, manifests, recent commit subjects), Hermes memory files and the title and first message of your last 14 days of chats (state.db, read-only) to build its seed for your own model; model-written search queries go to hn.algolia.com, api.github.com and api.openalex.org by default (api.firecrawl.dev and the api.typesafe.ai judge only when you turn them on)."
 maintainer: acadine-intelligence
 tier: community
 category: tools
@@ -14,12 +14,12 @@ platforms:
 title: Pioneer
 capabilities:
   provides_tools:
-  - pioneer_seed
-  - pioneer_scout
-  - pioneer_submit
-  - pioneer_absence
-  - pioneer_board
-  - pioneer_setup
+    - pioneer_seed
+    - pioneer_scout
+    - pioneer_submit
+    - pioneer_absence
+    - pioneer_board
+    - pioneer_setup
   provides_hooks: []
   provides_middleware: []
   requires_env: []

@@ -618,6 +618,18 @@ class TestRevoke:
             assert store.is_approved("telegram", "user1") is False
             assert store.approve_code("telegram", stale_code) is None
 
+    @pytest.mark.parametrize("content", ["{not json", "[1, 2]"])
+    def test_malformed_pending_file_is_reset_and_never_blocks_revoke(self, tmp_path, content):
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path), \
+                patch("gateway.pairing._sync_allowlist_add"), patch("gateway.pairing._sync_allowlist_remove"):
+            store = PairingStore()
+            store._approve_user("telegram", "user1")
+            store._pending_path("telegram").write_text(content)
+
+            assert store.revoke("telegram", "user1") is True
+            assert store.is_approved("telegram", "user1") is False
+            assert json.loads(store._pending_path("telegram").read_text()) == {}
+
     @pytest.mark.parametrize("approve_via", ["code", "request_id"])
     def test_revoke_from_other_store_invalidates_codes_for_both_approval_paths(self, tmp_path, approve_via):
         """The CLI revokes while the dashboard holds its own store: neither the DM'd code nor

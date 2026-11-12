@@ -8,7 +8,7 @@ import sqlite3
 import time
 from typing import Any
 
-from hermes_cli.kanban_access_resolution import AccessResolutionError
+from hermes_cli.kanban_access_resolution import AccessResolutionError, compact_json
 
 ACCESS_RESOLUTION_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS kanban_access_resolutions (
@@ -25,19 +25,23 @@ CREATE TABLE IF NOT EXISTS kanban_access_resolutions (
 """
 
 
-def _json(payload: dict[str, Any]) -> str:
-    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=False)
-
-
 def _authority_snapshot(conn: sqlite3.Connection, request: dict[str, Any]) -> sqlite3.Row:
+    """Return the card's current block generation, or raise ``authority_mismatch``.
+
+    A request is current only while the newest generation event is the ``blocked`` event it
+    names. ``unblocked``/``promoted`` end a generation but leave ``block_kind`` set, and the
+    dispatcher circuit breaker re-parks a card ``blocked`` with only a ``gave_up`` event, so
+    status and ``block_kind`` alone cannot tell a stale request from a current one.
+    """
     row = conn.execute(
         """
-        SELECT t.id, t.assignee, t.status, t.block_kind,
-               e.id AS block_event_id, e.created_at AS blocked_at
+        SELECT t.assignee, t.status, t.block_kind,
+               e.kind AS generation_kind, e.id AS block_event_id, e.created_at AS blocked_at
           FROM tasks t
           LEFT JOIN task_events e ON e.id = (
               SELECT id FROM task_events
-               WHERE task_id = t.id AND kind = 'blocked'
+               WHERE task_id = t.id
+                 AND kind IN ('blocked', 'unblocked', 'promoted', 'gave_up')
                ORDER BY id DESC LIMIT 1
           )
          WHERE t.id = ?
@@ -48,6 +52,7 @@ def _authority_snapshot(conn: sqlite3.Connection, request: dict[str, Any]) -> sq
         row["assignee"] != request["expectedAssignee"]
         or row["status"] != request["expectedStatus"]
         or row["block_kind"] != request["expectedBlockKind"]
+        or row["generation_kind"] != "blocked"
         or row["block_event_id"] != request["expectedBlockEventId"]
         or row["blocked_at"] != request["expectedBlockedAt"]
     ):
@@ -82,7 +87,7 @@ def resolve_access_request(
         if existing is not None:
             return _replayed_receipt(existing, request["payloadDigest"])
 
-        _authority_snapshot(conn, request)
+        authority = _authority_snapshot(conn, request)
         now = int(time.time())
         reservation = conn.execute(
             """
@@ -117,20 +122,17 @@ def resolve_access_request(
             },
         )
 
-        unblock_event_id = None
         if request["mode"] == "route":
-            current = _authority_snapshot(conn, request)
-            status_after = current["status"]
-            block_event_after = current["block_event_id"]
-            blocked_at_after = current["blocked_at"]
+            # The audit comment leaves the block untouched, so the snapshot above still holds.
+            unblock_event_id = None
+            status_after = authority["status"]
+            block_event_after = authority["block_event_id"]
+            blocked_at_after = authority["blocked_at"]
         else:
             unblocked = _kb._unblock_task_in_txn(
                 conn,
                 request["cardId"],
-                attribution={
-                    **attribution,
-                    "expected_block_event_id": request["expectedBlockEventId"],
-                },
+                attribution={**attribution, "expected_block_event_id": request["expectedBlockEventId"]},
             )
             if unblocked is None:
                 raise AccessResolutionError("authority_mismatch")
@@ -156,6 +158,6 @@ def resolve_access_request(
         }
         conn.execute(
             "UPDATE kanban_access_resolutions SET receipt_json = ? WHERE id = ?",
-            (_json(receipt), receipt_id),
+            (compact_json(receipt), receipt_id),
         )
         return receipt

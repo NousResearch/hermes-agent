@@ -142,6 +142,10 @@ def test_published_versioned_fixture_corpus_is_immutable_and_independent() -> No
         ({"requestId": "123e4567e89b12d3a456426614174000"}, "invalid_request"),
 
         ({"mode": "audit"}, "invalid_request"),
+        ({"mode": ["route"]}, "invalid_request"),
+        ({"mode": {}}, "invalid_request"),
+        ({"category": ["human_receipt"]}, "invalid_request"),
+        ({"category": {}}, "invalid_request"),
         ({"machine": "MacPro"}, "invalid_request"),
         ({"machine": "1macpro"}, "invalid_request"),
         ({"machine": "m" * 33}, "invalid_request"),
@@ -167,6 +171,10 @@ def test_published_versioned_fixture_corpus_is_immutable_and_independent() -> No
         ({"comment": "bad\rcomment"}, "invalid_request"),
         ({"comment": "bad\tcomment"}, "invalid_request"),
         ({"comment": "bad\x7fcomment"}, "invalid_request"),
+        ({"comment": "bidi \u202eoverride"}, "invalid_request"),
+        ({"comment": "zero\u200bwidth"}, "invalid_request"),
+        ({"comment": "line\u2028separator"}, "invalid_request"),
+        ({"owner": "para\u2029separator"}, "invalid_request"),
         ({"mode": "route", "evidenceRef": "receipt"}, "invalid_request"),
         ({"mode": "grant", "evidenceRef": None, "nextAction": None}, "invalid_request"),
     ],
@@ -358,6 +366,27 @@ def test_same_second_reblock_rejects_stale_event_generation(board_home) -> None:
 
         with pytest.raises(AccessResolutionError, match="authority_mismatch"):
             kb.resolve_access_request(conn, stale, machine="macpro")
+        assert kb.list_comments(conn, task_id) == []
+        assert conn.execute("SELECT COUNT(*) FROM kanban_access_resolutions").fetchone()[0] == 0
+
+
+def test_breaker_block_after_unblock_rejects_stale_capability_generation(board_home) -> None:
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli.kanban_access_resolution import AccessResolutionError
+    from hermes_cli.kanban_db_dispatch import _record_task_failure
+
+    with kbc.connect_closing() as conn:
+        task_id, stale = _blocked_request(conn, mode="grant")
+        assert kb.unblock_task(conn, task_id)
+        # The breaker parks the card with no new ``blocked`` event and keeps ``block_kind``.
+        assert _record_task_failure(conn, task_id, "spawn failed", outcome="spawn_failed", force_trip=True)
+        task = kb.get_task(conn, task_id)
+        assert task.status == "blocked" and task.block_kind == "capability"
+
+        with pytest.raises(AccessResolutionError, match="authority_mismatch"):
+            kb.resolve_access_request(conn, stale, machine="macpro")
+        assert kb.get_task(conn, task_id).status == "blocked"
         assert kb.list_comments(conn, task_id) == []
         assert conn.execute("SELECT COUNT(*) FROM kanban_access_resolutions").fetchone()[0] == 0
 

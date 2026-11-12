@@ -65,7 +65,9 @@ requires the inverse.
 Success prints one compact JSON receipt. Reusing the same request ID and digest returns
 the stored receipt with `replayed: true` and creates no duplicate effect. Reusing an ID
 with different content fails with `request_id_conflict`; stale task or block authority
-fails with `authority_mismatch`; an identity mismatch fails with `machine_mismatch`.
+fails with `authority_mismatch` (the named blocked event must still be the card's newest
+block, unblock, promotion or circuit-breaker event); an identity mismatch fails with
+`machine_mismatch`.
 Malformed, oversized, duplicate-key, non-canonical Unicode, or digest-mismatched input is
 rejected before any board mutation. The mutation form is unavailable from fenced
 `delegate_task` child contexts. This command is a local transactional primitive, not a
@@ -87,7 +89,8 @@ IDs are positive signed 64-bit integers and blocked timestamps are nonnegative s
 64-bit integers. Category is one of `credential_or_permission`,
 `missing_tool_or_read_api`, or `human_receipt`. After proving each string is already NFC,
 UTF-8 byte limits are: owner 1–256, evidence/next action 1–2048, and comment 1–8192.
-Unicode controls are forbidden except LF in comment. Grant requires evidence and forbids
+Unicode control, format (for example bidi override and zero-width) and line/paragraph
+separator characters are forbidden, except LF in comment. Grant requires evidence and forbids
 next action; route requires next action and forbids evidence.
 
 The digest excludes `payloadDigest` and hashes this exact order:

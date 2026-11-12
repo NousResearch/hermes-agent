@@ -27,7 +27,11 @@ _DIGEST_RE = re.compile(r"[0-9a-f]{64}\Z")
 _MACHINE_RE = re.compile(r"[a-z][a-z0-9-]{0,31}\Z")
 _CARD_RE = re.compile(r"t_[0-9a-f]{8}\Z")
 _ASSIGNEE_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}\Z")
+_MODES = frozenset({"route", "grant"})
 _CATEGORIES = frozenset({"credential_or_permission", "missing_tool_or_read_api", "human_receipt"})
+# Control, format (bidi overrides, zero-width) and line/paragraph separators would let an
+# audit comment or owner read differently from what was digested.
+_FORBIDDEN_CHAR_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp"})
 
 
 class AccessResolutionError(ValueError):
@@ -65,7 +69,7 @@ def _strict_text(value: Any, *, minimum: int, maximum: int, allow_lf: bool = Fal
     if not minimum <= len(encoded) <= maximum:
         raise _invalid()
     for char in value:
-        if unicodedata.category(char) == "Cc" and not (allow_lf and char == "\n"):
+        if unicodedata.category(char) in _FORBIDDEN_CHAR_CATEGORIES and not (allow_lf and char == "\n"):
             raise _invalid()
     return value
 
@@ -80,47 +84,60 @@ def _bounded_integer(value: Any, minimum: int) -> None:
         raise _invalid()
 
 
+def _choice(value: Any, allowed: frozenset[str]) -> None:
+    # ``isinstance`` first: an unhashable JSON value (list/object) must not reach the set lookup.
+    if not isinstance(value, str) or value not in allowed:
+        raise _invalid()
+
+
+def _matches(value: Any, pattern: re.Pattern[str]) -> None:
+    if not isinstance(value, str) or not pattern.fullmatch(value):
+        raise _invalid()
+
+
+def _validate_request_id(request_id: Any) -> None:
+    _matches(request_id, _UUID_RE)
+    try:
+        canonical = str(uuid.UUID(request_id))
+    except ValueError as exc:
+        raise _invalid() from exc
+    if canonical != request_id:
+        raise _invalid()
+
+
+def _validate_mode_fields(request: dict[str, Any]) -> None:
+    """``route`` carries a next action and no evidence; ``grant`` is the inverse."""
+    has_evidence = request["evidenceRef"] is not None
+    has_next_action = request["nextAction"] is not None
+    if request["mode"] == "route" and (has_evidence or not has_next_action):
+        raise _invalid()
+    if request["mode"] == "grant" and (not has_evidence or has_next_action):
+        raise _invalid()
+
+
 def _validate_request(request: Any) -> dict[str, Any]:
     if not isinstance(request, dict) or set(request) != _KEYS:
         raise _invalid()
     if type(request["version"]) is not int or request["version"] != 1:
         raise _invalid()
-    request_id = request["requestId"]
-    if not isinstance(request_id, str) or not _UUID_RE.fullmatch(request_id):
-        raise _invalid()
-    try:
-        if str(uuid.UUID(request_id)) != request_id:
-            raise _invalid()
-    except (ValueError, AttributeError) as exc:
-        raise _invalid() from exc
-    digest = request["payloadDigest"]
-    if not isinstance(digest, str) or not _DIGEST_RE.fullmatch(digest):
-        raise _invalid()
-    if request["mode"] not in {"route", "grant"} or not isinstance(request["mode"], str):
-        raise _invalid()
-    for field, pattern in (
-        ("machine", _MACHINE_RE), ("cardId", _CARD_RE), ("expectedAssignee", _ASSIGNEE_RE),
-    ):
-        value = request[field]
-        if not isinstance(value, str) or not pattern.fullmatch(value):
-            raise _invalid()
+    _validate_request_id(request["requestId"])
+    _matches(request["payloadDigest"], _DIGEST_RE)
+    _choice(request["mode"], _MODES)
+    _matches(request["machine"], _MACHINE_RE)
+    _matches(request["cardId"], _CARD_RE)
+    _matches(request["expectedAssignee"], _ASSIGNEE_RE)
     _exact_string(request["expectedStatus"], "blocked")
     _exact_string(request["expectedBlockKind"], "capability")
     _bounded_integer(request["expectedBlockEventId"], 1)
     _bounded_integer(request["expectedBlockedAt"], 0)
-    if not isinstance(request["category"], str) or request["category"] not in _CATEGORIES:
-        raise _invalid()
+    _choice(request["category"], _CATEGORIES)
     _strict_text(request["owner"], minimum=1, maximum=256)
     for field in ("evidenceRef", "nextAction"):
         if request[field] is not None:
             _strict_text(request[field], minimum=1, maximum=2048)
     _exact_string(request["author"], "seth")
     _strict_text(request["comment"], minimum=1, maximum=8192, allow_lf=True)
-    if request["mode"] == "route":
-        if request["evidenceRef"] is not None or request["nextAction"] is None:
-            raise _invalid()
-    elif request["evidenceRef"] is None or request["nextAction"] is not None:
-        raise _invalid()
+    _validate_mode_fields(request)
     return request
 
 
@@ -171,8 +188,13 @@ def configured_machine_identity() -> str:
     return value
 
 
-def _json_line(payload: dict[str, Any], *, stream=None) -> None:
-    print(json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=False), file=stream)
+def compact_json(payload: dict[str, Any]) -> str:
+    """Single-line JSON used for stdout lines and the stored receipt."""
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
+def _json_line(payload: dict[str, Any]) -> None:
+    print(compact_json(payload))
 
 
 def command(args) -> int:

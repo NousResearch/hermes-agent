@@ -4706,8 +4706,28 @@ Write only the summary body. Do not include any preamble or prefix."""
         # body until the provider answers 413 -- and the 413 handler's recovery compaction lands right back
         # here and frees nothing, which is the wedge in #89938. Keep the newest tool image, since that is
         # the one the model is reasoning about, and drop every older one wherever it sits.
+        from agent.turn_empty_response import _MACHINERY_DISPLAY_KINDS
+
+        newest_user_seen = False
         for i in range(len(messages) - 1, -1, -1):
             msg = messages[i]
+            if (
+                not newest_user_seen
+                and isinstance(msg, dict)
+                and msg.get("role") == "user"
+            ):
+                newest_user_seen = True
+                # A machinery wake turn (kanban/background-process/delegation
+                # notification) that is still being worked IS the in-flight
+                # task. _is_actionable_user_turn rejects every display_kind row,
+                # so without this the scan skipped the live wake and restated an
+                # OLDER user row (an earlier human ask or a stale notification)
+                # as "the active request" -- the model then resumed the wrong
+                # task. Only the newest user row qualifies: older notifications
+                # stay excluded exactly as before.
+                if msg.get("display_kind") in _MACHINERY_DISPLAY_KINDS and _is_real_user_message(msg):
+                    last_user_idx = i
+                    break
             # _is_real_user_message also rejects metadata-flagged scaffolding
             # (_todo_snapshot_synthetic, recovery nudges, ...) that
             # _is_actionable_user_turn cannot see.

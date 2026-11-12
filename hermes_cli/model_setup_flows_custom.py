@@ -398,7 +398,11 @@ def _model_flow_named_custom(config, provider_info):
         model.pop("base_url", None)
         model.pop("api_key", None)
     else:
-        model["provider"] = "custom"
+        # The list-form entry has no ``provider_key``, so its normalized display name IS its
+        # identity. Writing a bare ``custom`` here would drop that identity from the picker
+        # snapshot: a fallback entry then resolves its key from ``OPENAI_API_KEY`` or from a
+        # base_url matching the primary, neither of which describes this endpoint (#149320).
+        model["provider"] = custom_provider_slug(name)
         model["base_url"] = _custom_provider_base_url_config_value(provider_info, base_url)
         if config_api_key:
             model["api_key"] = config_api_key

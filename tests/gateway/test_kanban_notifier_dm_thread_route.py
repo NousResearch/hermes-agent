@@ -141,3 +141,25 @@ def test_an_untyped_legacy_thread_row_keeps_the_unknown_parent_gate(tmp_path, mo
     with kbc.connect() as conn:
         assert kbn.unseen_events_for_sub(conn, task_id=task, platform="discord", chat_id="post",
                                          thread_id="post", kinds=["completed"])[1]
+
+
+def test_a_cli_thread_row_with_no_stated_chat_type_keeps_the_unknown_parent_gate(tmp_path, monkeypatch):
+    """``notify-subscribe`` without ``--chat-type`` stores the column's 'dm' default; that default is
+    no evidence ``chat_id`` is the thread's parent, so an earlier channel route still refuses."""
+    import argparse
+    from hermes_cli import kanban as kc
+
+    runner = setup_runner(tmp_path, monkeypatch, [
+        dict(platform="discord", guild_id=TEAM, chat_id="C_OTHER", profile="household-coordinator"),
+    ])
+    runner.adapters = {Platform.DISCORD: RecordingAdapter()}
+    with kbc.connect() as conn:
+        task = kb.create_task(conn, title="cli thread completion", assignee="worker")
+    parser = argparse.ArgumentParser()
+    kc.build_parser(parser.add_subparsers(dest="command"))
+    assert kc.kanban_command(parser.parse_args([
+        "kanban", "notify-subscribe", task, "--platform", "discord", "--chat-id", "post",
+        "--thread-id", "post", "--guild-id", TEAM, "--notifier-profile", "default"])) == 0
+    with kbc.connect() as conn:
+        kb.complete_task(conn, task, result="finished")
+    assert not collect(runner), "a defaulted chat_type must not stand in for a known parent"

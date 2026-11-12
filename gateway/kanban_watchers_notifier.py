@@ -197,10 +197,13 @@ def _adapter_for_subscription(runner: Any, platform: Any, sub: dict, owner_profi
     # ``chat`` is the conversation a thread lives in: a DM or a channel carries its own parent, so
     # only a route that really names that chat may claim it — standing the ROUTE's chat in instead
     # let any channel route on the platform match itself and refuse a DM thread the default profile
-    # owns (#151520). An untyped legacy row (pre ``chat_type``) may instead store the thread's own id
-    # in ``chat_id``, so it has no knowable parent and the ordered gate keeps its historical
-    # assumption: an earlier channel route is never skipped (#110919).
-    hosted_parent = chat if thread_like and chat_type and chat_type not in _THREAD_CHAT_TYPES else None
+    # owns (#151520). Known means supplied by the subscriber (``add_notify_sub`` copies it into the
+    # metadata): the row column defaults to 'dm' when none was given, so a CLI Discord thread row
+    # storing the thread's own id in ``chat_id`` would read as hosted. Such a row, and an untyped
+    # legacy one, has no knowable parent and the ordered gate keeps its historical assumption: an
+    # earlier channel route is never skipped (#110919).
+    stated_type = str(metadata.get("chat_type") or "").strip().lower()
+    hosted_parent = chat if thread_like and stated_type and stated_type not in _THREAD_CHAT_TYPES else None
     # Preserve canonical route order, including equal-specificity ties. An older
     # row missing an anchor must not skip a potentially winning route. Reuse the
     # route's matcher (including platform-specific identity aliases), not a second

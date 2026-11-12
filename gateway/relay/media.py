@@ -243,8 +243,9 @@ class RelayMediaClient:
             headers["Authorization"] = f"Bearer {self._bearer()}"
 
         def _get() -> Optional[tuple[str, str]]:
-            req = urllib.request.Request(url, headers=headers)
             try:
+                # Inside the try: a malformed URL (`https://[::1/…`) raises ValueError here.
+                req = urllib.request.Request(url, headers=headers)
                 with urllib.request.urlopen(req, timeout=_REQUEST_TIMEOUT_S) as resp:
                     if int(resp.headers.get("Content-Length") or 0) > MEDIA_MAX_BYTES:
                         logger.warning("relay media download too large: %s", url)

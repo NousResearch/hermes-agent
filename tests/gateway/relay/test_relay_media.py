@@ -435,3 +435,32 @@ async def test_rehost_on_another_origin_names_both_origins_once(monkeypatch, cap
     assert len(hints) == 2
     assert "https://pilot.example" in hints[0] and "https://relay.example/team-a" in hints[0]
     assert "http://pilot.example" in hints[1]
+
+
+@pytest.mark.asyncio
+async def test_malformed_url_does_not_abort_later_attachments(monkeypatch):
+    """One unparseable media URL skips only its own entry: the re-host after it is
+    still localized instead of being left as a remote URL."""
+    class _Resp:
+        headers = {"Content-Type": "image/png", "Content-Length": "4"}
+
+        def read(self, *_a):
+            return b"\x89PNG"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_a):
+            return False
+
+    import urllib.request as _ur
+
+    monkeypatch.setattr(_ur, "urlopen", lambda req, timeout=None: _Resp())
+    adapter, _stub, _fake = _adapter()
+    adapter._media_client = RelayMediaClient("https://conn.example", "gw1", "sec")
+    event = _make_event(["https://[::1/relay/media/x", "https://conn.example/relay/media/good"])
+    await adapter._localize_inbound_media(event)
+    bad, local = event.media_urls[0], Path(event.media_urls[1])
+    assert bad == "https://[::1/relay/media/x"  # not a re-host of ours: kept like any public URL
+    assert local.is_file()
+    local.unlink()

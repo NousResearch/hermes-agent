@@ -9,6 +9,7 @@ import pytest
 
 from agent.message_sanitization import (
     apply_reasoning_content_policy, reapply_reasoning_echo, reasoning_replay_route, rejected_reasoning_carriers,
+    rejected_reasoning_fields,
 )
 from agent.transports.chat_completions import ChatCompletionsTransport
 
@@ -184,47 +185,6 @@ def test_duplicate_field_rejection_strips_the_alias_and_keeps_reasoning_content(
     assert record_reasoning_field_rejection(agent, body, sent) == frozenset()  # already learned -> no loop
 
 
-def test_duplicate_field_rejection_drops_every_alias_the_message_carried():
-    """``reasoning_details`` rides the same alias path as ``reasoning``: an OpenRouter-format route
-    sends all three carriers, so the strip must drop both aliases and keep the field the schema reads.
-    (With only two carriers sent, ``{R, RD}`` and ``{R}`` are indistinguishable.)"""
-    from types import SimpleNamespace
-    from agent.message_sanitization import record_reasoning_field_rejection
-
-    agent = SimpleNamespace(provider="nous", model="z-ai/glm-5.3",
-                            base_url="https://inference-api.nousresearch.com/v1",
-                            api_mode="chat_completions", _reasoning_rejecting_routes={}, session_id=None)
-    sent = [{"role": "assistant", "content": "", "reasoning": "thought", "reasoning_content": "thought",
-             "reasoning_details": _DETAILS}]
-    body = ("litellm.BadRequestError: OpenAIException - Invalid JSON data: Failed to deserialize the JSON body "
-            "into the target type: messages[2]: duplicate field `reasoning_content`")
-    assert record_reasoning_field_rejection(agent, body, sent) == frozenset({"reasoning", "reasoning_details"})
-    route = reasoning_replay_route("chat_completions", agent.provider, agent.model, agent.base_url,
-                                   rejected=rejected_reasoning_carriers(agent))
-    assert route.carriers == {"reasoning_content"}
-    assert record_reasoning_field_rejection(agent, body, sent) == frozenset()  # already learned -> no loop
-
-
-@pytest.mark.parametrize("body", [
-    # an unrelated key is the duplicate; the carrier is only mentioned in passing (and only matches
-    # `_NAMED_FIELD_RES[R]`'s proximity heuristic)
-    "messages[1]: duplicate field `content`, reasoning is fine",
-    "messages[2]: duplicate field `x`, reasoning ok",
-])
-def test_duplicate_field_for_an_unrelated_key_learns_nothing(body):
-    """``duplicate field`` shares the phrase gate with the unknown-field wording, so a uniqueness
-    complaint about a key this request never sent must stay inert: no carrier is dropped (that would
-    400 the retry) and no retry is spent."""
-    from types import SimpleNamespace
-    from agent.message_sanitization import record_reasoning_field_rejection
-
-    agent = SimpleNamespace(provider="custom", model="qwen3-32b", base_url="http://vllm.local/v1",
-                            api_mode="chat_completions", _reasoning_rejecting_routes={}, session_id=None)
-    sent = [{"role": "assistant", "content": "", "reasoning": "thought", "reasoning_content": "thought"}]
-    assert record_reasoning_field_rejection(agent, body, sent) == frozenset()
-    assert agent._reasoning_rejecting_routes == {}
-
-
 def test_single_reasoning_field_error_learns_only_the_replayed_alias():
     """Flint's keyless alias-collision rejection needs the same one-retry recovery (#136486)."""
     gw = _agent("flint")
@@ -247,16 +207,26 @@ def test_single_reasoning_field_error_learns_only_the_replayed_alias():
     assert not rejected_reasoning_carriers(solo)
 
 
-def test_duplicate_field_for_the_only_carrier_sent_learns_nothing():
-    """Naming the non-goal: a route that sends ONLY ``reasoning_content`` and is told it is a duplicate
-    has no carrier left to drop, so nothing is learned and the turn still falls back. There is no way
-    to switch replay off for such a route — same gap as the linked issue, deliberately out of scope."""
-    from types import SimpleNamespace
-    from agent.message_sanitization import record_reasoning_field_rejection
+_PAIR = {"role": "assistant", "content": "", "reasoning": "t", "reasoning_content": "t"}
+_SERDE = "Failed to deserialize the JSON body into the target type: "
 
-    agent = SimpleNamespace(provider="custom", model="qwen3-32b", base_url="http://vllm.local/v1",
-                            api_mode="chat_completions", _reasoning_rejecting_routes={}, session_id=None)
-    sent = [{"role": "assistant", "content": "", "reasoning_content": "thought"}]
-    body = "messages[0]: duplicate field `reasoning_content`"
-    assert record_reasoning_field_rejection(agent, body, sent) == frozenset()
-    assert agent._reasoning_rejecting_routes == {}
+
+@pytest.mark.parametrize("body,sent,expected", [
+    # serde names whichever spelling its struct declares, with or without the message path (#136486)
+    (_SERDE + "duplicate field `reasoning_content` at line 1 column 259", [_PAIR], {"reasoning"}),
+    (_SERDE + "duplicate field `reasoning` at line 1 column 259", [_PAIR], {"reasoning"}),
+    (_SERDE + "messages[2]: duplicate field 'reasoning' at line 1 column 845", [_PAIR], {"reasoning"}),
+    # an OpenRouter-format route sends all three: both aliases go, the field the schema reads stays
+    (_SERDE + "messages[2]: duplicate field `reasoning_content`",
+     [{**_PAIR, "reasoning_details": _DETAILS}], {"reasoning", "reasoning_details"}),
+    # only aliases that rode next to reasoning_content in ONE message collide
+    ('{"error": "Use one reasoning field per message"}',
+     [{"role": "assistant", "reasoning_content": "t"}, {"role": "assistant", "reasoning": "t"}], set()),
+    # nothing left to drop: a route that sends only reasoning_content learns nothing (no retry)
+    (_SERDE + "messages[0]: duplicate field `reasoning_content`", [{"role": "assistant", "reasoning_content": "t"}], set()),
+    # the duplicate is not a carrier; reasoning is only mentioned in passing
+    ("messages[1]: duplicate field `content`, reasoning is fine", [_PAIR], set()),
+    ("messages[2]: duplicate field `x`, reasoning ok", [_PAIR], set()),
+])
+def test_alias_collision_keeps_reasoning_content_and_drops_only_colliding_aliases(body, sent, expected):
+    assert rejected_reasoning_fields(body, sent) == frozenset(expected)

@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
 
 import type { AutomationBlueprint } from '@/hermes'
+import { TRANSLATIONS } from '@/i18n/catalog'
 
-import { initialBlueprintValues } from './blueprints'
+import { initialBlueprintValues, localizeBlueprints } from './blueprints'
 
 function blueprint(fields: AutomationBlueprint['fields']): AutomationBlueprint {
   return {
@@ -101,5 +102,47 @@ describe('initialBlueprintValues', () => {
     )
 
     expect(values).toEqual({ deliver: 'telegram' })
+  })
+})
+
+describe('localizeBlueprints', () => {
+  const ru = TRANSLATIONS.ru.cron.blueprints
+
+  const morning: AutomationBlueprint = {
+    ...blueprint([
+      { name: 'time', type: 'time', label: 'What time?', default: '08:00', options: [], optional: false, help: 'h' },
+      {
+        name: 'deliver',
+        type: 'enum',
+        label: 'Where to deliver?',
+        default: 'origin',
+        options: ['origin', 'local'],
+        optional: false,
+        help: 'origin = …'
+      }
+    ]),
+    key: 'morning-brief',
+    title: 'Morning briefing'
+  }
+
+  it('renders a built-in blueprint in the catalog language without touching what gets scheduled', () => {
+    const [localized] = localizeBlueprints([morning], ru)
+
+    expect(localized.title).toBe(ru.catalog['morning-brief'].title)
+    expect(localized.description).toBe(ru.catalog['morning-brief'].description)
+    expect(localized.fields.map(field => field.label)).toEqual([
+      ru.sharedFields.time.label,
+      ru.sharedFields.deliver.label
+    ])
+    expect(localized.key).toBe('morning-brief')
+    expect(localized.fields.map(field => [field.name, field.default, field.options])).toEqual(
+      morning.fields.map(field => [field.name, field.default, field.options])
+    )
+  })
+
+  it('leaves plugin and unknown blueprints as the backend sent them', () => {
+    const plugin = { ...morning, key: 'acme:morning-brief', title: 'Acme briefing' }
+
+    expect(localizeBlueprints([plugin], ru)).toEqual([plugin])
   })
 })

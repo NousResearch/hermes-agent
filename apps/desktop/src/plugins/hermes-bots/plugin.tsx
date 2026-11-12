@@ -735,20 +735,29 @@ export default {
       }
     })
 
-    ctx.register({
-      id: 'new-agent',
-      area: PALETTE_AREA,
-      data: {
-        id: `${ID}.new-agent`,
-        label: 'New bot…',
-        keywords: ['bot', 'agent', 'profile', 'teammate', 'create'],
-        run: () => {
-          host.notify({
-            kind: 'info',
-            message: ctx.i18n.t('bot.createFirstHint')
-          })
+    // A palette row carries a finished label, so it re-registers when the
+    // language loads or changes (same as the kanban plugin's rows).
+    const registerNewBotRow = () =>
+      ctx.register({
+        id: 'new-agent',
+        area: PALETTE_AREA,
+        data: {
+          id: `${ID}.new-agent`,
+          label: `${ctx.i18n.t('bot.newTitle')}…`,
+          keywords: ['bot', 'agent', 'profile', 'teammate', 'create'],
+          run: () => {
+            host.notify({
+              kind: 'info',
+              message: ctx.i18n.t('bot.createFirstHint')
+            })
+          }
         }
-      }
+      })
+
+    let disposeNewBotRow = registerNewBotRow()
+    ctx.i18n.onLocaleChange(() => {
+      disposeNewBotRow()
+      disposeNewBotRow = registerNewBotRow()
     })
 
     // @-mention middleware: "@<bot> do the thing" in any chat gets an

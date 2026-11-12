@@ -60,4 +60,7 @@ export interface OnboardingTranslations {
   change: string
   startChatting: string
   docs: (provider: string) => string
+  /** Descriptive provider titles keyed by provider id (`anthropic`, `openai-codex`…);
+   *  bare brand names (Nous Portal, xAI Grok) stay in `PROVIDER_DISPLAY_NAMES`. */
+  providerNames: Record<string, string>
 }

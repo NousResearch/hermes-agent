@@ -65,6 +65,8 @@ export const ruOverrides = {
     formatJson: 'Форматировать JSON',
     free: 'Бесплатно',
     loading: 'Загрузка…',
+    loadingStatus: 'Загрузка',
+    suggestions: 'Подсказки',
     notSet: 'Не задано',
     refresh: 'Обновить',
     remove: 'Убрать',
@@ -322,7 +324,16 @@ export const ruOverrides = {
       'composer.slash': 'Палитра slash-команд',
       'composer.help': 'Быстрая справка',
       'composer.history': 'Переключить поповер / историю',
-      'composer.cancel': 'Закрыть поповер · отменить запуск'
+      'composer.cancel': 'Закрыть поповер · отменить запуск',
+      'layout.editMode': 'Включить / выключить правку раскладки',
+      'layout.reset': 'Сбросить раскладку',
+      'plugins.reload': 'Перезагрузить плагины приложения',
+      'view.simpleMode': 'Простой режим',
+      'keybinds.panel': 'Горячие клавиши',
+      'profile.export': 'Экспортировать профиль…',
+      'profile.import': 'Импортировать профиль…',
+      'logs.toggle': 'Показать / скрыть журналы',
+      'session.yolo': 'Включить / выключить YOLO'
     }
   },
   findInPage: {
@@ -459,7 +470,8 @@ export const ruOverrides = {
       safety: 'Безопасность',
       memory: 'Память и контекст',
       voice: 'Голос',
-      advanced: 'Дополнительно'
+      advanced: 'Дополнительно',
+      browser: 'Браузер'
     },
     searchPlaceholder: {
       about: 'О Hermes Desktop',
@@ -693,7 +705,8 @@ export const ruOverrides = {
       },
       voice: {
         maxRecordingSeconds: 'Макс. длительность записи',
-        autoTts: 'Зачитывать ответы вслух'
+        autoTts: 'Зачитывать ответы вслух',
+        clientDirect: 'Прямое подключение к голосовым провайдерам'
       },
       stt: {
         enabled: 'Распознавание речи',
@@ -847,7 +860,8 @@ export const ruOverrides = {
       },
       memory: {
         memoryEnabled: 'Сохранять долговременные воспоминания, которые могут помочь будущим сеансам.',
-        userProfileEnabled: 'Поддерживать компактный профиль предпочтений пользователя.'
+        userProfileEnabled: 'Поддерживать компактный профиль предпочтений пользователя.',
+        provider: 'Плагин провайдера памяти'
       },
       context: {
         engine: 'Стратегия управления длинными диалогами у предела контекста.'
@@ -863,7 +877,9 @@ export const ruOverrides = {
         }
       },
       voice: {
-        autoTts: 'Автоматически зачитывать ответы ассистента.'
+        autoTts: 'Автоматически зачитывать ответы ассистента.',
+        clientDirect:
+          'Приложение само обращается к провайдерам распознавания и синтеза речи, не передавая звук через шлюз. Провайдеры, которые работают только на машине шлюза (локальный Whisper, Edge TTS, командные провайдеры), всегда идут через шлюз.'
       },
       tts: {
         xai: {
@@ -893,6 +909,17 @@ export const ruOverrides = {
           'Когда Hermes обновляет себя из приложения (без запроса в терминале), сохранять локальные правки исходников (stash) или выбрасывать (discard). Обновления из терминала всегда спрашивают.'
       }
     }),
+    optionLabels: {
+      'agent.image_input_mode': { auto: 'Авто', native: 'Напрямую', text: 'Текстом' },
+      'agent.service_tier': { normal: 'Обычный', fast: 'Быстрый', auto: 'Авто', cold: 'Холодный старт' },
+      'approvals.mode': { manual: 'Ручной', smart: 'Умный', off: 'Выключен' },
+      'code_execution.mode': { project: 'В пределах проекта', strict: 'Строгий' },
+      'context.engine': { compressor: 'Компрессор', default: 'По умолчанию', custom: 'Свой' },
+      'stt.provider': { local: 'Локальный' },
+      'terminal.backend': { local: 'Локальный' },
+      'updates.non_interactive_local_changes': { stash: 'Сохранять (stash)', discard: 'Выбрасывать (discard)' },
+      'voice.voice_chat_mode': { chained: 'Цепочка (chained)', 'gpt-live': 'GPT-Live' }
+    },
     about: { updates: 'Обновления', channel: ruUpdateChannel },
     config: {
       minimizeToTrayTitle: 'Сворачивать в трей',
@@ -2365,7 +2392,172 @@ export const ruOverrides = {
       loading: 'Загрузка шаблонов...',
       failedLoad: 'Не удалось загрузить шаблоны',
       emptyTitle: 'Шаблоны недоступны',
-      emptyDesc: 'На этом бэкенде нет шаблонов автоматизации.'
+      emptyDesc: 'На этом бэкенде нет шаблонов автоматизации.',
+      catalog: {
+        'morning-brief': {
+          title: 'Утренняя сводка',
+          description:
+            'Короткая ежедневная сводка: календарь на сегодня, погода и всё срочное, что вас ждёт.'
+        },
+        'important-mail': {
+          title: 'Важная почта',
+          description:
+            'Периодически проверяет почту и пишет вам ТОЛЬКО о письмах, которые действительно требуют внимания.',
+          fields: {
+            interval_min: { label: 'Как часто?', help: 'минут между проверками' },
+            criteria: { label: 'Сообщать, только если письмо…' }
+          }
+        },
+        'weekly-review': {
+          title: 'Итоги недели',
+          description:
+            'Еженедельная сводка: что сделано, что ещё открыто и что впереди.',
+          fields: {
+            day: { label: 'В какой день?' }
+          }
+        },
+        'workday-start': {
+          title: 'Начало рабочего дня',
+          description:
+            'Напоминание по будням: ваша повестка и главные приоритеты.'
+        },
+        'custom-reminder': {
+          title: 'Своё напоминание',
+          description:
+            'Повторяющееся напоминание вашими словами и по вашему расписанию.',
+          fields: {
+            what: { label: 'Напомнить мне…' },
+            recurrence: { label: 'Повторять' }
+          }
+        },
+        'evening-winddown': {
+          title: 'Завершение дня',
+          description:
+            'Вечерняя проверка: календарь на завтра одним взглядом и то, что стоит подготовить с вечера.'
+        },
+        'news-digest': {
+          title: 'Дайджест новостей по теме',
+          description:
+            'Регулярный дайджест по важной для вас теме — без повторов уже присланного, только действительно новое.',
+          fields: {
+            topic: { label: 'Какая тема?', help: 'предмет, продукт, человек или поисковая фраза' },
+            recurrence: { label: 'Повторять' },
+            count: { label: 'Сколько пунктов?' }
+          }
+        },
+        'bill-renewal-watch': {
+          title: 'Счета и продления',
+          description:
+            'Предупреждение перед регулярным платежом, продлением подписки или сроком оплаты — чтобы ничего не списалось неожиданно.',
+          fields: {
+            what: { label: 'Что нужно оплатить?' },
+            recurrence: { label: 'Повторять' }
+          }
+        },
+        'price-watch': {
+          title: 'Цена и наличие',
+          description:
+            'Следит за конкретным товаром, рейсом, отелем или объявлением и сообщает, когда выполнено ваше условие по цене или наличию.',
+          fields: {
+            item: { label: 'За чем именно следить?', help: 'ссылка или точное описание — вариант, даты, продавец' },
+            condition: { label: 'Сообщить, когда…', help: 'пороговая цена (укажите валюту), наличие или изменение условий' },
+            interval_h: { label: 'Как часто?', help: 'часов между проверками — не перегружайте сайты запросами' }
+          }
+        },
+        'competitor-watch': {
+          title: 'Новости конкурентов',
+          description:
+            'Следит за важными новостями выбранных компаний — запуски, цены, инвестиции, отчётность — и присылает дайджест со ссылками на источники.',
+          fields: {
+            companies: { label: 'Какие компании?', help: 'официальные названия и домены; другие варианты названий помогают убирать повторы' },
+            categories: { label: 'Какие события важны?' },
+            recurrence: { label: 'Повторять' }
+          }
+        },
+        'habit-checkin': {
+          title: 'Проверка привычки',
+          description:
+            'Регулярное напоминание, чтобы держать привычку и отмечать, получилось ли.',
+          fields: {
+            habit: { label: 'Какая привычка?' },
+            recurrence: { label: 'Повторять' }
+          }
+        },
+        'hydration-move': {
+          title: 'Вода и движение',
+          description:
+            'Напоминания в течение дня: выпить воды, встать и размяться.',
+          fields: {
+            interval_hours: { label: 'Как часто?', help: 'часов между напоминаниями' },
+            start_hour: { label: 'Час начала', help: 'первый час активного периода (24 ч)' },
+            end_hour: { label: 'Час окончания', help: 'последний час активного периода (24 ч)' }
+          }
+        },
+        'meal-plan': {
+          title: 'Меню на неделю',
+          description:
+            'Меню на неделю и общий список покупок с учётом вашего питания и времени на готовку.',
+          fields: {
+            diet: { label: 'Питание?' },
+            meals: { label: 'Сколько приёмов пищи в день?' },
+            effort: { label: 'Сложность готовки?' },
+            day: { label: 'В какой день?' }
+          }
+        },
+        'learn-daily': {
+          title: 'Урок дня',
+          description:
+            'Один короткий урок в день по теме, которую вы хотите изучить, — шаг за шагом.',
+          fields: {
+            topic: { label: 'Что изучать?' },
+            recurrence: { label: 'Повторять' }
+          }
+        },
+        'gratitude-journal': {
+          title: 'Благодарность и рефлексия',
+          description:
+            'Мягкое вечернее напоминание вспомнить день и отметить, что получилось.',
+          fields: {
+            recurrence: { label: 'Повторять' }
+          }
+        },
+        'on-this-day': {
+          title: 'Открытие дня',
+          description:
+            'Ежедневная порция любопытного: заметное историческое событие, факт или слово дня.',
+          fields: {
+            flavor: { label: 'Что именно?' }
+          }
+        }
+      },
+      sharedFields: {
+        time: { label: 'В какое время?', help: 'местное время, 24 ч, например 08:00' },
+        deliver: { label: 'Куда доставить?' }
+      },
+      optionLabels: {
+        everyday: 'каждый день',
+        weekdays: 'по будням',
+        weekends: 'по выходным',
+        sunday: 'воскресенье',
+        monday: 'понедельник',
+        friday: 'пятница',
+        saturday: 'суббота',
+        'no restrictions': 'без ограничений',
+        vegetarian: 'вегетарианское',
+        vegan: 'веганское',
+        'high-protein': 'высокобелковое',
+        'low-carb': 'низкоуглеводное',
+        'dinner only': 'только ужин',
+        'lunch and dinner': 'обед и ужин',
+        'all three': 'все три',
+        quick: 'быстро',
+        medium: 'средне',
+        ambitious: 'с размахом',
+        'on this day in history': 'этот день в истории',
+        'word of the day': 'слово дня',
+        'science fact': 'научный факт',
+        'quote of the day': 'цитата дня'
+      }
     }
   },
   artifacts: {
@@ -2564,8 +2756,24 @@ export const ruOverrides = {
     },
     markAllRead: 'Отметить все как прочитанные'
   },
+  quickEntry: {
+    inputLabel: 'Быстрый ввод',
+    placeholder: 'Спросите Hermes…',
+    notConnected: 'Нет подключения — откройте Hermes, чтобы переподключиться',
+    sendTo: 'Отправить в',
+    targetLabel: 'Сеанс-получатель',
+    currentChat: 'Текущий чат',
+    deliveryFailed: 'Hermes не смог доставить запрос.',
+    quickEntryFailed: 'Быстрый ввод не смог доставить запрос.',
+    notConfirmed: 'Hermes ещё не подтвердил запрос — возможно, он всё же будет доставлен.',
+    notAccepted: 'Запрос не принят.',
+    wrongSession: 'Запрос принял не тот сеанс, которому он был адресован.',
+    acceptanceUnknown: 'Запрос отправлен в выбранный сеанс, но неизвестно, принял ли его бэкенд.',
+    submitUnavailable: 'Отправка в выбранный сеанс недоступна.'
+  },
   composer: {
     message: 'Сообщение',
+    addContext: 'Добавить контекст',
     wakingProfile: profile => `Пробуждаем ${profile}…`,
     placeholderStarting: 'Запуск Hermes...',
     placeholderReconnecting: 'Переподключение к Hermes…',
@@ -2944,6 +3152,17 @@ export const ruOverrides = {
     discontinuedBody:
       'Эта сборка Hermes больше не поддерживается и может перестать работать — удалите её. Ваши данные останутся на диске.',
     channels: { stable: 'Стабильный', canary: 'Тестовый' },
+    versionDetailsSource: {
+      build: 'Сборка',
+      ci: 'CI',
+      'commit-build': 'Сборка из коммита',
+      docker: 'Docker',
+      fallback: 'Резервный вариант',
+      git: 'Git',
+      local: 'Локальная',
+      nix: 'Nix',
+      unknown: 'Неизвестно'
+    },
     bundleSwapPending: 'Перезапустите, чтобы завершить обновление',
     bundleSwapPendingDesc:
       'Обновлённое приложение уже установлено — достаточно перезапустить Hermes, чтобы загрузить его. Чаты и настройки не пострадают.',
@@ -3220,6 +3439,16 @@ export const ruOverrides = {
       xhigh: 'Очень высокое',
       max: 'Максимум',
       ultra: 'Ультра',
+      effortShort: {
+        none: 'Выкл',
+        minimal: 'Мин.',
+        low: 'Низк.',
+        medium: 'Сред.',
+        high: 'Выс.',
+        xhigh: 'Оч. выс.',
+        max: 'Макс.',
+        ultra: 'Ультра'
+      },
       sendsOnRoute: (level: string) => `на этом маршруте отправляется ${level}`,
       updateFailed: 'Не удалось обновить опцию модели',
       fastFailed: 'Не удалось обновить быстрый режим',
@@ -3580,6 +3809,7 @@ export const ruOverrides = {
       errorRateLimitResetBody: (provider, time) => `Вы достигли лимита запросов ${provider}. Он сбросится в ${time}.`,
       loadingSession: 'Загрузка сеанса',
       showEarlier: 'Показать ранние сообщения',
+      timelineLabel: 'Лента разговора',
       loadingResponse: 'Hermes загружает ответ',
       resumeWhenBackgroundDone: count =>
         count === 1

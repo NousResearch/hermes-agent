@@ -1,6 +1,8 @@
 import { DEFAULT_REASONING_EFFORT, REASONING_EFFORT_VALUES } from '@hermes/shared'
 import { describe, expect, it } from 'vitest'
 
+import { TRANSLATIONS } from '@/i18n/catalog'
+
 import {
   isThinkingEnabled,
   reasoningEffortClamp,
@@ -45,5 +47,15 @@ describe('reasoning-effort', () => {
     // Off selects nothing on the scale.
     expect(resolveReasoningEffort('none')).toBe('')
     expect(resolveReasoningEffort('bogus')).toBe(DEFAULT_REASONING_EFFORT)
+  })
+})
+
+describe('reasoningEffortLabel copy', () => {
+  it('reads the compact labels from the catalog it is given', () => {
+    const ru = TRANSLATIONS.ru.shell.modelOptions.effortShort
+
+    expect(reasoningEffortLabel('medium', undefined, ru)).toBe(ru.medium)
+    expect(reasoningEffortLabel('ultra', 'max', ru)).toBe(`${ru.ultra}→${ru.max}`)
+    expect(ru.medium).not.toBe(TRANSLATIONS.en.shell.modelOptions.effortShort.medium)
   })
 })

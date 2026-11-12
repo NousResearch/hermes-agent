@@ -4,6 +4,7 @@ import * as React from 'react'
 import { Codicon } from '@/components/ui/codicon'
 import { usePointerQuiet } from '@/components/ui/keyboard-first'
 import { menuItemClass } from '@/components/ui/menu'
+import { useI18n } from '@/i18n'
 import { SearchIcon } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
@@ -82,8 +83,10 @@ function CommandInput({ className, right, ...props }: CommandInputProps) {
   )
 }
 
-function CommandList({ className, ...props }: React.ComponentProps<typeof CommandPrimitive.List>) {
+function CommandList({ className, label, ...props }: React.ComponentProps<typeof CommandPrimitive.List>) {
   const variant = React.useContext(CommandVariantContext)
+  // cmdk names every list "Suggestions" unless told otherwise.
+  const suggestions = useI18n().t.common.suggestions
   // cmdk selects on pointer-enter, so a list that opens under a parked cursor —
   // or re-flows under one as the query narrows — hands the selection to
   // whatever row slid beneath the mouse, and Enter commits THAT. Inert until
@@ -99,6 +102,7 @@ function CommandList({ className, ...props }: React.ComponentProps<typeof Comman
         className
       )}
       data-slot="command-list"
+      label={label ?? suggestions}
       {...props}
     />
   )

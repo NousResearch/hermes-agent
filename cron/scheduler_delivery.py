@@ -766,8 +766,13 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *,
             try:
                 owner = find_canonical_live_owner(home)
             except ValueError:  # the target's gateway is down or starting: not a disposition
+                # SINGLE PAYLOAD CONVENTION (cron/bot_chat_legacy.py): defer stores the EXACT
+                # final inbound message, wrapped exactly once HERE. _dispose never re-wraps a
+                # stamped record -- wrapping at drain time too is what made the CRON lane's
+                # parked reports and the kanban lane's already-formatted handoffs collide on
+                # the same delivery id (admission_conflict forever).
                 from cron.bot_chat_legacy import defer
-                defer(key, job, content, home, for_failure=for_failure)
+                defer(key, job, message, home, for_failure=for_failure)
                 job.setdefault("_bot_chat_delivery_receipts", {})[target] = {"status": "queued", "delivery_id": key}
                 return f"{target} queued (receipt {key}): target profile not running; admitted once it is"
             if owner is None:

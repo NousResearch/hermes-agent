@@ -523,6 +523,12 @@ _CONTENT_NORMALIZERS: dict[Any, Callable[[dict[str, Any]], _Normalized]] = {
 _BINARY_CONTENT_TYPES = {"attachment", "voice", "group"}  # may decode/cache media bytes → run off the event loop
 
 
+def _reply_inner(content: dict[str, Any]) -> dict[str, Any]:
+    """The user's own payload of a threaded reply (``{type: "reply", content}``), else *content*."""
+    inner = content.get("content") if content.get("type") == "reply" else None
+    return inner if isinstance(inner, dict) else content
+
+
 def _carries_voice(content: dict[str, Any]) -> bool:
     """A voice note, alone or inside a ``group`` envelope: only speech can hold a spoken wake word."""
     if content.get("type") == "group":
@@ -841,7 +847,7 @@ class PhotonAdapter(BasePlatformAdapter):
         # A group voice note may wait on gate-time STT: run it off this single reader, FIFO per chat.
         chat, transcribes = self._gate_stt_chat(event)
         work = chat_ordered_work(self)
-        content = event.get("content") or {}
+        content = _reply_inner(event.get("content") or {})  # a threaded /stop is still an escape hatch
         command = content.get("type") == "text" and bypasses_chat_order(content.get("text"))
         if transcribes or (chat and work.busy(chat) and not command):
             work.submit(chat, lambda: self._dispatch_inbound(event), transcribes=transcribes)
@@ -854,9 +860,7 @@ class PhotonAdapter(BasePlatformAdapter):
     def _gate_stt_chat(self, event: dict[str, Any]) -> tuple[str, bool]:
         """``(space id, True when the spoken-wake-word gate will transcribe it)``."""
         space = event.get("space") or {}
-        content = event.get("content") or {}
-        if content.get("type") == "reply" and isinstance(content.get("content"), dict):
-            content = content["content"]
+        content = _reply_inner(event.get("content") or {})
         return space.get("id") or "", bool(
             space.get("type") == "group" and self.require_mention and _carries_voice(content)
             and voice_mention_gate_enabled(self.config.extra))

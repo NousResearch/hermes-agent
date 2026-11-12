@@ -2,7 +2,7 @@ name: taster
 repo: https://github.com/Yonkoo11/hermes-taster
 subdir: taster
 sha: eb28faad246267c59b4f9e1ed145ec23ac3e4026
-description: "Runs another Hermes plugin once in a locked box (fake home, canary wallet files, network denied and logged) and reports what it did versus its manifest. Disclosure: spawns sandbox-exec and a Python child process, reads the plugin folder you point it at and the Hermes and Python install folders, and makes no network calls, stores no credentials and runs nothing in the background. macOS only."
+description: "Runs another Hermes plugin once in a locked box (fake home, canary wallet files, network denied and logged) and reports what it did versus its manifest. Disclosure — /taster runs the plugin folder you point it at as real code on this machine, once, inside macOS sandbox-exec (network denied, writes only in a throwaway fake home, reads of your home folder denied); the box does not block reads elsewhere on disk or macOS system services such as the keychain, and the report shows what the tested plugin printed, so it is a tripwire, not a safety guarantee. Taster itself makes no network calls, stores no credentials and runs nothing in the background. macOS only."
 maintainer: Yonkoo11
 tier: community
 category: tools

@@ -12,6 +12,9 @@ Dockerfile  text eol=lf
 *.dockerfile text eol=lf
 docker/entrypoint.sh text eol=lf
 
+# Every file git detects as text is stored with LF; the rules below also pin the checkout.
+* text=auto
+
 # Enforce LF for all source/text files. Windows editors and tools default to
 # CRLF; without normalization a Windows contributor's edit turns into a
 # whole-file phantom diff (every line "changed" by its ending), breaks

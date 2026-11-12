@@ -1,0 +1,24 @@
+name: deja-fix
+title: Deja Fix
+repo: https://github.com/salch-cred/deja-fix
+sha: f31c1a317bd407ac6f226b203abb0881b901450e
+description: >-
+  Stops the agent from putting back code that already failed. Every version of
+  every file it writes in a session is fingerprinted and judged by the next test
+  or build run, or by the user saying "still broken". An edit that would recreate
+  a failed version is stopped once, naming when it failed and why; a second try
+  goes through. Catches the same code reached by different edits, which Hermes'
+  identical-call guard can't. /deja shows what is tracked. No model calls.
+
+maintainer: salch-cred
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/salch-cred/deja-fix
+version: "0.1.0"
+
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_tool_call, post_tool_call, pre_llm_call]
+  provides_middleware: []
+  requires_env: []

@@ -552,15 +552,16 @@ def _validate_child_output_schema(
     _output_schema = getattr(child, "_delegate_output_schema", None)
     if not isinstance(_output_schema, dict):
         return _SchemaOutcome(_output_schema, None, [], 0)
-    from tools.delegation_output_schema import build_retry_message, validate_output
+    from tools.delegation_output_schema import append_output_contract, build_retry_message, validate_output
     _first_text = result.get("final_response") or ""
     _schema_valid, _schema_errors = validate_output(_first_text, _output_schema)
     if _schema_valid or not _first_text.strip() or result.get("interrupted", False):
         return _SchemaOutcome(_output_schema, _schema_valid, _schema_errors, 0)
 
-    # Exactly one retry turn, carrying the validation errors verbatim (no
-    # schema re-paste — the child already holds the contract in its context).
+    # Exactly one retry turn, continuing the child's conversation. The contract is pasted again:
+    # it lives in the first user turn, which a compaction of a long first turn summarises away.
     _retry_result = None
+    _history = result.get("messages") if isinstance(result.get("messages"), list) else None
     try:
         # Same identity as the main child turn: this runs on the parent worker's thread, and an
         # unmarked turn is misread as the dispatcher-owned worker by every HERMES_KANBAN_* gate.
@@ -568,8 +569,9 @@ def _validate_child_output_schema(
         from tools.delegate_tool_routes import child_profile_scope
         with child_profile_scope(child), delegated_child_context(str(getattr(child, "session_id", "") or "")):
             _retry_result = child.run_conversation(
-                user_message=build_retry_message(_schema_errors), task_id=child_task_id,
-                stream_callback=relay_child_text,
+                user_message=append_output_contract(build_retry_message(_schema_errors), _output_schema),
+                task_id=child_task_id,
+                stream_callback=relay_child_text, conversation_history=_history,
             )
     except Exception as _retry_exc:
         logger.warning("Subagent %d schema-retry turn failed: %s", task_index, _retry_exc)
@@ -582,8 +584,13 @@ def _validate_child_output_schema(
         except (TypeError, ValueError):
             pass
         _retry_messages = _retry_result.get("messages")
-        if isinstance(_retry_messages, list) and isinstance(result.get("messages"), list):
-            result["messages"] = result["messages"] + _retry_messages
+        if isinstance(_retry_messages, list) and _history is not None:
+            # A compaction inside the retry rewrites the history it was given: keep the first turn whole.
+            # The loop exports where the correction turn starts; a steer inside it adds a later user row.
+            _start = _retry_result.get("current_turn_user_idx")
+            if not isinstance(_start, int):
+                _start = max((i for i, m in enumerate(_retry_messages) if m.get("role") == "user"), default=0)
+            result["messages"] = _history + _retry_messages[_start:]
         _schema_valid, _schema_errors = validate_output(_retry_text, _output_schema)
     return _SchemaOutcome(_output_schema, _schema_valid, _schema_errors, 1)
 
@@ -934,7 +941,9 @@ class _ChildRun:
         worker_thread_holder: dict[str, Optional[threading.Thread]] = {"t": None}
         # Resolved after seed_workspace so a multimodal goal's text part carries the worktree note too.
         _images = list(getattr(child, "_delegate_images", None) or [])
-        user_message: Any = _build_child_goal_message(self.goal, _images, child) if _images else self.goal
+        from tools.delegate_tool_progress import child_task_message
+        task_text = child_task_message(self.goal, getattr(child, "_delegate_context", None))
+        user_message: Any = _build_child_goal_message(task_text, _images, child) if _images else task_text
 
         def _run_with_thread_capture():
             worker_thread_holder["t"] = threading.current_thread()

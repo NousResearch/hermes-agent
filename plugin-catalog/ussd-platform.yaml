@@ -1,0 +1,27 @@
+name: ussd-platform
+repo: https://github.com/GodlyDeveloper1/hermes
+sha: f5f69e215dad54c06d2977320a080ab1c68f10ca
+title: USSD
+description: "Talk to Hermes from any phone by dialling a USSD short code: no app, no data plan, no smartphone. A gateway platform for Africa's Talking-style USSD callbacks: replies are paged into 160-character keypad screens, exec approvals become numbered menus whose choices appear only after the last page of the command, answers that outlive the session wait in an inbox or arrive by SMS, and a dropped call resumes on the page it left. Ships a keypad-phone simulator served to localhost only. Disclosure — runs an HTTP callback server on 127.0.0.1:8788 while the gateway runs (the user exposes it through their own tunnel); callbacks are authenticated by a 16+ character secret in the URL path because USSD gateways do not sign requests; only when AFRICASTALKING_USERNAME and AFRICASTALKING_API_KEY are set, message text and the recipient's number go to api.africastalking.com (or its sandbox) to send SMS; USSD and SMS are readable by the mobile operator and aggregator; inboxes are in memory only; no telemetry, no shell commands, no self-update."
+maintainer: GodlyDeveloper1
+tier: community
+category: platform
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/GodlyDeveloper1/hermes#readme
+version: "1.0.0"
+image: https://raw.githubusercontent.com/GodlyDeveloper1/hermes/f5f69e215dad54c06d2977320a080ab1c68f10ca/docs/media/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/GodlyDeveloper1/hermes/f5f69e215dad54c06d2977320a080ab1c68f10ca/docs/media/01-home.png
+  - https://raw.githubusercontent.com/GodlyDeveloper1/hermes/f5f69e215dad54c06d2977320a080ab1c68f10ca/docs/media/02-reply.png
+  - https://raw.githubusercontent.com/GodlyDeveloper1/hermes/f5f69e215dad54c06d2977320a080ab1c68f10ca/docs/media/03-approval.png
+  - https://raw.githubusercontent.com/GodlyDeveloper1/hermes/f5f69e215dad54c06d2977320a080ab1c68f10ca/docs/media/04-working.png
+  - https://raw.githubusercontent.com/GodlyDeveloper1/hermes/f5f69e215dad54c06d2977320a080ab1c68f10ca/docs/media/05-sms.png
+platforms: []
+known_issues:
+  - Real handsets need a USSD short code from Africa's Talking or another aggregator; the built-in simulator and the Africa's Talking sandbox need neither.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - USSD_WEBHOOK_SECRET

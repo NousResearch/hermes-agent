@@ -634,3 +634,41 @@ class TestCardLifecycle:
 # ---------------------------------------------------------------------------
 # AI Card Tests
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Media: download-code precedence
+# ---------------------------------------------------------------------------
+
+class TestMediaDownloadCodes:
+
+    @pytest.mark.asyncio
+    async def test_prefers_v1_download_code_and_stops_after_success(self, monkeypatch):
+        """A richText picture carries two codes; the legacy one answers unknownError 500.
+
+        Resolve the v1 ``downloadCode`` first and stop at the first success: fanning out to every
+        candidate loses the message whenever the legacy code is in the batch.
+        """
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        called: list[str] = []
+
+        async def _sdk_call(method, request, headers_cls, token):
+            called.append(request.download_code)
+            return SimpleNamespace(body=SimpleNamespace(download_url="https://example.test/f.png"))
+
+        monkeypatch.setattr(adapter, "_sdk_call", _sdk_call)
+        monkeypatch.setattr(adapter, "_get_access_token", AsyncMock(return_value="tok"))
+        monkeypatch.setattr(adapter, "_cache_media", AsyncMock(return_value="/tmp/cached.png"))
+        adapter._robot_sdk = SimpleNamespace(robot_message_file_download_with_options_async=object())
+
+        item = {"pictureDownloadCode": "legacy", "downloadCode": "v1"}
+        message = SimpleNamespace(
+            message_type="richText", robot_code="robot",
+            rich_text_content=SimpleNamespace(rich_text_list=[item]),
+        )
+
+        await adapter._resolve_media_codes(message)
+
+        assert called == ["v1"], "only the v1 code may be requested"
+        assert item["downloadCode"] == "/tmp/cached.png"

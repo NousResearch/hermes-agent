@@ -597,19 +597,19 @@ export function useTerminalSession({
       return
     }
 
-    return $terminalInjection.subscribe(command => {
+    return $terminalInjection.subscribe(injection => {
       const sessionId = sessionIdRef.current
 
-      if (!command || !sessionId) {
+      if (!injection || !sessionId || (injection.terminalId && injection.terminalId !== id)) {
         return
       }
 
       hasSessionActivityRef.current = true
-      void window.hermesDesktop?.terminal?.write(sessionId, `${command}\r`)
+      void window.hermesDesktop?.terminal?.write(sessionId, `${injection.command}\r`)
       $terminalInjection.set(null)
       termRef.current?.focus()
     })
-  }, [active, status])
+  }, [active, id, status])
 
   return {
     addSelectionToChat,

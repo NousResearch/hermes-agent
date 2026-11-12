@@ -661,6 +661,49 @@ and its siblings; the pet-wallet row uses the [pet bubble](#pet-bubble) door):
 `sessionId` in the table is the id the plugin's UI is bound to; for a composer
 slot render it is `host.state.focusedSessionId.get()`.
 
+### Terminal pane — `host.terminal` {#terminal-pane}
+
+The one terminal verb a plugin gets is the one the app already performs for the
+user: resume a Hermes session in the TUI — here in the **in-app terminal pane**
+rather than the external emulator "Open in terminal" hands it to. That is enough
+for a chat ⇄ TUI view toggle (the Ghostex gesture) without widening the trust
+model: there is deliberately no "type this into the user's shell" door, for the
+same reason `ctx.runAction` refuses the terminal actions.
+
+```js
+register(ctx) {
+  ctx.register({
+    id: 'tui',
+    area: PALETTE_AREA,
+    data: {
+      id: 'tui-view.open',
+      label: 'Switch to TUI',
+      run: () => {
+        const id = host.state.focusedStoredSessionId.get()
+        const result = id && host.terminal?.openSession(id, { profile: host.state.focusedSessionProfile.get() })
+
+        if (!result?.ok) host.notify({ kind: 'warning', message: result?.error ?? 'No session is focused.' })
+      }
+    }
+  })
+}
+```
+
+`openSession` opens a fresh tab on the gateway picked in Sessions (This device,
+or an SSH gateway — the shell then runs on that host, where the session lives),
+titles it `TUI`, expands the terminal pane, and queues
+`hermes [--profile <p>] --tui --resume <id>` for that tab; the command is echoed in
+the terminal like anything the user types. It never throws: `reason:
+'no-shell'` means the active gateway is URL/token or cloud (its sessions are not
+resumable from a shell this window can open — add the host as an SSH gateway),
+`'invalid-session'` means the id is unusable. `hermes` resolves through the
+interactive shell's own PATH. `setTakeover(false)` collapses the pane back to
+its rail without killing the TUI; `takeover` is the live state for a chip.
+`closeSession(terminalId)` closes a tab `openSession` returned — the way to
+restart the TUI after the chat view moved the session on (the TUI process reads
+the transcript once at resume) — and refuses any tab the door did not open.
+Feature-detect on older hosts: `host.terminal?.openSession`.
+
 ### Session rows — decorations + the session list API
 
 `SESSION_ROW_AREAS` (`leading`, `trailing`) let a plugin decorate sidebar
@@ -1452,6 +1495,13 @@ host.sessions.pin(storedSessionId, pinned?, index?)  // pin/unpin (default pinne
 host.sessions.reorder(ids)                 // replace the manual Recents order (what a drag persists); [] resets
 host.sessions.reorderPinned(ids)           // permute the Pinned section (the pinned drag path)
 host.sessions.setColor(storedSessionId, color | null)  // per-session colour override; null clears
+host.terminal.openSession(storedSessionId, { profile?, cwd?, title? })  // resume the session in `hermes --tui` inside a
+                                           //   fresh terminal tab on the active gateway and take the pane over;
+                                           //   result-shaped ({ ok, terminalId, command } | { ok: false, reason })
+host.terminal.canOpenSession()             // false on a URL/token or cloud gateway (no shell on the session's host)
+host.terminal.closeSession(terminalId)     // close a tab openSession returned (restart the TUI); refuses any other tab
+host.terminal.setTakeover(active)          // expand the terminal pane (true) or collapse it to its rail (false); PTYs live on
+host.terminal.takeover                     // ReadableAtom<boolean> — the pane's live takeover state, for a mirroring chip
 host.skills.list(profile?)                 // every skill for the scope (Capabilities endpoints)
 host.skills.setEnabled(name, on, profile?)  // enable/disable a skill — the Capabilities toggle
 host.toolsets.list(profile?)               // toolsets + enabled state
@@ -2484,7 +2534,7 @@ pipeline as a trust boundary.
 
 | Category | Exports |
 |----------|---------|
-| Host | `host` (`.state.*`, `.settings`, `.notify`, `.notifyError`, `.navigate`, `.onEvent`, `.logs`, `.status`, `.restartGateway`, `.request`, `.composer`, `.spellcheck`, `.sessions`, `.skills`, `.toolsets`, `.profiles`, `.pluginDecisions`) |
+| Host | `host` (`.state.*`, `.settings`, `.notify`, `.notifyError`, `.navigate`, `.onEvent`, `.logs`, `.status`, `.restartGateway`, `.request`, `.composer`, `.terminal`, `.spellcheck`, `.sessions`, `.skills`, `.toolsets`, `.profiles`, `.pluginDecisions`) |
 | Plugin contract | `HermesPlugin`, `PluginContext`, `PluginContribution`, `PluginStorage`, `PluginFiles`, `PluginFolder`, `PluginFileEntry`, `PluginFilesResult`, `PluginOs`, `PluginPet`, `PetSayOptions`, `PetMessageTone`, `PluginAppActionId`, `PluginAppActionInfo`, `PluginRunActionResult`, `PLUGIN_APP_ACTIONS`, `PluginRestOptions`, `PluginNativeNotificationInput`, `PluginNotificationAction`, `HermesOpenTarget`, `Contribution` |
 | Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `WORKSPACE_PAGE_HEADER_AREA`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS`, `MODEL_MENU_ROW_AREA`, `KANBAN_CARD_AREAS`, `SESSION_ROW_AREAS`, `SIDEBAR_NAV_PREFS_AREA`, `APPEARANCE_AREAS`, `SETTINGS_PLUGINS_AREA` |
 | Area payloads | `PluginSettingsPage`, `PluginSettingsSubpage` (+ `pluginSettingsHref`), `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider`, `ComposerContextMenuProvider` (+ `ComposerContextMenuItem`, `ComposerContextMenuContext`, `ComposerContextMenuAction`), `SessionRowSlotContribution`, `KanbanCardBadgeContribution` (+ `KanbanCard`, `KanbanCardBoard`, `KanbanCardBadge`, `KanbanCardBadgeTone`, `KANBAN_CARD_BADGE_HUES`, `KANBAN_CARD_BADGE_LIMITS`), `SidebarNavPrefsContribution` |

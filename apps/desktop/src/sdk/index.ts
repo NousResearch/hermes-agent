@@ -122,6 +122,7 @@ import {
 import { sessionsHost } from './sessions'
 import { desktopSettings } from './settings'
 import { spellcheckHost } from './spellcheck'
+import { terminalHost } from './terminal'
 import { $viewport, type ViewportRect } from './viewport'
 
 /** Pane, status bar and titlebar slots; see `./areas` for the mount rules. */
@@ -1526,6 +1527,11 @@ export const host = {
   traceIdentityChange,
 
   composer: composerHost,
+
+  /** The terminal pane: resume a session in the in-app TUI, expand/collapse
+   *  the pane — see `./terminal`. Feature-detect on older hosts
+   *  (`host.terminal?.openSession`). */
+  terminal: terminalHost,
 
   /** Chromium's custom spell-check dictionary, one validated word per call. */
   spellcheck: spellcheckHost,

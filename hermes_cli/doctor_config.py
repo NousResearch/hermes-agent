@@ -563,7 +563,9 @@ def _check_channel_record_hygiene() -> None:
     holds a DIFFERENT install now (``replaced``), a record whose path is
     gone (``missing``), and a record no live install-state folder claims
     (``unclaimed``). Keep-on-doubt: doctor names the config key, the user
-    removes it.
+    removes it. The ``unclaimed`` hint never says "safe to remove":
+    the record it names can hold a non-default channel, and dropping it
+    makes ``resolve_update_channel()`` fall back to the default channel.
     """
     try:
         from hermes_cli.config import load_config
@@ -582,7 +584,10 @@ def _check_channel_record_hygiene() -> None:
         elif reason == "missing":
             detail = f"(nothing at {recorded} — safe to remove update.installs.{sha16})"
         else:  # unclaimed
-            detail = f"(no live install claims {sha16} — safe to remove update.installs.{sha16})"
+            detail = (
+                f"(no live install claims {sha16} — removing update.installs.{sha16} "
+                f"also drops its recorded channel; the install then follows the default channel)"
+            )
         check_warn(f"Stale channel record: {sha16}", detail)
 
 

@@ -1,6 +1,6 @@
 # Catalog entry for NousResearch/hermes-agent :: plugin-catalog/agent-wallet.yaml
 #
-# Pinned to b17c7150052a92060983e30d7bd405d869a68719 — the commit `hermes plugins validate` passed at, cloned anonymously from
+# Pinned to b777a2d4a913f48150e014a179f7d792a91551cc — the commit `hermes plugins validate` passed at, cloned anonymously from
 # the public repo. `repo` resolves without credentials; the pin is that repo's HEAD.
 #
 # Disclosure (rule 13) — the README's block is the source of truth; this is the same content:
@@ -23,7 +23,7 @@
 #   telemetry: none.
 name: agent-wallet
 repo: https://github.com/BlackHelio/agent-wallet
-sha: "b17c7150052a92060983e30d7bd405d869a68719"
+sha: "b777a2d4a913f48150e014a179f7d792a91551cc"
 version: 0.9.3
 description: >-
   Approval-gated multi-chain wallet for agents. Default coins are XMR, BTC and XRP (XRP is

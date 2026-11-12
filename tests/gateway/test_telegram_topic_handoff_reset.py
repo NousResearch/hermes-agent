@@ -23,7 +23,7 @@ async def test_handoff_suspended_after_its_switch_does_not_undo_a_newer_reset(tm
     key = build_session_key(_make_source(thread_id=THREAD))
     routes = {}
 
-    def reset(k):
+    def reset(k, **_kwargs):
         routes[k] = "fresh"
         return _entry(k, "fresh")
 

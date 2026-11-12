@@ -73,8 +73,8 @@ async def test_new_moves_a_queued_wake_to_the_fresh_session(monkeypatch, settles
             return [r['status'] for r in list_session_admissions(authority.db, session_id=str(old), pending_only=False)
                     if r['principal_id'].startswith('automation:') == wake]
 
-        async def reset_then_settle(session_key):
-            entry = await reset(session_key)
+        async def reset_then_settle(session_key, **kwargs):
+            entry = await reset(session_key, **kwargs)
             finish.set()
             # The window the old drain must NOT claim in: it waits behind /new, or (unlocked) has
             # already taken the wake off the old FIFO.

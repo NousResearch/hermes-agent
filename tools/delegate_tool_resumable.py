@@ -198,14 +198,17 @@ _live_pin_cache: dict[str, tuple[float, list[str]]] = {}
 _live_pin_lock = threading.Lock()
 
 
-def _live_pins(record: dict[str, Any]) -> list[str]:
+def _live_pins(record: dict[str, Any], *, memo: bool = True) -> list[str]:
     """Pins of a ``running``/``claimed`` record: where the child is NOW, plus where its previous run stopped (a
     continue's stored ``pin_paths``); a cached set never hides the live location.
 
     The sweep asks again right before each tree it touches, so the git discovery behind the live part is memoized
     for a few seconds, keyed on every record field that drives it: a checkpointed move changes the key and is
     discovered at once, while the record itself is always read fresh. The only thing a cached answer can miss is a
-    worktree created within the TTL, and a tree that new is never past the sweep's idle tier."""
+    worktree created within the TTL, and a tree that new is never past the sweep's idle tier. Recovery and reclaim
+    store their answer as the stopped record's pins, so they pass ``memo=False``."""
+    if not memo:
+        return sorted({*(record.get("pin_paths") or ()), *_pin_paths(record)})
     key = json.dumps([record.get(k) for k in ("cwd", "start_cwd", "worktrees_at_start", "repo_baselines")]
                      + [(record.get("worktree") or {}).get("path")], sort_keys=True, default=str)
     now = time.monotonic()
@@ -465,7 +468,7 @@ def plan_recovery(path: Optional[Path], alive) -> dict[str, tuple[Any, Any, list
     plan = {}
     for sid, pid, started, raw in rows:
         if not alive(pid, started):
-            plan[sid] = (pid, started, _live_pins(json.loads(raw or "{}")))
+            plan[sid] = (pid, started, _live_pins(json.loads(raw or "{}"), memo=False))
     return plan
 
 
@@ -510,7 +513,7 @@ def _reclaim_dead_owner(path: Optional[Path], sid: str, record: dict[str, Any]) 
     pid, started = record.get("owner_pid"), record.get("owner_started_at")
     if alive is None or alive(pid, started):
         return None
-    pins = _live_pins(record)
+    pins = _live_pins(record, memo=False)
 
     def _do(conn):
         _begin_immediate(conn)
